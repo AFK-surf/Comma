@@ -200,6 +200,15 @@ defmodule Salix.Bindings.AgentConversations do
     end
   end
 
+  # A sandbox Task: a new sandbox of its own (`SalixWeb.CodingSandboxes`).
+  # Without a repository it needs only sandboxes set up and the Group under
+  # its limit of them.
+  defp resolve_runs_on(scope, %{"kind" => "sandbox"} = request) when map_size(request) == 1 do
+    with true <- SalixWeb.L4ES.enabled?() || {:error, :sandbox_unavailable},
+         :ok <- sandbox_room(scope),
+         do: {:ok, %{"kind" => "sandbox"}}
+  end
+
   # A coding Task: a new sandbox of its own (`SalixWeb.CodingSandboxes`) with
   # GitHub repository `repo` checked out. The repository must be one the
   # Group's connected GitHub account reads, and the Group under its limit of

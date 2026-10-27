@@ -22,7 +22,7 @@
 mod audio;
 mod clip;
 mod controls;
-mod ctrl_tap;
+mod modifier_tap;
 mod editor;
 mod effect;
 mod gpu;
@@ -39,7 +39,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::hash::{BuildHasher, Hasher};
 use std::io::{BufRead, Write};
-use std::sync::atomic::{AtomicIsize, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicIsize, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde::Deserialize;
@@ -74,13 +74,13 @@ use windows::Win32::UI::Input::Ime::{
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetKeyState, RegisterHotKey, ReleaseCapture, SendInput, SetCapture, SetFocus, UnregisterHotKey, HOT_KEY_MODIFIERS,
     INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, VIRTUAL_KEY, VK_BACK, VK_CONTROL,
-    VK_DELETE, VK_DOWN, VK_END, VK_ESCAPE, VK_F22, VK_HOME, VK_LCONTROL, VK_LEFT, VK_MENU, VK_PROCESSKEY, VK_RCONTROL,
-    VK_RETURN, VK_RIGHT, VK_SHIFT, VK_TAB, VK_UP,
+    VK_DELETE, VK_DOWN, VK_END, VK_ESCAPE, VK_F22, VK_HOME, VK_LCONTROL, VK_LEFT, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_MENU,
+    VK_PROCESSKEY, VK_RCONTROL, VK_RETURN, VK_RIGHT, VK_RMENU, VK_RSHIFT, VK_RWIN, VK_SHIFT, VK_TAB, VK_UP,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::controls::{Button, Controls, Tip};
-use crate::ctrl_tap::{Input, Recognizer, Tap};
+use crate::modifier_tap::{Input, Recognizer, Tap};
 use crate::editor::Editor;
 use crate::effect::{Effect, CANCEL_DURATION, SEND_DURATION};
 use crate::gpu::{Capture, Gpu};
@@ -149,6 +149,42 @@ impl Default for Strings {
     }
 }
 
+/// A modifier whose taps open Quick Chat, as Main names it.
+#[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+enum TapModifier {
+    Alt,
+    Control,
+    Meta,
+    Shift,
+}
+
+impl TapModifier {
+    fn code(self) -> u8 {
+        match self {
+            TapModifier::Alt => 1,
+            TapModifier::Control => 2,
+            TapModifier::Meta => 3,
+            TapModifier::Shift => 4,
+        }
+    }
+
+    /// Whether `vk` is one of the modifier's keys.
+    fn is(code: u8, vk: u16) -> bool {
+        match code {
+            1 => vk == VK_LMENU.0 || vk == VK_RMENU.0 || vk == VK_MENU.0,
+            2 => vk == VK_LCONTROL.0 || vk == VK_RCONTROL.0 || vk == VK_CONTROL.0,
+            3 => vk == VK_LWIN.0 || vk == VK_RWIN.0,
+            4 => vk == VK_LSHIFT.0 || vk == VK_RSHIFT.0 || vk == VK_SHIFT.0,
+            _ => false,
+        }
+    }
+}
+
+fn default_tap() -> Option<TapModifier> {
+    Some(TapModifier::Control)
+}
+
 /// Main → helper (messages.ts's HostCommand).
 #[derive(Deserialize, Debug)]
 #[serde(tag = "type", rename_all = "camelCase")]
@@ -158,6 +194,10 @@ enum Command {
         strings: Strings,
         /// Comma's AppUserModelID, which a failed send's notification is shown as.
         app_user_model_id: Option<String>,
+        /// The modifier whose double tap opens Quick Chat; null when a global shortcut Main holds opens it, missing
+        /// for Ctrl.
+        #[serde(default = "default_tap")]
+        tap: Option<TapModifier>,
     },
     #[serde(rename_all = "camelCase")]
     Result {
@@ -337,6 +377,8 @@ thread_local! {
 }
 static WINDOW: AtomicIsize = AtomicIsize::new(0);
 static TAPS: Mutex<Option<Recognizer>> = Mutex::new(None);
+/// The modifier the keyboard hook watches (`TapModifier::code`), 0 for none.
+static TAP_MODIFIER: AtomicU8 = AtomicU8::new(2);
 
 fn main() -> Result<()> {
     unsafe {
@@ -1535,9 +1577,13 @@ impl App {
 
     fn command(&mut self, command: Command) {
         match command {
-            Command::Configure { strings, app_user_model_id } => {
+            Command::Configure { strings, app_user_model_id, tap } => {
                 self.strings = strings;
                 self.app_user_model_id = app_user_model_id;
+                let code = tap.map_or(0, TapModifier::code);
+                if TAP_MODIFIER.swap(code, Ordering::SeqCst) != code {
+                    *TAPS.lock().unwrap() = Some(Recognizer::default());
+                }
             }
             Command::Listen => self.summon(),
             Command::DictationTicket { request_id, url, ticket } => self.on_ticket(request_id, url, ticket),
@@ -1643,7 +1689,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
         WM_APP_TAP => {
             with_app(|app| match wparam.0 {
                 2 => app.summon(),
-                // A tap of Ctrl: listening resumes after edited words.
+                // A tap of the modifier: listening resumes after edited words.
                 _ => app.resume(),
             });
             LRESULT(0)
@@ -1801,7 +1847,8 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
     }
 }
 
-/// Taps of Ctrl in every app. A key other than Ctrl, a click or a scroll between makes a press a chord, not a tap.
+/// Taps of the chosen modifier in every app. Another key, a click or a scroll between makes a press a chord, not a
+/// tap.
 /// A tap goes to the window as `WM_APP_TAP` with 1 (single) or 2 (double).
 fn feed(input: Input, time: u32) {
     let tap = TAPS.lock().unwrap().as_mut().and_then(|taps| taps.handle(input, time as f64));
@@ -1817,10 +1864,12 @@ unsafe extern "system" fn keyboard_hook(code: i32, wparam: WPARAM, lparam: LPARA
     if code == HC_ACTION as i32 {
         let key = unsafe { &*(lparam.0 as *const KBDLLHOOKSTRUCT) };
         let vk = key.vkCode as u16;
-        let ctrl = vk == VK_LCONTROL.0 || vk == VK_RCONTROL.0 || vk == VK_CONTROL.0;
+        let watched = TAP_MODIFIER.load(Ordering::SeqCst);
+        let modifier = TapModifier::is(watched, vk);
         match wparam.0 as u32 {
-            WM_KEYDOWN | WM_SYSKEYDOWN => feed(if ctrl { Input::CtrlDown } else { Input::Other }, key.time),
-            WM_KEYUP | WM_SYSKEYUP if ctrl => feed(Input::CtrlUp, key.time),
+            _ if watched == 0 => {}
+            WM_KEYDOWN | WM_SYSKEYDOWN => feed(if modifier { Input::Down } else { Input::Other }, key.time),
+            WM_KEYUP | WM_SYSKEYUP if modifier => feed(Input::Up, key.time),
             _ => {}
         }
     }

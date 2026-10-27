@@ -447,6 +447,30 @@ it("keeps an ended session's line under the rows where it has no branch", async 
   );
 });
 
+it("a sandbox Task without a repository shows its sandbox and terminal, and no repository, branch or changes", async () => {
+  const core = panelCore(() => null);
+  render(
+    core.wrap(
+      <TaskDetailsPanel
+        activityWorking={false}
+        coding={{ workspaceId: "w1", taskId: "cnv_1" }}
+        conversation={conversation}
+        groupId="grp_1"
+        labeled={false}
+        open
+        run={{ ...run("ready"), place: { kind: "sandbox", state: "ready" } }}
+      />
+    )
+  );
+  await flush();
+  await flush();
+
+  const environment = within(screen.getByTestId("task-panel-environment"));
+  expect(environment.queryByTestId("task-panel-coding-repo")).toBeNull();
+  expect(environment.queryByTestId("task-panel-coding-branch")).toBeNull();
+  expect(environment.getByTestId("task-panel-coding-terminal")).toBeTruthy();
+});
+
 it("says what to do when the sandbox is gone, and still makes the pull request of the branch it pushed", async () => {
   const core = panelCore((name) => {
     if (name === "coding.changes") return changes("github");

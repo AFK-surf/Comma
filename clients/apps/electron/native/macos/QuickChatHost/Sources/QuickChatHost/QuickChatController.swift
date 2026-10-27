@@ -38,6 +38,8 @@ final class QuickChatController {
     private let controls = QuickChatControls()
     private var phase = Phase.idle
     private var strings = QuickChatStrings.english
+    /// Main chose the modifier whose taps open Quick Chat, or none.
+    var onTapModifier: ((TapModifier?) -> Void)?
     private var source: TranscriptSource?
     private var editingSource: TranscriptSource?
     /// The words finishing as editing starts, until the editor opens with them.
@@ -118,8 +120,9 @@ final class QuickChatController {
 
     func handle(_ command: HostCommand) {
         switch command {
-        case let .configure(strings):
+        case let .configure(strings, tap):
             self.strings = strings
+            onTapModifier?(tap)
             controls.configure(close: strings.close, send: strings.send)
         case let .result(requestId, ok, _):
             submissions.cancel(requestId: requestId)
@@ -138,7 +141,7 @@ final class QuickChatController {
         }
     }
 
-    /// A double tap of ⌘, or the menu-bar menu's Quick Chat row: Quick Chat opens, or
+    /// A double tap, the global shortcut or the menu-bar menu's Quick Chat row: Quick Chat opens, or
     /// listens again after edited words; it keeps listening when it already does.
     func summon() {
         switch phase {

@@ -213,6 +213,71 @@ describe("AppPreferencesService", () => {
     await service.close();
   });
 
+  it("holds Quick Chat's chord only while Quick Chat runs and is on, and says when the OS refuses it", async () => {
+    const filePath = await temporaryPreferencesPath();
+    const optionSpace = {
+      key: "space" as const,
+      modifiers: { alt: true, control: false, meta: false, shift: false },
+    };
+    const platform = { ...createPlatform(), setQuickChatShortcut: vi.fn() };
+    const service = await AppPreferencesService.open({ filePath, platform });
+    // A double tap is the helper's: nothing to hold.
+    await service.update({ clientSettings: { quickChatShortcut: { tap: "alt" } } });
+    expect(platform.setQuickChatShortcut).not.toHaveBeenCalled();
+
+    // Before Quick Chat runs, a chord is saved but not held.
+    await service.update({ clientSettings: { quickChatShortcut: optionSpace } });
+    expect(platform.setQuickChatShortcut).not.toHaveBeenCalled();
+    await service.setQuickChatSupported(true);
+    expect(platform.setQuickChatShortcut).toHaveBeenLastCalledWith(optionSpace);
+    expect(service.state().quickChatShortcutStatus).toBe("registered");
+
+    // Turned off, it lets the chord go; on again, it holds it again.
+    await service.update({ quickChatEnabled: false });
+    expect(platform.setQuickChatShortcut).toHaveBeenLastCalledWith(null);
+    expect(service.state().quickChatShortcutStatus).toBe("unset");
+    await service.update({ quickChatEnabled: true });
+    expect(platform.setQuickChatShortcut).toHaveBeenLastCalledWith(optionSpace);
+
+    // A chord the OS refuses fails the edit and keeps the one held.
+    const optionK = { ...optionSpace, key: "k" as const };
+    platform.setQuickChatShortcut.mockImplementationOnce(() => {
+      throw new Error("Occupied");
+    });
+    await expect(
+      service.update({ clientSettings: { quickChatShortcut: optionK } })
+    ).rejects.toThrow("Occupied");
+    expect(service.state().clientSettings?.quickChatShortcut).toEqual(optionSpace);
+    expect(service.state().quickChatShortcutStatus).toBe("registered");
+
+    // Back to the double tap: the chord is let go.
+    await service.update({ clientSettings: { quickChatShortcut: null } });
+    expect(platform.setQuickChatShortcut).toHaveBeenLastCalledWith(null);
+    await service.close();
+  });
+
+  it("shows Quick Chat's chord as unavailable when the OS refuses it at start", async () => {
+    const filePath = await temporaryPreferencesPath();
+    const optionSpace = {
+      key: "space" as const,
+      modifiers: { alt: true, control: false, meta: false, shift: false },
+    };
+    const platform = {
+      ...createPlatform(),
+      setQuickChatShortcut: vi.fn().mockImplementationOnce(() => {
+        throw new Error("Occupied");
+      }),
+    };
+    const service = await AppPreferencesService.open({ filePath, platform });
+    await service.update({ clientSettings: { quickChatShortcut: optionSpace } });
+    await service.setQuickChatSupported(true);
+    expect(service.state().quickChatShortcutStatus).toBe("unavailable");
+    // Choosing it again retries.
+    await service.update({ clientSettings: { quickChatShortcut: optionSpace } });
+    expect(service.state().quickChatShortcutStatus).toBe("registered");
+    await service.close();
+  });
+
   it("defaults legacy Session visibility to off and persists explicit opt-in without resetting other settings", async () => {
     const filePath = await temporaryPreferencesPath();
     const { sessionHistoryEnabled: _absent, ...legacySettings } =

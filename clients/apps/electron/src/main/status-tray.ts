@@ -7,7 +7,13 @@ import {
   type CommaLocale,
 } from "@comma/i18n";
 import type { ProductInboxItem, ProductInboxListResult } from "@comma/core/contract";
-import { defaultCommaClientSettings, type AppPreferences } from "@comma/native-bridge";
+import {
+  defaultCommaClientSettings,
+  quickChatShortcutText,
+  resolveQuickChatShortcut,
+  type AppPreferences,
+  type QuickChatShortcut,
+} from "@comma/native-bridge";
 import {
   sameSessionProductLease,
   type SessionProductLease,
@@ -46,6 +52,10 @@ export interface StatusTrayContent {
   locale?: CommaLocale | undefined;
   /** Quick Chat runs: the menu has a row that starts it. */
   quickChat?: boolean | undefined;
+  /** What opens Quick Chat (`quickChatShortcut`); null is the platform's double tap. */
+  quickChatShortcut?: QuickChatShortcut | null | undefined;
+  /** The accelerator of Quick Chat's global shortcut, while it holds one. */
+  quickChatAccelerator?: string | undefined;
   /** Comma's credits and the person's own plans, for a signed-in session. */
   usage?: StatusTrayUsageSnapshot | undefined;
 }
@@ -156,13 +166,24 @@ export function inProgressStatusTrayTasks(
 /** Shows the chord only while it is the one that actually opens Comma. */
 export function statusTrayPreferenceContent(
   preferences: AppPreferences
-): Pick<StatusTrayContent, "openCommaAccelerator"> {
+): Pick<
+  StatusTrayContent,
+  "openCommaAccelerator" | "quickChatAccelerator" | "quickChatShortcut"
+> {
   const settings = preferences.clientSettings ?? defaultCommaClientSettings;
+  const quickChat = settings.quickChatShortcut;
   return {
     openCommaAccelerator:
       preferences.openCommaShortcutStatus === "registered"
         ? shortcutAccelerator(settings.openCommaShortcut)
         : undefined,
+    quickChatAccelerator:
+      quickChat &&
+      !("tap" in quickChat) &&
+      preferences.quickChatShortcutStatus === "registered"
+        ? shortcutAccelerator(quickChat)
+        : undefined,
+    quickChatShortcut: quickChat,
   };
 }
 
@@ -294,17 +315,14 @@ export function createCommaStatusTray({
         label: messages.electron_tray_open({ productName }, language),
         ...shortcut(next.openCommaAccelerator),
       },
-      // A double tap of ⌘ (Ctrl on Windows) starts it too.
+      // Its shortcut starts it too: a double tap shows as text, a chord as the row's own.
       ...(next.quickChat
         ? [
             {
               click: onQuickChat,
               id: "quick-chat",
               label: messages.electron_tray_quick_chat({}, language),
-              shortcutText:
-                platform === "win32"
-                  ? messages.electron_tray_quick_chat_shortcut_windows({}, language)
-                  : messages.electron_tray_quick_chat_shortcut({}, language),
+              ...quickChatShortcutRow(next, platform, language),
             },
           ]
         : []),
@@ -847,6 +865,22 @@ function electronItem(item: StatusTrayMenuItem): StatusTrayElectronItem {
   return trailing
     ? { ...shown, ...kind, label: `${rest.label ?? ""} · ${trailing}` }
     : { ...shown, ...kind };
+}
+
+function quickChatShortcutRow(
+  content: StatusTrayContent,
+  platform: NodeJS.Platform,
+  language: { locale: CommaLocale }
+) {
+  const system = platform === "win32" ? "windows" : "macos";
+  const quickChat = resolveQuickChatShortcut(content.quickChatShortcut, system);
+  if (!("tap" in quickChat)) return shortcut(content.quickChatAccelerator);
+  return {
+    shortcutText: messages.quick_chat_trigger_double_tap(
+      { key: quickChatShortcutText(quickChat, system) },
+      language
+    ),
+  };
 }
 
 function shortcut(accelerator: string | undefined) {

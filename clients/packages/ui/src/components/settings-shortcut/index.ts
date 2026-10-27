@@ -1,5 +1,7 @@
 export { SettingsShortcut, formatSettingsShortcut } from "./SettingsShortcut";
 export type {
+  SettingsModifierTapValue,
+  SettingsShortcutBinding,
   SettingsShortcutKey,
   SettingsShortcutProps,
   SettingsShortcutValue,

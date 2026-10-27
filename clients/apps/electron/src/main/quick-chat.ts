@@ -9,7 +9,13 @@ import {
   type ProductInboxListResult,
   type QuickChatMessage,
 } from "@comma/core/contract";
-import type { NotchHostEvent, NotchTaskItem } from "@comma/native-bridge";
+import {
+  quickChatShortcutText,
+  resolveQuickChatShortcut,
+  type NotchHostEvent,
+  type NotchTaskItem,
+  type QuickChatShortcut,
+} from "@comma/native-bridge";
 import {
   sameSessionProductLease,
   sessionPrincipalKind,
@@ -77,6 +83,8 @@ export interface QuickChatServiceOptions {
   onAvailableChanged?: ((available: boolean) => void) | undefined;
   /** The person's setting (`quickChatEnabled`); off, no helper runs. Default on. */
   enabled?: boolean | undefined;
+  /** The person's setting (`quickChatShortcut`); null is the platform's double tap. */
+  shortcut?: QuickChatShortcut | null | undefined;
   clock?: MainClock | undefined;
   osRelease?: (() => string) | undefined;
   pathExists?: ((path: string) => boolean) | undefined;
@@ -229,6 +237,7 @@ export class QuickChatService {
   readonly #stopNotchEvents: () => void;
   #closed = false;
   #enabled: boolean;
+  #shortcut: QuickChatShortcut | null;
   #lease: SessionProductLease | undefined;
   /** Changes with each session; answers for an earlier one are dropped. */
   #epoch = 0;
@@ -256,6 +265,7 @@ export class QuickChatService {
     openRoute,
     onAvailableChanged,
     enabled = true,
+    shortcut = null,
     clock = realMainClock,
     osRelease = release,
     pathExists = existsSync,
@@ -275,6 +285,7 @@ export class QuickChatService {
     this.#openRoute = openRoute;
     this.#onAvailableChanged = onAvailableChanged;
     this.#enabled = enabled;
+    this.#shortcut = shortcut;
     this.#clock = clock;
     this.#spawnHost = spawnHost;
     this.#appUserModelId = appUserModelId;
@@ -329,8 +340,19 @@ export class QuickChatService {
   }
 
   /**
-   * The menu-bar menu's Quick Chat row was chosen: Quick Chat listens, as
-   * after a double tap of ⌘.
+   * The person chose what opens Quick Chat: the helper watches the modifier
+   * of a double tap, or none for a global shortcut, which Main holds.
+   */
+  setShortcut(shortcut: QuickChatShortcut | null) {
+    if (this.#closed || JSON.stringify(shortcut) === JSON.stringify(this.#shortcut))
+      return;
+    this.#shortcut = shortcut;
+    if (this.#host?.ready) this.#configure(this.#host);
+  }
+
+  /**
+   * The menu-bar menu's Quick Chat row, or its global shortcut: Quick Chat
+   * listens, as after a double tap.
    * False while its helper is not running, and nothing happens.
    */
   listen() {
@@ -542,8 +564,12 @@ export class QuickChatService {
 
   #configure(host: QuickChatHostGeneration) {
     const locale = { locale: readMainLocale(this.#locale) };
-    // Windows taps Ctrl, keeps a failed send's words for the next Quick Chat, and has no Notch.
+    // Windows keeps a failed send's words for the next Quick Chat, and has no Notch.
     const windows = this.#platform === "win32";
+    const shortcut = resolveQuickChatShortcut(
+      this.#shortcut,
+      windows ? "windows" : "macos"
+    );
     this.#write(host, {
       strings: {
         close: messages.quick_chat_close({}, locale),
@@ -555,15 +581,17 @@ export class QuickChatService {
               locale
             ),
         preparing: messages.quick_chat_preparing({}, locale),
-        resume: windows
-          ? messages.quick_chat_resume_windows({}, locale)
-          : messages.quick_chat_resume({}, locale),
+        resume: messages.quick_chat_resume(
+          { key: quickChatShortcutText(shortcut, windows ? "windows" : "macos") },
+          locale
+        ),
         send: messages.quick_chat_send({}, locale),
         sendFailed: windows
           ? messages.quick_chat_send_failed_windows({}, locale)
           : messages.quick_chat_send_failed({}, locale),
         speechUnavailable: messages.quick_chat_speech_unavailable({}, locale),
       },
+      tap: "tap" in shortcut ? shortcut.tap : null,
       type: "configure",
       ...(windows && this.#appUserModelId
         ? { appUserModelId: this.#appUserModelId }

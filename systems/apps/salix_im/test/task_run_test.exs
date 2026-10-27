@@ -398,7 +398,7 @@ defmodule SalixIM.TaskRunTest do
         "repo" => %{"owner" => "afk-surf", "name" => "cue"}
       })
 
-    assert {:error, {:bad_request, "a coding Task runs on its own sandbox" <> _}} =
+    assert {:error, {:bad_request, "a sandbox Task runs on its own sandbox" <> _}} =
              TaskRun.switch(
                ctx.group_id,
                conversation_id,

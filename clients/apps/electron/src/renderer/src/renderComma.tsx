@@ -56,6 +56,12 @@ if (isOnboardingWindow) {
   document.documentElement.dataset.commaWindowRole = "onboarding";
   document.body.dataset.commaWindowRole = "onboarding";
 }
+const windowMaterial = getNativeBridge().windowMaterial;
+if (rendererRole === "main-window" && windowMaterial) {
+  // Main drew this window over a system material (window-options.ts): the
+  // page leaves its root clear and the shell tints it.
+  document.documentElement.dataset.commaWindowMaterial = windowMaterial;
+}
 const RendererApp = isBrowserInspectionComposer
   ? BrowserInspectionComposer
   : isOnboardingWindow

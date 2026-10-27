@@ -113,6 +113,33 @@ async function expectWindowDragRegions(page: Page) {
       })
     )
     .toEqual({ appRegion: "drag", topmostDragSurface: true });
+  // Electron gives a box its parent's app region and registers every box that
+  // has one at its unclipped rect. Content scrolled up out of a no-drag panel
+  // must not carry the region, or it cuts holes into the window bar above;
+  // neither may anything inside it that sets one of its own. A probe header
+  // with controls, as chat cards and page titles carry, stands in for the
+  // content this page does not show.
+  const scrollContents = page.locator(
+    '.comma-content [data-slot="scroll-area-content"]'
+  );
+  await expect(scrollContents.first()).toBeAttached();
+  expect(
+    await scrollContents.evaluateAll((contents) => {
+      const probe = document.createElement("header");
+      probe.innerHTML =
+        '<a href="#">a</a><button>b</button><input /><div role="button">c</div>';
+      contents[0]!.append(probe);
+      const carrying = contents
+        .flatMap((content) => [content, ...Array.from(content.querySelectorAll("*"))])
+        .filter(
+          (element) =>
+            getComputedStyle(element).getPropertyValue("-webkit-app-region") !== "none"
+        )
+        .map((element) => element.outerHTML.slice(0, 120));
+      probe.remove();
+      return carrying;
+    })
+  ).toEqual([]);
   // The Chat Sidebar toggle is a window-bar control: it opts out of the drag
   // surface and nothing paints over it.
   await expect
@@ -499,10 +526,26 @@ test(
   "electron keeps native window backing aligned with Comma appearance while signed out",
   { tag: "@shared-app" },
   async ({ sharedElectron: { app, mainWindow: appWindow } }) => {
+    const mainWindowBacking = () =>
+      app.evaluate(({ BrowserWindow }) => {
+        const mainWindow = BrowserWindow.getAllWindows().find((candidate) => {
+          const url = candidate.webContents.getURL();
+          return url.length > 0 && new URL(url).hash === "";
+        });
+        return mainWindow?.getBackgroundColor().toLowerCase();
+      });
     try {
       await expect(
         appWindow.getByRole("heading", { name: "Welcome to Comma" })
       ).toBeVisible();
+      // Over a system material (macOS vibrancy, Windows acrylic) the native
+      // backing stays clear and the page paints the theme's opaque ground when
+      // Comma's theme differs from the system's (window-options.ts, styles.css).
+      // Electron reports the clear #00000000 as #000000. The renderer marks the
+      // material before it renders, so the welcome heading means it is set.
+      const overMaterial = await appWindow.evaluate(
+        () => document.documentElement.dataset.commaWindowMaterial !== undefined
+      );
 
       await setElectronNativeTheme(app, "light");
 
@@ -526,17 +569,7 @@ test(
         ).toBe(true);
       }).toPass();
 
-      await expect
-        .poll(() =>
-          app.evaluate(({ BrowserWindow }) => {
-            const mainWindow = BrowserWindow.getAllWindows().find((candidate) => {
-              const url = candidate.webContents.getURL();
-              return url.length > 0 && new URL(url).hash === "";
-            });
-            return mainWindow?.getBackgroundColor().toLowerCase();
-          })
-        )
-        .toBe("#0f0f10");
+      await expect.poll(mainWindowBacking).toBe(overMaterial ? "#000000" : "#0f0f10");
 
       await setElectronNativeTheme(app, "dark");
       await appWindow.evaluate(() =>
@@ -548,18 +581,7 @@ test(
         "data-theme",
         "Light mode"
       );
-      await expect
-        .poll(() =>
-          app.evaluate(({ BrowserWindow }) => {
-            const windows = BrowserWindow.getAllWindows();
-            const mainWindow = windows.find((candidate) => {
-              const url = candidate.webContents.getURL();
-              return url.length > 0 && new URL(url).hash === "";
-            });
-            return mainWindow?.getBackgroundColor().toLowerCase();
-          })
-        )
-        .toBe("#f4f4f5");
+      await expect.poll(mainWindowBacking).toBe(overMaterial ? "#000000" : "#f4f4f5");
     } finally {
       // The theme the test set stands in for the operating system's: the app does not own it.
       await setElectronNativeTheme(app, "system");
@@ -766,7 +788,7 @@ test(
         railSlot.evaluate((slot) => Math.round(slot.getBoundingClientRect().width));
       await expect(railToggle).toHaveAttribute("aria-expanded", "true");
       await expect(railSlot).toHaveAttribute("data-collapsed", "false");
-      await expect.poll(railSlotWidth).toBe(75);
+      await expect.poll(railSlotWidth).toBe(68);
       await railToggle.click();
       await expect(railToggle).toHaveAttribute("aria-expanded", "false");
       await expect(railSlot).toHaveAttribute("data-collapsed", "true");
@@ -777,7 +799,7 @@ test(
       await railToggle.click();
       await expect(railToggle).toHaveAttribute("aria-expanded", "true");
       await expect(railSlot).toHaveAttribute("data-collapsed", "false");
-      await expect.poll(railSlotWidth).toBe(75);
+      await expect.poll(railSlotWidth).toBe(68);
       await expect(homeLink).toBeVisible();
       // The toggle-left-sidebar shortcut drives the same collapse.
       const railShortcut = process.platform === "darwin" ? "Meta+B" : "Control+B";
@@ -790,7 +812,7 @@ test(
       await appWindow.keyboard.press(railShortcut);
       await expect(railToggle).toHaveAttribute("aria-expanded", "true");
       await expect(railSlot).toHaveAttribute("data-collapsed", "false");
-      await expect.poll(railSlotWidth).toBe(75);
+      await expect.poll(railSlotWidth).toBe(68);
     }
   }
 );

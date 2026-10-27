@@ -1,0 +1,119 @@
+/* A slider drawn as a field, as in an inspector: its name and value sit
+   inside, its fill is the value, and it can be taken anywhere along it
+   (SettingsSliderField.tsx). The Notch width and the window transparency use
+   it. */
+.comma-settings-slider-field {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-md);
+}
+
+.comma-settings-slider-field__field {
+  position: relative;
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-md);
+  min-width: 0;
+  /* A small button's height, so the row lines up. */
+  height: calc(var(--spacing-4xl) + var(--spacing-xs));
+  padding-inline: var(--spacing-lg);
+  overflow: hidden;
+  border-radius: var(--radius-md);
+  background: var(--color-bg-tertiary);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm--line-height);
+  cursor: ew-resize;
+  outline: none;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  transition: box-shadow var(--motion-duration-state-change) ease;
+}
+
+.comma-settings-slider-field[data-disabled="true"] .comma-settings-slider-field__field {
+  cursor: default;
+}
+
+.comma-settings-slider-field__field:focus-visible {
+  box-shadow: var(--shadow-focus-brand);
+}
+
+/* The fill and the default mark measure the whole field, padding included. */
+.comma-settings-slider-field__track {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.comma-settings-slider-field__fill,
+.comma-settings-slider-field__detent {
+  position: absolute;
+}
+
+.comma-settings-slider-field__fill {
+  inset: 0;
+  background: color-mix(in oklab, var(--color-text-primary) 8%, transparent);
+  transform-origin: left center;
+  transition: background-color var(--motion-duration-state-change) ease;
+}
+
+.comma-settings-slider-field__detent {
+  top: 50%;
+  left: calc(var(--settings-slider-default-fraction) * 100%);
+  width: var(--spacing-xxs);
+  height: var(--spacing-lg);
+  margin-top: calc(var(--spacing-lg) / -2);
+  margin-left: calc(var(--spacing-xxs) / -2);
+  border-radius: var(--radius-full);
+  background: var(--color-fg-disabled);
+  opacity: 0;
+  transition:
+    opacity var(--motion-duration-state-change) ease,
+    background-color var(--motion-duration-state-change) ease;
+}
+
+.comma-settings-slider-field__label,
+.comma-settings-slider-field__readout {
+  position: relative;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+.comma-settings-slider-field__label {
+  overflow: hidden;
+  color: var(--color-text-tertiary);
+  text-overflow: ellipsis;
+}
+
+.comma-settings-slider-field__readout {
+  flex: none;
+  color: var(--color-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .comma-settings-slider-field:not([data-disabled="true"])
+    .comma-settings-slider-field__field:hover
+    .comma-settings-slider-field__fill {
+    background: color-mix(in oklab, var(--color-text-primary) 11%, transparent);
+  }
+}
+
+.comma-settings-slider-field[data-dragging="true"] .comma-settings-slider-field__fill {
+  background: color-mix(in oklab, var(--color-text-primary) 13%, transparent);
+}
+
+.comma-settings-slider-field[data-dragging="true"]
+  .comma-settings-slider-field__detent {
+  opacity: 1;
+}
+
+.comma-settings-slider-field[data-snapped="true"] .comma-settings-slider-field__detent {
+  background: var(--color-fg-brand-primary);
+}
+
+.comma-settings-slider-field__reset {
+  flex: none;
+}

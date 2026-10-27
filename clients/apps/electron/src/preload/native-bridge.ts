@@ -10,6 +10,7 @@ import type {
   NativeCommandContract,
   NativeCommandResult,
   NativeBridgeError,
+  CommaWindowMaterial,
   NativeRendererIdentity,
   NativeRendererWindowRole,
   NativeStateBridge,
@@ -198,6 +199,7 @@ export function createNativeBridgePreload(
     platform: "electron",
     os: detectOperatingSystem(),
     self: resolvePreloadRendererIdentity(options.argv ?? process.argv),
+    ...resolvePreloadWindowMaterial(options.argv ?? process.argv),
     ...generatedBridge,
     surfaces: {
       ...generatedBridge.surfaces,
@@ -658,6 +660,16 @@ function detectOperatingSystem(): CommaOperatingSystem {
     return "linux";
   }
   return "unknown";
+}
+
+/** The material Main gave this window (window-options.ts), if any. */
+export function resolvePreloadWindowMaterial(argv: readonly string[]): {
+  windowMaterial?: CommaWindowMaterial;
+} {
+  const material = readArgumentValue(argv, "--window-material");
+  return material === "vibrancy" || material === "acrylic"
+    ? { windowMaterial: material }
+    : {};
 }
 
 function readArgumentValue(argv: readonly string[], name: string) {

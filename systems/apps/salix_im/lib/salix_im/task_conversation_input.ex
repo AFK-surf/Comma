@@ -335,18 +335,23 @@ defmodule SalixIM.TaskConversationInput do
     end
   end
 
-  # A coding Task (`runs_on {kind: sandbox}`) runs on the device its sandboxes'
-  # stations register as, the same for every sandbox, and works on a session
-  # branch named after it unless the request named one.
+  # A sandbox Task (`runs_on {kind: sandbox}`) runs on the device its sandboxes'
+  # stations register as, the same for every sandbox. A coding Task (`repo`)
+  # works on a session branch named after it unless the request named one.
   defp sandbox_place(%{"runs_on" => %{"kind" => "sandbox"}} = attrs, conversation_id) do
-    repo = attrs["repo"] || %{}
+    attrs =
+      Map.put(attrs, "runs_on", %{
+        "kind" => "sandbox",
+        "device_id" => SalixStore.CodingSandboxes.device_id(conversation_id)
+      })
 
-    attrs
-    |> Map.put("runs_on", %{
-      "kind" => "sandbox",
-      "device_id" => SalixStore.CodingSandboxes.device_id(conversation_id)
-    })
-    |> Map.put("repo", Map.put_new(repo, "branch", session_branch(conversation_id)))
+    case attrs["repo"] do
+      %{} = repo ->
+        Map.put(attrs, "repo", Map.put_new(repo, "branch", session_branch(conversation_id)))
+
+      _none ->
+        attrs
+    end
   end
 
   defp sandbox_place(attrs, _conversation_id), do: attrs

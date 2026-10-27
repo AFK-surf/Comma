@@ -20,6 +20,11 @@ export { DeviceSettings } from "./DeviceSettings";
 export { CreatedSecretPanel } from "./CreatedSecretPanel";
 export { DeviceSetupStatus, DeviceSetupHelp } from "./DeviceSetupContent";
 export { NotchWidthSetting } from "./NotchWidthSetting";
+export { SettingsSliderField } from "./SettingsSliderField";
+export type {
+  SettingsSliderFieldHandle,
+  SettingsSliderFieldProps,
+} from "./SettingsSliderField";
 export type {
   NotchWidthSettingLabels,
   NotchWidthSettingProps,

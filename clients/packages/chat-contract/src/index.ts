@@ -130,15 +130,20 @@ export const chatTaskRunSchema = z.object({
       deviceId: z.string().min(1),
       name: z.string().optional(),
     }),
-    /** A coding Task's own cloud sandbox: its repository and session branch, and where the sandbox stands. */
+    /**
+     * A sandbox Task's own cloud sandbox: where it stands and, for a coding Task, its repository and session branch
+     * (a Task without a repository has no `repo`).
+     */
     z.object({
       kind: z.literal("sandbox"),
-      repo: z.object({
-        owner: z.string(),
-        name: z.string(),
-        baseRef: z.string().optional(),
-        branch: z.string().optional(),
-      }),
+      repo: z
+        .object({
+          owner: z.string(),
+          name: z.string(),
+          baseRef: z.string().optional(),
+          branch: z.string().optional(),
+        })
+        .optional(),
       state: z.string(),
       reason: z.string().optional(),
     }),

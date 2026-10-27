@@ -272,6 +272,43 @@ defmodule SalixIM.DailyBriefSourceTest do
            ]
   end
 
+  test "reads an active member's own messages page by page for their threads", ctx do
+    # Three pages, newest first: the second and third follow the cursor.
+    SystemsRuntime.put_env(:salix_im, :daily_brief_test_search, fn opts ->
+      case opts[:cursor_ts_us] do
+        nil ->
+          {:ok,
+           %{
+             messages: [%{"channel" => "C_PUBLIC", "ts" => "9.0"}],
+             next_cursor: {9, "m9"},
+             has_more?: true
+           }}
+
+        9 ->
+          {:ok,
+           %{
+             messages: [%{"channel" => "C_PUBLIC", "ts" => "8.0", "thread_ts" => "5.0"}],
+             next_cursor: {8, "m8"},
+             has_more?: true
+           }}
+
+        8 ->
+          {:ok, page([%{"channel" => "C_PUBLIC", "ts" => "2.0", "thread_ts" => "1.0"}])}
+      end
+    end)
+
+    assert {:ok, %{threads: threads, complete?: true}} =
+             DailyBriefSource.member_threads(
+               Map.merge(ctx.source, %{
+                 slack_user_id: "U_ALICE",
+                 channel_ids: ["C_PUBLIC"],
+                 after_us: @after_us
+               })
+             )
+
+    assert Enum.map(threads, & &1.thread_ts) == ["9.0", "5.0", "1.0"]
+  end
+
   test "rejects a connect from another tenant", ctx do
     assert DailyBriefSource.read_window(%{window(ctx.source, "C_PUBLIC") | tenant_id: "other"}) ==
              {:error, :source_unavailable}

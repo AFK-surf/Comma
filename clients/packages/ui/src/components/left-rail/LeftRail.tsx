@@ -14,7 +14,7 @@ import { cx, definedProps } from "../utils";
  * `--comma-sidebar-rail-width` so the layout slot and the shell's width math
  * read one value.
  */
-export const LEFT_RAIL_WIDTH = 75;
+export const LEFT_RAIL_WIDTH = 68;
 
 export interface LeftRailItem {
   id: string;

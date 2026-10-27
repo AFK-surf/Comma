@@ -155,8 +155,15 @@ export interface NativePeersBridge {
   ): () => void;
 }
 
+/**
+ * The system material Main drew this window over, if any: macOS vibrancy, or
+ * Windows 11 acrylic. The page then leaves its window ground translucent.
+ */
+export type CommaWindowMaterial = "vibrancy" | "acrylic";
+
 export type CommaNativeBridge = Omit<GeneratedNativeBridge, "peers" | "surfaces"> & {
   platform: CommaPlatform;
+  windowMaterial?: CommaWindowMaterial;
   /** Product state lives outside this view. Native APIs remain platform-specific. */
   runtimeHost?: "shared-worker";
   os: CommaOperatingSystem;

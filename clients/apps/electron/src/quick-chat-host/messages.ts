@@ -1,3 +1,5 @@
+import type { QuickChatTapModifier } from "@comma/native-bridge";
+
 // What Quick Chat's helper and Main say on its stdin and stdout, one JSON object per line: the macOS QuickChatHost's
 // HostWire.swift and the Windows QuickChatHost's main.rs (native/windows/QuickChatHost) speak it.
 
@@ -20,6 +22,11 @@ export type HostCommand =
       strings: QuickChatStrings;
       /** Windows: Comma's AppUserModelID, which the helper notifies a failed send as. */
       appUserModelId?: string;
+      /**
+       * The modifier whose double tap opens Quick Chat and whose tap listens
+       * again; null when a global shortcut, held by Main, opens it instead.
+       */
+      tap: QuickChatTapModifier | null;
     }
   | { type: "result"; requestId: string; ok: boolean; message?: string }
   | { type: "transcript"; clipId: string; text?: string | null }

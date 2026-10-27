@@ -1,9 +1,9 @@
 defmodule Salix.Bindings.TaskRunsOnSandboxTest do
   @moduledoc """
-  A coding Task's place (`runs_on {kind: sandbox}`) through
-  `Salix.Bindings.AgentConversations.runs_on/2`: the repository must be well
-  formed and one the Group's GitHub account reads, the Group under its limit
-  of sandboxes, and coding sandboxes set up. GitHub is a fake.
+  A sandbox Task's place (`runs_on {kind: sandbox}`) through
+  `Salix.Bindings.AgentConversations.runs_on/2`: sandboxes set up and the
+  Group under its limit of them; for a coding Task, the repository must be
+  well formed and one the Group's GitHub account reads. GitHub is a fake.
   """
   use SystemsClock.Case, async: false
 
@@ -161,6 +161,29 @@ defmodule Salix.Bindings.TaskRunsOnSandboxTest do
   test "a Group at its limit of live sandboxes is refused", %{scope: scope} do
     live(scope, ["cnv_1", "cnv_2"])
     assert sandbox(scope, %{"owner" => "acme", "name" => "api"}) == {:error, {:sandbox_limit, 2}}
+  end
+
+  test "a sandbox without a repository needs no GitHub account, only room", %{scope: scope} do
+    SystemsRuntime.put_env(:salix_web, :sandbox_test_unconnected, scope.group_id)
+
+    assert AgentConversations.runs_on(scope, %{"kind" => "sandbox"}) ==
+             {:ok, %{"kind" => "sandbox"}}
+
+    assert AgentConversations.runs_on(scope, %{"kind" => "sandbox", "size" => "large"}) ==
+             {:error, :invalid_runs_on}
+
+    for c <- ["cnv_1", "cnv_2"] do
+      {:ok, _} =
+        CodingSandboxes.create(%{
+          tenant_id: scope.tenant_id,
+          group_id: scope.group_id,
+          conversation_id: c,
+          workspace: "comma:" <> scope.group_id
+        })
+    end
+
+    assert AgentConversations.runs_on(scope, %{"kind" => "sandbox"}) ==
+             {:error, {:sandbox_limit, 2}}
   end
 
   test "a Workspace's own limit replaces the default in the check and the assertion",

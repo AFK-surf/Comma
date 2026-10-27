@@ -811,7 +811,7 @@ Implementation: [Task Share page](../../clients/packages/app/src/components/shar
 The chat Task panel docks the Tasks a chat created. A running Task always shows.
 A User clears a settled one with Dismiss, or with Reveal in Chat. The dismissal records the run that the User acknowledged: the Task's `run_started_at`, or 0 for a Task from before Salix kept it.
 Salix sets `run_started_at` on the Conversation when a Task's status becomes `active`, at creation or later. It is a value, not another entity.
-Every device hides the row until the Task's latest run started after the acknowledged one. A Task that runs again shows again, and no device has to see it run. A rename, a label, or a review acceptance starts no run, so it does not bring the row back.
+Every device hides the row until the Task's latest run started after the acknowledged one. A Task that runs again shows again, and no device has to see it run. A Router dismisses its own completed or cancelled non-Loop Task for the Task's `owner_user_id` through `im_api.internal.task.dismiss`; a Task without one owner is refused. A rename, a label, or a review acceptance starts no run, so it does not bring the row back.
 
 Reuse is insufficient. Archive is shared Task lifecycle state for the whole Group, and this choice belongs to one User.
 The client core's device-local marks are lost on another device, another profile, or a reinstall.
@@ -1530,7 +1530,7 @@ No physical deletion deadline or exactly-once provider reply is claimed.
 
 ### Station
 
-A Station runs on a user's machine, a Group's managed Workload, or a Task's isolated Coding Sandbox in one Salix Group.
+A Station runs on a user's machine, a Group's managed Workload, or a Task's isolated sandbox in one Salix Group. Tasks run on two kinds of environment: a Station on the user's or Group's own hardware, or a sandbox the platform manages ([execution environments](../compute-devices.md#execution-environments)).
 The Group is the station's workspace: the Group id is the `workspace` a station holds and the `ws` of a member credential.
 Salix is the stations' control plane: it replaces still.fail cloud's control plane and also provides Cloud VM stations.
 It is an experimental integration. Membership is the owning product's: Comma's User, Auth Session, Workspace and Membership, or BridgeForTeams' Organization and Project roles.
@@ -1914,6 +1914,8 @@ Local tests do not prove cloud-provider progress.
 
 ### Cloud VM stations
 
+Retiring. By owner decision (2026-10), platform-managed execution is a per-Task [sandbox](#coding-sandboxes): the Cloudflare Cloud VM, one long-lived VM per Group with an archived disk, is retired in a later release, and nothing new is built on it. The Group VM on an Agent VMM Host stays as a VMM Station. This entry is the contract until that release ([execution environments](../compute-devices.md#execution-environments)).
+
 The Cloudflare Container runs the Comma station, the same station a person's machine runs.
 It connects out to `/v1/connect` with its Workload's connect credential
 ([WorkloadCredential](../../systems/apps/salix_store/lib/salix_store/compute/workload_credential.ex)),
@@ -1952,7 +1954,7 @@ See [local setup](../development.md#cloud-vm-stations).
 
 ### Coding sandboxes
 
-A coding Task runs on an L4ES sandbox of its own, with a GitHub repository checked out (`runs_on {kind: sandbox}`).
+A sandbox Task runs on an L4ES sandbox of its own (`runs_on {kind: sandbox}`). With a GitHub repository (`repo`) it is a coding Task, with that repository checked out; without one it is a plain sandbox Task: the same sandbox, lifecycle, limit and metering, with no GitHub grant, git identity, checkout, save, diff or pull request.
 This adds no entity: the session is a Task, its sandbox is a Compute Workload, and its station is that Workload's Device.
 
 - Reuse: the Task keeps the conversation, Messages, status and owner, and the station protocol delegates it (`task.invite`, `task.put`, `task.post`).
@@ -1968,7 +1970,8 @@ This adds no entity: the session is a Task, its sandbox is a Compute Workload, a
   When `repo.branch` is omitted, Task creation generates the branch before sandbox reservation. The initial ACL includes that branch's full ref.
   With `repo.pull_request`, placement reads that open pull request: its head branch, which must be in the same repository, becomes `repo.branch`, and its base becomes `repo.base_ref`. The initial ACL then pushes to the pull request's head, so the Worker updates it directly.
   Both use the existing Workload identity and authenticated Station protocol. Their owners keep separate preparation, recovery, and disk policies.
-- Values on the Task: `runs_on {kind: sandbox, device_id}` and `repo {owner, name, base_ref, branch, pull_request?}`, kept on the conversation record at create ([TaskConversationInput](../../systems/apps/salix_im/lib/salix_im/task_conversation_input.ex)).
+- Values on the Task: `runs_on {kind: sandbox, device_id}` and, for a coding Task, `repo {owner, name, base_ref, branch, pull_request?}`, kept on the conversation record at create ([TaskConversationInput](../../systems/apps/salix_im/lib/salix_im/task_conversation_input.ex)).
+  A Worker may be bound to it (`station_binding.runs_on {kind: sandbox}`, [StationBinding](../../systems/apps/salix_agent/lib/salix_agent/station_binding.ex)): each of its Tasks then gets a sandbox of its own and takes one of the Group's live-sandbox slots; where sandboxes are not set up, its Tasks are refused (`sandbox_unavailable`). A Loop Task refuses a bound sandbox, as it refuses any station. The sandbox is not a Group's default place: the clients show no such place yet.
   The device id is `dev-sbx-<conversation>` for every sandbox of the Task. `start.repo` carries the repository to the station.
   Public device and environment lists show coding sandboxes only while connected. Exact reads and internal Registry lists retain disconnected records.
   Agent calls express repository isolation with `runs_on.kind=sandbox` and `repo`. Other locations reject repository arguments, including on creation retries.

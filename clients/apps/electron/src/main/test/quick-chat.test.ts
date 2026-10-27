@@ -1324,7 +1324,61 @@ describe("QuickChatService", () => {
         sendFailed: "发送失败，请在刘海处重试。",
         speechUnavailable: "语音识别不可用。",
       },
+      tap: "meta",
       type: "configure",
+    });
+    fixture.service.close();
+  });
+
+  it("tells the helper the shortcut the person chose: the modifier it taps, or none for a chord", async () => {
+    const fixture = createFixture({ shortcut: { tap: "alt" } });
+    fixture.service.sessionChanged(signedIn(1));
+    const host = fixture.hosts.at(-1)!;
+    host.emitEvent({ type: "ready" });
+    await expect(host.nextCommand()).resolves.toMatchObject({
+      strings: { resume: "Press ⌥ to continue" },
+      tap: "alt",
+      type: "configure",
+    });
+
+    // A global shortcut is Main's to hold: the helper watches no modifier.
+    fixture.service.setShortcut({
+      key: "space",
+      modifiers: { alt: true, control: false, meta: false, shift: false },
+    });
+    await expect(host.nextCommand()).resolves.toMatchObject({
+      strings: { resume: "Press ⌥Space to continue" },
+      tap: null,
+      type: "configure",
+    });
+
+    // Back to the platform's own: ⌘.
+    fixture.service.setShortcut(null);
+    await expect(host.nextCommand()).resolves.toMatchObject({
+      strings: { resume: "Press ⌘ to continue" },
+      tap: "meta",
+      type: "configure",
+    });
+    fixture.service.close();
+  });
+
+  it("taps Ctrl on Windows unless the person chose another modifier", async () => {
+    const fixture = createFixture({
+      platform: "win32",
+      osRelease: () => "10.0.26100",
+      hostPath: "C:/Comma/resources/native/win32/x64/QuickChatHost.exe",
+    });
+    fixture.service.sessionChanged(signedIn(1));
+    const host = fixture.hosts.at(-1)!;
+    host.emitEvent({ type: "ready" });
+    await expect(host.nextCommand()).resolves.toMatchObject({
+      strings: { resume: "Press Ctrl to continue" },
+      tap: "control",
+    });
+    fixture.service.setShortcut({ tap: "shift" });
+    await expect(host.nextCommand()).resolves.toMatchObject({
+      strings: { resume: "Press Shift to continue" },
+      tap: "shift",
     });
     fixture.service.close();
   });

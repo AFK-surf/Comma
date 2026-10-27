@@ -19,6 +19,11 @@ import type { LaunchAtLoginReadback } from "./launch-at-login";
 
 export interface AppPreferencesPlatform {
   setOpenCommaShortcut?(shortcut: GlobalShortcutBinding): void;
+  /**
+   * Holds the global shortcut that opens Quick Chat, or none; throws when the
+   * OS refuses it. A double tap is the helper's and holds nothing here.
+   */
+  setQuickChatShortcut?(shortcut: GlobalShortcutBinding): void;
   /** macOS: whether the sleep guard daemon may run, as Login Items shows it. */
   getKeepAwakeWhenLidClosedStatus?(): KeepAwakeWhenLidClosedStatus;
   /**
@@ -223,10 +228,10 @@ export class AppPreferencesService {
   async setQuickChatSupported(supported: boolean) {
     return this.#enqueue(async () => {
       const previous = this.#preferences;
-      const next = appPreferencesSchema.parse({
-        ...previous,
-        quickChatSupported: supported,
-      });
+      const next = this.#withQuickChatShortcut(
+        previous,
+        appPreferencesSchema.parse({ ...previous, quickChatSupported: supported })
+      );
       if (samePreferenceValues(next, previous)) return this.state();
       this.#preferences = withNextRevision(next, previous);
       const snapshot = this.state();
@@ -256,6 +261,31 @@ export class AppPreferencesService {
         ? this.state()
         : await this.#update({ clientSettings: initialSettings })
     );
+  }
+
+  /**
+   * `next` with Quick Chat's global shortcut held when it uses one, runs and
+   * is on, and released otherwise. A shortcut the OS refuses shows as
+   * unavailable; one the reader just chose throws, so Settings says so.
+   */
+  #withQuickChatShortcut(
+    previous: AppPreferences,
+    next: AppPreferences,
+    { force = false, chosen = false } = {}
+  ): AppPreferences {
+    if (!this.#platform.setQuickChatShortcut) return next;
+    if (!force && sameQuickChatChord(previous, next)) return next;
+    const chord = quickChatChord(next);
+    try {
+      this.#platform.setQuickChatShortcut(chord);
+    } catch (error) {
+      if (chosen) throw error;
+      return { ...next, quickChatShortcutStatus: "unavailable" };
+    }
+    return {
+      ...next,
+      quickChatShortcutStatus: chord === null ? "unset" : "registered",
+    };
   }
 
   #enqueue<Result>(task: () => Promise<Result>): Promise<Result> {
@@ -332,6 +362,10 @@ export class AppPreferencesService {
       !(
         clientSettingsPatch?.openCommaShortcut !== undefined &&
         previous.openCommaShortcutStatus === "unavailable"
+      ) &&
+      !(
+        clientSettingsPatch?.quickChatShortcut !== undefined &&
+        previous.quickChatShortcutStatus === "unavailable"
       )
     ) {
       return this.state();
@@ -354,6 +388,22 @@ export class AppPreferencesService {
           )
         );
         next.openCommaShortcutStatus = newShortcut === null ? "unset" : "registered";
+      }
+      if (
+        this.#platform.setQuickChatShortcut &&
+        (!sameQuickChatChord(previous, next) ||
+          (clientSettingsPatch?.quickChatShortcut !== undefined &&
+            previous.quickChatShortcutStatus === "unavailable"))
+      ) {
+        const chosen = clientSettingsPatch?.quickChatShortcut !== undefined;
+        next = this.#withQuickChatShortcut(previous, next, { force: true, chosen });
+        applied.push(async () => {
+          this.#platform.setQuickChatShortcut!(
+            previous.quickChatShortcutStatus === "registered"
+              ? quickChatChord(previous)
+              : null
+          );
+        });
       }
       if (shouldApplyLaunchAtLogin) {
         const requested = requestedLaunchAtLogin;
@@ -559,6 +609,7 @@ function samePreferenceValues(left: AppPreferences, right: AppPreferences) {
   return (
     sameClientSettings(left.clientSettings, right.clientSettings) &&
     left.openCommaShortcutStatus === right.openCommaShortcutStatus &&
+    left.quickChatShortcutStatus === right.quickChatShortcutStatus &&
     left.quickChatSupported === right.quickChatSupported &&
     left.airDropName === right.airDropName &&
     left.keepAwakeWhenLidClosed === right.keepAwakeWhenLidClosed &&
@@ -591,6 +642,21 @@ function mergeClientSettings(
       ...patch.appearance,
     },
   });
+}
+
+/** The global shortcut Quick Chat holds: a chord it is set to, while it runs and is on. */
+function quickChatChord(preferences: AppPreferences): GlobalShortcutBinding {
+  const shortcut = preferences.clientSettings?.quickChatShortcut;
+  return preferences.quickChatSupported &&
+    preferences.quickChatEnabled &&
+    shortcut &&
+    !("tap" in shortcut)
+    ? shortcut
+    : null;
+}
+
+function sameQuickChatChord(left: AppPreferences, right: AppPreferences) {
+  return JSON.stringify(quickChatChord(left)) === JSON.stringify(quickChatChord(right));
 }
 
 function sameClientSettings(

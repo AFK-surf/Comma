@@ -129,6 +129,8 @@ To update a CI-installed staging app, use a newer CI build with the same staging
 ## Google Play
 
 Client Checks also builds a production AAB for each mainline staging release.
+To upload without Android input changes, run **Client Checks** manually with `main` selected.
+Wait for that run to succeed before you run **Android Release** on the same commit.
 Android Release signs it with the production upload key and uploads it to Play internal testing.
 It uses `surf.comma.android` and the production backend. The staging APK keeps its existing package and backend.
 The Play AAB uses `1000000 + Client Checks run_number` as its version code.

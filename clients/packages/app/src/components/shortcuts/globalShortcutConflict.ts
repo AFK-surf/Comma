@@ -35,3 +35,13 @@ export const findAppShortcutConflictForGlobalShortcut = (
   appShortcutIds.find((id) =>
     appBindingConflictsWithGlobalShortcut(bindings[id], shortcut)
   );
+
+/** Whether two global shortcuts are the same chord; never for an unset one. */
+export const sameGlobalShortcut = (
+  left: GlobalShortcutBinding,
+  right: GlobalShortcutBinding
+) =>
+  left !== null &&
+  right !== null &&
+  left.key === right.key &&
+  sameAppKeyModifiers(left.modifiers, right.modifiers);

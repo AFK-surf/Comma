@@ -25,12 +25,13 @@ defmodule SalixIM.Provider.Internal do
   @inline_task_ref_limit SalixIM.ConversationLimits.inline_task_ref_limit()
   @task_list_default_limit 200
   @task_list_max_limit 1_000
+  @task_dismiss_max 50
   @task_list_cursor_max_length 1_024
   @conversation_update_string_fields ~w(kind status activity_status title owner_user_id)
   @conversation_update_map_fields ~w(metadata latest_artifact artifact_manifest source_refs)
   @title_batch_limit 20
   @send_message_params ~w(conversation_id content request_id delivery_filter mentions reply_to_message_id)
-  @router_task_apis ~w(internal.task.create internal.task.update internal.task.list)
+  @router_task_apis ~w(internal.task.create internal.task.update internal.task.list internal.task.dismiss)
   @router_label_apis ~w(internal.label.list internal.label.assign internal.label.propose)
   @label_propose_params ~w(op payload summary)
   @add_agent_participant_api "internal.add_agent_participant"
@@ -223,6 +224,26 @@ defmodule SalixIM.Provider.Internal do
        )}
     else
       {:error, :not_found} -> {:error, "group not found"}
+      {:error, reason} -> {:error, control_error(reason)}
+    end
+  end
+
+  def call(%{agent: %{"role" => "router"}} = scope, "internal.task.dismiss", params)
+      when is_map(params) do
+    with :ok <- validate_param_keys(params, ~w(conversation_ids), "im_api.internal.task.dismiss"),
+         {:ok, ids} <- task_dismiss_ids(params["conversation_ids"]),
+         :ok <- authorize_task_update(scope),
+         {:ok, loops} <- task_list_loops_by_ids(scope.group_id, ids) do
+      results = dismiss_tasks(scope, ids, loops)
+      dismissed = Enum.count(results, &(&1["status"] == "dismissed"))
+
+      {:ok,
+       %{
+         "results" => results,
+         "dismissed_count" => dismissed,
+         "skipped_count" => Enum.count(results, &(&1["status"] == "skipped"))
+       }}
+    else
       {:error, reason} -> {:error, control_error(reason)}
     end
   end
@@ -1623,6 +1644,107 @@ defmodule SalixIM.Provider.Internal do
       end
     end)
   end
+
+  defp task_dismiss_ids(ids) when is_list(ids) and ids != [] do
+    ids = Enum.uniq(ids)
+
+    cond do
+      not Enum.all?(ids, &(is_binary(&1) and String.trim(&1) != "")) ->
+        {:error, "conversation_ids must be non-empty strings"}
+
+      length(ids) > @task_dismiss_max ->
+        {:error, "conversation_ids accepts at most #{@task_dismiss_max} ids"}
+
+      true ->
+        {:ok, ids}
+    end
+  end
+
+  defp task_dismiss_ids(_), do: {:error, "conversation_ids must be a non-empty array"}
+
+  defp task_list_loops_by_ids(group_id, ids) do
+    case SalixIM.Ports.TaskLoops.task_loops(group_id, ids) do
+      {:ok, loops} -> {:ok, loops}
+      {:error, reason} -> {:error, {:task_loops, reason}}
+    end
+  end
+
+  # Dismiss clears a finished Task from its owner's chat Task panel
+  # (`SalixIM.Ports.TaskPanelDismissals`). It changes no Task fact. Only the
+  # Router that created a completed or cancelled, non-Loop Task with one
+  # owning User may do it, for that User.
+  defp dismiss_tasks(scope, ids, loops) do
+    checked = Enum.map(ids, &{&1, check_dismissible(scope, &1, loops)})
+
+    written =
+      checked
+      |> Enum.flat_map(fn
+        {_id, {:ok, owner, task}} -> [{owner, task}]
+        _ -> []
+      end)
+      |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
+      |> Map.new(fn {owner, tasks} ->
+        dismissals =
+          Enum.map(
+            tasks,
+            &%{"task_id" => &1["conversation_id"], "revision" => &1["run_started_at"] || 0}
+          )
+
+        {owner, SalixIM.Ports.TaskPanelDismissals.dismiss(owner, dismissals)}
+      end)
+
+    Enum.map(checked, fn
+      {id, {:ok, owner, _task}} ->
+        case written[owner] do
+          {:ok, _} -> %{"conversation_id" => id, "dismissed" => true, "status" => "dismissed"}
+          {:error, reason} -> dismiss_skipped(id, "dismissal not saved: #{control_error(reason)}")
+        end
+
+      {id, {:skip, reason}} ->
+        dismiss_skipped(id, reason)
+    end)
+  end
+
+  defp check_dismissible(scope, id, loops) do
+    case Conversations.get_group_conversation(scope.group_id, id) do
+      {:ok, %{"kind" => "agent_task"} = task} ->
+        owner = task["owner_user_id"]
+
+        cond do
+          task["created_by_agent_id"] != scope.agent_id ->
+            {:skip, "not created by this Router"}
+
+          Map.has_key?(loops, id) ->
+            {:skip, "Loop Tasks are not dismissed"}
+
+          task["status"] not in ["completed", "cancelled"] ->
+            {:skip, "status #{task["status"]} is not dismissible; only completed or cancelled"}
+
+          not (is_binary(owner) and String.trim(owner) != "") ->
+            {:skip, "the Task has no single owning user to dismiss it for"}
+
+          true ->
+            {:ok, owner, task}
+        end
+
+      {:ok, _other} ->
+        {:skip, "not a Task"}
+
+      {:error, :not_found} ->
+        {:skip, "conversation not found"}
+
+      {:error, reason} ->
+        {:skip, control_error(reason)}
+    end
+  end
+
+  defp dismiss_skipped(id, reason),
+    do: %{
+      "conversation_id" => id,
+      "dismissed" => false,
+      "status" => "skipped",
+      "reason" => reason
+    }
 
   defp task_ref(task_id, "agent_task") do
     %{

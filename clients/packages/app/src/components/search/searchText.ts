@@ -93,3 +93,19 @@ export function firstHighlightExcerpt(
     text: `${prefix}${text.slice(excerptStart, excerptEnd)}${suffix}`,
   };
 }
+
+/**
+ * Whether every word of `query` is in one of `titles`: an action's name in the
+ * app's language and in English, so either language's words find it.
+ */
+export function titleMatches(query: string, ...titles: string[]) {
+  const tokens = query
+    .normalize("NFKC")
+    .toLocaleLowerCase()
+    .split(/\s+/u)
+    .filter(Boolean);
+  return titles.some((title) => {
+    const haystack = title.normalize("NFKC").toLocaleLowerCase();
+    return tokens.every((token) => haystack.includes(token));
+  });
+}

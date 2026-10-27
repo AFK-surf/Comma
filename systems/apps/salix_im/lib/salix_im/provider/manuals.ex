@@ -585,6 +585,37 @@ defmodule SalixIM.Provider.Manuals do
           }
         },
         %{
+          "name" => "internal.task.dismiss",
+          "safety" => "write",
+          "roles" => ["router"],
+          "description" =>
+            "Dismiss finished Tasks this Router created, at most 50 per call. Dismiss clears the Task from its owning user's chat Task panel on every device of that user. It changes no Task status and does not archive. The Task and its Messages stay, and the row shows again if the Task runs again. Only a completed or cancelled Task of this Router with one owning user is dismissed, for that user. A Task that is active, ready_for_review, escalated or failed, a Loop Task, a Task of another creator, a Task without one owning user and a conversation that is not a Task are skipped with a reason. Dismissing again succeeds. Each conversation_id gets its own result; one skip does not stop the others.",
+          "required_params" => ["conversation_ids"],
+          "example_params" => %{
+            "connect_id" => "internal",
+            "conversation_ids" => ["exact Task conversation_id"]
+          },
+          "input_schema" => %{
+            "type" => "object",
+            "additionalProperties" => false,
+            "properties" => %{
+              "conversation_ids" => %{
+                "type" => "array",
+                "minItems" => 1,
+                "maxItems" => 50,
+                "items" => %{"type" => "string", "minLength" => 1}
+              }
+            },
+            "required" => ["conversation_ids"]
+          },
+          "returns" => %{
+            "results" =>
+              "One entry per distinct conversation_id, in order: {conversation_id, dismissed: boolean, status: dismissed|skipped, reason (when skipped)}.",
+            "dismissed_count" => "Tasks dismissed by this call.",
+            "skipped_count" => "Entries that were skipped."
+          }
+        },
+        %{
           "name" => "internal.search_conversations",
           "safety" => "read",
           "description" =>

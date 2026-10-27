@@ -59,6 +59,13 @@ export const commaFontSizeScale = {
   large: 1.1,
 } as const satisfies Record<CommaFontSizePreference, number>;
 
+/**
+ * How much of the macOS window material shows through the window color, as a
+ * percentage on the page root. The Appearance slider previews a drag by
+ * writing it before the setting commits.
+ */
+export const commaWindowTransparencyProperty = "--comma-window-transparency";
+
 /** A chosen family leads Comma's own stack, which still covers glyphs it lacks. */
 export const commaFontFamilyStack = (family: string) =>
   `"${family.replace(/["\\]/g, "\\$&")}", ${fontFamilyTokens.sans}`;
@@ -113,6 +120,8 @@ export interface CommaAppearancePreferences {
   customChroma: number;
   customLightness: number;
   customScheme: CommaCustomSchemePreference;
+  windowTranslucency: boolean;
+  windowTransparency: number;
 }
 
 export const defaultCommaAppearancePreferences: CommaAppearancePreferences = {
@@ -236,6 +245,8 @@ interface CommaAppearanceContextValue extends CommaAppearancePreferences {
     customLightness?: number
   ) => Promise<void>;
   setCustomScheme: (customScheme: CommaCustomSchemePreference) => void;
+  setWindowTranslucency: (windowTranslucency: boolean) => void;
+  setWindowTransparency: (windowTransparency: number) => void;
 }
 
 const CommaAppearanceContext = createContext<CommaAppearanceContextValue | null>(null);
@@ -359,6 +370,19 @@ export function CommaAppearanceProvider({
     },
     [updatePreferences]
   );
+  const setWindowTranslucency = useCallback(
+    (windowTranslucency: boolean) => {
+      updatePreferences((current) => ({ ...current, windowTranslucency }));
+    },
+    [updatePreferences]
+  );
+  const setWindowTransparency = useCallback(
+    (windowTransparency: number) => {
+      const clamped = Math.round(Math.min(100, Math.max(0, windowTransparency)));
+      updatePreferences((current) => ({ ...current, windowTransparency: clamped }));
+    },
+    [updatePreferences]
+  );
 
   useLayoutEffect(() => {
     const root = document.documentElement;
@@ -402,6 +426,19 @@ export function CommaAppearanceProvider({
     }
   }, [preferences.fontFamily]);
 
+  // Only a window drawn over the native material reads these (styles.css).
+  useLayoutEffect(() => {
+    const root = document.documentElement;
+    const value = preferences.windowTranslucency ? "on" : "off";
+    if (root.dataset.commaWindowTranslucency !== value) {
+      root.dataset.commaWindowTranslucency = value;
+    }
+    root.style.setProperty(
+      commaWindowTransparencyProperty,
+      `${preferences.windowTransparency}%`
+    );
+  }, [preferences.windowTranslucency, preferences.windowTransparency]);
+
   useLayoutEffect(() => {
     const root = document.documentElement;
     const value = String(preferences.pointerCursors);
@@ -427,6 +464,8 @@ export function CommaAppearanceProvider({
       delete root.dataset.commaFontFamily;
       delete root.dataset.commaFontSize;
       delete root.dataset.commaPointerCursors;
+      delete root.dataset.commaWindowTranslucency;
+      root.style.removeProperty(commaWindowTransparencyProperty);
       root.style.removeProperty("--font-sans");
       root.style.removeProperty("--comma-theme-h");
       root.style.removeProperty("--comma-theme-c");
@@ -468,6 +507,8 @@ export function CommaAppearanceProvider({
       setCustomLightness,
       setCustomColor,
       setCustomScheme,
+      setWindowTranslucency,
+      setWindowTransparency,
     }),
     [
       preferences,
@@ -483,6 +524,8 @@ export function CommaAppearanceProvider({
       setCustomLightness,
       setCustomColor,
       setCustomScheme,
+      setWindowTranslucency,
+      setWindowTransparency,
     ]
   );
 

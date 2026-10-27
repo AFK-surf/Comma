@@ -72,9 +72,11 @@ defmodule SalixCluster.TaskSchedulesTest do
   end
 
   defmodule SandboxPorts do
-    @moduledoc "The product's check of a coding Task's place: any repository is readable, from main."
+    @moduledoc "The product's check of a sandbox Task's place: any repository is readable, from main."
     def runs_on(_scope, %{"kind" => "sandbox", "repo" => repo}),
       do: {:ok, %{"kind" => "sandbox", "repo" => Map.put_new(repo, "base_ref", "main")}}
+
+    def runs_on(_scope, %{"kind" => "sandbox"}), do: {:ok, %{"kind" => "sandbox"}}
 
     def session_model(_scope, choice), do: {:ok, choice}
     def task_worker(scope), do: SalixAgent.TaskAgent.ensure(scope)
@@ -545,7 +547,7 @@ defmodule SalixCluster.TaskSchedulesTest do
     refute_received {:agent_delivery, ^worker_id, _payload, _opts}
   end
 
-  test "a coding Task reserves its sandbox instead of inviting a station, and keeps its repository and session branch",
+  test "a sandbox Task reserves its sandbox instead of inviting a station; a coding Task keeps its repository and session branch",
        %{group_id: group_id, router: router} do
     previous = SystemsRuntime.get_env(:salix_im, :task_create_mod)
     SystemsRuntime.put_env(:salix_im, :task_create_mod, SandboxPorts)
@@ -584,18 +586,27 @@ defmodule SalixCluster.TaskSchedulesTest do
     assert task["runs_on"] == %{"kind" => "sandbox", "device_id" => device_id}
     assert task["repo"]["branch"] == branch
 
-    # Without a repository there is no coding Task.
-    assert {:error, message} =
-             call_task_create(
-               router["agent_id"],
-               %{
-                 "content" => "Fix it.",
-                 "runs_on" => %{"kind" => "sandbox"}
-               },
-               %{}
-             )
+    # Without a repository it is a plain sandbox Task: a sandbox reserved, no repository or branch.
+    plain =
+      create_task(router["agent_id"], %{
+        "content" => "Convert the videos to MP4.",
+        "runs_on" => %{"kind" => "sandbox"}
+      })
 
-    assert message =~ "needs repo"
+    plain_id = plain["conversation_id"]
+    plain_device = "dev-sbx-" <> plain_id
+    refute_received {:station_invite, _}
+
+    assert_received {:sandbox_reserved,
+                     %{conversation_id: ^plain_id, device_id: ^plain_device, start: start} =
+                       reservation}
+
+    assert reservation[:repo] == nil
+    refute Map.has_key?(start, "repo")
+
+    {:ok, task} = Conversations.get_group_conversation(group_id, plain_id)
+    assert task["runs_on"] == %{"kind" => "sandbox", "device_id" => plain_device}
+    refute task["repo"]
   end
 
   test "a Task that names no place runs at the Group's default place, checked as a named one",

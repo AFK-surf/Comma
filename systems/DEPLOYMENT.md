@@ -445,6 +445,17 @@ The Salix subsystem alone does not serve Comma login or the Web client.
   Include ClickHouse and Redis as their configured use needs. Bucket backups alone cannot restore the product.
   Verify a restore with the matching release before you admit users.
 
+### L4ES sandboxes
+
+Coding and sandbox Tasks run on L4ES ([compute and devices](../docs/compute-devices.md#coding-sandboxes)). To deploy them:
+
+1. Set `l4es` (`url`, `size`, `maxSandboxes`) in the environment spec. It also needs `computeRuntimeBaseURL` and `oauthIdp: enabled`.
+2. Make the IdP signing key. Register L4ES as an IdP client and set a default GitHub OAuth app.
+3. Set the L4ES issuer to the API origin, with the client id and secret.
+4. The release names the image `Coding sandbox image` built from its sources. Salix adds it and its dm-verity root to each L4ES workspace.
+   x86_64 images have make, GCC/G++, headers, pkg-config, Rust/Cargo and Go. FFmpeg/ffprobe use Debian snapshots.
+   From l4h v2026.10.32, [kemu](https://github.com/losfair/kemu) runs arm64 Linux programs directly, without QEMU or binfmt: integer code near native speed, NEON slower, no io_uring.
+
 ## CI
 
 See [`.github/CI.md`](../.github/CI.md).

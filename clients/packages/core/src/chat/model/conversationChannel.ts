@@ -4678,12 +4678,18 @@ export function taskRun(run: CommaTaskRun | undefined): ChatTaskRun | undefined 
       : run.place.kind === "sandbox"
         ? {
             kind: "sandbox",
-            repo: {
-              owner: run.place.repo.owner,
-              name: run.place.repo.name,
-              ...(run.place.repo.base_ref ? { baseRef: run.place.repo.base_ref } : {}),
-              ...(run.place.repo.branch ? { branch: run.place.repo.branch } : {}),
-            },
+            ...(run.place.repo
+              ? {
+                  repo: {
+                    owner: run.place.repo.owner,
+                    name: run.place.repo.name,
+                    ...(run.place.repo.base_ref
+                      ? { baseRef: run.place.repo.base_ref }
+                      : {}),
+                    ...(run.place.repo.branch ? { branch: run.place.repo.branch } : {}),
+                  },
+                }
+              : {}),
             state: run.place.state,
             ...(run.place.reason ? { reason: run.place.reason } : {}),
           }

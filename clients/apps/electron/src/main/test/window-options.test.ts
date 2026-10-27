@@ -8,6 +8,7 @@ import {
 describe("createMainWindowOptions", () => {
   it("keeps the renderer isolated from Node APIs", () => {
     const options = createMainWindowOptions({
+      platform: "linux",
       windowId: "win_main",
       windowRole: "main-window",
       preloadPath: "/tmp/comma-preload.js",
@@ -51,8 +52,52 @@ describe("createMainWindowOptions", () => {
         },
         {
           name: "uses the dark window token when Electron resolves dark mode",
-          input: { darkMode: true },
+          input: { darkMode: true, platform: "linux" },
           expected: { backgroundColor: "#0f0f10" },
+        },
+        {
+          name: "lays the macOS window over a clear frosted material",
+          input: { darkMode: true, platform: "darwin" },
+          expected: {
+            backgroundColor: "#00000000",
+            vibrancy: "under-window",
+            visualEffectState: "followWindow",
+            webPreferences: {
+              additionalArguments: [
+                "--window-id=win_main",
+                "--window-role=main-window",
+                "--window-material=vibrancy",
+              ],
+            },
+          },
+        },
+        {
+          name: "lays a Windows 11 22H2 window over clear acrylic",
+          input: { darkMode: true, osRelease: "10.0.22631", platform: "win32" },
+          expected: {
+            backgroundColor: "#00000000",
+            backgroundMaterial: "acrylic",
+            webPreferences: {
+              additionalArguments: [
+                "--window-id=win_main",
+                "--window-role=main-window",
+                "--window-material=acrylic",
+              ],
+            },
+          },
+        },
+        {
+          name: "keeps an older Windows window opaque",
+          input: { darkMode: true, osRelease: "10.0.19045", platform: "win32" },
+          expected: {
+            backgroundColor: "#0f0f10",
+            webPreferences: {
+              additionalArguments: [
+                "--window-id=win_main",
+                "--window-role=main-window",
+              ],
+            },
+          },
         },
         {
           name: "keeps the pointer visible while typing in the main window",

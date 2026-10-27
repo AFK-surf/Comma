@@ -341,6 +341,8 @@ export type {
   AppKeyCode,
   AppKeyModifiers,
   AppKeyStroke,
+  SettingsModifierTapValue,
+  SettingsShortcutBinding,
   SettingsShortcutKey,
   SettingsShortcutKeycapsProps,
   SettingsShortcutProps,
@@ -362,11 +364,14 @@ export {
   DeviceSettingsDetail,
   CreatedSecretPanel,
   NotchWidthSetting,
+  SettingsSliderField,
 } from "./settings";
 export type {
   CreatedSecretPanelProps,
   NotchWidthSettingLabels,
   NotchWidthSettingProps,
+  SettingsSliderFieldHandle,
+  SettingsSliderFieldProps,
   SettingsCategoryDefinition,
   SettingsCategoryDetail,
   SettingsCategoryGroupDefinition,

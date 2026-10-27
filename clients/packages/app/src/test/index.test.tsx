@@ -1640,8 +1640,8 @@ describe("CommaApp", () => {
     const sidebar = screen.getByRole("complementary", { name: "App sidebar" });
     expect(slot).toHaveAttribute("data-collapsed", "false");
     expect(slot).toHaveStyle({
-      "--comma-sidebar-layout-width": "75px",
-      "--comma-sidebar-rail-width": "75px",
+      "--comma-sidebar-layout-width": "68px",
+      "--comma-sidebar-rail-width": "68px",
     });
     expect(slot).toContainElement(sidebar);
     expect(sidebar).toHaveAttribute("data-collapsed", "false");
@@ -1661,8 +1661,8 @@ describe("CommaApp", () => {
     expect(slot).toHaveAttribute("data-collapsed", "false");
     expect(sidebar).toHaveAttribute("data-collapsed", "false");
     expect(slot).toHaveStyle({
-      "--comma-sidebar-layout-width": "75px",
-      "--comma-sidebar-rail-width": "75px",
+      "--comma-sidebar-layout-width": "68px",
+      "--comma-sidebar-rail-width": "68px",
     });
     expect(content).toHaveAttribute("data-sidebar-collapsed", "false");
     expect(content).toHaveClass("bg-main-panel-bg");
@@ -1679,7 +1679,7 @@ describe("CommaApp", () => {
     // the content panel.
     expect(slot).toHaveStyle({
       "--comma-sidebar-layout-width": "var(--spacing-md)",
-      "--comma-sidebar-rail-width": "75px",
+      "--comma-sidebar-rail-width": "68px",
     });
     expect(content).toHaveAttribute("data-sidebar-collapsed", "true");
     expect(toggle).toHaveAttribute("aria-expanded", "false");
@@ -1691,8 +1691,8 @@ describe("CommaApp", () => {
     expect(slot).toHaveAttribute("data-collapsed", "false");
     expect(sidebar).toHaveAttribute("data-collapsed", "false");
     expect(slot).toHaveStyle({
-      "--comma-sidebar-layout-width": "75px",
-      "--comma-sidebar-rail-width": "75px",
+      "--comma-sidebar-layout-width": "68px",
+      "--comma-sidebar-rail-width": "68px",
     });
     expect(content).toHaveAttribute("data-sidebar-collapsed", "false");
     expect(toggle).toHaveAttribute("aria-expanded", "true");

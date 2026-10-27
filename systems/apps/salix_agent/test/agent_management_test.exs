@@ -409,6 +409,17 @@ defmodule SalixAgent.AgentManagementTest do
                %{rebind | "target" => %{"kind" => "station", "device_id" => "dev-desk"}},
                ctx
              )
+
+    # A Worker may run each of its Tasks on a sandbox of its own.
+    assert {:ok, %{"result" => "applied", "agent" => sandboxed}} =
+             AgentManagement.run(
+               :rebind,
+               %{rebind | "target" => %{"kind" => "sandbox"}, "expected_binding_revision" => 2},
+               ctx
+             )
+
+    assert sandboxed["runtime"]["runs_on"] == %{"kind" => "sandbox"}
+    assert sandboxed["binding_revision"] == 3
   end
 
   test "the release migration binds External Runtime Workers to their station", %{

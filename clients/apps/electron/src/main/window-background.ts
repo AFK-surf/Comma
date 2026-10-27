@@ -5,6 +5,9 @@ export const opaqueWindowBackgroundColors = {
   light: "#f4f4f5",
 } as const;
 
+/** A window over a native vibrancy material leaves its backing surface clear. */
+export const windowMaterialBackgroundColor = "#00000000";
+
 export function opaqueWindowBackgroundColor(darkMode: boolean) {
   return darkMode
     ? opaqueWindowBackgroundColors.dark

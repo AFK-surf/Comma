@@ -6,11 +6,14 @@ defmodule SalixAgent.StationBinding do
   The Agent record field `station_binding` holds:
 
     * `runs_on`: `%{"kind" => "station", "device_id" => id}` (a user's Comma
-      station, or a VMM Workload's station by its device id) or
+      station, or a VMM Workload's station by its device id),
       `%{"kind" => "cloud_vm"}` (the Group's Cloud VM, on the Agent VMM Host
-      of the Group's Project where it has one). The Cloud VM belongs to the
-      Group, and the Group's Cloud VM switch alone decides whether its
-      Agents may start it and place Tasks there
+      of the Group's Project where it has one) or `%{"kind" => "sandbox"}`
+      (a sandbox of its own for each Task, `SalixWeb.CodingSandboxes`; each
+      Task takes one of the Group's live-sandbox slots, and where sandboxes
+      are not set up the Tasks are refused as `sandbox_unavailable`). The
+      Cloud VM belongs to the Group, and the Group's Cloud VM switch alone
+      decides whether its Agents may start it and place Tasks there
       (`SalixAgent.CloudVM.allowed?/1`); the binding only makes it the
       Worker's default Task location.
     * `model`: `%{"kind" => "runtime", "provider" => "codex" | "claude"}` with
@@ -74,8 +77,9 @@ defmodule SalixAgent.StationBinding do
 
   @doc "Check a `runs_on` a Worker can be bound to."
   @spec runs_on(term()) :: {:ok, map()} | {:error, term()}
-  def runs_on(%{"kind" => "cloud_vm"} = runs_on) when map_size(runs_on) == 1,
-    do: {:ok, %{"kind" => "cloud_vm"}}
+  def runs_on(%{"kind" => kind} = runs_on)
+      when kind in ~w(cloud_vm sandbox) and map_size(runs_on) == 1,
+      do: {:ok, %{"kind" => kind}}
 
   def runs_on(%{"kind" => "station", "device_id" => device_id} = runs_on)
       when map_size(runs_on) == 2 and is_binary(device_id) do
@@ -97,7 +101,7 @@ defmodule SalixAgent.StationBinding do
     do:
       {:error,
        {:bad_request,
-        "station_binding.runs_on must be {kind: station, device_id} or {kind: cloud_vm}"}}
+        "station_binding.runs_on must be {kind: station, device_id}, {kind: cloud_vm} or {kind: sandbox}"}}
 
   @doc "Check the runtime model of a binding. Without `model`, the station's default runs."
   @spec model(term(), String.t()) :: {:ok, map()} | {:error, term()}

@@ -85,6 +85,12 @@ const AppearanceProbe = () => {
       <button onClick={() => appearance.setReducedMotion(false)} type="button">
         Motion restored
       </button>
+      <button onClick={() => appearance.setWindowTranslucency(false)} type="button">
+        Opaque window
+      </button>
+      <button onClick={() => appearance.setWindowTransparency(80)} type="button">
+        Transparency 80
+      </button>
     </>
   );
 };
@@ -178,6 +184,8 @@ describe("CommaAppearanceProvider", () => {
       customChroma: defaultCommaAppearancePreferences.customChroma,
       customLightness: defaultCommaAppearancePreferences.customLightness,
       customScheme: "system",
+      windowTranslucency: true,
+      windowTransparency: 50,
     });
 
     renderWithClientSettings(
@@ -254,6 +262,33 @@ describe("CommaAppearanceProvider", () => {
         defaultCommaAppearancePreferences
       )
     );
+  });
+
+  it("applies and persists the window ground's translucency and transparency", async () => {
+    const view = renderWithClientSettings(
+      <CommaAppearanceProvider>
+        <AppearanceProbe />
+      </CommaAppearanceProvider>
+    );
+    const root = document.documentElement;
+    expect(root.dataset.commaWindowTranslucency).toBe("on");
+    expect(root.style.getPropertyValue("--comma-window-transparency")).toBe("50%");
+
+    await userEvent.click(screen.getByRole("button", { name: "Transparency 80" }));
+    await userEvent.click(screen.getByRole("button", { name: "Opaque window" }));
+
+    expect(root.dataset.commaWindowTranslucency).toBe("off");
+    expect(root.style.getPropertyValue("--comma-window-transparency")).toBe("80%");
+    await waitFor(() =>
+      expect(readStoredClientSettings().appearance).toMatchObject({
+        windowTranslucency: false,
+        windowTransparency: 80,
+      })
+    );
+
+    view.unmount();
+    expect(root).not.toHaveAttribute("data-comma-window-translucency");
+    expect(root.style.getPropertyValue("--comma-window-transparency")).toBe("");
   });
 
   it("keeps Default on Light mode when the system color scheme changes", async () => {
@@ -513,6 +548,8 @@ describe("CommaAppearanceProvider", () => {
       fontSize: "default",
       pointerCursors: false,
       reducedMotion: false,
+      windowTranslucency: true,
+      windowTransparency: 50,
     });
   });
 

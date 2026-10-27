@@ -135,15 +135,24 @@ Use it for sites that block the cloud browser or need the user's own device.
 2. Run `comma describe in-app-browser` to confirm the live schema.
 3. `comma call in-app-browser open-tab --json '{"url":"https://..."}'`
    returns a `tabId`. `list-targets` lists open tabs.
-4. `comma call in-app-browser send-cdp-command --json
-   '{"tabId":"...","method":"Runtime.evaluate","params":{"expression":"..."}}'`
-   reads or acts on the page. Read bounded text, for example
-   `document.body.innerText.slice(0, 8000)`. Click with an element's
-   `click()`. Type with `Input.insertText` after you focus the field. Use
-   `Page.navigate` to change the URL.
-5. `capture-screenshot` saves a PNG on the device. Copy it with `env.copy` if
-   the user needs it.
-6. When the page shows a login form, log in with the credentials that the
+4. The commands follow the cloud browser (section 2), with camelCase fields
+   and without `new_tabs`: a popup opens in its own window.
+   `navigate`, `click`, `fill`, `press`, `scroll`, `select` and `wait` return
+   a receipt: the page URL, title and a viewport snapshot with refs such as
+   `[e12]`. `snapshot` reads more (`scope`, `ref`, `interactiveOnly`). For
+   example: `comma call in-app-browser click --json
+   '{"tabId":"...","target":"role=button[name=\"Sign in\"]"}'`.
+5. Send known steps as one `actions` call: `{"tabId":"...","steps":[{"op":
+   "fill","ref":"e3","text":"milk"},{"op":"press","key":"Enter"}]}`. Each
+   call is one `env.exec`, so a batch saves round trips. A failure is a result
+   with `error` (and `failedStep` in a batch), as in section 2. Invalid input
+   returns `invalid_input` with `issues`.
+6. A receipt with `dialog` means a JavaScript dialog is open. Answer it with
+   `dialog` (`action` `accept` or `dismiss`, `promptText` for a prompt).
+7. `capture-screenshot` saves a PNG on the device. Copy it with `env.copy` if
+   the user needs it. `send-cdp-command` sends one raw CDP command when the
+   commands above cannot do the step.
+8. When the page shows a login form, log in with the credentials that the
    user gives you, or ask the user to log in inside the Comma browser tab.
 
 If Comma reports that permission is required, ask the user to turn on Allow

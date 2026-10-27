@@ -82,7 +82,7 @@ defmodule SalixAgent.Tools.History do
            {:ok, state} <- Source.read(ctx.agent_id, ctx.session_id),
            {:ok, {ceiling, before_seq, before_part}} <-
              cursor(args["cursor"], query, SalixAgent.InternalSession.get(state, :last_seq)),
-           {:ok, {position, hot}} <-
+           {:ok, {position, hot, resume}} <-
              Hot.snapshot(
                ctx.agent_id,
                ctx.session_id,
@@ -94,12 +94,21 @@ defmodule SalixAgent.Tools.History do
              )
              |> stage(:hot_index_unavailable),
            {:ok, cold} <-
-             cold(ctx, query, min(ceiling, position.cold), before_seq, before_part, limit + 1)
+             cold(
+               ctx,
+               query,
+               cold_ceiling(ceiling, position, resume),
+               before_seq,
+               before_part,
+               limit + 1
+             )
              |> stage(:cold_index_unavailable) do
         Worker.hint(ctx.agent_id, ctx.session_id)
+        if position.indexed < ceiling, do: Hot.prioritize(ctx.agent_id, ctx.session_id)
         rows = Enum.sort_by(hot ++ cold, &{&1["seq"], &1["part"]}, :desc)
         page = Enum.take(rows, limit)
-        last = List.last(page)
+        # A search that stopped inside the hot range continues there, not below the last hit.
+        next = if length(rows) > limit, do: List.last(page), else: resume_row(resume)
 
         response = %{
           "results" => Enum.map(page, &hit(&1, query)),
@@ -107,8 +116,8 @@ defmodule SalixAgent.Tools.History do
           "source_through" => ceiling,
           "indexed_through" => position.indexed,
           "complete" => position.indexed >= ceiling,
-          "has_more" => length(rows) > limit,
-          "next_cursor" => if(length(rows) > limit, do: encode_cursor(query, ceiling, last))
+          "has_more" => next != nil,
+          "next_cursor" => if(next, do: encode_cursor(query, ceiling, next))
         }
 
         labelled(response, page, ctx)
@@ -152,6 +161,13 @@ defmodule SalixAgent.Tools.History do
       end
     end)
   end
+
+  # Cold rows sort below every hot row, so they wait until the hot scan finishes.
+  defp cold_ceiling(ceiling, position, nil), do: min(ceiling, position.cold)
+  defp cold_ceiling(_ceiling, _position, _resume), do: 0
+
+  defp resume_row(nil), do: nil
+  defp resume_row({seq, part}), do: %{"seq" => seq, "part" => part}
 
   defp cold(_, _, 0, _, _, _), do: {:ok, []}
 
@@ -216,7 +232,7 @@ defmodule SalixAgent.Tools.History do
   defp stage(result, _failed), do: result
 
   @reasons ~w(invalid_arguments invalid_cursor unsupported_storage_format source_gap not_found
-              hot_index_unavailable cold_index_unavailable)a
+              hot_index_unavailable cold_index_unavailable index_timeout index_busy)a
 
   defp reason({:error, {reason, _detail}}) when reason in @reasons, do: reason
   defp reason({:error, reason}) when reason in @reasons, do: reason
@@ -244,7 +260,15 @@ defmodule SalixAgent.Tools.History do
   defp protect(ctx, fun) do
     fun.()
   rescue
-    exception -> failure({:exception, exception.__struct__}, ctx)
+    exception in Postgrex.Error ->
+      case exception.postgres do
+        %{code: :query_canceled} -> failure(:index_timeout, ctx)
+        %{code: :lock_not_available} -> failure(:index_busy, ctx)
+        _ -> failure({:exception, Postgrex.Error}, ctx)
+      end
+
+    exception ->
+      failure({:exception, exception.__struct__}, ctx)
   catch
     kind, _ -> failure({:caught, kind}, ctx)
   end

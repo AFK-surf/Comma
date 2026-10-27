@@ -190,4 +190,48 @@ defmodule SalixAgent.SessionHistoryTest do
 
     assert (History.get(%{"seq" => 0}, ctx) |> Jason.decode!())["reason"] == "invalid_arguments"
   end
+
+  test "one maintenance visit indexes a backlog larger than one source page", %{agent: agent} do
+    save(state(agent, 100))
+    Hot.track(agent, @session)
+    Worker.index(agent, @session)
+    assert Hot.state(agent, @session).indexed == 100
+  end
+
+  # The first hot window holds no hit, one hit stays hot and the rest are cold.
+  @hits [800, 500, 100]
+  test "a search that runs out of time resumes from where it stopped", %{agent: agent, ctx: ctx} do
+    messages =
+      for seq <- 1..1000,
+          do: %{
+            id: seq,
+            seq: seq,
+            role: "user",
+            content: if(seq in @hits, do: "needle", else: "hay")
+          }
+
+    save(%{state(agent, 1000) | messages: messages})
+    Hot.track(agent, @session)
+    Worker.index(agent, @session)
+    assert Hot.state(agent, @session).cold > 0
+
+    SystemsRuntime.put_env(:salix_agent, :session_history_scan_budget_ms, 0)
+    on_exit(fn -> SystemsRuntime.delete_env(:salix_agent, :session_history_scan_budget_ms) end)
+
+    pages =
+      Stream.unfold(%{}, fn
+        nil ->
+          nil
+
+        args ->
+          (page = search(ctx, args)) &&
+            {page, page["next_cursor"] && %{"cursor" => page["next_cursor"]}}
+      end)
+      |> Enum.to_list()
+
+    assert Enum.any?(pages, &(&1["results"] == [] and &1["has_more"]))
+
+    assert Enum.flat_map(pages, &Enum.map(&1["results"], fn hit -> hit["seq"] end)) ==
+             @hits
+  end
 end

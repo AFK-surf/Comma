@@ -20,7 +20,10 @@ import { supportedLocales, type CommaLocale } from "@comma/i18n";
 import {
   getNativeBridge,
   notchSideWidthRange,
+  quickChatShortcutText,
+  resolveQuickChatShortcut,
   type GlobalShortcut,
+  type QuickChatShortcut,
 } from "@comma/native-bridge";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { getActiveCommaConfig } from "@comma/config";
@@ -54,6 +57,7 @@ import {
   type CommaRecommendationSettingsPatch,
 } from "@comma/core/api-schemas";
 import { ThemePicker } from "./commaCustomThemeStudio";
+import { WindowTransparencySetting } from "./WindowTransparencySetting";
 import {
   commaFontFamilyStack,
   useCommaAppearance,
@@ -93,6 +97,7 @@ import { useCommaAppShortcuts } from "./shortcuts/commaAppShortcuts";
 import {
   appBindingConflictsWithGlobalShortcut,
   findAppShortcutConflictForGlobalShortcut,
+  sameGlobalShortcut,
 } from "./shortcuts/globalShortcutConflict";
 import { useWorkspacePreference } from "./activeWorkspace";
 import { useUsageBillingCategory } from "./billing/useUsageBillingCategory";
@@ -395,6 +400,8 @@ export function AppSettingsRoute({
     setFontSize,
     setPointerCursors,
     setReducedMotion,
+    setWindowTranslucency,
+    windowTranslucency,
   } = useCommaAppearance();
   const localFonts = useLocalFontFamilies(activeCategoryId === "appearance");
   const fontFamilyItems = useMemo((): DropdownItem[] => {
@@ -429,14 +436,35 @@ export function AppSettingsRoute({
     Partial<Record<AppShortcutId, true>>
   >({});
   const electronRuntime = getNativeBridge().platform === "electron";
-  // Quick Chat starts with a double tap of ⌘ on macOS and of Ctrl on Windows.
+  // Only a main window Main drew over a system material (macOS, Windows 11)
+  // has a translucent ground to turn off or tune (window-options.ts).
+  const windowMaterial = getNativeBridge().windowMaterial !== undefined;
+  // Quick Chat starts with a double tap of ⌘ on macOS and of Ctrl on Windows,
+  // unless the person chose another modifier or a global shortcut.
   const quickChatOnWindows = detectAppKeybindingPlatform() === "windows";
+  const quickChatPlatform = quickChatOnWindows ? "windows" : "macos";
+  const quickChatShortcut = resolveQuickChatShortcut(
+    clientSettings.settings.quickChatShortcut,
+    quickChatPlatform
+  );
+  const quickChatChord = "tap" in quickChatShortcut ? null : quickChatShortcut;
+  const quickChatTrigger =
+    "tap" in quickChatShortcut
+      ? m.quick_chat_trigger_double_tap({
+          key: quickChatShortcutText(quickChatShortcut, quickChatPlatform),
+        })
+      : m.quick_chat_trigger_press({
+          shortcut: quickChatShortcutText(quickChatShortcut, quickChatPlatform),
+        });
   const [openCommaShortcutError, setOpenCommaShortcutError] = useState<
     "conflict" | "registration"
   >();
   const [openCommaShortcutPending, setOpenCommaShortcutPending] = useState(false);
   const setOpenCommaShortcut = async (shortcut: GlobalShortcut | null) => {
-    if (findAppShortcutConflictForGlobalShortcut(appShortcutBindings, shortcut)) {
+    if (
+      findAppShortcutConflictForGlobalShortcut(appShortcutBindings, shortcut) ||
+      sameGlobalShortcut(shortcut, quickChatChord)
+    ) {
       setOpenCommaShortcutError("conflict");
       return;
     }
@@ -451,6 +479,41 @@ export function AppSettingsRoute({
       setOpenCommaShortcutError("registration");
     } finally {
       setOpenCommaShortcutPending(false);
+    }
+  };
+  const [quickChatShortcutError, setQuickChatShortcutError] = useState<
+    "conflict" | "registration"
+  >();
+  const [quickChatShortcutPending, setQuickChatShortcutPending] = useState(false);
+  // The platform's own double tap is stored as null, so it follows the platform.
+  const setQuickChatShortcut = async (shortcut: QuickChatShortcut) => {
+    const chord = "tap" in shortcut ? null : shortcut;
+    if (
+      findAppShortcutConflictForGlobalShortcut(appShortcutBindings, chord) ||
+      sameGlobalShortcut(chord, clientSettings.settings.openCommaShortcut)
+    ) {
+      setQuickChatShortcutError("conflict");
+      return;
+    }
+    const platformDefault = resolveQuickChatShortcut(null, quickChatPlatform);
+    setQuickChatShortcutPending(true);
+    setQuickChatShortcutError(undefined);
+    try {
+      await clientSettings.update(
+        {
+          quickChatShortcut:
+            "tap" in shortcut &&
+            "tap" in platformDefault &&
+            shortcut.tap === platformDefault.tap
+              ? null
+              : shortcut,
+        },
+        { throwOnError: true }
+      );
+    } catch {
+      setQuickChatShortcutError("registration");
+    } finally {
+      setQuickChatShortcutPending(false);
     }
   };
   const computerUse = useComputerUsePermissions(activeCategoryId === "computer-use");
@@ -1126,8 +1189,12 @@ export function AppSettingsRoute({
                           id: "app.quick-chat",
                           title: m.settings_quick_chat(),
                           description: quickChatOnWindows
-                            ? m.settings_quick_chat_enabled_description_windows()
-                            : m.settings_quick_chat_enabled_description(),
+                            ? m.settings_quick_chat_enabled_description_windows({
+                                trigger: quickChatTrigger,
+                              })
+                            : m.settings_quick_chat_enabled_description({
+                                trigger: quickChatTrigger,
+                              }),
                           keywords: ["quick chat", "voice", "dictation", "语音"],
                           control: {
                             type: "toggle" as const,
@@ -1422,6 +1489,33 @@ export function AppSettingsRoute({
                       },
                     },
                   },
+                  ...(windowMaterial
+                    ? [
+                        {
+                          id: "appearance.window-translucency",
+                          title: m.settings_window_translucency(),
+                          description: m.settings_window_translucency_description(),
+                          keywords: [
+                            "transparency",
+                            "translucent",
+                            "blur",
+                            "vibrancy",
+                            "透明",
+                            "毛玻璃",
+                          ],
+                          control: {
+                            type: "toggle" as const,
+                            checked: windowTranslucency,
+                            onChange: (event: { target: { checked: boolean } }) => {
+                              setWindowTranslucency(event.target.checked);
+                            },
+                          },
+                          content: windowTranslucency ? (
+                            <WindowTransparencySetting />
+                          ) : null,
+                        },
+                      ]
+                    : []),
                   {
                     id: "appearance.pointer-cursors",
                     title: m.settings_pointer_cursors(),
@@ -1596,10 +1690,14 @@ export function AppSettingsRoute({
                       onChange: (binding: AppKeybinding) => {
                         const conflictsWithOpenComma =
                           electronRuntime &&
-                          appBindingConflictsWithGlobalShortcut(
+                          (appBindingConflictsWithGlobalShortcut(
                             binding,
                             clientSettings.settings.openCommaShortcut
-                          );
+                          ) ||
+                            appBindingConflictsWithGlobalShortcut(
+                              binding,
+                              quickChatChord
+                            ));
                         if (
                           conflictFor(definition.id, binding) ||
                           conflictsWithOpenComma
@@ -1645,17 +1743,18 @@ export function AppSettingsRoute({
                         }
                       : {}),
                   },
-                  // Where Quick Chat is on: a double tap of ⌘ (Ctrl on Windows),
-                  // which no setting changes; the App settings turn it off.
+                  // Where Quick Chat is on: a double tap of a modifier (⌘ on macOS,
+                  // Ctrl on Windows, by default) or a global shortcut. The App
+                  // settings turn it off.
                   ...(appPreferences?.quickChatSupported &&
                   appPreferences.quickChatEnabled
                     ? [
                         {
                           id: "keyboard.quick-chat",
                           title: m.settings_quick_chat(),
-                          description: quickChatOnWindows
-                            ? m.settings_quick_chat_description_windows()
-                            : m.settings_quick_chat_description(),
+                          description: m.settings_quick_chat_description({
+                            trigger: quickChatTrigger,
+                          }),
                           keywords: [
                             "voice",
                             "dictation",
@@ -1665,8 +1764,32 @@ export function AppSettingsRoute({
                             "快捷键",
                           ],
                           control: {
-                            type: "keycaps" as const,
-                            keys: [quickChatOnWindows ? "Ctrl" : "⌘"],
+                            type: "shortcut" as const,
+                            value: quickChatShortcut,
+                            disabled: quickChatShortcutPending,
+                            recordingLabel: m.settings_press_shortcut(),
+                            modifierTaps: quickChatOnWindows
+                              ? (["control", "alt", "shift"] as const)
+                              : (["meta", "alt", "control", "shift"] as const),
+                            onModifierTap: setQuickChatShortcut,
+                            onChange: setQuickChatShortcut,
+                            ...(clientSettings.settings.quickChatShortcut !== null
+                              ? {
+                                  onClear: () =>
+                                    setQuickChatShortcut(
+                                      resolveQuickChatShortcut(null, quickChatPlatform)
+                                    ),
+                                }
+                              : {}),
+                            ...(quickChatShortcutError ||
+                            appPreferences.quickChatShortcutStatus === "unavailable"
+                              ? {
+                                  errorMessage:
+                                    quickChatShortcutError === "conflict"
+                                      ? m.settings_shortcut_conflict()
+                                      : m.settings_open_comma_shortcut_registration_failed(),
+                                }
+                              : {}),
                           },
                         },
                       ]

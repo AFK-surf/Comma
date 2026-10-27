@@ -1487,8 +1487,9 @@ defmodule CommaWeb.SalixClient do
     %{"place" => place, "model" => model}
   end
 
-  # A coding Task runs on its own sandbox (`SalixStore.CodingSandboxes`): the
-  # place carries its repository, session branch and the sandbox's state.
+  # A sandbox Task runs on its own sandbox (`SalixStore.CodingSandboxes`): the
+  # place carries the sandbox's state and, for a coding Task, its repository
+  # and session branch; a Task without a repository sends no `repo`.
   defp coding_task_run(workspace, conversation) do
     tenant_id = workspace["salix_tenant_id"]
 
@@ -1521,11 +1522,13 @@ defmodule CommaWeb.SalixClient do
 
     %{
       "place" =>
-        %{
-          "kind" => "sandbox",
-          "repo" => Map.take(repo, ~w(owner name base_ref branch)),
-          "state" => sandbox["state"] || "starting"
-        }
+        %{"kind" => "sandbox", "state" => sandbox["state"] || "starting"}
+        |> then(fn place ->
+          case Map.take(repo, ~w(owner name base_ref branch)) do
+            %{"owner" => _, "name" => _} = repo -> Map.put(place, "repo", repo)
+            _ -> place
+          end
+        end)
         |> then(fn place ->
           if is_binary(sandbox["reason"]),
             do: Map.put(place, "reason", sandbox["reason"]),

@@ -487,6 +487,63 @@ defmodule SalixWeb.CodingSandboxesTest do
     assert w.spec["start"]["repo"]["branch"] == branch
   end
 
+  test "a Task without a repository gets a sandbox with no GitHub grant, token or git identity, and stops idle without saving",
+       %{reservation: r} do
+    r = %{r | repo: nil, start: Map.delete(r.start, "repo")}
+    # A GitHub account any ask would fail on: none is made.
+    SystemsRuntime.put_env(:salix_web, :coding_test_github_token, {"ghu_unknown", nil})
+    assert :ok = CodingSandboxes.reserve(r)
+    w = due!(r)
+    assert w.spec["state"] == "starting"
+    path = "/api/workspaces/comma:#{r.group_id}/sandboxes"
+    assert_received {:l4es, "POST", ^path, _, body}
+    assert Map.keys(body["secrets"]) == ["SALIX_WORKLOAD_CREDENTIAL"]
+    refute Map.has_key?(body, "github")
+    refute Map.has_key?(body, "github_token")
+    assert Map.keys(body["env"]) == ["SALIX_SERVER"]
+    assert w.spec["repo"] == nil
+    assert w.spec["github_expires_at"] == nil
+
+    connect!(r)
+    assert_received {:asked, "task.invite", %{"start" => start}}
+    refute Map.has_key?(start, "repo")
+    assert workload(r).spec["state"] == "ready"
+
+    # Idle for 2 hours: stopped, with nothing to save.
+    Station.status(%{"state" => "idle", "pending" => 0, "for_ms" => 3 * 3_600_000})
+    due!(r)
+    assert workload(r).spec["state"] == "stopped"
+    refute_received {:asked, "task.save", _}
+    refute_received {:l4es, "PUT", _, _, _}
+  end
+
+  test "a Router-created Task with runs_on sandbox and no repo gets a sandbox without GitHub",
+       %{reservation: r} do
+    {router, r} = router_task!(r)
+    SystemsRuntime.put_env(:salix_im, :task_create_mod, Salix.Bindings.AgentConversations)
+    SystemsRuntime.put_env(:salix_web, :coding_test_github_token, {"ghu_unknown", nil})
+
+    assert {:ok, %{"conversation_id" => id}} =
+             SalixIM.Provider.call_api(router, "internal", "internal.task.create", %{
+               "connect_id" => "internal",
+               "tool_call_id" => "create-plain-sandbox",
+               "params" => %{
+                 "content" => "Convert the videos to MP4.",
+                 "agent_id" => r.agent_id,
+                 "runs_on" => %{"kind" => "sandbox"}
+               }
+             })
+
+    {:ok, task} = SalixIM.Conversations.get_group_conversation(r.group_id, id)
+    assert task["runs_on"] == %{"kind" => "sandbox", "device_id" => Store.device_id(id)}
+    refute task["repo"]
+    created = %{r | conversation_id: id}
+    w = due!(created)
+    path = "/api/workspaces/comma:#{r.group_id}/sandboxes/#{w.spec["sandbox"]}"
+    refute Map.has_key?(Answers.sandbox(path), "github")
+    refute Map.has_key?(w.spec["start"], "repo")
+  end
+
   test "the Router replaces a coding Task's ACL through L4ES and a restart keeps it",
        %{reservation: r} do
     {router, r} = router_task!(r)
@@ -1219,7 +1276,7 @@ defmodule SalixWeb.CodingSandboxesTest do
     assert [
              %{
                "content" =>
-                 "The coding sandbox could not run: the sandbox did not start within 5 minutes" <>
+                 "The sandbox could not run: the sandbox did not start within 5 minutes" <>
                    _
              }
            ] =

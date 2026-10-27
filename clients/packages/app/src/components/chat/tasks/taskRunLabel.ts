@@ -15,7 +15,7 @@ export function taskRunLabel(messages: CommaMessages, run: ChatTaskRun): string 
   return model ? messages.task_panel_run({ place, model }) : place;
 }
 
-/** Where a Task runs: Comma, a Cloud VM, a coding sandbox (with its repository), or the computer's own name. */
+/** Where a Task runs: Comma, a Cloud VM, a sandbox (with its repository, when it has one), or the computer's own name. */
 export function taskRunPlace(
   messages: CommaMessages,
   place: ChatTaskRun["place"]
@@ -26,9 +26,11 @@ export function taskRunPlace(
     case "cloud_vm":
       return messages.task_panel_run_place_cloud_vm();
     case "sandbox":
-      return messages.task_panel_run_place_sandbox({
-        repo: `${place.repo.owner}/${place.repo.name}`,
-      });
+      return place.repo
+        ? messages.task_panel_run_place_sandbox({
+            repo: `${place.repo.owner}/${place.repo.name}`,
+          })
+        : messages.task_panel_run_place_sandbox_plain();
     default:
       return place.name || messages.task_panel_run_place_computer();
   }

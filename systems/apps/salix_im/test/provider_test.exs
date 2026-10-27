@@ -1118,6 +1118,20 @@ defmodule SalixIM.ProviderTest do
     end
   end
 
+  defmodule RecordingDismissals do
+    @behaviour SalixIM.Ports.TaskPanelDismissals
+
+    @impl true
+    def dismiss(user_id, dismissals) do
+      send(
+        SystemsRuntime.get_env(:salix_im, :dismissals_test_pid),
+        {:dismissed, user_id, dismissals}
+      )
+
+      {:ok, dismissals}
+    end
+  end
+
   defmodule RecordingTaskSchedule do
     @moduledoc false
     @behaviour SalixIM.Ports.TaskSchedule
@@ -10492,6 +10506,171 @@ defmodule SalixIM.ProviderTest do
                "https://l4es.test/t/comma:g/t-code-g1"
 
       refute Map.has_key?(by_id[plain["conversation_id"]], "terminal_url")
+    end
+
+    test "im_api.internal.task.dismiss clears only this Router's finished, non-Loop Tasks from their owner's panel",
+         %{tenant: tenant, group_id: group_id, agent_id: agent_id} do
+      SalixIM.TestSupport.TaskLoops.install()
+      previous = SystemsRuntime.get_env(:salix_im, :task_panel_dismissals)
+      SystemsRuntime.put_env(:salix_im, :task_panel_dismissals, __MODULE__.RecordingDismissals)
+      SystemsRuntime.put_env(:salix_im, :dismissals_test_pid, SystemsRuntime.Proc.self())
+
+      on_exit(fn ->
+        restore(:salix_im, :task_panel_dismissals, previous)
+        SystemsRuntime.delete_env(:salix_im, :dismissals_test_pid)
+      end)
+
+      task = fn title, status, owner ->
+        id =
+          seed_group_conversation(group_id, agent_id, %{"kind" => "agent_task", "title" => title})[
+            "conversation_id"
+          ]
+
+        if owner do
+          assert {:ok, _} =
+                   ConversationServer.update_group_conversation(group_id, id, %{
+                     "owner_user_id" => owner
+                   })
+        end
+
+        case status do
+          "completed" ->
+            assert {:ok, %{"updated_at" => version}} =
+                     ConversationServer.update_group_conversation(group_id, id, %{
+                       "status" => "ready_for_review"
+                     })
+
+            assert {:ok, %{"status" => "completed"}} =
+                     ConversationServer.accept_task_review(group_id, id, version)
+
+          "active" ->
+            :ok
+
+          status ->
+            assert {:ok, %{"status" => ^status}} =
+                     ConversationServer.update_group_conversation(group_id, id, %{
+                       "status" => status
+                     })
+        end
+
+        id
+      end
+
+      dismiss = fn ids ->
+        call(agent_id, "internal", "internal.task.dismiss", "internal", %{
+          "conversation_ids" => ids
+        })
+      end
+
+      done = task.("Done", "completed", "U-ann")
+      cancelled = task.("Cancelled", "cancelled", "U-bob")
+      running = task.("Running", "active", "U-ann")
+      review = task.("Review", "ready_for_review", "U-ann")
+      looped = task.("Loop", "completed", "U-ann")
+      unowned = task.("Unowned", "completed", nil)
+
+      SalixIM.TestSupport.TaskLoops.put_views(%{
+        looped => %{"status" => "active", "trigger" => %{"every_minutes" => 15}}
+      })
+
+      {:ok, other} =
+        create_control_agent(
+          %{"name" => "Other creator", "group_id" => group_id, "role" => "worker"},
+          tenant
+        )
+
+      foreign =
+        seed_group_conversation(group_id, agent_id, %{
+          "kind" => "agent_task",
+          "title" => "Foreign",
+          "participants" => [
+            %{
+              "actor_type" => "agent",
+              "agent_id" => other["agent_id"],
+              "state" => "active",
+              "notification_filter" => %{"messages" => "all", "statuses" => "none"}
+            }
+          ]
+        })["conversation_id"]
+
+      chat =
+        seed_group_conversation(group_id, agent_id, %{"kind" => "user_chat"})["conversation_id"]
+
+      missing = Ids.new_conversation_id()
+
+      ids = [done, cancelled, running, review, looped, unowned, foreign, chat, missing, done]
+
+      assert {:ok, %{"results" => results, "dismissed_count" => 2, "skipped_count" => 7}} =
+               dismiss.(ids)
+
+      by_id = Map.new(results, &{&1["conversation_id"], &1})
+      assert length(results) == 9
+      assert %{"dismissed" => true, "status" => "dismissed"} = by_id[done]
+      assert %{"dismissed" => true, "status" => "dismissed"} = by_id[cancelled]
+      assert %{"status" => "skipped", "reason" => "status active" <> _} = by_id[running]
+      assert %{"status" => "skipped", "reason" => "status ready_for_review" <> _} = by_id[review]
+      assert %{"status" => "skipped", "reason" => "Loop Tasks are not dismissed"} = by_id[looped]
+
+      assert %{"status" => "skipped", "reason" => "the Task has no single owning user" <> _} =
+               by_id[unowned]
+
+      assert %{"status" => "skipped", "reason" => "not created by this Router"} = by_id[foreign]
+      assert %{"status" => "skipped", "reason" => "not a Task"} = by_id[chat]
+      assert %{"status" => "skipped", "reason" => "conversation not found"} = by_id[missing]
+
+      # Each owner is written for once, at the run the Task last started.
+      settle_receive({:dismissed, "U-ann", [%{"task_id" => ^done, "revision" => _}]})
+      settle_receive({:dismissed, "U-bob", [%{"task_id" => ^cancelled, "revision" => _}]})
+      settle_refute_receive({:dismissed, _, _})
+
+      # The Task itself is untouched.
+      assert {:ok, %{"status" => "completed"}} =
+               Conversations.get_group_conversation(group_id, done)
+
+      # Repeating the call succeeds.
+      assert {:ok, %{"results" => [%{"status" => "dismissed"}], "dismissed_count" => 1}} =
+               dismiss.([cancelled])
+
+      # A failed save is a skip, not a lost success.
+      SystemsRuntime.put_env(:salix_im, :task_panel_dismissals, nil)
+
+      assert {:ok,
+              %{"results" => [%{"status" => "skipped", "reason" => "dismissal not saved" <> _}]}} =
+               dismiss.([cancelled])
+    end
+
+    test "im_api.internal.task.dismiss rejects Workers and malformed params",
+         %{tenant: tenant, group_id: group_id, agent_id: agent_id} do
+      {:ok, worker} =
+        create_control_agent(
+          %{"name" => "Dismiss-forbidden Worker", "group_id" => group_id, "role" => "worker"},
+          tenant
+        )
+
+      assert {:error, "operation is not authorized for this agent role"} =
+               call(
+                 worker["agent_id"],
+                 "internal",
+                 "internal.task.dismiss",
+                 "internal",
+                 %{
+                   "conversation_ids" => ["cnv"]
+                 },
+                 %{"tool_context" => %{"role" => "router", "agent" => %{"role" => "router"}}}
+               )
+
+      for bad <- [[], "x", [""], [1], Enum.map(1..51, &"cnv#{&1}")] do
+        assert {:error, _} =
+                 call(agent_id, "internal", "internal.task.dismiss", "internal", %{
+                   "conversation_ids" => bad
+                 })
+      end
+
+      assert {:error, "im_api.internal.task.dismiss accepts only conversation_ids"} =
+               call(agent_id, "internal", "internal.task.dismiss", "internal", %{
+                 "conversation_ids" => ["x"],
+                 "status" => "archived"
+               })
     end
 
     test "im_api.internal.task.list rejects Workers and strict-schema violations from direct provider calls",

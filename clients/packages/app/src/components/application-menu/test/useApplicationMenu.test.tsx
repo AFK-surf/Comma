@@ -3,7 +3,11 @@ import { installNativeBridgeMock } from "@comma/test-utils/native-bridge";
 import type { ApplicationMenuCommand } from "@comma/native-bridge";
 import { expect, it, vi } from "vitest";
 import { useHoldOnboardingOpen } from "../../onboarding/onboardingPresence";
-import { useApplicationMenu } from "../useApplicationMenu";
+import {
+  runApplicationMenuCommand,
+  useApplicationMenu,
+  useEnabledApplicationMenuCommands,
+} from "../useApplicationMenu";
 
 it("withdraws unmounted actions and dispatches the latest handler only while enabled", async () => {
   let invoke: ((id: ApplicationMenuCommand) => void) | undefined;
@@ -157,4 +161,34 @@ it("holds every command unavailable while the onboarding covers the window", asy
   });
   expect(openSearch).toHaveBeenCalledOnce();
   menu.unmount();
+});
+
+it("offers the command palette the commands enabled now and runs the enabled owner's", async () => {
+  installNativeBridgeMock({
+    platform: "electron",
+    applicationMenu: { update: vi.fn(async () => {}), onCommand: () => () => {} },
+  });
+  const check = vi.fn();
+  const download = vi.fn();
+  const owner = renderHook(
+    ({ downloadable }) =>
+      useApplicationMenu([
+        { id: "check-updates", enabled: true, run: check },
+        { id: "drive-download", enabled: downloadable, run: download },
+      ]),
+    { initialProps: { downloadable: false } }
+  );
+  const enabled = renderHook(() => useEnabledApplicationMenuCommands());
+  await waitFor(() => expect(enabled.result.current).toEqual(["check-updates"]));
+  owner.rerender({ downloadable: true });
+  await waitFor(() =>
+    expect(enabled.result.current).toEqual(["check-updates", "drive-download"])
+  );
+  await act(async () => {
+    runApplicationMenuCommand("check-updates");
+  });
+  expect(check).toHaveBeenCalledTimes(1);
+  owner.unmount();
+  await waitFor(() => expect(enabled.result.current).toEqual([]));
+  enabled.unmount();
 });

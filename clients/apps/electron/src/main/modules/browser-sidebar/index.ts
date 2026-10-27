@@ -43,6 +43,13 @@ import {
 import type { HybridPasskeys } from "./hybrid";
 import { BrowserMeetingProbe } from "./meeting-presence";
 import { BrowserTabPasskeys } from "./passkeys";
+import {
+  BROWSER_AGENT_COMMAND_TIMEOUT_MS,
+  BrowserAgentSession,
+  type BrowserAgentInput,
+  type BrowserAgentOperation,
+  type BrowserAgentRefs,
+} from "./agent";
 import { randomUUID } from "node:crypto";
 import { getCurrentNativeCallerContext } from "../ipc";
 import type { NativeSurfaceService } from "../surfaces";
@@ -154,6 +161,14 @@ interface BrowserSidebarWebContentsLike {
     attach(protocolVersion?: string): void;
     detach(): void;
     isAttached(): boolean;
+    on(
+      event: "message",
+      listener: (event: unknown, method: string, params: unknown) => void
+    ): unknown;
+    removeListener(
+      event: "message",
+      listener: (event: unknown, method: string, params: unknown) => void
+    ): unknown;
     sendCommand(
       method: string,
       commandParams?: Record<string, unknown>
@@ -320,6 +335,10 @@ export interface BrowserSidebarProvider {
 }
 
 interface ActiveBrowserSidebar {
+  /** The document the agent's element refs belong to, and the next ref. */
+  agentRefs?: BrowserAgentRefs | undefined;
+  /** The agent's session, kept attached while a page dialog waits for its answer. */
+  agentSession?: BrowserAgentSession | undefined;
   closing: boolean;
   closePromise?: Promise<void> | undefined;
   destructionObserved: Promise<void>;
@@ -337,7 +356,7 @@ interface ActiveBrowserSidebar {
   navigationPendingGeneration?: number | undefined;
   navigationRevision: number;
   navigationResumeUrl?: string | undefined;
-  /** A back, forward or reload asked for and not yet committed: hiding the view stops it. */
+  /** A back, forward or reload asked for whose page has not stopped loading: hiding the view stops it. */
   navigationPendingAction?: BrowserSidebarHistoryAction | undefined;
   /** The stopped back, forward or reload to repeat when the view shows again. */
   navigationResumeAction?: BrowserSidebarHistoryAction | undefined;
@@ -721,7 +740,7 @@ export class NativeBrowserSidebarService implements BrowserSidebarProvider {
       const requestedNavigationRevision = parsed.navigationRevision ?? 0;
       if (requestedNavigationRevision > previous.navigationRevision) {
         previous.navigationRevision = requestedNavigationRevision;
-        this.#startNavigation(previous, normalizeBrowserSidebarUrl(parsed.url));
+        void this.#startNavigation(previous, normalizeBrowserSidebarUrl(parsed.url));
       } else {
         this.#resumeNavigation(previous);
       }
@@ -836,7 +855,7 @@ export class NativeBrowserSidebarService implements BrowserSidebarProvider {
         role: BROWSER_SIDEBAR_ROLE,
         view,
       });
-      this.#startNavigation(active, active.url);
+      void this.#startNavigation(active, active.url);
       void nextMainTurn()
         .then(() => {
           if (
@@ -954,6 +973,74 @@ export class NativeBrowserSidebarService implements BrowserSidebarProvider {
     });
   }
 
+  /**
+   * Runs one agent command (`./agent`) on the exact tab: a snapshot, an
+   * action or a batch of actions, answered with the page after it.
+   */
+  async runClientAgentCommand<Op extends BrowserAgentOperation>(
+    op: Op,
+    input: BrowserAgentInput[Op]
+  ) {
+    const target = this.#requireClientTarget(input.tabId);
+    return this.#enqueueOwnerOperation(target.ownerWindowId, async () => {
+      const active = this.#requireClientTarget(input.tabId);
+      let session: BrowserAgentSession | undefined;
+      try {
+        return await this.#withClientDebugger(
+          active,
+          async (debuggerApi) => {
+            session =
+              active.agentSession ?? this.#createAgentSession(active, debuggerApi);
+            active.agentSession = undefined;
+            const result = await session.command(op, input);
+            if (session.holding) active.agentSession = session;
+            else session.stop();
+            return result;
+          },
+          undefined,
+          BROWSER_AGENT_COMMAND_TIMEOUT_MS
+        );
+      } catch (error) {
+        // A command that timed out may still await the page: end its session
+        // so that it neither listens nor sends after Main detached.
+        session?.stop();
+        throw error;
+      }
+    });
+  }
+
+  #createAgentSession(
+    active: ActiveBrowserSidebar,
+    debuggerApi: NonNullable<BrowserSidebarWebContentsLike["debugger"]>
+  ) {
+    return new BrowserAgentSession({
+      cdp: {
+        send: (method, params) => debuggerApi.sendCommand(method, params),
+        onEvent: (listener) => {
+          const forward = (_event: unknown, method: string, params: unknown) =>
+            listener(method, (params ?? {}) as Record<string, unknown>);
+          debuggerApi.on("message", forward);
+          return () => debuggerApi.removeListener("message", forward);
+        },
+      },
+      clock: this.#clock,
+      get refs() {
+        return active.agentRefs;
+      },
+      set refs(refs) {
+        active.agentRefs = refs;
+      },
+      navigate: async (url) => {
+        await this.#startNavigation(active, url);
+        return active.reason;
+      },
+      platform: process.platform,
+      tabId: active.tabId,
+      title: () => active.webContents.getTitle(),
+      url: () => currentSafeUrl(active.webContents, active.url),
+    });
+  }
+
   async captureClientScreenshot(input: { tabId: string }) {
     const target = this.#requireClientTarget(input.tabId);
     return this.#enqueueOwnerOperation(target.ownerWindowId, async () => {
@@ -1046,19 +1133,27 @@ export class NativeBrowserSidebarService implements BrowserSidebarProvider {
     operation: (
       debuggerApi: NonNullable<BrowserSidebarWebContentsLike["debugger"]>
     ) => Promise<T>,
-    maxResultChars = 512 * 1024
+    maxResultChars = 512 * 1024,
+    timeoutMs = CLIENT_CDP_TIMEOUT_MS
   ) {
     const debuggerApi = active.webContents.debugger;
     if (!debuggerApi) throw new Error("CDP is unavailable for this browser target.");
-    if (debuggerApi.isAttached()) {
-      throw new Error("The browser target is already attached to a debugger.");
+    // An agent session that waits on a page dialog keeps its attachment.
+    if (active.agentSession && !debuggerApi.isAttached()) {
+      active.agentSession.stop();
+      active.agentSession = undefined;
     }
-    debuggerApi.attach("1.3");
+    if (!active.agentSession) {
+      if (debuggerApi.isAttached()) {
+        throw new Error("The browser target is already attached to a debugger.");
+      }
+      debuggerApi.attach("1.3");
+    }
     try {
       const result = await withWallTimeout(
         this.#clock,
         operation(debuggerApi),
-        CLIENT_CDP_TIMEOUT_MS,
+        timeoutMs,
         "CDP command timed out."
       );
       const encoded = JSON.stringify(result);
@@ -1068,7 +1163,7 @@ export class NativeBrowserSidebarService implements BrowserSidebarProvider {
       return result;
     } finally {
       try {
-        if (debuggerApi.isAttached()) debuggerApi.detach();
+        if (!active.agentSession && debuggerApi.isAttached()) debuggerApi.detach();
       } catch {
         // Detach is cleanup. Never hide the command's timeout or protocol error.
       }
@@ -1104,7 +1199,7 @@ export class NativeBrowserSidebarService implements BrowserSidebarProvider {
     }
     if (parsed.url) {
       const nextUrl = normalizeBrowserSidebarUrl(parsed.url);
-      this.#startNavigation(active, nextUrl);
+      void this.#startNavigation(active, nextUrl);
     } else if (parsed.visible) {
       this.#resumeNavigation(active);
     }
@@ -1494,7 +1589,10 @@ export class NativeBrowserSidebarService implements BrowserSidebarProvider {
       publish();
     });
     active.webContents.on("did-navigate", () => {
-      active.navigationPendingAction = undefined;
+      // The history moved, but the committed document still loads until
+      // loading stops: hiding the view now stops it and leaves the page blank,
+      // so what remains to repeat is a reload of this entry.
+      if (active.navigationPendingAction) active.navigationPendingAction = "reload";
       publish();
     });
     active.webContents.on("did-navigate-in-page", publish);
@@ -1576,7 +1674,8 @@ export class NativeBrowserSidebarService implements BrowserSidebarProvider {
     );
   }
 
-  #startNavigation(active: ActiveBrowserSidebar, url: string) {
+  /** Starts loading `url` in the tab. The returned Promise settles with the load and never rejects. */
+  #startNavigation(active: ActiveBrowserSidebar, url: string): Promise<void> {
     void this.#cancelInspection(active);
     const navigationGeneration = ++active.navigationGeneration;
     active.reason = undefined;
@@ -1591,19 +1690,21 @@ export class NativeBrowserSidebarService implements BrowserSidebarProvider {
     try {
       navigation = active.webContents.loadURL(url);
     } catch (error: unknown) {
-      if (!this.#isCurrentNavigation(active, navigationGeneration)) return;
+      if (!this.#isCurrentNavigation(active, navigationGeneration)) {
+        return Promise.resolve();
+      }
       active.navigationPendingGeneration = undefined;
       if (isExpectedNavigationCancellation(error)) {
         void this.#publishState(active).catch(() => undefined);
-        return;
+        return Promise.resolve();
       }
       active.reason =
         error instanceof Error ? error.message : "This page could not be loaded.";
       this.#rejectPendingClientTabOpen(active.tabId, asError(error));
       void this.#publishState(active).catch(() => undefined);
-      return;
+      return Promise.resolve();
     }
-    void navigation.then(
+    return navigation.then(
       () => {
         if (!this.#isCurrentNavigation(active, navigationGeneration)) return;
         active.navigationPendingGeneration = undefined;
@@ -1719,7 +1820,7 @@ export class NativeBrowserSidebarService implements BrowserSidebarProvider {
   /** Repeats what hiding the view stopped: a page it was loading, or a back, forward or reload. */
   #resumeNavigation(active: ActiveBrowserSidebar) {
     if (active.navigationResumeUrl) {
-      this.#startNavigation(active, active.navigationResumeUrl);
+      void this.#startNavigation(active, active.navigationResumeUrl);
     } else if (active.navigationResumeAction) {
       this.#runHistoryAction(active, active.navigationResumeAction);
     }

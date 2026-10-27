@@ -26,6 +26,7 @@
 @import "./components/settings/DeviceSettingsContent.css";
 @import "./components/settings/DeviceSetupContent.css";
 @import "./components/settings/NotchWidthSetting.css";
+@import "./components/settings/SettingsSliderField.css";
 @import "./components/settings/CreatedSecretPanel.css";
 @import "./components/home-tasks/home-tasks.css";
 @import "./components/task-board/task-board.css";
@@ -995,9 +996,16 @@
      the scrollbars and edge layers; a descendant that resolved against it
      stayed put while the viewport scrolled (react-aria's visually hidden
      radio input), and focusing it then scrolled the root's overflow-hidden
-     box to reveal it. Overlays pinned to the area go beside it, not inside. */
+     box to reveal it. Overlays pinned to the area go beside it, not inside.
+
+     The content does not inherit the area's window app region. Electron
+     inherits the region and registers every box that has one at its unclipped
+     rect, so a transcript scrolled up cut no-drag holes into the window bar
+     above it. The viewport's own region covers what shows. Only `initial`
+     clears the region; an explicit `none` computes as no-drag. */
   .comma-scroll-area__content {
     position: relative;
+    -webkit-app-region: initial;
   }
 
   .comma-scroll-area[data-freeze-content-inline-size="true"]

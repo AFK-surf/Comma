@@ -79,10 +79,10 @@ defmodule SalixIM.TaskRun do
 
   defp task(group_id, conversation_id) do
     case Conversations.get_group_conversation(group_id, conversation_id) do
-      # A coding Task runs on the sandbox made for its repository: it moves nowhere.
+      # A sandbox Task runs on the sandbox made for it: it moves nowhere.
       {:ok, %{"kind" => "agent_task", "runs_on" => %{"kind" => "sandbox"}}} ->
         {:error,
-         {:bad_request, "a coding Task runs on its own sandbox; its model is not switched"}}
+         {:bad_request, "a sandbox Task runs on its own sandbox; its model is not switched"}}
 
       {:ok, %{"kind" => "agent_task", "task_worker_agent_id" => worker} = conversation}
       when is_binary(worker) and worker != "" ->

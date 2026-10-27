@@ -1621,24 +1621,29 @@ export const ConversationView = memo(function ConversationView({
   // A coding Task's changes open as a tab of the sidebar, at the file pressed in the panel.
   const sandboxBranch =
     state.taskRun?.place.kind === "sandbox"
-      ? state.taskRun.place.repo.branch
+      ? state.taskRun.place.repo?.branch
       : undefined;
   const isSandboxTask = state.taskRun?.place.kind === "sandbox";
+  // A coding Task: a sandbox Task with a repository. One without has no changes or pull request.
+  const isCodingTask =
+    state.taskRun?.place.kind === "sandbox" && state.taskRun.place.repo !== undefined;
   const sandboxBase =
     state.taskRun?.place.kind === "sandbox"
-      ? state.taskRun.place.repo.baseRef
+      ? state.taskRun.place.repo?.baseRef
       : undefined;
   const sandboxOwner =
     state.taskRun?.place.kind === "sandbox"
-      ? state.taskRun.place.repo.owner
+      ? state.taskRun.place.repo?.owner
       : undefined;
   const sandboxRepoName =
-    state.taskRun?.place.kind === "sandbox" ? state.taskRun.place.repo.name : undefined;
+    state.taskRun?.place.kind === "sandbox"
+      ? state.taskRun.place.repo?.name
+      : undefined;
   const sandboxReady =
     state.taskRun?.place.kind === "sandbox" && state.taskRun.place.state === "ready";
   const openCodingChanges = useMemo(
     () =>
-      sidebar && isSandboxTask && workspaceId && threadGroupId && taskConversationId
+      sidebar && isCodingTask && workspaceId && threadGroupId && taskConversationId
         ? (file?: string) =>
             sidebar.openCodingChanges(
               sidebar.getActiveHost() ?? {
@@ -1660,7 +1665,7 @@ export const ConversationView = memo(function ConversationView({
             )
         : undefined,
     [
-      isSandboxTask,
+      isCodingTask,
       sandboxReady,
       sandboxBase,
       sandboxOwner,
@@ -1729,7 +1734,7 @@ export const ConversationView = memo(function ConversationView({
   // The moment to propose the branch: the coding Task in review or done, its sandbox running or not (Comma opens the
   // pushed branch on GitHub once it is gone). Through a Worker's turn the prompt stays and waits.
   const pullRequestDue =
-    isSandboxTask &&
+    isCodingTask &&
     (headerTaskStatus === "needs_review" || headerTaskStatus === "done");
   const taskPanelProps =
     showTaskPanel && presentation

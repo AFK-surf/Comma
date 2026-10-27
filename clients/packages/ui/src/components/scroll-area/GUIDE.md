@@ -58,6 +58,10 @@ Do not add a local observer.
   的（滚动条和边缘层挂在它上面），以根节点为包含块的后代在 viewport 滚动时会留在
   原地。要钉在区域上的浮层（选择条、回到底部按钮）放在
   ScrollArea 旁边，不放在内容里。
+- 内容层不继承窗口的 app region（`-webkit-app-region: initial`）。Electron 让后代继承
+  这个属性，并按每个盒子未裁剪的矩形登记拖拽区；滚出可视区的内容会在窗口栏上挖出
+  no-drag 的洞。可视部分由 viewport 自己的区域覆盖。清除只能用 `initial`，显式写
+  `none` 会算成 `no-drag`。
 - `scrollbarRevealSource="interaction"`：滚轮和它引起的 `scroll` 是两个事件。滚轮输入
   后约 250ms 内发生的滚动算读者的，显示滚动条；前面没有滚轮的滚动算应用自己的
   （跟随到底、跳转），保持隐藏。键盘、触摸和拖动滚动条照旧直接显示。

@@ -67,6 +67,53 @@ describe("SettingsShortcut", () => {
     expect(formatSettingsShortcut(onChange.mock.calls[0]![0])).toBe("Alt + ,");
   });
 
+  it("records a modifier tapped alone as a tap, where the field takes one", async () => {
+    const onModifierTap = vi.fn();
+    const onChange = vi.fn();
+    render(
+      <SettingsShortcut
+        ariaLabel="Quick Chat"
+        modifierTaps={["meta", "alt"]}
+        onChange={onChange}
+        onModifierTap={onModifierTap}
+        value={{ tap: "meta" }}
+      />
+    );
+    const recorder = screen.getByRole("button", { name: "Quick Chat: Cmd" });
+    expect(screen.getByText("⌘")).toBeInTheDocument();
+
+    // Option with another key is a chord, not a tap.
+    await userEvent.click(recorder);
+    fireEvent.keyDown(recorder, { code: "AltLeft", key: "Alt", altKey: true });
+    fireEvent.keyDown(recorder, { code: "Space", key: " ", altKey: true });
+    fireEvent.keyUp(recorder, { code: "Space", key: " ", altKey: true });
+    fireEvent.keyUp(recorder, { code: "AltLeft", key: "Alt" });
+    expect(onModifierTap).not.toHaveBeenCalled();
+    expect(onChange).toHaveBeenCalledOnce();
+
+    // Option alone.
+    await userEvent.click(recorder);
+    fireEvent.keyDown(recorder, { code: "AltLeft", key: "Alt", altKey: true });
+    fireEvent.keyUp(recorder, { code: "AltLeft", key: "Alt" });
+    expect(onModifierTap).toHaveBeenCalledWith({ tap: "alt" });
+    expect(formatSettingsShortcut({ tap: "alt" })).toBe("Alt");
+
+    // Shift is not one this field takes; Shift with Option is no tap either.
+    await userEvent.click(recorder);
+    fireEvent.keyDown(recorder, { code: "ShiftLeft", key: "Shift", shiftKey: true });
+    fireEvent.keyUp(recorder, { code: "ShiftLeft", key: "Shift" });
+    fireEvent.keyDown(recorder, { code: "ShiftLeft", key: "Shift", shiftKey: true });
+    fireEvent.keyDown(recorder, {
+      code: "AltLeft",
+      key: "Alt",
+      altKey: true,
+      shiftKey: true,
+    });
+    fireEvent.keyUp(recorder, { code: "AltLeft", key: "Alt", shiftKey: true });
+    fireEvent.keyUp(recorder, { code: "ShiftLeft", key: "Shift" });
+    expect(onModifierTap).toHaveBeenCalledOnce();
+  });
+
   it("formats the default Control-Z shortcut", () => {
     expect(formatSettingsShortcut(shortcut)).toBe("Ctrl + Z");
     render(<SettingsShortcut ariaLabel="Open Side Chat" value={shortcut} />);

@@ -546,7 +546,7 @@ export function TaskDetailsPanel({
           <TaskLoopSection loop={loop} onOpenTasksFilter={onOpenTasksFilter} />
         ) : null}
 
-        {coding && run?.place.kind === "sandbox" ? (
+        {coding && run?.place.kind === "sandbox" && run.place.repo ? (
           // A coding Task's record stands in for its Activity: its steps come from the sandbox, not from milestones.
           // Keyed by the Task, so another Task's changes and record never show while this one's are read.
           <>

@@ -15,11 +15,14 @@ defmodule SalixIM.TaskPlacement do
       the Cloud VM switch on (the VM itself need not be running: a Task made
       while it sleeps is kept for it and the VM woken), a station connected
       and ready.
-    * A coding Task (`runs_on {"kind": "sandbox"}`) runs on a sandbox made for
-      it, with the GitHub repository `repo` (`{owner, name, base_ref?,
-      branch?}`, or `{owner, name, pull_request}` to continue an open pull
-      request on its own head branch) checked out. The product checks the repository and the
-      Group's sandbox limit. It is never a Group's default place.
+    * A sandbox Task (`runs_on {"kind": "sandbox"}`) runs on an L4ES sandbox
+      made for it. With the GitHub repository `repo` (`{owner, name,
+      base_ref?, branch?}`, or `{owner, name, pull_request}` to continue an
+      open pull request on its own head branch) it is a coding Task, with
+      that repository checked out; the product checks the repository.
+      Without `repo` it is a plain sandbox Task. The product applies the
+      Group's sandbox limit either way. A Worker may be bound to it
+      (`SalixAgent.StationBinding`); it is not a Group's default place.
     * A Mini App build (`mini_app {"app_id": ...}`) is a coding Task on the
       app's own repository: only with `runs_on {"kind": "sandbox"}` and a
       `repo` that is the app's (`SalixIM.MiniApps.repo/2`).
@@ -422,13 +425,13 @@ defmodule SalixIM.TaskPlacement do
         {:ok, nil}
 
       %{"kind" => "sandbox"} = request ->
-        case params["repo"] do
-          repo when is_map(repo) ->
-            sandbox(scope, target_agent_id, Map.put(request, "repo", repo), source)
+        request =
+          case params["repo"] do
+            repo when is_map(repo) -> Map.put(request, "repo", repo)
+            _none -> request
+          end
 
-          _missing ->
-            {:error, {:runs_on, :repo_required, source}}
-        end
+        sandbox(scope, target_agent_id, request, source)
 
       request when is_map(request) ->
         with {:ok, _agent} <- GroupDirectory.get_agent(target_agent_id),
@@ -569,11 +572,6 @@ defmodule SalixIM.TaskPlacement do
        when reason in [:device_needs_station, :station_outdated],
        do: station_refusal(reason, info)
 
-  defp runs_on_refusal(:repo_required, _source),
-    do:
-      "runs_on {kind: sandbox} needs repo {owner, name, base_ref?}: the GitHub repository " <>
-        "to check out. The Task was not made."
-
   defp runs_on_refusal(:repo_requires_sandbox, _source),
     do:
       "repo requires runs_on {kind: sandbox}. Describe existing files in content when using another machine."
@@ -597,7 +595,7 @@ defmodule SalixIM.TaskPlacement do
     do: "apps are not set up here; omit mini_app. The Task was not made."
 
   defp runs_on_refusal(:sandbox_unavailable, _source),
-    do: "coding sandboxes are not set up here; give another place. The Task was not made."
+    do: "sandboxes are not set up here; give another place. The Task was not made."
 
   defp runs_on_refusal(:github_not_connected, _source),
     do:
@@ -646,7 +644,7 @@ defmodule SalixIM.TaskPlacement do
 
   defp runs_on_refusal({:sandbox_limit, max}, _source),
     do:
-      "the Workspace already runs #{max} coding sandboxes, the most it may; end one " <>
+      "the Workspace already runs #{max} sandboxes, the most it may; end one " <>
         "(set its Task completed) or wait. The Task was not made."
 
   defp runs_on_refusal(:device_not_found, _source),

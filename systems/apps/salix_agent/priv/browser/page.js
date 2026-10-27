@@ -114,11 +114,18 @@
             continue;
           }
           const label = child.getAttribute("aria-label") || (child.localName === "img" ? child.getAttribute("alt") : null);
+          // A block, flex or grid item or table cell is a separate run of
+          // text: <span>2062</span><span>0</span> in a flex row reads
+          // "2062 0". Inline boxes, inline-block digits included, join.
+          const display = child.ownerDocument.defaultView.getComputedStyle(child).display;
+          const gap = display.startsWith("inline") || display === "contents" ? "" : " ";
+          out += gap;
           if (label) out += " " + label + " ";
           else if (child.localName === "br") out += " ";
           else if (child.shadowRoot) walk(child.shadowRoot);
           else if (child.localName === "slot") for (const assigned of child.assignedNodes({ flatten: true })) walk({ childNodes: [assigned] });
           else walk(child);
+          out += gap;
         }
       }
     };

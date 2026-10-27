@@ -37,12 +37,13 @@ defmodule SalixIM.Ports.TaskStations do
   @callback joined(row :: map()) :: :ok | {:error, term()}
 
   @doc """
-  Reserves the sandbox of a coding Task about to be made (`runs_on {kind:
+  Reserves the sandbox of a sandbox Task about to be made (`runs_on {kind:
   sandbox}`), in place of inviting a station: no station runs it yet. The
   product makes the sandbox and invites its station once it connects.
   `reservation` carries what `joined/1`'s row does but `session`, and the
-  Task's `repo`, the subscription `account_id` it runs on (nil for the
-  default) and its `requester` (a user id or nil).
+  Task's `repo` (nil for a Task without a repository), the subscription
+  `account_id` it runs on (nil for the default) and its `requester` (a user
+  id or nil).
   """
   @callback sandbox(reservation :: map()) :: :ok | {:error, term()}
 

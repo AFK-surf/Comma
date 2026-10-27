@@ -68,6 +68,7 @@ defmodule CommaWeb.Application do
     SystemsRuntime.put_env(:salix_web, :comma_oauth_commit_mod, CommaWeb.OAuthCommit)
     # Salix reaches the Mini App owner through these ports (CommaWeb.MiniAppPort).
     SystemsRuntime.put_env(:salix_im, :mini_apps, CommaWeb.MiniAppPort)
+    SystemsRuntime.put_env(:salix_im, :task_panel_dismissals, CommaWeb.TaskPanelDismissalPort)
     SystemsRuntime.put_env(:salix_web, :mini_app_deploys, CommaWeb.MiniAppPort)
     SystemsRuntime.put_env(:salix_web, :composio_signal_mod, CommaWeb.MemberSourceTriggers)
 

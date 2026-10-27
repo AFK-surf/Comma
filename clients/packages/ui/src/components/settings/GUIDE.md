@@ -94,10 +94,15 @@ const registry = createSettingsRegistry({
 - Use a row's `content` for full-width content that belongs to that setting,
   such as a live preview under its switch. Pass `null` while it is hidden, so
   the slot folds open and shut instead of jumping the page.
+- Use `SettingsSliderField` for a number a row's `content` sets with a slider.
+  Pass the saved value, its range and default, the localized label, reset label
+  and spoken value, and `onValueCommit`. It writes once a drag is released or
+  arrow keys stop. Give it `onPaint` to preview the value on each frame of a
+  drag or glide without a render.
 - Use `NotchWidthSetting` as the Notch row's `content`. Pass the saved width,
-  its range and default, and `onValueCommit`. Its slider writes once a drag is
-  released or arrow keys stop, and animates the preview itself. Pass
-  `onPreview` to offer showing that width once on the real Notch.
+  its range and default, and `onValueCommit`. Its `SettingsSliderField` drives
+  the preview. Pass `onPreview` to offer showing that width once on the real
+  Notch.
 - A `model-menu` groups models by maker. Give models a `section` to head runs
   of them, such as model families, inside the maker's menu. The trigger shows
   the chosen model's maker mark, or the `icon` of a chosen top-level item.

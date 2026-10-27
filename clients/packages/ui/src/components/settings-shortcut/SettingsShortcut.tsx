@@ -60,6 +60,13 @@ export interface SettingsShortcutValue {
   };
 }
 
+/** One modifier tapped on its own, which a double tap of it stands for. */
+export interface SettingsModifierTapValue {
+  tap: keyof SettingsShortcutValue["modifiers"];
+}
+
+export type SettingsShortcutBinding = SettingsShortcutValue | SettingsModifierTapValue;
+
 export interface SettingsShortcutProps {
   ariaLabel: string;
   className?: string;
@@ -69,8 +76,14 @@ export interface SettingsShortcutProps {
   errorMessage?: string;
   onChange?: (shortcut: SettingsShortcutValue) => Promise<void> | void;
   onClear?: () => Promise<void> | void;
+  /**
+   * The modifiers that may be recorded alone: pressed and released with no
+   * other key, one becomes the value as a tap of it.
+   */
+  modifierTaps?: readonly SettingsModifierTapValue["tap"][];
+  onModifierTap?: (tap: SettingsModifierTapValue) => Promise<void> | void;
   recordingLabel?: string;
-  value: SettingsShortcutValue | null;
+  value: SettingsShortcutBinding | null;
 }
 
 const physicalShortcutKey = (code: string): SettingsShortcutKey | undefined => {
@@ -86,13 +99,24 @@ const physicalShortcutKey = (code: string): SettingsShortcutKey | undefined => {
 const keyText = (key: SettingsShortcutKey) =>
   key === "space" ? "Space" : key === "comma" ? "," : key.toLocaleUpperCase();
 
-const shortcutParts = ({ key, modifiers }: SettingsShortcutValue) => [
+const noModifiers = { alt: false, control: false, meta: false, shift: false };
+
+const tapModifiers = ({ tap }: SettingsModifierTapValue) => ({
+  ...noModifiers,
+  [tap]: true,
+});
+
+const modifierParts = (modifiers: SettingsShortcutValue["modifiers"]) => [
   ...(modifiers.control ? ["Ctrl"] : []),
   ...(modifiers.alt ? ["Alt"] : []),
   ...(modifiers.shift ? ["Shift"] : []),
   ...(modifiers.meta
     ? [{ macos: "Cmd", windows: "Win", linux: "Super" }[detectAppKeybindingPlatform()]]
     : []),
+];
+
+const shortcutParts = ({ key, modifiers }: SettingsShortcutValue) => [
+  ...modifierParts(modifiers),
   keyText(key),
 ];
 
@@ -132,8 +156,12 @@ const emptyShortcutKeycaps: ShortcutKeycap[] = [
   { id: "empty-1", text: "-" },
 ];
 
-const valueKeycaps = (value: SettingsShortcutValue | null) =>
-  value === null ? emptyShortcutKeycaps : shortcutKeycaps(value);
+const valueKeycaps = (value: SettingsShortcutBinding | null) =>
+  value === null
+    ? emptyShortcutKeycaps
+    : "tap" in value
+      ? modifierKeycaps(tapModifiers(value))
+      : shortcutKeycaps(value);
 
 const shortcutModifiers = (event: KeyboardEvent<HTMLButtonElement>) => ({
   alt: event.altKey,
@@ -151,8 +179,19 @@ const isModifierKey = (event: KeyboardEvent<HTMLButtonElement>) =>
   event.key === "Meta" ||
   event.key === "Shift";
 
-export const formatSettingsShortcut = (shortcut: SettingsShortcutValue) =>
-  shortcutParts(shortcut).join(" + ");
+const modifierKeys: Partial<Record<string, SettingsModifierTapValue["tap"]>> = {
+  Alt: "alt",
+  Control: "control",
+  Meta: "meta",
+  Shift: "shift",
+};
+
+const modifierOfKey = (key: string) => modifierKeys[key];
+
+export const formatSettingsShortcut = (shortcut: SettingsShortcutBinding) =>
+  "tap" in shortcut
+    ? modifierParts(tapModifiers(shortcut)).join(" + ")
+    : shortcutParts(shortcut).join(" + ");
 
 export const SettingsShortcut = ({
   ariaLabel,
@@ -163,14 +202,20 @@ export const SettingsShortcut = ({
   errorMessage,
   onChange,
   onClear,
+  modifierTaps = [],
+  onModifierTap,
   recordingLabel = "Press shortcut",
   value,
 }: SettingsShortcutProps) => {
   const [capture, setCapture] = useState<ShortcutCaptureState>({ kind: "idle" });
   const [optimisticValue, setOptimisticValue] = useState<
-    { value: SettingsShortcutValue | null } | undefined
+    { value: SettingsShortcutBinding | null } | undefined
   >();
   const commitOperationRef = useRef(0);
+  // The one modifier held so far with nothing else, which a release records as a tap.
+  const loneModifierRef = useRef<SettingsModifierTapValue["tap"] | undefined>(
+    undefined
+  );
   const controlRef = useRef<HTMLButtonElement>(null);
   const pending = optimisticValue !== undefined;
   const controlDisabled = disabled || pending;
@@ -203,7 +248,7 @@ export const SettingsShortcut = ({
   }, [disabled]);
 
   const trackOptimisticValue = (
-    nextValue: SettingsShortcutValue | null,
+    nextValue: SettingsShortcutBinding | null,
     changeResult: Promise<void> | void
   ) => {
     const operation = ++commitOperationRef.current;
@@ -251,6 +296,13 @@ export const SettingsShortcut = ({
     }
 
     const modifiers = shortcutModifiers(event);
+    const pressed = modifierOfKey(event.key);
+    loneModifierRef.current =
+      pressed !== undefined &&
+      Object.values(modifiers).filter(Boolean).length === 1 &&
+      modifiers[pressed]
+        ? pressed
+        : undefined;
     if (isModifierKey(event)) {
       const modifierPreviewKeycaps = modifierKeycaps(modifiers);
       if (capture.kind === "preview" && modifierPreviewKeycaps.length > 0) return;
@@ -285,6 +337,20 @@ export const SettingsShortcut = ({
 
     event.preventDefault();
     event.stopPropagation();
+
+    const lone = loneModifierRef.current;
+    loneModifierRef.current = undefined;
+    if (
+      lone !== undefined &&
+      lone === modifierOfKey(event.key) &&
+      modifierTaps.includes(lone) &&
+      !Object.values(shortcutModifiers(event)).some(Boolean)
+    ) {
+      const tap = { tap: lone };
+      trackOptimisticValue(tap, onModifierTap?.(tap));
+      setCapture({ kind: "idle" });
+      return;
+    }
 
     if (isModifierKey(event)) {
       const modifierPreviewKeycaps = modifierKeycaps(shortcutModifiers(event));
@@ -331,6 +397,7 @@ export const SettingsShortcut = ({
           disabled={nativeDisabled}
           onClick={() => {
             if (controlDisabled) return;
+            loneModifierRef.current = undefined;
             setCapture((current) =>
               current.kind === "idle" ? { kind: "editing" } : current
             );

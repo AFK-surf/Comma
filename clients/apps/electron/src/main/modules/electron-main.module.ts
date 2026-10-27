@@ -649,6 +649,7 @@ export async function createElectronMainContext(
       nativeEventBus.emit(appPreferencesChangedEvent, preferences);
       applyNotchPreferences(preferences);
       quickChat?.setEnabled(preferences.quickChatEnabled);
+      quickChat?.setShortcut(preferences.clientSettings?.quickChatShortcut ?? null);
       statusTrayPreferences = preferences;
       followStatusTrayTasks();
       publishStatusTray();
@@ -1076,6 +1077,7 @@ export async function createElectronMainContext(
       },
       // Turned off in Settings, no helper starts: it takes neither ⌘ nor the microphone.
       enabled: appPreferencesService.state().quickChatEnabled,
+      shortcut: appPreferencesService.state().clientSettings?.quickChatShortcut ?? null,
       openRoute: deps.quickChat.openRoute,
       selectWorkspace: async (workspace) => {
         await sessionAdmissionGuard.runOwned(() =>
@@ -1759,6 +1761,9 @@ const unavailableClientControlBrowser: ClientControlBrowser = {
   },
   sendClientCdpCommand() {
     throw new Error("In-app browser CDP is unavailable in this runtime.");
+  },
+  runClientAgentCommand() {
+    throw new Error("In-app browser control is unavailable in this runtime.");
   },
 };
 

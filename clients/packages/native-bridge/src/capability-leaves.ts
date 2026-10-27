@@ -923,6 +923,14 @@ export const commaClientFontFamilyPreferenceSchema = z
   .min(1)
   .max(256)
   .nullable();
+// The macOS window ground: whether it shows the frosted material, and how
+// much of the material shows through the window color (0 opaque, 100 clear).
+export const commaClientWindowTranslucencyPreferenceSchema = z.boolean();
+export const commaClientWindowTransparencyPreferenceSchema = z
+  .number()
+  .int()
+  .min(0)
+  .max(100);
 export const commaClientCustomSchemePreferenceSchema = z.enum([
   "system",
   "light",
@@ -940,6 +948,9 @@ export const commaClientAppearancePreferencesSchema = z
     pointerCursors: z.boolean(),
     reducedMotion: z.boolean(),
     theme: commaClientThemePreferenceSchema,
+    // Settings saved before the window ground choice shipped are translucent.
+    windowTranslucency: commaClientWindowTranslucencyPreferenceSchema.default(true),
+    windowTransparency: commaClientWindowTransparencyPreferenceSchema.default(50),
   })
   .strict();
 export type CommaClientAppearancePreferences = z.output<
@@ -957,6 +968,8 @@ export const defaultCommaClientAppearancePreferences =
     pointerCursors: false,
     reducedMotion: false,
     theme: "default",
+    windowTranslucency: true,
+    windowTransparency: 50,
   });
 
 export const commaClientAppShortcutIds = [
@@ -1145,6 +1158,61 @@ export const defaultOpenCommaShortcut: GlobalShortcut = {
   modifiers: { alt: true, control: false, meta: false, shift: false },
 };
 
+/** A modifier Quick Chat opens with when it is tapped twice. */
+export const quickChatTapModifierSchema = z.enum(["alt", "control", "meta", "shift"]);
+export type QuickChatTapModifier = z.infer<typeof quickChatTapModifierSchema>;
+
+/**
+ * What opens Quick Chat: a double tap of one modifier, or a global shortcut.
+ * Null is the platform's own, a double tap of ⌘ on macOS and of Ctrl on Windows.
+ */
+export const quickChatShortcutSchema = z.union([
+  z.object({ tap: quickChatTapModifierSchema }).strict(),
+  globalShortcutSchema,
+]);
+export type QuickChatShortcut = z.infer<typeof quickChatShortcutSchema>;
+
+export const defaultQuickChatShortcut = (
+  platform: "macos" | "windows"
+): QuickChatShortcut => ({ tap: platform === "windows" ? "control" : "meta" });
+
+/** The stored Quick Chat shortcut, null read as the platform's own. */
+export const resolveQuickChatShortcut = (
+  stored: QuickChatShortcut | null | undefined,
+  platform: "macos" | "windows"
+): QuickChatShortcut => stored ?? defaultQuickChatShortcut(platform);
+
+/**
+ * The keys of a Quick Chat shortcut as this platform names them: ⌃⌥⇧⌘ and
+ * Space on macOS, Ctrl Alt Shift Win elsewhere.
+ */
+export const quickChatShortcutKeys = (
+  shortcut: QuickChatShortcut,
+  platform: "macos" | "windows"
+): string[] => {
+  const names =
+    platform === "macos"
+      ? { alt: "⌥", control: "⌃", meta: "⌘", shift: "⇧" }
+      : { alt: "Alt", control: "Ctrl", meta: "Win", shift: "Shift" };
+  if ("tap" in shortcut) return [names[shortcut.tap]];
+  return [
+    ...(["control", "alt", "shift", "meta"] as const)
+      .filter((modifier) => shortcut.modifiers[modifier])
+      .map((modifier) => names[modifier]),
+    shortcut.key === "space"
+      ? "Space"
+      : shortcut.key === "comma"
+        ? ","
+        : shortcut.key.toUpperCase(),
+  ];
+};
+
+/** The shortcut's keys in one piece, as text names it: ⌥Space, Alt+Space. */
+export const quickChatShortcutText = (
+  shortcut: QuickChatShortcut,
+  platform: "macos" | "windows"
+) => quickChatShortcutKeys(shortcut, platform).join(platform === "macos" ? "" : "+");
+
 /**
  * Client settings that builds with Side Chat require, at their defaults. Saved
  * settings keep carrying them so such a build, after a rollback, still parses
@@ -1215,6 +1283,8 @@ export const commaClientSettingsSchema = z
     meetingHideRecorder: z.boolean().default(false),
     meetingSmartSummary: z.boolean().default(true),
     openCommaShortcut: globalShortcutBindingSchema.default(defaultOpenCommaShortcut),
+    // Null: the platform's own, a double tap of ⌘ (Ctrl on Windows).
+    quickChatShortcut: quickChatShortcutSchema.nullable().default(null),
     // Icon-rail item ids in the reader's order. Stored loosely: an id the
     // running build no longer knows is dropped on read and one it newly ships
     // is appended, so a rail change never invalidates the whole settings file.
@@ -1232,9 +1302,14 @@ export const commaClientSettingsPatchSchema = z
   .object({
     appShortcutOverrides: commaClientAppShortcutOverridesSchema.optional(),
     // Zod applies a default inside partial(), which would reset the saved
-    // family on every patch that changes another appearance field.
+    // family and window ground on every patch that changes another
+    // appearance field.
     appearance: commaClientAppearancePreferencesSchema
-      .extend({ fontFamily: commaClientFontFamilyPreferenceSchema })
+      .extend({
+        fontFamily: commaClientFontFamilyPreferenceSchema,
+        windowTranslucency: commaClientWindowTranslucencyPreferenceSchema,
+        windowTransparency: commaClientWindowTransparencyPreferenceSchema,
+      })
       .partial()
       .strict()
       .optional(),
@@ -1247,6 +1322,7 @@ export const commaClientSettingsPatchSchema = z
     meetingHideRecorder: z.boolean().optional(),
     meetingSmartSummary: z.boolean().optional(),
     openCommaShortcut: globalShortcutBindingSchema.optional(),
+    quickChatShortcut: quickChatShortcutSchema.nullable().optional(),
     sidebarNavOrder: z.array(z.string()).optional(),
     onboardingCompletedUserIds: z.array(z.string()).optional(),
     routerProfileNoticeSeen: z.boolean().optional(),
@@ -1283,14 +1359,16 @@ const mutableAppPreferencesSchema = z
     showInMenuBar: z.boolean(),
     /** macOS: whether Comma shows running Tasks and AirDrop around the notch. */
     showInNotch: z.boolean(),
-    /** macOS 26: whether a double tap of ⌘ or the menu-bar item opens Quick Chat. */
+    /** Whether Quick Chat's shortcut (`clientSettings.quickChatShortcut`) or the menu-bar item opens it. */
     quickChatEnabled: z.boolean(),
     systemNotifications: z.boolean(),
   })
   .strict();
 export const appPreferencesSchema = mutableAppPreferencesSchema.extend({
   openCommaShortcutStatus: z.enum(["registered", "unset", "unavailable"]).optional(),
-  /** macOS 26: this Mac can run Quick Chat (double-tap ⌘), which Settings offers. Never saved. */
+  /** A global-shortcut Quick Chat shortcut that the OS refused; a double tap needs no registration. */
+  quickChatShortcutStatus: z.enum(["registered", "unset", "unavailable"]).optional(),
+  /** This machine can run Quick Chat, which Settings offers. Never saved. */
   quickChatSupported: z.boolean().optional(),
   launchAtLoginStatus: appLaunchAtLoginStatusSchema.optional(),
   // Defaults keep preference files written before notifications, AirDrop,

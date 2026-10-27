@@ -25,7 +25,7 @@ Provider cards and client timeouts cannot complete, cancel, or reopen Tasks. Tel
 
 ## Station Tasks
 
-A Task with `runs_on` uses a VMM, Cloudflare, physical Station, or explicit [coding sandbox](../compute-devices.md#coding-sandboxes). Its Worker Session runs there.
+A Task with `runs_on` uses a VMM, Cloudflare, physical Station, or a [sandbox](../compute-devices.md#coding-sandboxes) of its own. Its Worker Session runs there.
 `SalixWeb.StationTasks` invites the station, gives it each Message (`task.put`) and writes its posts into the Task as the Worker (`task.post`).
 A desktop station must be connected when the Task is made; the Group's Cloud VM need not be: the VM is woken or made, and its station invited and given the Task once the VM is ready.
 The Worker participant is delivered nothing, and its Session id names no Session Salix runs, so `SalixIM.TaskWorkerWatch` reminds and reports nothing for it.

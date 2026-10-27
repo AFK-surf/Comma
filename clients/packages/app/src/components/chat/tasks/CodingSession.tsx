@@ -377,13 +377,14 @@ export function CodingSandboxRows({
 }) {
   const messages = useCommaMessages();
   const call = useCall();
-  const repo = `${place.repo.owner}/${place.repo.name}`;
-  const branch = place.repo.branch;
+  // A Task without a repository has no repository or branch rows: its sandbox alone.
+  const repo = place.repo ? `${place.repo.owner}/${place.repo.name}` : null;
+  const branch = place.repo?.branch;
   const hint = sandboxHint(messages, place);
   // An ended session's line is about its branch: it ends the branch's menu instead, where the branch has a row.
   const branchNote = branch && sandboxState(place) === "ended" ? hint : null;
   const [opening, setOpening] = useState(false);
-  const repoUrl = `https://github.com/${place.repo.owner}/${place.repo.name}`;
+  const repoUrl = `https://github.com/${repo ?? ""}`;
   // The terminal's address is the sandbox's own on L4ES, where the member signs in with Comma: a tab can come back
   // to it. It is asked for at the press, since it answers only while the sandbox runs.
   const openTerminal = () => {
@@ -407,26 +408,28 @@ export function CodingSandboxRows({
 
   return (
     <>
-      <div className="comma-task-panel-row" data-testid="task-panel-coding-repo">
-        <RowMenu
-          items={[
-            { id: "github", label: messages.coding_repo_open() },
-            { id: "copy", label: messages.coding_copy_link() },
-            ...terminalItem,
-          ]}
-          label={repo}
-          onAction={(key) => {
-            if (key === "github") void openNativePlatformExternalUrl(repoUrl);
-            else if (key === "copy") copy(repoUrl, messages.coding_link_copied());
-            else if (key === "terminal") openTerminal();
-          }}
-        >
-          <span className="flex size-5 shrink-0 items-center justify-center">
-            <GithubBrandIcon className="size-4 text-quaternary" />
-          </span>
-          <span className="truncate">{repo}</span>
-        </RowMenu>
-      </div>
+      {repo ? (
+        <div className="comma-task-panel-row" data-testid="task-panel-coding-repo">
+          <RowMenu
+            items={[
+              { id: "github", label: messages.coding_repo_open() },
+              { id: "copy", label: messages.coding_copy_link() },
+              ...terminalItem,
+            ]}
+            label={repo}
+            onAction={(key) => {
+              if (key === "github") void openNativePlatformExternalUrl(repoUrl);
+              else if (key === "copy") copy(repoUrl, messages.coding_link_copied());
+              else if (key === "terminal") openTerminal();
+            }}
+          >
+            <span className="flex size-5 shrink-0 items-center justify-center">
+              <GithubBrandIcon className="size-4 text-quaternary" />
+            </span>
+            <span className="truncate">{repo}</span>
+          </RowMenu>
+        </div>
+      ) : null}
       {branch ? (
         <div className="comma-task-panel-row" data-testid="task-panel-coding-branch">
           <RowMenu
@@ -444,7 +447,7 @@ export function CodingSandboxRows({
             <BranchIcon className="size-5 shrink-0 text-quaternary" />
             <span className="truncate">{branch}</span>
           </RowMenu>
-          {place.repo.baseRef ? (
+          {place.repo?.baseRef ? (
             <span className="comma-task-coding-trailing">
               {messages.coding_branch_base({ branch: place.repo.baseRef })}
             </span>
@@ -1172,8 +1175,8 @@ export function CodingChangesSection({
   // Where the changes are on GitHub: the pull request made here, else the branch.
   const onGithub =
     pr?.url ??
-    `https://github.com/${place.repo.owner}/${place.repo.name}${
-      place.repo.branch ? `/tree/${place.repo.branch}` : ""
+    `https://github.com/${place.repo?.owner}/${place.repo?.name}${
+      place.repo?.branch ? `/tree/${place.repo.branch}` : ""
     }`;
   const onMenuAction = (key: string | number) => {
     if (actions.handle(key)) return;

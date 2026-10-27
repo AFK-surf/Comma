@@ -19,6 +19,8 @@ defmodule SalixIM.DailyBriefSource do
   @max_members 50
   @max_window_limit 200
   @max_thread_channels 2_000
+  # Enough for a month of an active person's messages.
+  @max_thread_pages 15
   @max_emails 50
 
   @type error ::
@@ -159,7 +161,7 @@ defmodule SalixIM.DailyBriefSource do
   Thread coordinates (channel and thread ts, no text) where the member wrote
   since `after_us`, limited to the channels the caller names. The caller
   passes the readable channels from `channels/1` of the same run. `complete?`
-  is false when the bounded page ran out.
+  is false when the bounded pages ran out.
   """
   @spec member_threads(map()) :: {:ok, map()} | {:error, error()}
   def member_threads(
@@ -168,18 +170,11 @@ defmodule SalixIM.DailyBriefSource do
       when is_binary(user_id) and is_list(channel_ids) and
              length(channel_ids) <= @max_thread_channels and is_integer(after_us) do
     with {:ok, connect} <- fetch_connect(request),
-         {:ok, page} <-
-           search(scope(connect),
-             actor_id: user_id,
-             after_us: after_us,
-             after_date: date(after_us),
-             sort_dir: :desc,
-             limit: @max_window_limit
-           ) do
+         {:ok, messages, complete?} <- own_messages(scope(connect), user_id, after_us, nil, 1, []) do
       allowed = MapSet.new(channel_ids)
 
       threads =
-        page.messages
+        messages
         |> Enum.filter(&MapSet.member?(allowed, &1["channel"]))
         |> Enum.map(fn message ->
           {message["channel"], present(message["thread_ts"]) || message["ts"]}
@@ -189,11 +184,35 @@ defmodule SalixIM.DailyBriefSource do
           %{channel_id: channel_id, thread_ts: thread_ts}
         end)
 
-      {:ok, %{threads: threads, complete?: not page.has_more?}}
+      {:ok, %{threads: threads, complete?: complete?}}
     end
   end
 
   def member_threads(_request), do: {:error, :invalid_request}
+
+  # The member's own messages, newest first, a page at a time up to
+  # `@max_thread_pages` pages.
+  defp own_messages(scope, user_id, after_us, cursor, page_number, acc) do
+    with {:ok, page} <-
+           search(
+             scope,
+             [
+               actor_id: user_id,
+               after_us: after_us,
+               after_date: date(after_us),
+               sort_dir: :desc,
+               limit: @max_window_limit
+             ] ++ cursor_opts(cursor_view(cursor))
+           ) do
+      acc = acc ++ page.messages
+
+      cond do
+        not page.has_more? or is_nil(page.next_cursor) -> {:ok, acc, true}
+        page_number >= @max_thread_pages -> {:ok, acc, false}
+        true -> own_messages(scope, user_id, after_us, page.next_cursor, page_number + 1, acc)
+      end
+    end
+  end
 
   @doc """
   Resolves BFT emails to Slack members of the connect's workspace. Deleted,

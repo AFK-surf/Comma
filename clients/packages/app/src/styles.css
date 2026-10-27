@@ -8308,6 +8308,82 @@ button.comma-chat-user-bubble-toggle:focus-visible {
   --comma-window-bar-search-max-width: 400px;
 }
 
+/* Main draws the main window over a system frosted material, macOS vibrancy
+   or Windows 11 acrylic (window-options.ts, renderComma.tsx). The page root leaves it clear, the
+   shell alone tints it with a translucent window ground, and the frame and the
+   sidebar inside the shell leave it clear so the tints do not stack. The white
+   content panels stay opaque. The material follows the system appearance, not
+   Comma's theme: when the two differ, the ground is opaque. Appearance turns
+   the translucent ground off (the page then paints its usual opaque ground
+   over the material) and sets how much of the material shows through the
+   window color (--comma-window-transparency, commaAppearance.tsx). */
+html[data-comma-window-material]:not([data-comma-window-translucency="off"]) {
+  --comma-window-material-tint: calc(100% - var(--comma-window-transparency, 50%));
+  background: transparent;
+}
+
+@media (prefers-color-scheme: light) {
+  html[data-comma-window-material]:not(
+      [data-comma-window-translucency="off"]
+    )[data-theme="Dark mode"] {
+    --comma-window-material-tint: 100%;
+  }
+}
+
+@media (prefers-color-scheme: dark) {
+  html[data-comma-window-material]:not(
+      [data-comma-window-translucency="off"]
+    )[data-theme="Light mode"] {
+    --comma-window-material-tint: 100%;
+  }
+}
+
+[data-comma-window-material]:not([data-comma-window-translucency="off"])
+  .comma-app-shell {
+  background-color: color-mix(
+    in srgb,
+    var(--color-bg-window) var(--comma-window-material-tint),
+    transparent
+  );
+}
+
+[data-comma-window-material]:not([data-comma-window-translucency="off"])
+  .comma-app-shell
+  :is(.comma-window-frame, .comma-sidebar) {
+  background-color: transparent;
+}
+
+/* A picked-up rail row cannot repaint a ground the page does not draw: it
+   blurs the rows it crosses instead, so their labels still give way. */
+[data-comma-window-material]:not([data-comma-window-translucency="off"])
+  .comma-sidebar-nav-row[data-pointer-dragging="true"]
+  .comma-sidebar-link {
+  background: transparent;
+  backdrop-filter: blur(var(--spacing-md));
+}
+
+/* The unread pip's ring cannot paint the ground either: it is a clear gap
+   cut through the icon slot, through its selected or hovered fill and its
+   glyph alike, so the material shows between the pip and the slot. The pip
+   is 7.2px, 4px from the slot's right edge and 2px from its top, so its
+   centre sits 7.6px and 5.6px inside the slot's top-right corner; the gap is
+   the ring's 1.5px around it. The pip inside the gap stays drawn. */
+[data-comma-window-material]:not([data-comma-window-translucency="off"])
+  [data-slot="left-rail-item-badge"] {
+  box-shadow: none;
+}
+
+[data-comma-window-material]:not([data-comma-window-translucency="off"])
+  [data-slot="left-rail-item-icon"]:has(> [data-slot="left-rail-item-badge"]) {
+  mask-image: radial-gradient(
+    circle at calc(100% - 7.6px) 5.6px,
+    #000 3.6px,
+    transparent 3.6px,
+    transparent 5.1px,
+    #000 5.1px
+  );
+}
+
 /* The window bar's three columns: the leading controls and the trailing
    controls are equal flexible flanks, so the search hint sits on the window's
    centre line rather than in the middle of whatever is left beside the
@@ -8390,10 +8466,13 @@ button.comma-chat-user-bubble-toggle:focus-visible {
   z-index: 1;
 }
 
+/* No app region here: the panel's no-drag already reaches these controls, and
+   an explicit one on a header inside scroll content (a chat card, a page title
+   row) registers at its unclipped rect once scrolled up, cutting a hole into
+   the window bar. The Content Header's own controls opt out above. */
 .comma-content header :is(a, button, input, select, textarea, [role="button"]) {
   position: relative;
   z-index: 6;
-  -webkit-app-region: no-drag;
 }
 
 .app-login-container {

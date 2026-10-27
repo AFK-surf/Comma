@@ -665,7 +665,7 @@ test("a rejected real refresh replaces stale mock recommendations with canonical
     exact: true,
     name: "Next mock card",
   });
-  // Keep Greeting above its 681px route floor beside the 75px app rail
+  // Keep Greeting above its 681px route floor beside the 68px app rail
   // and 8px window inset, so closing the menu can restore its trigger.
   await page.setViewportSize({ height: 800, width: 780 });
   await expect(page.getByTestId("home-greet-rail")).toHaveAttribute(

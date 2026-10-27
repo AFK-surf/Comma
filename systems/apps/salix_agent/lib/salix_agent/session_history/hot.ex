@@ -3,6 +3,9 @@ defmodule SalixAgent.SessionHistory.Hot do
   alias SalixStore.SessionHistoryRepo, as: Repo
   @states "agent_session_history_states"
   @docs "agent_session_history_documents"
+  @first_window 128
+  @min_window 16
+  @max_window 8_192
 
   def track(agent, session) do
     query("INSERT INTO #{@states} (agent_id, session_id) VALUES ($1,$2) ON CONFLICT DO NOTHING", [
@@ -83,35 +86,73 @@ defmodule SalixAgent.SessionHistory.Hot do
     end)
   end
 
+  # Returns {position, rows, resume}. A text search scans seq windows newest
+  # first until it has `limit` rows or spends its time budget. resume is the
+  # {seq, part} to continue below, or nil when the hot range is exhausted.
   def snapshot(agent, session, search, ceiling, before_seq, before_part, limit) do
     transaction(fn ->
       # The row lock also prevents cleanup between the boundary and document reads.
       lock(agent, session)
       position = state(agent, session)
-
-      rows =
-        query(
-          """
-          SELECT seq,part,text,kind,tool_name,label FROM #{@docs}
-          WHERE agent_id=$1 AND session_id=$2 AND seq>$3 AND seq<=$4
-            AND (seq,part)<($5,$6)
-            AND (($7::text IS NULL AND part=0) OR text LIKE $7 ESCAPE '\\')
-          ORDER BY seq DESC,part DESC LIMIT $8
-          """,
-          [
-            agent,
-            session,
-            position.cold,
-            ceiling,
-            before_seq,
-            before_part,
-            pattern(search),
-            limit
-          ]
-        ).rows
-
-      {position, decode(rows)}
+      deadline = SystemsClock.monotonic_time(:millisecond) + scan_budget_ms()
+      scope = {agent, session, pattern(search), position.cold, ceiling, limit, deadline}
+      {rows, resume} = scan(scope, {before_seq, before_part}, [], search && @first_window)
+      {position, decode(rows), resume}
     end)
+  end
+
+  # A listing reads only part 0 in primary-key order, so one query stops early.
+  defp scan({agent, session, nil, floor, ceiling, limit, _}, {seq, part}, [], nil),
+    do: {window(agent, session, nil, floor, ceiling, {seq, part}, limit), nil}
+
+  # A text match filters every row it reads, so each query covers a bounded seq
+  # window that stays inside statement_timeout however large the session is.
+  defp scan(scope, {seq, part}, acc, size) do
+    {agent, session, pattern, floor, ceiling, limit, deadline} = scope
+    low = max(floor, min(ceiling, seq) - size)
+    started = SystemsClock.monotonic_time(:millisecond)
+    rows = window(agent, session, pattern, low, ceiling, {seq, part}, limit - length(acc))
+    now = SystemsClock.monotonic_time(:millisecond)
+    acc = acc ++ rows
+
+    cond do
+      length(acc) >= limit or low <= floor -> {acc, nil}
+      now >= deadline -> {acc, {low + 1, 0}}
+      true -> scan(scope, {low + 1, 0}, acc, resize(size, now - started))
+    end
+  end
+
+  defp scan_budget_ms,
+    do: SystemsRuntime.get_env(:salix_agent, :session_history_scan_budget_ms, 1_500)
+
+  defp resize(size, elapsed) when elapsed < 50, do: min(size * 2, @max_window)
+  defp resize(size, elapsed) when elapsed > 150, do: max(div(size, 2), @min_window)
+  defp resize(size, _elapsed), do: size
+
+  defp window(agent, session, pattern, low, ceiling, {seq, part}, limit) do
+    query(
+      """
+      SELECT seq,part,text,kind,tool_name,label FROM #{@docs}
+      WHERE agent_id=$1 AND session_id=$2 AND seq>$3 AND seq<=$4
+        AND (seq,part)<($5,$6)
+        AND (($7::text IS NULL AND part=0) OR text LIKE $7 ESCAPE '\\')
+      ORDER BY seq DESC,part DESC LIMIT $8
+      """,
+      [agent, session, low, ceiling, seq, part, pattern, limit]
+    ).rows
+  end
+
+  # Moves a session that a lookup found behind to the front of maintenance.
+  # Best effort: a lookup still answers if this write fails.
+  def prioritize(agent, session) do
+    query("UPDATE #{@states} SET checked_at='-infinity' WHERE agent_id=$1 AND session_id=$2", [
+      agent,
+      session
+    ])
+
+    :ok
+  rescue
+    _ -> :ok
   end
 
   def transfer_batch(agent, session) do

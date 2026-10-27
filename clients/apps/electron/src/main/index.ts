@@ -154,6 +154,7 @@ import {
   createMainWindowOptions,
   createOnboardingWindowOptions,
   createRuntimeWorkbenchWindowOptions,
+  mainWindowMaterial,
 } from "./window-options";
 import {
   MainWindowOnboardingHold,
@@ -801,7 +802,8 @@ async function createWindow({
       windowRole: mainWindowIdentity.role,
     })
   );
-  opaqueWindowBackgrounds.track(mainWindow);
+  // A main window over a system material stays clear (window-options.ts).
+  if (mainWindowMaterial() === null) opaqueWindowBackgrounds.track(mainWindow);
   // A maximize or system zoom that lands before the first paint leaves the
   // renderer at the creation size. Re-check after sizing settles, without
   // changing the native size while the user is still dragging an edge.
@@ -1162,8 +1164,13 @@ function ensureMeetingRecorderWindow() {
 }
 
 const openCommaShortcut = new OpenCommaShortcut(globalShortcut, requestOpenMainApp);
+// Quick Chat set to a chord: it listens as after the menu-bar row.
+const quickChatShortcut = new OpenCommaShortcut(globalShortcut, () => {
+  appContext?.startQuickChat();
+});
 app.on("will-quit", () => {
   openCommaShortcut.dispose();
+  quickChatShortcut.dispose();
   statusMenu.dispose();
 });
 // Quitting needs no cleanup: the daemon restores sleep when this process's
@@ -1203,6 +1210,7 @@ async function createElectronMainContext() {
     // Main applies native effects and publishes from one preferences queue.
     appPreferencesPlatform: {
       setOpenCommaShortcut: (shortcut) => openCommaShortcut.set(shortcut),
+      setQuickChatShortcut: (shortcut) => quickChatShortcut.set(shortcut),
       authorizeSystemNotifications,
       getLaunchAtLogin: readLaunchAtLogin,
       getSystemNotificationsStatus: readSystemNotificationsStatus,

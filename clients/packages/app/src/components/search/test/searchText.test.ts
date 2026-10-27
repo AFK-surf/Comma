@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { firstHighlightExcerpt, findTextHighlights } from "../searchText";
+import { firstHighlightExcerpt, findTextHighlights, titleMatches } from "../searchText";
 
 describe("command palette text", () => {
   it("returns every non-overlapping title and content highlight", () => {
@@ -42,5 +42,13 @@ describe("command palette text", () => {
       highlights: [{ start: 12, end: 19 }],
       text: "Prepare the archive rollout",
     });
+  });
+});
+
+describe("titleMatches", () => {
+  it("finds an action by the words of its name in the app's language or in English", () => {
+    expect(titleMatches("检查", "检查更新", "Check for Updates")).toBe(true);
+    expect(titleMatches("check update", "检查更新", "Check for Updates")).toBe(true);
+    expect(titleMatches("check tab", "检查更新", "Check for Updates")).toBe(false);
   });
 });

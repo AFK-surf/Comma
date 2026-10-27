@@ -1,6 +1,11 @@
+import { release } from "node:os";
 import type { BaseWindow, BrowserWindowConstructorOptions } from "electron";
+import type { CommaWindowMaterial } from "@comma/native-bridge";
 import { baseLocale, messages, type CommaLocale } from "@comma/i18n";
-import { opaqueWindowBackgroundColor } from "./window-background";
+import {
+  opaqueWindowBackgroundColor,
+  windowMaterialBackgroundColor,
+} from "./window-background";
 
 export interface RendererWindowIdentityOptions {
   windowId: string;
@@ -12,11 +17,31 @@ export interface RendererWindowIdentityOptions {
     | "onboarding-window";
 }
 
+/** Windows 11 22H2, the first build that draws a window's backdrop material. */
+const windowsBackdropMaterialBuild = 22621;
+
+/**
+ * The system material a main window is drawn over: macOS vibrancy, or acrylic
+ * on Windows 11 22H2 and later. Older Windows and Linux keep an opaque window.
+ */
+export function mainWindowMaterial(
+  platform: NodeJS.Platform = process.platform,
+  osRelease: string = release()
+): CommaWindowMaterial | null {
+  if (platform === "darwin") return "vibrancy";
+  if (platform === "win32") {
+    const build = Number(osRelease.split(".")[2]);
+    return build >= windowsBackdropMaterialBuild ? "acrylic" : null;
+  }
+  return null;
+}
+
 export function createMainWindowOptions({
   bounds,
   darkMode = false,
   iconPath,
   platform = process.platform,
+  osRelease = release(),
   preloadPath,
   productName,
   windowId,
@@ -27,9 +52,12 @@ export function createMainWindowOptions({
   darkMode?: boolean;
   iconPath?: string;
   platform?: NodeJS.Platform;
+  /** The operating system's version (os.release()), which decides Windows' material. */
+  osRelease?: string;
   preloadPath: string;
   productName: string;
 } & RendererWindowIdentityOptions): BrowserWindowConstructorOptions {
+  const material = mainWindowMaterial(platform, osRelease);
   return {
     width: 1440,
     height: 1024,
@@ -46,10 +74,19 @@ export function createMainWindowOptions({
     disableAutoHideCursor: true,
     show: false,
     title: productName,
-    backgroundColor: opaqueWindowBackgroundColor(darkMode),
+    // Over a material the window ground is the system's frosted backdrop: the
+    // renderer tints it with a translucent bg-window and keeps its white panels
+    // opaque (styles.css, [data-comma-window-material]).
+    backgroundColor:
+      material === null
+        ? opaqueWindowBackgroundColor(darkMode)
+        : windowMaterialBackgroundColor,
     ...(iconPath ? { icon: iconPath } : {}),
+    ...(material === "acrylic" ? { backgroundMaterial: "acrylic" as const } : {}),
     ...(platform === "darwin"
       ? {
+          vibrancy: "under-window" as const,
+          visualEffectState: "followWindow" as const,
           titleBarStyle: "hiddenInset" as const,
           // The renderer's window bar sits at the window's top-left corner and
           // keeps a 64px slot for the lights at the start of its row (6px of
@@ -78,10 +115,13 @@ export function createMainWindowOptions({
       // and it runs on the compositor thread: the band keeps following the
       // gesture through main-thread work, which a JavaScript spring cannot.
       scrollBounce: platform === "darwin",
-      additionalArguments: createRendererWindowIdentityArguments({
-        windowId,
-        windowRole,
-      }),
+      additionalArguments: [
+        ...createRendererWindowIdentityArguments({
+          windowId,
+          windowRole,
+        }),
+        ...(material === null ? [] : [`--window-material=${material}`]),
+      ],
     },
   };
 }

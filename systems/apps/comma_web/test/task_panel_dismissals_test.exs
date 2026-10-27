@@ -28,6 +28,18 @@ defmodule CommaWeb.TaskPanelDismissalsTest do
     assert listed(dismiss(other_device, [{"cnv_a", 30}])) == [{"cnv_a", 30}, {"cnv_b", 25}]
   end
 
+  test "Salix IM's port writes the same dismissals", ctx do
+    assert SystemsRuntime.get_env(:salix_im, :task_panel_dismissals) ==
+             CommaWeb.TaskPanelDismissalPort
+
+    assert {:ok, [%{"task_id" => "cnv_port", "revision" => 7}]} =
+             SalixIM.Ports.TaskPanelDismissals.dismiss(ctx.user["id"], [
+               %{"task_id" => "cnv_port", "revision" => 7}
+             ])
+
+    assert listed(request(:get, @path, ctx.session)) == [{"cnv_port", 7}]
+  end
+
   test "keeps the 300 most recently dismissed", ctx do
     first = Enum.map(1..300, &{"cnv_#{&1}", &1})
     assert %{status: 200} = dismiss(ctx.session, first)

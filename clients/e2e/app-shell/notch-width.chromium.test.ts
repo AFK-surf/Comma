@@ -150,7 +150,9 @@ test("a drag that leaves the field before its first move still ends on release",
 }) => {
   const slider = await openFixture(page);
   const { field, xFor, y } = await fieldScale(page);
-  const root = page.locator('[data-slot="notch-width-setting"]');
+  const root = page.locator(
+    '[data-slot="notch-width-setting"] [data-slot="settings-slider-field"]'
+  );
 
   // The very first move lands well below the field, and so does the release.
   await page.mouse.move(Math.round(xFor(range.default)), y);
@@ -197,7 +199,9 @@ test("the default holds a light drag, Reset restores it, and the Notch previews 
 }) => {
   const slider = await openFixture(page);
   const { pixelsPerPoint, xFor, y } = await fieldScale(page);
-  const root = page.locator('[data-slot="notch-width-setting"]');
+  const root = page.locator(
+    '[data-slot="notch-width-setting"] [data-slot="settings-slider-field"]'
+  );
   const reset = page.getByRole("button", { name: "Reset" });
   await expect(reset).toBeDisabled();
   const start = Math.round(xFor(range.default));

@@ -138,6 +138,8 @@ const renderElectronSettings = (auth = defaultAuth()) =>
 const readStoredClientSettings = () =>
   JSON.parse(localStorage.getItem(commaClientSettingsStorageKey)!);
 
+/** Quick Chat's shortcut recorder in Keyboard shortcuts. */
+const quickChatRecorder = () => screen.getByRole("button", { name: /^Quick Chat:/ });
 /** A setting's row, by its id. */
 const setting = (id: string) =>
   within(document.querySelector<HTMLElement>(`[data-setting-id="${id}"]`)!);
@@ -654,6 +656,50 @@ describe("AppSettingsRoute", () => {
     });
   });
 
+  it("turns the macOS window ground's translucency off and stores a new transparency", async () => {
+    // Main drew this window over a system material.
+    installNativeBridgeMock({
+      platform: "electron",
+      os: "macos",
+      windowMaterial: "vibrancy",
+    });
+    renderSettings();
+
+    await user.click(screen.getByRole("button", { name: "Appearance" }));
+    const translucency = screen.getByRole("switch", { name: /Translucent window/ });
+    expect(translucency).toBeChecked();
+    const transparency = screen.getByRole("slider", { name: "Transparency" });
+    expect(transparency).toHaveAttribute("aria-valuenow", "50");
+
+    // Arrow keys glide the preview and store the value once they stop.
+    transparency.focus();
+    await user.keyboard("{ArrowRight}");
+    await advance(1_000);
+    expect(transparency).toHaveAttribute("aria-valuenow", "51");
+    expect(
+      document.documentElement.style.getPropertyValue("--comma-window-transparency")
+    ).toBe("51%");
+    await user.click(translucency);
+    expect(translucency).not.toBeChecked();
+    expect(document.documentElement.dataset.commaWindowTranslucency).toBe("off");
+    await flush();
+    expect(readStoredClientSettings().appearance).toEqual({
+      ...defaultCommaAppearancePreferences,
+      windowTranslucency: false,
+      windowTransparency: 51,
+    });
+  });
+
+  it("offers no window translucency when the window has no system material", async () => {
+    // Windows before 11 22H2 draws no backdrop material.
+    installNativeBridgeMock({ platform: "electron", os: "windows" });
+    renderSettings();
+
+    await user.click(screen.getByRole("button", { name: "Appearance" }));
+    expect(screen.getByRole("switch", { name: "Reduce motion" })).toBeInTheDocument();
+    expect(screen.queryByRole("switch", { name: /Translucent window/ })).toBeNull();
+  });
+
   it("applies and stores Soft Light, and names it on the theme control", async () => {
     renderSettings();
 
@@ -798,8 +844,56 @@ describe("AppSettingsRoute", () => {
     await flush();
     expect(screen.getByText("Quick Chat")).toBeVisible();
     // A double tap of ⌘ on macOS, of Ctrl on Windows (and where the suite runs as Windows).
-    const key = detectAppKeybindingPlatform() === "windows" ? "Ctrl" : "⌘";
-    expect(screen.getByLabelText(`Keyboard shortcut: ${key}`)).toBeVisible();
+    const key = detectAppKeybindingPlatform() === "windows" ? "Ctrl" : "Cmd";
+    expect(screen.getByRole("button", { name: `Quick Chat: ${key}` })).toBeVisible();
+  });
+
+  it("records the modifier or chord that opens Quick Chat", async () => {
+    // macOS's keys: where the suite runs decides the platform's own otherwise.
+    vi.spyOn(window.navigator, "platform", "get").mockReturnValue("MacIntel");
+    installNativeBridgeMock({
+      appPreferences: {
+        state: createNativeStateBridgeMock(() =>
+          appPreferencesSchema.parse({
+            ...defaultAppPreferences,
+            quickChatSupported: true,
+          })
+        ),
+      },
+      os: "macos",
+      platform: "electron",
+    });
+    renderSettings();
+    await user.click(screen.getByRole("button", { name: "Keyboard shortcuts" }));
+    await flush();
+
+    // Option alone: a double tap of it.
+    await user.click(quickChatRecorder());
+    await user.keyboard("{Alt}");
+    await flush();
+    expect(readStoredClientSettings().quickChatShortcut).toEqual({ tap: "alt" });
+    expect(
+      setting("keyboard.quick-chat").getByText(/Double-tap ⌥ and speak/)
+    ).toBeVisible();
+
+    // A chord.
+    await user.click(quickChatRecorder());
+    await user.keyboard("{Alt>}{Shift>}[Space]{/Shift}{/Alt}");
+    await advance(16);
+    expect(readStoredClientSettings().quickChatShortcut).toEqual({
+      key: "space",
+      modifiers: { alt: true, control: false, meta: false, shift: true },
+    });
+    expect(
+      setting("keyboard.quick-chat").getByText(/Press ⌥⇧Space and speak/)
+    ).toBeVisible();
+
+    // Clearing returns to the platform's own double tap of ⌘, stored as none.
+    await user.click(quickChatRecorder());
+    await user.click(screen.getByRole("button", { name: "Clear shortcut" }));
+    await flush();
+    expect(readStoredClientSettings().quickChatShortcut).toBeNull();
+    expect(quickChatRecorder()).toHaveAccessibleName("Quick Chat: Cmd");
   });
 
   it("turns Quick Chat off where this Mac can run it, and drops its shortcut", async () => {
@@ -841,7 +935,9 @@ describe("AppSettingsRoute", () => {
 
     await user.click(screen.getByRole("button", { name: "Keyboard shortcuts" }));
     await flush();
-    expect(screen.queryByLabelText("Keyboard shortcut: ⌘")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /^Quick Chat:/ })
+    ).not.toBeInTheDocument();
   });
 
   it("shows the Router's reply style in General and asks the core to save a new one", async () => {

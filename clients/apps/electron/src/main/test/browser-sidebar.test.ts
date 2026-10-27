@@ -22,6 +22,7 @@ import {
   maxBrowserSidebarFaviconBytes,
   maxBrowserSidebarSessionsPerOwner,
 } from "@comma/native-bridge";
+import { BROWSER_AGENT_COMMAND_TIMEOUT_MS } from "../modules/browser-sidebar/agent";
 import { browserSidebarElementInspectorRectSource } from "../modules/browser-sidebar/element-inspector";
 import { NativeSurfaceService } from "../modules/surfaces";
 import { realMainClock } from "../clock";
@@ -466,6 +467,85 @@ describe("NativeBrowserSidebarService", () => {
     expect(view.webContents.debugger.detach).toHaveBeenCalledTimes(3);
   });
 
+  it("keeps the agent's debugger attached while a page dialog waits for its answer", async () => {
+    const harness = await createHarness();
+    await harness.service.open({
+      sessionId: "host-a",
+      tabId: "tab-a",
+      bounds: { height: 720, width: 420, x: 860, y: 0 },
+      url: "https://shop.example/",
+    });
+    const cdp = harness.views[0]!.webContents.debugger;
+    cdp.sendCommand.mockImplementation(async (method, params) => {
+      const call =
+        String(params?.expression ?? "")
+          .split("\n")
+          .at(-1) ?? "";
+      switch (method) {
+        case "Page.getFrameTree":
+          return { frameTree: { frame: { id: "main", loaderId: "doc-1" } } };
+        case "Runtime.evaluate":
+          if (call.includes("__commaAgent.resolve(")) {
+            return { result: { value: { ref: "e1", next: 2 } } };
+          }
+          if (call.includes("__commaAgent.snapshot(")) {
+            return {
+              result: {
+                value: {
+                  next: 2,
+                  text: '- paragraph "Deleted"',
+                  title: "Shop",
+                  url: "https://shop.example/",
+                },
+              },
+            };
+          }
+          if (call.includes("__commaAgent.clickPoint(el")) {
+            return { result: { value: { value: { x: 40, y: 20 } } } };
+          }
+          return { result: { value: { value: null } } };
+        case "Input.dispatchMouseEvent":
+          if (params?.type !== "mousePressed") return {};
+          cdp.emit("Page.javascriptDialogOpening", {
+            message: "Delete item?",
+            type: "confirm",
+          });
+          return new Promise(() => undefined);
+        case "Page.handleJavaScriptDialog":
+          cdp.emit("Page.javascriptDialogClosed");
+          return {};
+        default:
+          return {};
+      }
+    });
+
+    await expect(
+      harness.service.runClientAgentCommand("click", {
+        tabId: "tab-a",
+        target: "#delete",
+      })
+    ).resolves.toMatchObject({ dialog: { message: "Delete item?", type: "confirm" } });
+    expect(cdp.isAttached()).toBe(true);
+    expect(cdp.detach).not.toHaveBeenCalled();
+
+    // Only the session that saw the dialog open can answer it.
+    await expect(
+      harness.service.runClientAgentCommand("dialog", {
+        tabId: "tab-a",
+        action: "accept",
+      })
+    ).resolves.toMatchObject({
+      handledDialog: { message: "Delete item?" },
+      snapshot: '- paragraph "Deleted"',
+    });
+    expect(cdp.attach).toHaveBeenCalledOnce();
+    expect(cdp.sendCommand).toHaveBeenCalledWith("Page.handleJavaScriptDialog", {
+      accept: true,
+    });
+    expect(cdp.detach).toHaveBeenCalledOnce();
+    expect(cdp.isAttached()).toBe(false);
+  });
+
   it("captures any retained tab by tab id, including a hidden tab", async () => {
     const harness = await createHarness();
     await harness.service.open({
@@ -592,6 +672,31 @@ describe("NativeBrowserSidebarService", () => {
       await vi.advanceTimersByTimeAsync(CLIENT_CDP_TIMEOUT_MS);
       await rejection;
       expect(view.webContents.debugger.detach).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("ends a timed-out agent command's session when Main detaches", async () => {
+    const harness = await createHarness();
+    await harness.service.open({
+      sessionId: "host-a",
+      bounds: { height: 720, width: 420, x: 860, y: 0 },
+      url: "https://linear.app/",
+    });
+    const cdp = harness.views[0]!.webContents.debugger;
+    cdp.sendCommand.mockReturnValueOnce(new Promise(() => undefined));
+
+    vi.useFakeTimers();
+    try {
+      const request = harness.service.runClientAgentCommand("snapshot", {
+        tabId: "host-a",
+      });
+      const rejection = expect(request).rejects.toThrow(/timed out/i);
+      await vi.advanceTimersByTimeAsync(BROWSER_AGENT_COMMAND_TIMEOUT_MS);
+      await rejection;
+      expect(cdp.detach).toHaveBeenCalledOnce();
+      expect(cdp.removeListener).toHaveBeenCalledOnce();
     } finally {
       vi.useRealTimers();
     }
@@ -1080,7 +1185,7 @@ describe("NativeBrowserSidebarService", () => {
     await Promise.resolve();
   });
 
-  it("repeats a reload or history step that hiding the view stopped before it committed", async () => {
+  it("repeats a reload or history step that hiding the view stopped before its page loaded", async () => {
     const harness = await createHarness();
     await harness.service.open({
       bounds: { height: 720, width: 420, x: 860, y: 0 },
@@ -1101,11 +1206,20 @@ describe("NativeBrowserSidebarService", () => {
     await harness.service.update({ sessionId: "host-a", visible: true });
     expect(view.webContents.reload).toHaveBeenCalledTimes(2);
 
-    // A reload that committed is done: showing the view again does not repeat it.
+    // A reload that committed still loads its document: hiding the view stops
+    // that load, and showing the view reloads the page instead of leaving it blank.
     view.emitStateChange("did-navigate");
     await harness.service.update({ sessionId: "host-a", visible: false });
+    view.emitStateChange("did-stop-loading");
     await harness.service.update({ sessionId: "host-a", visible: true });
-    expect(view.webContents.reload).toHaveBeenCalledTimes(2);
+    expect(view.webContents.reload).toHaveBeenCalledTimes(3);
+
+    // A reload whose page stopped loading is done: showing the view again does not repeat it.
+    view.emitStateChange("did-navigate");
+    view.emitStateChange("did-stop-loading");
+    await harness.service.update({ sessionId: "host-a", visible: false });
+    await harness.service.update({ sessionId: "host-a", visible: true });
+    expect(view.webContents.reload).toHaveBeenCalledTimes(3);
 
     // A stopped back step is taken again, not turned into a reload.
     harness.views[0]!.webContents.navigationHistory.goBack.mockImplementationOnce(
@@ -1116,7 +1230,7 @@ describe("NativeBrowserSidebarService", () => {
     await harness.service.update({ sessionId: "host-a", visible: true });
     expect(view.webContents.navigationHistory.goBack).toHaveBeenCalledTimes(2);
     expect(view.webContents.getURL()).toBe("https://example.com/one");
-    expect(view.webContents.reload).toHaveBeenCalledTimes(2);
+    expect(view.webContents.reload).toHaveBeenCalledTimes(3);
   });
 
   it("removes native views when the owner renderer reloads or exits", async () => {
@@ -2258,6 +2372,9 @@ function createTestView(
   const destroyedListeners: Array<() => void> = [];
   const stateListeners = new Map<string, Array<(...args: unknown[]) => void>>();
   let debuggerAttached = false;
+  const debuggerListeners = new Set<
+    (event: unknown, method: string, params: unknown) => void
+  >();
   const webContents = {
     id: nextWebContentsId++,
     capturePage: vi.fn(async (_rect?: SurfaceBounds) => fakePageImage()),
@@ -2280,7 +2397,32 @@ function createTestView(
         debuggerAttached = false;
       }),
       isAttached: vi.fn(() => debuggerAttached),
-      sendCommand: vi.fn(async () => ({})),
+      sendCommand: vi.fn(
+        async (
+          _method: string,
+          _params?: Record<string, unknown>
+        ): Promise<unknown> => ({})
+      ),
+      on: vi.fn(
+        (
+          _event: "message",
+          listener: (event: unknown, method: string, params: unknown) => void
+        ) => {
+          debuggerListeners.add(listener);
+        }
+      ),
+      removeListener: vi.fn(
+        (
+          _event: "message",
+          listener: (event: unknown, method: string, params: unknown) => void
+        ) => {
+          debuggerListeners.delete(listener);
+        }
+      ),
+      /** Delivers a protocol event to the attached session's listeners. */
+      emit(method: string, params: Record<string, unknown> = {}) {
+        for (const listener of debuggerListeners) listener({}, method, params);
+      },
     },
     focus: vi.fn(),
     getTitle: vi.fn(() => "Page title"),

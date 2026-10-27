@@ -12,6 +12,11 @@ import { z } from "zod";
 import { realMainClock } from "../../clock";
 import type { AirDropService } from "../airdrop";
 import { airDropSendInputSchema, type AirDropSendInput } from "../airdrop/sender";
+import {
+  browserAgentInputSchemas,
+  type BrowserAgentInput,
+  type BrowserAgentOperation,
+} from "../browser-sidebar/agent";
 
 const MAX_REQUEST_BYTES = 64 * 1024;
 const MAX_RESPONSE_BYTES = 1024 * 1024;
@@ -34,6 +39,10 @@ export interface ClientControlBrowser {
     params: Record<string, unknown>;
     tabId: string;
   }): Promise<unknown>;
+  runClientAgentCommand<Op extends BrowserAgentOperation>(
+    op: Op,
+    input: BrowserAgentInput[Op]
+  ): Promise<Record<string, unknown>>;
   captureClientScreenshot(input: { tabId: string }): Promise<{
     pngImage: Uint8Array;
     target: ClientControlBrowserTarget;
@@ -52,6 +61,8 @@ interface ApiDeclaration {
   handler(input: unknown): Promise<unknown> | unknown;
   id: string;
   input: z.ZodType;
+  /** Answers invalid input with its issues instead of HTTP 400, which the comma CLI shows without a body. */
+  invalidInputResult?: boolean;
   usage: string;
 }
 
@@ -109,6 +120,15 @@ export class CommaClientControlRegistry {
     }
     const input = api.input.safeParse(parsed.data.input);
     if (!input.success) {
+      if (api.invalidInputResult) {
+        return {
+          error: "invalid_input",
+          issues: input.error.issues.slice(0, 10).map((issue) => ({
+            message: issue.message,
+            path: issue.path.join("."),
+          })),
+        };
+      }
       throw new ClientControlError(400, "Invalid API input.");
     }
     return api.handler(input.data);
@@ -443,8 +463,10 @@ export function createCommaClientControlRegistry({
           input: emptyInputSchema,
           usage: `comma call in-app-browser list-targets`,
         },
+        ...browserAgentApis(browser),
         {
-          description: "Send one bounded CDP command to the exact requested tab id.",
+          description:
+            "Send one raw CDP command to the exact requested tab id. Prefer snapshot and the action APIs.",
           handler: async (input) => ({
             result: await browser.sendClientCdpCommand(
               input as z.output<typeof cdpInputSchema>
@@ -473,6 +495,67 @@ export function createCommaClientControlRegistry({
       id: "in-app-browser",
     },
   ]);
+}
+
+const browserAgentApiDescriptions: Record<BrowserAgentOperation, string> = {
+  snapshot:
+    "Read the tab as an outline of roles, names, states and element refs ([e12]). " +
+    'scope "viewport" (default), "full", or "subtree" with a ref; interactiveOnly drops text.',
+  navigate: "Load an http(s) URL in the tab and return the receipt of the new page.",
+  click:
+    'Click an element by ref or target (text=Save, text="Save changes", ' +
+    'role=button[name="Sign in"], or a CSS selector), or at x and y.',
+  fill: "Replace the text of an input, textarea or editable element.",
+  press:
+    "Press a key or chord (Enter, Tab, ArrowDown, Shift+Tab, ControlOrMeta+a), on a target if given.",
+  scroll: "Scroll the page by y (and x) pixels, or scroll a target into view.",
+  select: "Choose an option of a <select> by value or visible label.",
+  wait: "Wait up to timeoutMs (default 5000, at most 10000) for text, a CSS selector or urlContains.",
+  actions:
+    "Run up to ten steps ({op, ...} with op navigate, click, fill, press, scroll, select or wait) " +
+    "in one call. It stops at the first step that cannot run and reports failedStep and stepsCompleted.",
+  dialog:
+    "Accept or dismiss the JavaScript dialog the receipt reported (promptText for a prompt).",
+};
+
+const browserAgentUsages: Record<BrowserAgentOperation, string> = {
+  snapshot: `{"tabId":"...","scope":"full"}`,
+  navigate: `{"tabId":"...","url":"https://example.com/"}`,
+  click: `{"tabId":"...","ref":"e12"}`,
+  fill: `{"tabId":"...","target":"role=textbox[name=Email]","text":"me@example.com"}`,
+  press: `{"tabId":"...","key":"Enter"}`,
+  scroll: `{"tabId":"...","y":600}`,
+  select: `{"tabId":"...","ref":"e7","value":"Large"}`,
+  wait: `{"tabId":"...","text":"Order placed"}`,
+  actions: `{"tabId":"...","steps":[{"op":"fill","ref":"e3","text":"milk"},{"op":"press","key":"Enter"}]}`,
+  dialog: `{"tabId":"...","action":"accept"}`,
+};
+
+// Every agent command answers with a result, failures included: the comma
+// CLI hides HTTP error bodies, and the agent needs the reason to continue.
+function browserAgentApis(browser: ClientControlBrowser): ApiDeclaration[] {
+  return (Object.keys(browserAgentInputSchemas) as BrowserAgentOperation[]).map(
+    (op) => ({
+      description: browserAgentApiDescriptions[op],
+      handler: async (input) => {
+        try {
+          return await browser.runClientAgentCommand(
+            op,
+            input as BrowserAgentInput[typeof op]
+          );
+        } catch (error) {
+          return {
+            error: "browser_operation_failed",
+            message: error instanceof Error ? error.message : String(error),
+          };
+        }
+      },
+      id: op,
+      input: browserAgentInputSchemas[op],
+      invalidInputResult: true,
+      usage: `comma call in-app-browser ${op} --json '${browserAgentUsages[op]}'`,
+    })
+  );
 }
 
 class ClientControlError extends Error {

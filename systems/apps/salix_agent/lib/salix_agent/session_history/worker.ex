@@ -6,6 +6,8 @@ defmodule SalixAgent.SessionHistory.Worker do
   alias SalixStore.{S3, Codec, Keys}
   @hints __MODULE__.Hints
   @slots 1024
+  @visit_batches 32
+  @visit_budget_ms 2_000
 
   def start_link(opts), do: SystemsRuntime.Server.start_link(__MODULE__, opts, name: __MODULE__)
 
@@ -90,31 +92,46 @@ defmodule SalixAgent.SessionHistory.Worker do
       Hot.track(agent, session)
       recent_state(agent, session, state)
 
-      position = Hot.state(agent, session)
+      # A session far behind catches up over several batches per visit, bounded
+      # by count and time so other sessions still get their turn.
+      deadline = SystemsClock.monotonic_time(:millisecond) + @visit_budget_ms
+      repeat(@visit_batches, deadline, fn -> append_batch(agent, session, state) end)
+      repeat(@visit_batches, deadline, fn -> transfer(agent, session) end)
+    end
+  end
 
-      with {:ok, records} <- Source.page(agent, state, position.indexed) do
-        if records != [] do
-          part = Hot.pending_part(agent, session, position.indexed + 1)
+  defp repeat(0, _deadline, _step), do: :ok
 
-          documents =
-            records
-            |> Enum.flat_map(&Document.documents/1)
-            |> Enum.reject(&(&1["seq"] == position.indexed + 1 and &1["part"] < part))
+  defp repeat(left, deadline, step) do
+    if match?({:ok, _}, step.()) and SystemsClock.monotonic_time(:millisecond) < deadline,
+      do: repeat(left - 1, deadline, step),
+      else: :ok
+  end
 
-          {batch, rest} = Enum.split(documents, 128)
+  defp append_batch(agent, session, state) do
+    position = Hot.state(agent, session)
 
-          through =
-            case rest do
-              [] -> List.last(records).seq
-              [next | _] -> next["seq"] - 1
-            end
+    with {:ok, [_ | _] = records} <- Source.page(agent, state, position.indexed) do
+      part = Hot.pending_part(agent, session, position.indexed + 1)
 
-          # Partial records remain hot. Coverage advances only after their last chunk.
-          Hot.append(agent, session, position.indexed, through, batch)
+      documents =
+        records
+        |> Enum.flat_map(&Document.documents/1)
+        |> Enum.reject(&(&1["seq"] == position.indexed + 1 and &1["part"] < part))
+
+      {batch, rest} = Enum.split(documents, 128)
+
+      through =
+        case rest do
+          [] -> List.last(records).seq
+          [next | _] -> next["seq"] - 1
         end
-      end
 
-      transfer(agent, session)
+      # Partial records remain hot. Coverage advances only after their last chunk.
+      Hot.append(agent, session, position.indexed, through, batch)
+    else
+      {:ok, []} -> :caught_up
+      error -> error
     end
   end
 
@@ -145,6 +162,9 @@ defmodule SalixAgent.SessionHistory.Worker do
            Hot.transfer_batch(agent, session),
          :ok <- confirm(agent, session, docs) do
       Hot.release(agent, session, before, through)
+    else
+      {:ok, {_before, _through, _docs}} -> :caught_up
+      error -> error
     end
   end
 

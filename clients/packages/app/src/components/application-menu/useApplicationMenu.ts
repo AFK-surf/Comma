@@ -4,7 +4,7 @@ import {
   type ApplicationMenuCommand,
   type ApplicationMenuItems,
 } from "@comma/native-bridge";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useSyncExternalStore } from "react";
 import { toast } from "@comma/ui/components/toast";
 import {
   isOnboardingOpen,
@@ -16,6 +16,18 @@ const owners = new Map<symbol, readonly MenuAction[]>();
 let locale: "en" | "zh-CN" = "en";
 let unsubscribe: (() => void) | undefined;
 let publishQueued = false;
+// The commands enabled now, for the command palette (one per id, as the menu
+// keeps them); a new array each time the owners change.
+let enabledCommands: readonly ApplicationMenuCommand[] = [];
+const enabledListeners = new Set<() => void>();
+function ownersChanged() {
+  const enabled = new Map<ApplicationMenuCommand, boolean>();
+  for (const group of owners.values())
+    for (const action of group)
+      enabled.set(action.id, action.enabled || (enabled.get(action.id) ?? false));
+  enabledCommands = [...enabled].flatMap(([id, on]) => (on ? [id] : []));
+  for (const listener of enabledListeners) listener();
+}
 function publish() {
   if (publishQueued) return;
   publishQueued = true;
@@ -63,20 +75,7 @@ export function useApplicationMenu(actions: readonly MenuAction[]) {
     locale = currentLocale;
     const key = owner.current;
     if (!unsubscribe) {
-      const stopCommands = bridge.applicationMenu.onCommand((id) => {
-        if (isOnboardingOpen()) return;
-        const action = [...owners.values()]
-          .flat()
-          .findLast((item) => item.id === id && item.enabled);
-        if (action?.enabled)
-          void Promise.resolve()
-            .then(action.run)
-            .catch((error: unknown) => {
-              toast.error(
-                error instanceof Error ? error.message : "Menu action failed"
-              );
-            });
-      });
+      const stopCommands = bridge.applicationMenu.onCommand(runApplicationMenuCommand);
       const stopOnboarding = subscribeOnboardingOpen(publish);
       unsubscribe = () => {
         stopCommands();
@@ -91,13 +90,44 @@ export function useApplicationMenu(actions: readonly MenuAction[]) {
       }))
     );
     publish();
+    ownersChanged();
     return () => {
       owners.delete(key);
       publish();
+      ownersChanged();
       if (!owners.size) {
         unsubscribe?.();
         unsubscribe = undefined;
       }
     };
   }, [presentation, currentLocale]);
+}
+
+/**
+ * The application menu's commands enabled now, as mounted surfaces own them
+ * (none outside the desktop app): what the command palette offers of them.
+ */
+export function useEnabledApplicationMenuCommands(): readonly ApplicationMenuCommand[] {
+  return useSyncExternalStore(
+    (listener) => {
+      enabledListeners.add(listener);
+      return () => enabledListeners.delete(listener);
+    },
+    () => enabledCommands,
+    () => enabledCommands
+  );
+}
+
+/** Runs a menu command as choosing it in the menu does: its latest enabled owner's. */
+export function runApplicationMenuCommand(id: ApplicationMenuCommand) {
+  if (isOnboardingOpen()) return;
+  const action = [...owners.values()]
+    .flat()
+    .findLast((item) => item.id === id && item.enabled);
+  if (action)
+    void Promise.resolve()
+      .then(action.run)
+      .catch((error: unknown) => {
+        toast.error(error instanceof Error ? error.message : "Menu action failed");
+      });
 }

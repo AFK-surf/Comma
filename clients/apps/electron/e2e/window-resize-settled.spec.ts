@@ -434,12 +434,12 @@ test(
       await expect.poll(sidebarWidth).toBe(440);
 
       // Narrow enough that the route hits its 425px floor. The app sidebar is a
-      // fixed 75px rail that never yields, so the rendered width is clamped to
+      // fixed 68px rail that never yields, so the rendered width is clamped to
       // what the window leaves past the shell's trailing inset and the rail:
-      // 900 - 8 - 75 - 425 = 392 (a 1100px window would still fit the stored
+      // 900 - 8 - 68 - 425 = 399 (a 1100px window would still fit the stored
       // 440px beside the rail and clamp nothing).
       await resizeMainWindow(app, 900, 900);
-      await expect.poll(sidebarWidth).toBe(392);
+      await expect.poll(sidebarWidth).toBe(399);
 
       await resizeMainWindow(app, 1_900, 900);
       await expect.poll(sidebarWidth).toBe(440);

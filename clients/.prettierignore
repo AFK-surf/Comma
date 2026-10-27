@@ -21,3 +21,5 @@ apps/electron/.dev-electron/
 apps/electron/native/**/.build/
 apps/electron/native/**/.derived/
 apps/electron/native/**/.swiftpm/
+# A copy of systems/apps/salix_agent/priv/browser/page.js, formatted as that one.
+apps/electron/src/main/modules/browser-sidebar/agent/page.js

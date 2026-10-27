@@ -24,7 +24,8 @@ export function shortcutAccelerator(shortcut: GlobalShortcutBinding) {
 
 /** Owns at most one OS registration; edits reserve the new chord before
  * releasing the old one so an unavailable chord cannot erase the binding.
- * Suspended, it holds none: the chord's keys reach the focused window. */
+ * Suspended, it holds none: the chord's keys reach the focused window.
+ * Open Comma's shortcut and Quick Chat's (when it is a chord) each have one. */
 export class OpenCommaShortcut {
   #accelerator: string | undefined;
   #suspended = false;
@@ -37,9 +38,7 @@ export class OpenCommaShortcut {
     const accelerator = shortcutAccelerator(shortcut);
     if (accelerator === this.#accelerator) return;
     if (accelerator && !this.platform.register(accelerator, this.open)) {
-      throw new Error(
-        "The Open Comma global shortcut is unavailable. Choose another shortcut."
-      );
+      throw new Error("The global shortcut is unavailable. Choose another shortcut.");
     }
     const previous = this.#accelerator;
     this.#accelerator = accelerator;

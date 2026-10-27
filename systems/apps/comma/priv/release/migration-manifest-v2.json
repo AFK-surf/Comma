@@ -6195,6 +6195,22 @@
         "postgres.constraint/comma_admin_audit_action_valid=workspace-sandbox-limit-and-signal-actions-present"
       ],
       "repair": "retry_exact_version_idempotently"
+    },
+    {
+      "id": "salix-20261027000001",
+      "owner": "salix_store",
+      "store": "postgres",
+      "version": 20261027000001,
+      "source": "systems/apps/salix_store/priv/repo/migrations/20261027000001_drop_agent_session_history_text_index.exs",
+      "checksum": "sha256:7f24058be4a09c3145d6e04cc25d87b0ee194fa2968e50f439eacf2cc1235c71",
+      "execution": {
+        "transactional": false,
+        "idempotent": true
+      },
+      "postconditions": [
+        "postgres.index/agent_session_history_text=absent"
+      ],
+      "repair": "retry_exact_version_idempotently"
     }
   ],
   "orderingConstraints": [

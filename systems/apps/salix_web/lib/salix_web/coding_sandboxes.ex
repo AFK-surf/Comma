@@ -1,9 +1,13 @@
 defmodule SalixWeb.CodingSandboxes do
   @moduledoc """
-  The lifecycle of coding Tasks' sandboxes (`runs_on {kind: sandbox}`): one
+  The lifecycle of sandbox Tasks' sandboxes (`runs_on {kind: sandbox}`): one
   L4ES sandbox at a time per Task, running the Comma station, which Salix
-  invites to the Task once it connects. The facts live on the Task's Compute
-  Workload (`SalixStore.CodingSandboxes`); this module acts on them.
+  invites to the Task once it connects. A Task with a repository (`repo`) is
+  a coding Task: its sandbox gets a GitHub grant and a git identity, and its
+  station keeps the checkout pushed. A Task without one gets the same
+  sandbox, lifecycle and metering, and nothing of GitHub. The facts live on
+  the Task's Compute Workload (`SalixStore.CodingSandboxes`); this module
+  acts on them.
 
     * `reserve/1`: the Task is about to be made. Its Workload is written in
       state `starting`, due for a check at once.
@@ -11,19 +15,20 @@ defmodule SalixWeb.CodingSandboxes do
       #{20} Workloads a pass, claimed with a lease): a `starting` Workload
       without a sandbox gets one (`SalixWeb.L4ES.create/3`) of the release's
       image (`SalixWeb.L4ES.ensure_image/1`), with the Workload's connect
-      credential as a secret and a GitHub grant: `write` on the Task's
-      repository, pushes to the Task's branch only, and the Group's GitHub
-      token, which L4ES keeps out of the sandbox (its node's proxy uses it).
+      credential as a secret and, for a coding Task, a GitHub grant: `write`
+      on the Task's repository, pushes to the Task's branch only, and the
+      Group's GitHub token, which L4ES keeps out of the sandbox (its node's
+      proxy uses it).
       An existing sandbox keeps its saved ACL, including Router updates
       through `update_github/3`.
       A sandbox that does not connect within 5 minutes is stopped and `failed`. A
       `ready` Workload is checked every 5 minutes: a sandbox L4ES no longer
       runs is `lost`; an idle Session (nothing running, nothing pending,
       `task.status`) of a Task in review or ended for 3 minutes, or of any
-      Task for 2 hours, has its work saved (`task.save`: commit and push) and its
-      sandbox stopped (`stopped`); after 24 hours idle it is stopped whatever
-      it holds, and the Task says what was not pushed. A Task going into
-      review is checked at once (`task_status/3`). A GitHub token that
+      Task for 2 hours, has its work saved (`task.save`: commit and push, a
+      coding Task) and its sandbox stopped (`stopped`); after 24 hours idle it
+      is stopped whatever it holds, and a coding Task says what was not
+      pushed. A Task going into review is checked at once (`task_status/3`). A GitHub token that
       expires is replaced in L4ES 45 s before it does, once the credential
       store has refreshed it (`rotate_github/1`).
     * `connected/1`: the sandbox's station connected: `ready`, and invited to
@@ -89,8 +94,8 @@ defmodule SalixWeb.CodingSandboxes do
   # --- Reservation and events
 
   @doc """
-  Writes the Workload of a coding Task about to be made, in state
-  `starting`. Refused when coding sandboxes are off.
+  Writes the Workload of a sandbox Task about to be made, in state
+  `starting`. Refused when sandboxes are off.
   """
   def reserve(%{tenant_id: tenant, group_id: group, conversation_id: conversation} = r) do
     if L4ES.enabled?() do
@@ -386,18 +391,19 @@ defmodule SalixWeb.CodingSandboxes do
 
   defp create_sandbox(%{spec: spec} = workload) do
     name = spec["disk"] || sandbox_name(spec["conversation_id"], workload.generation)
+    coding? = is_map(spec["repo"])
 
     # What the create needs, each from another service, asked for together;
-    # the members' sync holds nothing back.
+    # the members' sync holds nothing back. Only a coding Task asks GitHub.
     [identity, image, _members, grant] =
       together([
-        fn -> github_identity(spec) end,
+        fn -> if coding?, do: github_identity(spec), else: {:ok, nil} end,
         fn -> L4ES.ensure_image(spec["group_id"]) end,
         fn -> sync_members(spec) end,
-        fn -> initial_github_grant(spec, name) end
+        fn -> if coding?, do: initial_github_grant(spec, name), else: {:ok, nil} end
       ])
 
-    with {:ok, {github, user}} <- identity,
+    with {:ok, identity} <- identity,
          {:ok, image} <- image,
          {:ok, grant} <- grant,
          {:ok, credential} <- WorkloadCredential.issue_connect(workload.id, workload.generation) do
@@ -406,27 +412,33 @@ defmodule SalixWeb.CodingSandboxes do
       # Its name is kept before it is asked for: a create that is never
       # answered (Salix stopped meanwhile) is asked again, or its sandbox
       # stopped, by name.
+      {github, user} = identity || {nil, nil}
       author = git_author(spec, user)
 
       recorded = %{
         "sandbox" => name,
         "disk" => name,
         "created" => false,
-        "github_expires_at" => github.expires_at
+        "github_expires_at" => github && github.expires_at
       }
 
       update(workload, &Map.merge(&1, recorded))
       workload = %{workload | spec: Map.merge(spec, recorded)}
 
+      env =
+        case author do
+          %{name: name, email: email} ->
+            %{"COMMA_GIT_USER_NAME" => name, "COMMA_GIT_USER_EMAIL" => email}
+
+          nil ->
+            %{}
+        end
+
       case L4ES.create(spec["group_id"], name,
-             env: %{
-               "SALIX_SERVER" => SalixEnv.Ports.PublicURL.connector_server_url(),
-               "COMMA_GIT_USER_NAME" => author.name,
-               "COMMA_GIT_USER_EMAIL" => author.email
-             },
+             env: Map.put(env, "SALIX_SERVER", SalixEnv.Ports.PublicURL.connector_server_url()),
              secrets: %{"SALIX_WORKLOAD_CREDENTIAL" => credential},
              github: grant,
-             github_token: github.token,
+             github_token: github && github.token,
              metadata: %{"task" => spec["conversation_id"], "workload" => workload.id},
              image: image,
              size: spec["size"]
@@ -575,7 +587,8 @@ defmodule SalixWeb.CodingSandboxes do
   end
 
   # Who the sandbox commits as: the Task's owner as the product knows them
-  # (`config :salix_web, :coding_git_author`), else the GitHub account.
+  # (`config :salix_web, :coding_git_author`), else the GitHub account; nil
+  # for a Task without a repository and no owner identity.
   defp git_author(spec, github_user) do
     with {:ok, owner} <- task_owner(spec),
          mod when not is_nil(mod) <- SystemsRuntime.get_env(:salix_web, :coding_git_author),
@@ -583,7 +596,7 @@ defmodule SalixWeb.CodingSandboxes do
            mod.identity(owner) do
       %{name: name, email: email}
     else
-      _ -> %{name: github_user.login, email: github_user.email}
+      _ -> if github_user, do: %{name: github_user.login, email: github_user.email}
     end
   end
 
@@ -646,11 +659,16 @@ defmodule SalixWeb.CodingSandboxes do
     )
   end
 
-  # The station commits what is not committed and pushes the session branch.
+  # The station commits what is not committed and pushes the session branch
+  # (a coding Task; a Task without a repository has nothing to save).
   defp save(%{spec: spec}) do
-    case StationTasks.ask(spec["group_id"], spec["conversation_id"], "task.save", %{}, 60_000) do
-      {:ok, _} -> :ok
-      error -> Logger.info("a coding sandbox's work was not saved: #{inspect(error)}")
+    if is_map(spec["repo"]) do
+      case StationTasks.ask(spec["group_id"], spec["conversation_id"], "task.save", %{}, 60_000) do
+        {:ok, _} -> :ok
+        error -> Logger.info("a coding sandbox's work was not saved: #{inspect(error)}")
+      end
+    else
+      :ok
     end
   end
 
@@ -692,7 +710,7 @@ defmodule SalixWeb.CodingSandboxes do
         spec["conversation_id"],
         spec["agent_id"],
         "failed:#{workload.generation}",
-        "The coding sandbox could not run: #{reason}. Reply to try again."
+        "The sandbox could not run: #{reason}. Reply to try again."
       )
     end
 
@@ -827,11 +845,17 @@ defmodule SalixWeb.CodingSandboxes do
 
     with {:ok, tenant} <- tenant_of(group),
          {:ok, workload} <- Store.get_by_conversation(tenant, conversation) do
+      repo = workload.spec["repo"]
+
       [usage, changes, pull_request] =
         together([
           fn -> usage_read(ask_station(group, conversation, "task.history", %{"limit" => 1})) end,
-          fn -> changes_read(ask_station(group, conversation, "task.diff", %{})) end,
-          fn -> pull_request_read(tenant, group, workload.spec["repo"]) end
+          fn ->
+            if is_map(repo),
+              do: changes_read(ask_station(group, conversation, "task.diff", %{})),
+              else: :error
+          end,
+          fn -> pull_request_read(tenant, group, repo) end
         ])
 
       remember(

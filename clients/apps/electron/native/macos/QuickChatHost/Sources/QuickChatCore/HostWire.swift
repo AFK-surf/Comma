@@ -2,26 +2,32 @@ import Foundation
 
 /// Main → QuickChatHost, one JSON object per stdin line.
 public enum HostCommand: Decodable, Equatable, Sendable {
-    /// The interface text in Comma's language. Sent first, and again when it changes.
-    case configure(QuickChatStrings)
+    /// The interface text in Comma's language, and the modifier whose double tap
+    /// opens Quick Chat (nil: a global shortcut Main holds opens it). Sent
+    /// first, and again when either changes.
+    case configure(QuickChatStrings, tap: TapModifier?)
     /// Whether the Message for a `submit` was accepted.
     case result(requestId: String, ok: Bool, message: String?)
     /// The server's words for a `transcribe`; nil when it could not transcribe it.
     case transcript(clipId: String, text: String?)
     /// The ticket for a `dictationTicket`; nil when there is no live dictation now.
     case dictationTicket(requestId: String, ticket: DictationTicket?)
-    /// The person clicked the menu-bar item: listen, as a double tap of ⌘ does.
+    /// The menu-bar item or Quick Chat's global shortcut: listen, as a double tap does.
     case listen
 
     private enum CodingKeys: String, CodingKey {
-        case type, strings, requestId, ok, message, clipId, text, url, ticket
+        case type, strings, tap, requestId, ok, message, clipId, text, url, ticket
     }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         switch try container.decode(String.self, forKey: .type) {
         case "configure":
-            self = .configure(try container.decode(QuickChatStrings.self, forKey: .strings))
+            // A configure without `tap` keeps ⌘.
+            self = .configure(
+                try container.decode(QuickChatStrings.self, forKey: .strings),
+                tap: container.contains(.tap) ? try container.decodeIfPresent(TapModifier.self, forKey: .tap) : .meta
+            )
         case "result":
             self = .result(
                 requestId: try container.decode(String.self, forKey: .requestId),
@@ -50,6 +56,11 @@ public enum HostCommand: Decodable, Equatable, Sendable {
     }
 }
 
+/// A modifier whose double tap opens Quick Chat, as Main names it.
+public enum TapModifier: String, Decodable, Equatable, Sendable {
+    case alt, control, meta, shift
+}
+
 /// Where live dictation's socket is (`/v1/comma/dictation`), and the one-use ticket that opens it.
 public struct DictationTicket: Equatable, Sendable {
     public var url: String
@@ -73,7 +84,7 @@ public struct QuickChatStrings: Codable, Equatable, Sendable {
     public var speechUnavailable: String
     /// The send failed; it waits in the Notch to be sent again.
     public var sendFailed: String
-    /// Over the words while they are edited: a tap of ⌘ listens again.
+    /// Over the words while they are edited: a tap of the modifier (or the shortcut) listens again.
     public var resume: String
 
     public init(

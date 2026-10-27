@@ -124,14 +124,33 @@ test("an agent's video over 10 MB plays on the web from its media URL and downlo
 
     // Focus shows the controls at once (a hover slides them in, and a press during the slide misses).
     await frame.getByRole("button", { name: "Download video" }).focus();
+    // The started feedback hides again on a timer, which can run out while the
+    // test reads the 11 MB file: the page records it as it appears.
+    await frame.evaluate((element) => {
+      const host = element as HTMLElement & { startedShown?: Promise<void> };
+      host.startedShown = new Promise<void>((done) => {
+        const observer = new MutationObserver(() => {
+          if (
+            host.textContent?.includes(
+              "Download started. Check your browser for progress."
+            )
+          ) {
+            observer.disconnect();
+            done();
+          }
+        });
+        observer.observe(host, { characterData: true, childList: true, subtree: true });
+      });
+    });
     const downloading = page.waitForEvent("download");
     await page.keyboard.press("Enter");
     const download = await downloading;
     expect(download.suggestedFilename()).toBe("clip.mp4");
+    await frame.evaluate(
+      (element) =>
+        (element as HTMLElement & { startedShown: Promise<void> }).startedShown
+    );
     expect((await readFile((await download.path())!)).equals(video)).toBe(true);
-    await expect(
-      frame.getByText("Download started. Check your browser for progress.")
-    ).toBeVisible();
     await expect(frame.getByText("Video downloaded.")).toHaveCount(0);
   } finally {
     metadataHeld.resolve();

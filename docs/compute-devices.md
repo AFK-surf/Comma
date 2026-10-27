@@ -5,6 +5,12 @@
 Comma Workspaces and BFT Projects use Salix Groups. Products own setup and member access.
 Salix owns devices, runtimes and dispatch. Check membership and scope before connecting. Scope machine credentials to Groups.
 
+## Execution environments
+
+Two kinds serve Tasks: a Station on the user's or Group's own hardware (a personal computer, or a VMM Station on a Group Host) and a Sandbox the platform manages (an L4ES VM for one Task, [below](#coding-sandboxes)).
+Durable data lives in Salix (Task Messages, accounts), VFS, Drive and pushed branches; a sandbox disk is a cache.
+By owner decision the Cloudflare Cloud VM (one long-lived VM per Group) retires in a later release; its contract below stands until then. The Group VM on an Agent VMM Host stays as a VMM Station.
+
 ## Identity
 
 Device identity is Group-scoped. `connector_id` identifies installation. Reconnect changes `connector_run_id`.
@@ -16,12 +22,11 @@ See the [domain inventory](architecture/DOMAIN_CONCEPTS.md#7-devices-and-compute
 ## Installation and Runner
 
 Tools and installation `connector-token` need no SSH/Drive. Consent grants read-only access until reboot, with no startup service.
-First registration expires after 15 minutes. Reconnect does not. Revocation persists.
+First registration expires after 15 minutes; reconnect does not. Revocation persists.
 An install command belongs to the member who asked for it, in Settings or through the Router. The device it installs is theirs (`owner_user_id`), and they set its access in Settings > Devices.
 Reuse uncertain commands. Verify `connection-check.txt` through the exact Device/Environment.
 Runners use BFT device-code auth. Group Connectors use Salix credentials, without BFT login.
-Reconnect updates routes and fences stale runs. Manager loss or upgrade cannot stop independent workloads.
-Reject unsupported operations locally.
+Reconnect updates routes and fences stale runs. Manager loss or upgrade cannot stop independent workloads. Reject unsupported operations locally.
 Station cutover: [Station](architecture/DOMAIN_CONCEPTS.md#station).
 
 ## Comma desktop machine accounts
@@ -30,8 +35,7 @@ Desktop stations do not import local CLI logins automatically.
 Settings > Devices shows installed Codex and Claude Code CLIs on this computer.
 A usable login shows a switch. Unsigned and keychain-only logins show sign-in.
 
-The switch controls its `machine-<runtime>` station profile.
-Only the computer owner can change it or sign in. Without an owner, Workspace owners and admins can.
+The switch controls its `machine-<runtime>` station profile. Only the computer owner can change it or sign in; without an owner, Workspace owners and admins can.
 `POST /machine-logins` runs `claude auth login` or `codex login` on this station in the person's home.
 The CLI opens its browser page and receives approval on its local callback. Credentials stay in a profile-readable file.
 Success refreshes inventory and enables the machine profile. `machineSignIns` reports results and why a login was not used.
@@ -40,8 +44,7 @@ Profile removal blocks later turns, including warm sessions. Sent turns can fini
 Other profiles, credentials and history remain. Restart and refresh do not enable removed accounts.
 Upgrades preserve enabled profiles. Cloud VM controls are separate.
 
-The page reads this station on entry or focus. Each edit sends one request.
-After an uncertain reply, it reads this station once. It does not poll other devices.
+The page reads this station on entry or focus. Each edit sends one request. After an uncertain reply it reads this station once; it never polls other devices.
 
 ## Compute and VMM
 
@@ -50,25 +53,22 @@ Bound offline requests. Input awaits READY. Recovery repairs hints without Sessi
 Preserve bindings, accepted input, tool deadlines and receipts. Explicit targets and accepted work keep their selected machine.
 See [deadlines](agent-runtime.md).
 VMM gateway secrets remain independent of [Comma candidate-Secret rollout](release-operations.md).
-VMM Host and user Device disk disposal requires owner approval. Cloudflare Group VMs follow the policy below.
+VMM Host and user Device disk disposal needs owner approval; Cloudflare Group VMs follow the policy below.
 Compute uses [billing facts](billing-models.md), not delayed usage telemetry.
 
 Authorized Worker selection wakes archived Cloudflare Workloads with a 30s demand hold.
-A ready Group VM archives after `idle_archive_ms` (5 minutes) with no Salix operation, no agent settle after one, and no Task Message its station posted or was given. A station that refuses to park waits the idle period again, doubled for each refusal in a row, at most four times, until the VM is used again.
+A ready Group VM archives after `idle_archive_ms` (5 minutes) with no Salix operation, no agent settle after one, and no Task Message its station posted or was given. A station that refuses to park waits the idle period again, doubled per refusal in a row, at most four times, until the VM is used again.
 See [Tasks](../systems/station/docs/tasks.md) for station wake when Salix cannot give a Task Message to an unconnected Group VM station.
 
-Shell Host tunnels keep their gRPC connection while idle, until session expiry, revocation, or transport loss.
-When a Host request detects a vanished tunnel, it marks the current session stale and its ready Workload pending.
+Shell Host tunnels keep their gRPC connection while idle, until session expiry, revocation, or transport loss; a Host request that finds the tunnel gone marks the current session stale and its ready Workload pending.
 The bounded Compute reconciler replaces missing, stale, or expired shell sessions even when the Host connection epoch has not changed.
-Discovery reports observed state without a Host probe. It does not guarantee current execution availability.
+Discovery reports observed state without a Host probe and does not guarantee current execution availability.
 
 Shell cleanup, seven-day authorization and remnants: [settings](product-features.md#compute-node-settings-and-initialization).
 
 ### Linux Compute Host installation
 
-Get the Linux install command in Cue Settings > Devices or BFT Project Compute.
-Run it on Linux arm64 with sudo, systemd and KVM access.
-The server fixes the Group. No desktop app or separate login is needed.
+Get the Linux install command in Cue Settings > Devices or BFT Project Compute. Run it on Linux arm64 with sudo, systemd and KVM access. The server fixes the Group; no desktop app or separate login is needed.
 
 The secret-free GET script POSTs the ticket argument in a body, never a URL. The reply runs the tar archive's `agent-vmm lifecycle install`.
 Native owns systemd and recovery. Reuse uncertain commands. Downloads neither rotate nor consume the ticket.
@@ -83,22 +83,20 @@ Authorized Group Hosts prepare reusable VMM Stations alongside existing Cloudfla
 Runtime Tasks without a chosen location prefer VMM, the requester's authorized physical Station, then enabled Cloudflare.
 Creation receipts keep the selected target across retries.
 Managed Stations use cloud-authorized profiles. Physical machine logins require the owner's opt-in.
-See [Station ownership and placement](architecture/DOMAIN_CONCEPTS.md#station).
 
 ## Cloud VM data policy
 
 Cloudflare Group VM disks are disposable, including edits, dependencies, native history, and local auth.
-Archive and restore are best effort. After bounded recovery fails, rebuild the exact VM.
-Local disk loss needs no further approval and must not block a release.
-A Container's disk lives only as long as the Container. Salix never starts a ready VM's stopped Container empty: Salix seals the Gateway control and releases the Container, as an archive does. The VM is then `archived` with its last archive and wakes from it.
-Salix never archives a stopped Container. With no archive, the VM starts empty and its record keeps `container_loss`.
-A wake's Container restores the archive before it starts its station. If it cannot, it exits and no station connects.
+Archive and restore are best effort; after bounded recovery fails, rebuild the exact VM. Local disk loss needs no further approval and must not block a release.
+A Container's disk lives only as long as the Container. Salix never starts a ready VM's stopped Container empty: it seals the Gateway control and releases the Container, as an archive does, so the VM is `archived` with its last archive and wakes from it.
+Salix never archives a stopped Container; with no archive the VM starts empty and its record keeps `container_loss`.
+A wake's Container restores the archive before it starts its station; if it cannot, it exits and no station connects.
 An archive is the Container's whole `/workspace` tree: the station data directory `/workspace/.comma/station` and the home `/workspace/.salix/sprite-home` (`/home/sprite` links to it).
-It leaves out the station's live database files (consistent snapshots travel in their place), its `run/` runtime state (runner records, pids, ports; a restore drops it from an older archive), its runtime homes' `.tmp`, regenerable caches under the home (`.cache`, `.npm/_cacache`, `.codex/tmp`, package-manager stores), and links that lead out of `/workspace`.
-Each Task has its own Session and an initially empty `/workspace/.comma/station/sessions/<connect>/<id>/workspace`. It survives wakes until that Session is deleted.
-`HOME` is the archived `/home/sprite/.local/share/salix/connector-home`, including `.codex` and `.claude`. Restored entries receive new timestamps at wake.
-`PYTHONUSERBASE=/home/sprite/.local` puts `pip install --user` in the archived `/workspace/.salix/sprite-home/.local/lib/python3.13/site-packages`. It is outside `HOME`. `~/.local/lib` is empty.
-`npm install --global` without `--prefix` lands under the image's npm prefix `/usr/local` and is gone at the next wake. `npm install --global --prefix /home/sprite/.local`, which the station's own tool installation runs, lands in `/workspace/.salix/sprite-home/.local/lib/node_modules` and survives.
+It leaves out live database files (snapshots travel instead), `run/` runtime state (a restore drops it), runtime homes' `.tmp`, regenerable caches under the home (`.cache`, `.npm/_cacache`, `.codex/tmp`, package-manager stores), and links out of `/workspace`.
+Each Task's Session starts with an empty workspace of its own under `/workspace/.comma/station/sessions/`, kept until that Session is deleted.
+`HOME` is the archived `/home/sprite/.local/share/salix/connector-home` (`.codex`, `.claude` too); restored entries get new timestamps at wake.
+`pip install --user` (`PYTHONUSERBASE=/home/sprite/.local`, outside `HOME`) and `npm install --global --prefix /home/sprite/.local` land under the archived `/workspace/.salix/sprite-home/.local` and survive.
+`npm install --global` without `--prefix` lands in the image's `/usr/local` and is gone at the next wake.
 Nothing outside `/workspace` survives a wake: it is the image.
 
 Preserve Salix-owned Sessions, Messages, queues, credentials, and execution records.
@@ -109,42 +107,36 @@ A reset advances the Workload generation. Sessions keep input with an unknown ou
 
 ## Coding sandboxes
 
-GitHub changes use `runs_on {kind: sandbox}`, `repo {owner, name, base_ref?, branch?}`, unless a named machine or local files are needed.
-Other places and retries reject `repo`. Models use runtime defaults. Salix selects resources and credentials.
-x86_64 images have make, GCC/G++, headers, pkg-config, Rust/Cargo and Go.
-FFmpeg/ffprobe use Debian snapshots. From l4h v2026.10.32, [kemu](https://github.com/losfair/kemu) runs arm64 Linux programs directly, without QEMU or binfmt: integer code near native speed, NEON slower, no io_uring.
+A sandbox Task (`runs_on {kind: sandbox}`) runs on an L4ES VM of its own. With `repo {owner, name, base_ref?, branch?}` it is a coding Task: GitHub changes go there unless a named machine or local files are needed. Without `repo` it has no checkout, GitHub grant, git identity, save, diff or pull request.
+Other places and retries reject `repo`. A Worker may be bound to a sandbox: each of its Tasks takes a live-sandbox slot, and where sandboxes are not set up they are refused. Models use runtime defaults. Salix selects resources and credentials.
+Image contents: [L4ES sandboxes](../systems/DEPLOYMENT.md#l4es-sandboxes).
 
 `SalixWeb.CodingSandboxes` owns creation, recovery, stopping and turn `facts`. `SalixStore.CodingSandboxes` stores them on the Workload.
 Group Stations and Task sandboxes share execution and connection authorization. Disk/resource policies differ.
 
 - Identity: the Task owns an Environment on the tenant's `l4es` Pool, a ProviderBinding, and a `coding_sandbox` Workload.
   Each run gets an Allocation and advances the Environment and Workload generation.
-  Device `dev-sbx-<task>` is stable. Commands and credentials require the current authorized Workload connection.
-  Old-generation and terminal connections get no account profiles or platform model.
-- Creation: placement checks the repository through the Group's GitHub binding and the live-sandbox limit: the Workspace's admin override or `SALIX_L4ES_MAX_SANDBOXES` (default 5).
-  A `starting` Workload reserves the Task's sandbox. A worker creates it from `SALIX_L4ES_IMAGE` with its connect credential, GitHub grant, and owner's git identity.
-  Its Station connects, accepts the Task, and checks out its branch before the first turn.
+  Device `dev-sbx-<task>` is stable. Commands, credentials, account profiles and the platform model need the current authorized Workload connection; old-generation and terminal connections get none.
+- Creation: placement checks a coding Task's repository through the Group's GitHub binding, and the live-sandbox limit: the Workspace's admin override or `SALIX_L4ES_MAX_SANDBOXES` (default 5).
+  A `starting` Workload reserves the Task's sandbox. A worker creates it from `SALIX_L4ES_IMAGE` with its connect credential and, for a coding Task, a GitHub grant and the owner's git identity.
+  Its Station connects, accepts the Task, and checks out a coding Task's branch before the first turn.
 - Calls: L4ES takes a 300-second assertion from `CommaWeb.Coding.L4ESAssertions`. Before a create or terminal, Salix makes non-viewers L4ES members, who sign in with Comma.
 - Checks: each node takes at most 20 Workloads per 15 seconds, with a 2-minute lease. Ready ones are checked each 5 minutes.
-  A Task is in review once its Session ends a turn with no follow-up, active on one. Its work is pushed; the sandbox stops after 3 idle minutes in review or ended, else 2 hours.
-  After 24 idle hours, it stops and the Task records any lost work.
+  A Task is in review once its Session ends a turn with no follow-up, active on one. A coding Task's work is pushed; the sandbox stops after 3 idle minutes in review or ended, else 2 hours.
+  After 24 idle hours, it stops and a coding Task records any lost work.
   No connection in 5 minutes makes the sandbox `failed`. A sandbox L4ES no longer runs is `lost`.
 - Recovery: a Message resumes a `stopped`, `lost`, `failed`, or `ended` sandbox. L4ES starts it from its kept disk.
   A refused start (409) remakes it on a new disk, unless it is still stopping.
   Replacement waits until L4ES says the old run stopped. An unknown invite or stop result never authorizes a second carrier.
   A Station on a new disk gets the Task start and goes on from the pushed branch.
 - Completion: completed, cancelled, failed, and archived Tasks end their sandbox. Failed stops retry each minute by name.
-- GitHub: L4ES holds and Salix renews the token. Initial grants allow repo-wide reads and Task-branch writes. See [Router ACL updates](architecture/DOMAIN_CONCEPTS.md#coding-sandboxes).
+- GitHub (coding Tasks): L4ES holds and Salix renews the token. Initial grants allow repo-wide reads and Task-branch writes. See [Router ACL updates](architecture/DOMAIN_CONCEPTS.md#coding-sandboxes).
 - Accounts: a selected `account_id` limits subscription profiles to that account, also when lookup fails.
 - Billing: VM time runs from `ready` to stop, with provider `l4es` and SKU `sandbox-<size>`. Only a priced SKU charges.
 
-Sandbox disks are unarchived. L4ES can evict stopped disks. Task Messages and pushed branches are durable.
+Sandbox disks are unarchived and L4ES can evict stopped ones; Task Messages and pushed branches are durable.
 Session state, changes, history, token use, PRs and terminals use `/v1/comma/workspaces/:id/coding`.
-Deployment:
-1. Set `l4es` (`url`, `size`, `maxSandboxes`) in the environment spec. It also needs `computeRuntimeBaseURL` and `oauthIdp: enabled`.
-2. Make the IdP signing key. Register L4ES as an IdP client and set a default GitHub OAuth app.
-3. Set the L4ES issuer to the API origin, with the client id and secret.
-4. The release names the image `Coding sandbox image` built from its sources. Salix adds it and its dm-verity root to each L4ES workspace.
+Deployment: [L4ES sandboxes](../systems/DEPLOYMENT.md#l4es-sandboxes).
 
 ## Managed runtime credential binding
 
@@ -199,8 +191,8 @@ A Host hello drops unknown or contradictory inventory entries instead of failing
 
 The `mac-apps` plugin binds MCP `mac` to one member's Mac: `placement: device`, the device's Connector runtime, and `owner_user_id`. Only the Comma desktop app on a Mac lists it, and installs it with its device ID. The member turns apps on inside it; every app starts off. See [Mac apps plugin](architecture/DOMAIN_CONCEPTS.md#mac-apps-plugin).
 Salix sends each JSON-RPC message with the Connector method `client_mcp` (`server: "mac-apps"`). The station forwards it to Main with Main's bearer. A device with Read access accepts it; Off refuses it like a read. No device port, URL or token reaches Salix.
-Main serves only the apps the user turned on. The switches stay on that Mac and are the only switch authority; every workspace connected on that Mac shares them. A change installs the plugin again, which rediscovers the tools. Uninstall removes the workspace's binding and leaves the switches.
+Main serves only the apps the user turned on. The switches stay on that Mac as the only switch authority, shared by every workspace connected there. A change installs the plugin again, which rediscovers the tools. Uninstall removes the workspace's binding and leaves the switches.
 MacAppsHost runs the tools as Comma's child, so macOS attributes permissions to Comma. A call without a permission returns `permission_required` and never prompts. Only the user's switch in Comma requests a permission: turning Vision on also takes one screen capture, so macOS asks then whether Comma may capture without its window picker. An app opened only for its Automation prompt is closed again. Comma does not read Messages history: that needs Full Disk Access, which every command its station runs would share. A switch macOS did not allow stays off, and Plugins says so. macOS reads Screen Recording into a process when it starts. After the user goes to System Settings for it, Main starts a new MacAppsHost when it reads the state, while no call runs, for up to 10 minutes or until the grant shows. The user does not restart Comma.
 A `client:` binding runs only when the turn's requester owns the device it reaches, as the device registry records; no binding field decides. A Worker's turn in an ordinary one-shot Task counts as the person whose own Router message created the Task, for the Task's first command only. A later command the Router sends into the Task, background work, schedule fires, Loop wakes, scheduled and Loop Tasks, and other members get an error. An Agent's `mcp_manager` cannot create or change such a binding. Only Comma's own MCP definition may use the `comma-client` transport: Salix refuses it in any other definition. Results keep the Group connector label.
 An offline Mac returns `device_offline`. Calls are not queued or replayed. A write that times out has an unknown outcome, and the error says so. MacAppsHost does not start an AppleScript call whose deadline passed while it waited for the main thread. The station aborts a request Main has not answered in 30 seconds. A change to a recurring event must name its occurrence (`occurrence_start`).
-A result that made or found Calendar events, reminders, notes, contacts or places also gives the Agent up to five `mac_app_item` cards to put in its reply. Comma on a Mac draws each card as its app draws it and opens the item in that app; other clients show the text fallback.
+A result that made or found Calendar events, reminders, notes, contacts or places also gives the Agent up to five `mac_app_item` cards for its reply. Comma on a Mac draws each as its app does and opens the item there; other clients show text.

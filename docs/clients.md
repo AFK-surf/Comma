@@ -114,8 +114,9 @@ Details open Comma Web. Failed reads clear content.
 ### Quick Chat
 
 macOS 26 or Windows 10 2004+, non-guest login. Double-tap ⌘ (Windows: Ctrl) alone (each press ≤0.4 s, gap ≤0.4 s) or choose Quick Chat in the menu-bar menu (Windows: tray menu). Any click on the menu-bar item (Windows: tray icon) opens the menu.
-Settings > App defaults on. Off stops helper/hides shortcut.
-Clips ≤60 s. Return finishes pending clips. Click/type edits. ⌘ (Windows: Ctrl) resumes.
+Settings > Keyboard shortcuts records the shortcut (client setting `quickChatShortcut`, null for the default): a modifier pressed alone (⌘ ⌥ ⌃ ⇧; Windows: Ctrl Alt Shift) is double-tapped and watched by the helper; a chord is a global shortcut Main holds, which sends the helper `listen`.
+Settings > App defaults on. Off stops helper/releases shortcut.
+Clips ≤60 s. Return finishes pending clips. Click/type edits. A tap of the modifier (or the chord) resumes.
 Words come from live dictation as spoken; its final words are sent. Without it, clip transcription shows them after each pause. Helpers: `clients/apps/electron/native/{macos,windows}/QuickChatHost`.
 Close and Esc discard. Click away/30 s without new words close and retain words.
 Notch keeps sent words. Windows has no Notch: a failed send shows a notification and its words wait for the next Quick Chat. After acceptance, it says Sent and a click opens Home in the words' workspace.

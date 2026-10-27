@@ -258,6 +258,18 @@ describe("Comma Main client-control API", () => {
         apis: [
           expect.objectContaining({ id: "open-tab", usage: expect.any(String) }),
           expect.objectContaining({ id: "list-targets", usage: expect.any(String) }),
+          ...[
+            "snapshot",
+            "navigate",
+            "click",
+            "fill",
+            "press",
+            "scroll",
+            "select",
+            "wait",
+            "actions",
+            "dialog",
+          ].map((id) => expect.objectContaining({ id, usage: expect.any(String) })),
           expect.objectContaining({ id: "send-cdp-command" }),
           expect.objectContaining({ id: "capture-screenshot" }),
         ],
@@ -387,6 +399,37 @@ describe("Comma Main client-control API", () => {
       method: "Runtime.evaluate",
       params: { expression: "document.title", returnByValue: true },
       tabId: "tab-1",
+    });
+
+    // Invalid input too: the comma CLI shows no HTTP 400 body.
+    await expect(
+      harness.registry.invoke({
+        api: "click",
+        input: { tab_id: "tab-1", target: "text=Save" },
+        module: "in-app-browser",
+      })
+    ).resolves.toMatchObject({
+      error: "invalid_input",
+      issues: expect.arrayContaining([expect.objectContaining({ path: "tabId" })]),
+    });
+
+    // An agent command answers with its failure, which the comma CLI shows.
+    harness.browser.runClientAgentCommand.mockRejectedValueOnce(
+      new Error("The requested in-app browser tab tab-1 is unavailable.")
+    );
+    await expect(
+      harness.registry.invoke({
+        api: "click",
+        input: { tabId: "tab-1", target: "text=Save" },
+        module: "in-app-browser",
+      })
+    ).resolves.toEqual({
+      error: "browser_operation_failed",
+      message: "The requested in-app browser tab tab-1 is unavailable.",
+    });
+    expect(harness.browser.runClientAgentCommand).toHaveBeenCalledWith("click", {
+      tabId: "tab-1",
+      target: "text=Save",
     });
 
     const captured = (await harness.registry.invoke({
@@ -530,6 +573,7 @@ async function createHarness() {
       url,
     })),
     sendClientCdpCommand: vi.fn(async () => ({ result: { value: "Linear" } })),
+    runClientAgentCommand: vi.fn(async (): Promise<Record<string, unknown>> => ({})),
   };
   const registry = createCommaClientControlRegistry({
     appPreferences,

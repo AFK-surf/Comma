@@ -997,10 +997,10 @@ test("app shell supports routed content and sidebar interactions", async ({ page
     contentStartsAtRail: true,
     flanksEqual: true,
     historyInsets: { leading: 12, trailing: 12 },
-    railWidth: 75,
+    railWidth: 68,
     rowBelowBar: true,
     searchWidth: 400,
-    slotWidth: 75,
+    slotWidth: 68,
     trailingGap: 4,
   });
   await expectActiveRailItem(page, "Tasks");
@@ -1008,7 +1008,7 @@ test("app shell supports routed content and sidebar interactions", async ({ page
   // collapse paint widths between the open rail and the collapsed gutter.
   const collapseWidths = sampleFrameWidths(slot);
   await toggle.click();
-  expect((await collapseWidths).some((width) => width > 9 && width < 74)).toBe(true);
+  expect((await collapseWidths).some((width) => width > 9 && width < 67)).toBe(true);
 
   await expect(slot).toHaveAttribute("data-collapsed", "true");
   await expect(content).toHaveAttribute("data-sidebar-collapsed", "true");
@@ -1046,7 +1046,7 @@ test("app shell supports routed content and sidebar interactions", async ({ page
     .toEqual({
       contentKeepsGutter: true,
       railBodyHidden: true,
-      railWidth: 75,
+      railWidth: 68,
       slotKeepsHeight: true,
     });
   await expect
@@ -1065,8 +1065,8 @@ test("app shell supports routed content and sidebar interactions", async ({ page
   const expandWidths = sampleFrameWidths(slot);
   await toggle.click();
   await expect(slot).toHaveAttribute("data-collapsed", "false");
-  expect((await expandWidths).some((width) => width > 9 && width < 74)).toBe(true);
-  await expect.poll(async () => (await slot.boundingBox())?.width ?? 0).toBe(75);
+  expect((await expandWidths).some((width) => width > 9 && width < 67)).toBe(true);
+  await expect.poll(async () => (await slot.boundingBox())?.width ?? 0).toBe(68);
   await expect(toggle).toHaveAttribute("aria-expanded", "true");
   await expect(content).toHaveAttribute("data-sidebar-collapsed", "false");
   expect(await content.boundingBox()).toEqual(expandedContentBox);
@@ -1077,11 +1077,11 @@ test("app shell supports routed content and sidebar interactions", async ({ page
   const collapsedContentBox = await content.boundingBox();
   expect(collapsedContentBox?.x ?? 0).toBeLessThan(expandedContentBox?.x ?? 0);
   // Collapsing frees the rail's width less the window gutter the slot keeps.
-  expect((collapsedContentBox?.width ?? 0) - (expandedContentBox?.width ?? 0)).toBe(67);
+  expect((collapsedContentBox?.width ?? 0) - (expandedContentBox?.width ?? 0)).toBe(60);
 
   await toggle.click();
   await expect(slot).toHaveAttribute("data-collapsed", "false");
-  await expect.poll(async () => (await slot.boundingBox())?.width ?? 0).toBe(75);
+  await expect.poll(async () => (await slot.boundingBox())?.width ?? 0).toBe(68);
 });
 
 test("the rail's border collapses it and its hint rides the pointer", async ({
@@ -3037,6 +3037,8 @@ test("reduce motion minimizes animation and restores the persisted setting", asy
     customChroma: defaultCustomChroma,
     customScheme: "system",
     customLightness: commaThemeLightnessNeutral,
+    windowTranslucency: true,
+    windowTransparency: 50,
   });
 
   await page.evaluate(() => {
@@ -3785,6 +3787,121 @@ test("a category selected past the end of the tab row is scrolled into view", as
     .toEqual({ inView: true, label: "Archived tasks", scrolled: true });
 });
 
+test("the macOS frosted window ground is tinted once and opaque when Comma's theme differs from the system's", async ({
+  page,
+}) => {
+  // The Electron renderer marks a macOS main window this way (renderComma.tsx).
+  await page.addInitScript(() => {
+    document.documentElement.dataset.commaWindowMaterial = "vibrancy";
+  });
+  await page.emulateMedia({ colorScheme: "light" });
+  await app.open(page, "/");
+  await expect(page.getByRole("complementary", { name: "App sidebar" })).toBeVisible();
+
+  const setAppearance = (appearance: Record<string, unknown>) =>
+    page.evaluate((patch) => {
+      const key = "comma.client-settings";
+      const oldValue = localStorage.getItem(key);
+      const current = JSON.parse(oldValue ?? "{}");
+      const newValue = JSON.stringify({
+        ...current,
+        appearance: { ...current.appearance, ...patch },
+      });
+      localStorage.setItem(key, newValue);
+      window.dispatchEvent(
+        new StorageEvent("storage", {
+          key,
+          newValue,
+          oldValue,
+          url: window.location.href,
+        })
+      );
+    }, appearance);
+  const setTheme = (theme: "light" | "dark") => setAppearance({ theme });
+  const groundAlphas = () =>
+    page.evaluate(() => {
+      const probe = document.createElement("canvas").getContext("2d")!;
+      const alpha = (selector: string) => {
+        const element = document.querySelector(selector)!;
+        probe.clearRect(0, 0, 1, 1);
+        probe.fillStyle = getComputedStyle(element).backgroundColor;
+        probe.fillRect(0, 0, 1, 1);
+        return Math.round((probe.getImageData(0, 0, 1, 1).data[3]! / 255) * 100) / 100;
+      };
+      return {
+        content: alpha(".comma-content"),
+        frame: alpha(".comma-window-frame"),
+        html: alpha("html"),
+        shell: alpha(".comma-app-shell"),
+        sidebar: alpha(".comma-sidebar"),
+      };
+    });
+  const tinted = { content: 1, frame: 0, html: 0, shell: 0.5, sidebar: 0 };
+  const opaque = { ...tinted, shell: 1 };
+
+  await setTheme("light");
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "Light mode");
+  await expect.poll(groundAlphas).toEqual(tinted);
+  await setTheme("dark");
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "Dark mode");
+  await expect.poll(groundAlphas).toEqual(opaque);
+  await page.emulateMedia({ colorScheme: "dark" });
+  await expect.poll(groundAlphas).toEqual(tinted);
+  await setTheme("light");
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "Light mode");
+  await expect.poll(groundAlphas).toEqual(opaque);
+
+  // Appearance's transparency sets how much material shows through the
+  // window color, and its switch gives the page its opaque ground back.
+  await page.emulateMedia({ colorScheme: "light" });
+  await setAppearance({ windowTransparency: 80 });
+  await expect.poll(groundAlphas).toEqual({ ...tinted, shell: 0.2 });
+  await setAppearance({ windowTranslucency: false });
+  await expect(page.locator("html")).toHaveAttribute(
+    "data-comma-window-translucency",
+    "off"
+  );
+  await expect.poll(groundAlphas).toEqual({
+    ...tinted,
+    frame: 1,
+    html: 1,
+    shell: 1,
+    sidebar: 1,
+  });
+  await setAppearance({ windowTranslucency: true, windowTransparency: 50 });
+  await expect.poll(groundAlphas).toEqual(tinted);
+
+  // Nothing in the rail paints an opaque window ground over the material: a
+  // picked-up row blurs what it crosses, and the unread pip's ring is a cut in
+  // the icon rather than a painted halo.
+  const home = page.locator(".comma-sidebar-nav-row").first();
+  const rail = await home.evaluate((row) => {
+    row.setAttribute("data-pointer-dragging", "true");
+    const slot = row.querySelector<HTMLElement>('[data-slot="left-rail-item-icon"]')!;
+    const pip = document.createElement("span");
+    pip.className =
+      "pointer-events-none absolute right-1 top-0.5 size-[7.2px] rounded-full bg-utility-brand-400 shadow-[0_0_0_1.5px_var(--color-bg-window)]";
+    pip.dataset.slot = "left-rail-item-badge";
+    slot.append(pip);
+    const link = getComputedStyle(row.querySelector(".comma-sidebar-link")!);
+    const styles = {
+      dragBackdrop: link.backdropFilter,
+      dragBackground: link.backgroundColor,
+      iconMask: getComputedStyle(slot).maskImage,
+      pipShadow: getComputedStyle(pip).boxShadow,
+    };
+    pip.remove();
+    row.removeAttribute("data-pointer-dragging");
+    return styles;
+  });
+  expect(rail).toEqual({
+    dragBackdrop: expect.stringMatching(/^blur\(/),
+    dragBackground: "rgba(0, 0, 0, 0)",
+    iconMask: expect.stringContaining("radial-gradient"),
+    pipShadow: "none",
+  });
+});
+
 test("the 500px minimum window yields the rail to usable full-height primary content", async ({
   page,
 }) => {
@@ -4407,7 +4524,7 @@ test("Home rails collapse by container width and fold in place", async ({ page }
     .toBeGreaterThan(10);
 
   // At both 300px preferred widths and the 393px chat floor, all columns fit.
-  await page.setViewportSize({ width: 1140, height: 800 });
+  await page.setViewportSize({ width: 1133, height: 800 });
   await expect(greetRail).toBeVisible();
   const readRailTracks = () =>
     homeLayout.evaluate((layout) => {
@@ -4469,7 +4586,7 @@ test("Home rails collapse by container width and fold in place", async ({ page }
   await expect(tasksTrigger).toHaveCount(0);
 
   // Below the combined floor, Tasks folds and chat takes its track.
-  await page.setViewportSize({ width: 965, height: 800 });
+  await page.setViewportSize({ width: 958, height: 800 });
   await expect(tasksRail).toBeHidden();
   await expect(tasksRail).toHaveAttribute("data-folded", "true");
   await expect(greetRail).toHaveAttribute("data-folded", "false");
@@ -4490,7 +4607,7 @@ test("Home rails collapse by container width and fold in place", async ({ page }
 
   // Narrower still (a 574px route): Greet folds the same way and the chat
   // column keeps the whole route.
-  await page.setViewportSize({ width: 665, height: 800 });
+  await page.setViewportSize({ width: 658, height: 800 });
   await expect(greetRail).toBeHidden();
   await expect(greetRail).toHaveAttribute("data-folded", "true");
   await expect.poll(readRailTracks).toMatchObject({
@@ -4538,7 +4655,7 @@ test("sidebar collapse honors reduced motion", async ({ page }) => {
   expect(await slot.evaluate((element) => element.getAnimations().length)).toBe(0);
   await toggle.click();
   await expect(slot).toHaveAttribute("data-collapsed", "false");
-  await expect.poll(async () => (await slot.boundingBox())?.width ?? 0).toBe(75);
+  await expect.poll(async () => (await slot.boundingBox())?.width ?? 0).toBe(68);
 });
 
 // A Home rail is eaten by a drag as a continuous function of the route width,
@@ -4768,10 +4885,10 @@ test("Home rails collapse and expand from their edge handles", async ({ page }) 
   await expect(tasksRail).toBeVisible();
 
   // A rail the route itself folded has nothing to expand into, so it offers
-  // no handle — it comes back with the width, as it always has. (657px past
-  // the 75px rail and the 8px inset leaves the route the 574px an 880px
+  // no handle — it comes back with the width, as it always has. (650px past
+  // the 68px rail and the 8px inset leaves the route the 574px an 880px
   // window used to.)
-  await page.setViewportSize({ width: 657, height: 900 });
+  await page.setViewportSize({ width: 650, height: 900 });
   await expect(greetRail).toHaveAttribute("data-folded", "true");
   await expect(greetHandle).toHaveCount(0);
   await expect(tasksHandle).toHaveCount(0);

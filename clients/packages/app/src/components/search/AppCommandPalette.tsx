@@ -1,4 +1,5 @@
-import { formatDate } from "@comma/i18n";
+import { formatDate, messages, type CommaLocale } from "@comma/i18n";
+import type { ApplicationMenuCommand } from "@comma/native-bridge";
 import { useCommaLocale, useCommaMessages } from "@comma/i18n/react";
 import {
   CommandPalette,
@@ -13,8 +14,12 @@ import { taskStatusIcon } from "@comma/ui/components/task-workspace";
 import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useCall, type TaskSearchResult } from "@comma/core-client";
+import {
+  runApplicationMenuCommand,
+  useEnabledApplicationMenuCommands,
+} from "../application-menu/useApplicationMenu";
 import { AppIcon, type AppIconName } from "../icons";
-import { useAppShortcutCopy } from "../shortcuts/appShortcutCopy";
+import { appShortcutTitle, useAppShortcutCopy } from "../shortcuts/appShortcutCopy";
 import type { AppShortcutId } from "../shortcuts/appShortcutRegistry";
 import {
   useOptionalAppShortcutBinding,
@@ -26,6 +31,7 @@ import { TaskConversationPreview } from "./TaskConversationPreview";
 import {
   firstHighlightExcerpt,
   findTextHighlights,
+  titleMatches,
   type TextHighlight,
 } from "./searchText";
 
@@ -48,21 +54,62 @@ const paletteActions = [
   { icon: "layout-right", id: "toggle-right-sidebar" },
 ] as const satisfies readonly { icon: AppIconName; id: AppShortcutId }[];
 
+type Message = (inputs?: undefined, options?: { locale?: CommaLocale }) => string;
+
+// The application menu's commands the palette offers after those, in this
+// order, each while a mounted surface has it enabled (the desktop app's menu:
+// none elsewhere). Those the shortcuts above already offer are not repeated.
+const menuPaletteActions = [
+  { icon: "reload", id: "check-updates", title: messages.search_palette_check_updates },
+  { icon: "mic", id: "record-start", title: messages.search_palette_record_start },
+  { icon: "mic", id: "record-pause", title: messages.search_palette_record_pause },
+  { icon: "mic", id: "record-resume", title: messages.search_palette_record_resume },
+  { icon: "mic", id: "record-stop", title: messages.search_palette_record_stop },
+  { icon: "plus", id: "drive-upload", title: messages.search_palette_drive_upload },
+  {
+    icon: "plus",
+    id: "drive-upload-folder",
+    title: messages.search_palette_drive_upload_folder,
+  },
+  {
+    icon: "drive",
+    id: "drive-add-folder",
+    title: messages.search_palette_drive_add_folder,
+  },
+  {
+    icon: "drive",
+    id: "drive-download",
+    title: messages.search_palette_drive_download,
+  },
+  {
+    icon: "plus",
+    id: "browser-new-tab",
+    title: messages.search_palette_browser_new_tab,
+  },
+  {
+    icon: "window-close",
+    id: "browser-close-tab",
+    title: messages.search_palette_browser_close_tab,
+  },
+  { icon: "sparkles", id: "go-routines", title: messages.search_palette_go_routines },
+  { icon: "settings", id: "go-shortcuts", title: messages.search_palette_go_shortcuts },
+  {
+    icon: "mic",
+    id: "go-recording-settings",
+    title: messages.search_palette_recording_settings,
+  },
+] as const satisfies readonly {
+  icon: AppIconName;
+  id: ApplicationMenuCommand;
+  title: Message;
+}[];
+
 const actionValuePrefix = "action:";
+const menuValuePrefix = "menu:";
 const taskValuePrefix = "task:";
 
 function isTaskValue(value: string) {
   return value.startsWith(taskValuePrefix);
-}
-
-function actionMatches(title: string, query: string) {
-  const haystack = title.normalize("NFKC").toLocaleLowerCase();
-  return query
-    .normalize("NFKC")
-    .toLocaleLowerCase()
-    .split(/\s+/u)
-    .filter(Boolean)
-    .every((token) => haystack.includes(token));
 }
 
 type SearchScope = {
@@ -217,6 +264,7 @@ export function AppCommandPalette({
   const searchShortcutKeycaps = appKeybindingKeycaps(searchShortcut);
   const shortcutBindings = useOptionalAppShortcutBindings();
   const shortcutCopy = useAppShortcutCopy();
+  const enabledMenuCommands = useEnabledApplicationMenuCommands();
   const [query, setQuery] = useState("");
   const [activeValue, setActiveValue] = useState<string>();
   const [previewValue, setPreviewValue] = useState<string>();
@@ -271,7 +319,11 @@ export function AppCommandPalette({
   const actionItems: CommandPaletteItem<string>[] = runShortcut
     ? paletteActions.flatMap(({ icon, id }) => {
         const title = shortcutCopy[id].title;
-        if (normalizedQuery && !actionMatches(title, normalizedQuery)) return [];
+        if (
+          normalizedQuery &&
+          !titleMatches(normalizedQuery, title, appShortcutTitle(id, "en"))
+        )
+          return [];
         const keycaps = appKeybindingKeycaps(shortcutBindings?.[id] ?? null);
         return [
           {
@@ -285,10 +337,28 @@ export function AppCommandPalette({
         ];
       })
     : [];
+  const menuItems = menuPaletteActions.flatMap<CommandPaletteItem<string>>(
+    ({ icon, id, title: message }) => {
+      if (!enabledMenuCommands.includes(id)) return [];
+      const title = message();
+      if (
+        normalizedQuery &&
+        !titleMatches(normalizedQuery, title, message(undefined, { locale: "en" }))
+      )
+        return [];
+      return [
+        {
+          icon: <AppIcon name={icon} />,
+          title: highlightedText(title, findTextHighlights(title, normalizedQuery)),
+          value: `${menuValuePrefix}${id}`,
+        },
+      ];
+    }
+  );
   const actionGroup: CommandPaletteGroup<string> = {
     heading: m.search_palette_actions(),
     id: "actions",
-    items: actionItems,
+    items: [...actionItems, ...menuItems],
   };
 
   const historyItems = recentTasks.map<CommandPaletteItem<string>>((task) => {
@@ -450,6 +520,16 @@ export function AppCommandPalette({
     }
     runShortcut?.(id);
   };
+  const runMenuCommand = (id: ApplicationMenuCommand) => {
+    // Those that open a page or a tab move the user there; the others leave
+    // them where they were, so focus goes back there.
+    if (id.startsWith("go-") || id === "browser-new-tab") closeAfterAction();
+    else {
+      setQuery("");
+      onOpenChange(false);
+    }
+    runApplicationMenuCommand(id);
+  };
 
   // Actions show at once; only a list with nothing else waits for Tasks.
   const loading =
@@ -507,6 +587,12 @@ export function AppCommandPalette({
       onSelect={(item) => {
         if (item.value.startsWith(actionValuePrefix)) {
           runAction(item.value.slice(actionValuePrefix.length) as AppShortcutId);
+          return;
+        }
+        if (item.value.startsWith(menuValuePrefix)) {
+          runMenuCommand(
+            item.value.slice(menuValuePrefix.length) as ApplicationMenuCommand
+          );
           return;
         }
         const task = taskTargets.get(item.value);

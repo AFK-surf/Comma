@@ -57,6 +57,34 @@ const task = (updatedAt: number, messages: unknown[]) => ({
 
 // The real core, its clock and its HTTP boundary; startTestCore also replays each run.
 describe("a Task's model on the core protocol", () => {
+  it("keeps a sandbox Task's run when its sandbox has no repository", async () => {
+    const run = {
+      place: { kind: "sandbox", state: "starting" },
+      model: { kind: "runtime", provider: "claude", name: null, vendor: "anthropic" },
+    };
+    const host = new FakeHost();
+    host.api
+      .on("GET", base, { ...task(1, [command]), run })
+      .onStream("/v1/comma/groups/grp_1/conversations/events");
+    const core = startTestCore(host, { coalesceMs: 0 });
+    const client = new CoreClient(inProcessOpener(core, host, view.surface), {
+      schedule: () => undefined,
+    });
+    let shown: ChatViewValue | undefined;
+    client.subscribe(
+      { topic: "chatView", ...view },
+      (value) => (shown = value as ChatViewValue),
+      () => undefined
+    );
+    core.observeSession(signedIn());
+    await host.time!.pass(0);
+    expect(shown?.state?.taskRun?.place).toEqual({
+      kind: "sandbox",
+      state: "starting",
+    });
+    client.close();
+  });
+
   it("shows a coding Task's sandbox from its detail, and again at once when the Task is opened again", async () => {
     const run = {
       place: {

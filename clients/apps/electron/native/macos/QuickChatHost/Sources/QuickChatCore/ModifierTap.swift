@@ -1,24 +1,25 @@
 import Foundation
 
-/// Recognizes taps of ⌘: either Command key pressed and released within
-/// `maximumPress`, with no other key, click, scroll or modifier meanwhile.
+/// Recognizes taps of one modifier (⌘ unless the person chose another): either
+/// of its keys pressed and released within `maximumPress`, with no other key,
+/// click, scroll or modifier meanwhile.
 /// It fires on the release. A second tap that starts within `maximumGap` of
 /// the first one's release, with nothing else from the first press on, is a
 /// double tap.
 ///
-/// A global `flagsChanged` monitor sees ⌘ without any permission, but key-down
+/// A global `flagsChanged` monitor sees modifiers without any permission, but key-down
 /// events need Accessibility. A chord such as ⌘C, ⌘Tab or ⌘-scroll therefore
 /// shows up only as the time of the latest key-down, click or scroll, which
 /// also needs no permission. Input at or after a press makes it a chord, not
 /// a tap. The time is compared with the events' own timestamps, so a monitor
 /// that runs late (after the C of a quick ⌘C already went down) still sees
 /// the chord.
-public struct CommandTap: Sendable {
+public struct ModifierTap: Sendable {
     public enum Event: Sendable {
-        /// ⌘ went down with no other modifier held.
-        case commandDown
-        /// ⌘ came up with no other modifier held.
-        case commandUp
+        /// The modifier went down with no other modifier held.
+        case down
+        /// The modifier came up with no other modifier held.
+        case up
         /// Any other modifier changed, or one is held.
         case otherModifier
     }
@@ -43,10 +44,10 @@ public struct CommandTap: Sendable {
     /// it completes.
     public mutating func handle(_ event: Event, at time: TimeInterval, lastInput: TimeInterval) -> Tap? {
         switch (pressed, event) {
-        case (nil, .commandDown):
+        case (nil, .down):
             pressed = time
             return nil
-        case let (press?, .commandUp):
+        case let (press?, .up):
             pressed = nil
             guard time - press <= Self.maximumPress, lastInput < press else {
                 first = nil
@@ -58,11 +59,11 @@ public struct CommandTap: Sendable {
             }
             first = (press, time)
             return .single
-        case (nil, .commandUp):
+        case (nil, .up):
             // macOS repeats some releases; those change nothing.
             return nil
         default:
-            // Another modifier, or the other ⌘ while one is held (a chord).
+            // Another modifier, or the modifier's other key while one is held (a chord).
             pressed = nil
             first = nil
             return nil

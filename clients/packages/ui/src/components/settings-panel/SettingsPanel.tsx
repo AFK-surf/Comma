@@ -33,6 +33,8 @@ import {
   SettingsShortcut,
   SettingsShortcutKeycaps,
   type AppKeybinding,
+  type SettingsModifierTapValue,
+  type SettingsShortcutBinding,
   type SettingsShortcutValue,
 } from "../settings-shortcut";
 import { Toggle } from "../toggle";
@@ -136,11 +138,14 @@ export type SettingsControl =
     }
   | {
       type: "shortcut";
-      value: SettingsShortcutValue | null;
+      value: SettingsShortcutBinding | null;
       onClear?: () => Promise<void> | void;
       disabled?: boolean;
       errorMessage?: string;
       onChange?: (shortcut: SettingsShortcutValue) => Promise<void> | void;
+      /** Modifiers that may be recorded alone, as a tap (a double tap of it). */
+      modifierTaps?: readonly SettingsModifierTapValue["tap"][];
+      onModifierTap?: (tap: SettingsModifierTapValue) => Promise<void> | void;
       recordingLabel?: string;
     }
   | {
@@ -564,6 +569,8 @@ export const SettingsControlView = ({
           errorMessage: control.errorMessage,
           onChange: control.onChange,
           onClear: control.onClear,
+          modifierTaps: control.modifierTaps,
+          onModifierTap: control.onModifierTap,
           recordingLabel: control.recordingLabel,
         })}
       />

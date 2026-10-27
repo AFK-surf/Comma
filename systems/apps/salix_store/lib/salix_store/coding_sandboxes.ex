@@ -52,8 +52,8 @@ defmodule SalixStore.CodingSandboxes do
   a Task that has one answers it.
 
   `attrs`: `tenant_id`, `group_id`, `conversation_id`, `workspace` (the L4ES
-  workspace reference, `comma:<id>`), `repo` (a map) and optional `size`,
-  `account_id` and `requester`.
+  workspace reference, `comma:<id>`) and optional `repo` (a map; a coding
+  Task's repository), `size`, `account_id` and `requester`.
   """
   def create(%{tenant_id: tenant, group_id: group, conversation_id: conversation} = attrs)
       when is_binary(tenant) and is_binary(group) and is_binary(conversation) do
@@ -117,7 +117,7 @@ defmodule SalixStore.CodingSandboxes do
               "connector_id" => connector_id(conversation),
               "transport_id" => transport_id(conversation),
               "workspace" => attrs.workspace,
-              "repo" => Map.fetch!(attrs, :repo),
+              "repo" => Map.get(attrs, :repo),
               "size" => Map.get(attrs, :size),
               "account_id" => Map.get(attrs, :account_id),
               "requester" => Map.get(attrs, :requester),

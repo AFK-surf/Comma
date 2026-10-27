@@ -213,7 +213,7 @@ const commaTaskRunSchema = z
           name: z.string().nullable().optional(),
         })
         .strip(),
-      // A coding Task: its own cloud sandbox, with a GitHub repository checked out.
+      // A sandbox Task: its own cloud sandbox; a coding Task's has a GitHub repository checked out.
       z
         .object({
           kind: z.literal("sandbox"),
@@ -224,7 +224,8 @@ const commaTaskRunSchema = z
               base_ref: z.string().optional(),
               branch: z.string().optional(),
             })
-            .strip(),
+            .strip()
+            .optional(),
           state: z.string(),
           reason: z.string().nullable().optional(),
         })

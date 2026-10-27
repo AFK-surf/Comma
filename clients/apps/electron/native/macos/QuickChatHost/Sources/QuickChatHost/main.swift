@@ -1,16 +1,16 @@
 // QuickChatHost: Comma's Quick Chat on macOS.
 //
-// A double tap of ⌘ anywhere, or the menu-bar menu's Quick Chat row, shows NameDrop's
-// connection hint above the Dock and sends the microphone to the server's live dictation; the words can be edited, and
-// a tap of ⌘ then listens again. Return or the send button sends the words
+// A double tap of ⌘ (or the modifier the person chose) anywhere, the global shortcut Main holds instead, or the
+// menu-bar menu's Quick Chat row shows NameDrop's connection hint above the Dock and sends the microphone to the
+// server's live dictation; the words can be edited, and a tap of the modifier then listens again. Return or the send button sends the words
 // away and Main creates a Task for the Worker from them.
 //
 // Protocol (one JSON object per line):
-//   stdin  ← {"type":"configure","strings":{…}}           interface text, Comma's language
+//   stdin  ← {"type":"configure","strings":{…},"tap"}    interface text, Comma's language; the tapped modifier or null
 //            {"type":"result","requestId","ok","message"?} the Task for a submit
 //            {"type":"transcript","clipId","text"?}       the server's words for a transcribe
 //            {"type":"dictationTicket","requestId","url"?,"ticket"?}  live dictation's socket, if any
-//            {"type":"listen"}                            the menu-bar Quick Chat row: as a double tap of ⌘
+//            {"type":"listen"}                            the menu-bar row or the global shortcut: as a double tap
 //   stdout → {"type":"ready"}
 //            {"type":"submit","requestId","text","draft","audio"?}
 //            {"type":"transcribe","clipId","audio"}       audio between two pauses, without live dictation
@@ -45,7 +45,8 @@ let controller = QuickChatController(
     if let previewText { return PreviewTranscript(text: previewText) }
     return LiveDictation(draft: draft, ticket: tickets.ticket, transcribe: transcripts.transcribe)
 }
-let monitor = CommandKeyMonitor()
+let monitor = ModifierTapMonitor()
+controller.onTapModifier = { monitor.modifier = $0 }
 monitor.onTap = { controller.resume() }
 monitor.onDoubleTap = { controller.summon() }
 monitor.start()

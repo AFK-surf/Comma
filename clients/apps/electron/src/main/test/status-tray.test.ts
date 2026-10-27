@@ -475,6 +475,30 @@ describe("helperStatusTrayHost", () => {
     controller.update({ inProgressTasks: [], quickChat: false });
     expect(shown().rows.some((row) => row.id === "quick-chat")).toBe(false);
   });
+
+  it("shows the Quick Chat shortcut the person chose on its row", () => {
+    const { controller, helper } = helperHarness({
+      inProgressTasks: [],
+      quickChat: true,
+      quickChatShortcut: { tap: "alt" },
+    });
+    const quickChatRow = () =>
+      (helper.showStatusMenu.mock.lastCall![0] as { rows: StatusMenuRow[] }).rows.find(
+        (row) => row.id === "quick-chat"
+      );
+
+    expect(quickChatRow()).toMatchObject({ shortcut: "Double-tap ⌥" });
+    controller.update({
+      inProgressTasks: [],
+      quickChat: true,
+      quickChatAccelerator: "Alt+Space",
+      quickChatShortcut: {
+        key: "space",
+        modifiers: { alt: true, control: false, meta: false, shift: false },
+      },
+    });
+    expect(quickChatRow()).toMatchObject({ shortcut: "⌥ Space" });
+  });
 });
 
 /** The rows between Open Comma and the separator above Settings. */
@@ -755,12 +779,12 @@ describe("statusTrayPreferenceContent", () => {
       statusTrayPreferenceContent(
         preferences({ openCommaShortcutStatus: "registered" })
       )
-    ).toEqual({ openCommaAccelerator: "Control+Super+K" });
+    ).toMatchObject({ openCommaAccelerator: "Control+Super+K" });
     expect(
       statusTrayPreferenceContent(
         preferences({ openCommaShortcutStatus: "unavailable" })
       )
-    ).toEqual({ openCommaAccelerator: undefined });
+    ).toMatchObject({ openCommaAccelerator: undefined });
   });
 });
 

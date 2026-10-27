@@ -37,7 +37,15 @@ defmodule Comma.ReleaseNoDowntimeMigrationsTest do
                                  "salix-20261015000101",
                                  # Contract: drops the Loop Task columns that nothing
                                  # reads since the Loop holds its Task's facts.
-                                 "salix-20261020300002"
+                                 "salix-20261020300002",
+                                 # Daily brief people become actor refs: an old server
+                                 # reads the renamed follow-up columns and fails its
+                                 # brief until every server updates.
+                                 "bridge-20261023001001",
+                                 # Snoozes move to a per-member table: an old server
+                                 # reads the dropped follow-up column and fails its
+                                 # brief until every server updates.
+                                 "bridge-20261023001101"
                                ])
   @recertification_versions [20_260_910_140_001, 20_260_915_183_001]
 

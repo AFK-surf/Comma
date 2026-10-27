@@ -245,7 +245,7 @@ defmodule Salix.Bindings.MeetingActivationTest do
     source_id = "meeting-activation:" <> state["meeting_id"]
 
     assert payload[:session_id] == router_session_id
-    assert payload[:name] == "Bridge chat"
+    assert payload[:name] == "Comma"
     assert opts[:source_message_id] == source_id
     assert opts[:no_wake] == true
 

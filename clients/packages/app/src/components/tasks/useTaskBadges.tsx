@@ -2,13 +2,16 @@ import { useCommaMessages } from "@comma/i18n/react";
 import { useCallback, useMemo, type ReactNode } from "react";
 import type { CommaTaskLabel, CommaTaskLabelCatalog } from "@comma/core/api-schemas";
 import type { TaskLoop } from "@comma/core/contract";
+import { openNativePlatformExternalUrl } from "../../nativePlatformActions";
 import { useTaskLabelsCatalog } from "../chat/tasks/labels/useTaskLabelsCatalog";
 import {
   TaskLabelChip,
   TaskHostChip,
   TaskLabelOverflowChip,
   TaskPlatformChip,
+  TaskPullRequestChip,
   TaskScheduleChip,
+  type TaskPullRequest,
 } from "./taskChips";
 import { taskLoopFilterKey } from "./taskLoopLabels";
 import { taskOriginKey, taskOriginLabel, type TaskOriginKey } from "./taskOrigin";
@@ -24,6 +27,8 @@ type LoadedTask = {
   conversationId: string;
   labels?: readonly string[] | undefined;
   clientPlatform?: string | undefined;
+  /** Set on a coding Task that has a pull request. */
+  pullRequest?: TaskPullRequest | undefined;
   /** Set on a Loop Task only. */
   loop?: TaskLoop | undefined;
   /** Set on a Task a station hosts. */
@@ -104,6 +109,16 @@ export function useTaskBadges(
     [tasks]
   );
 
+  const pullRequests = useMemo(
+    () =>
+      new Map(
+        tasks.flatMap((task) =>
+          task.pullRequest ? [[task.conversationId, task.pullRequest] as const] : []
+        )
+      ),
+    [tasks]
+  );
+
   const hosts = useMemo(
     () =>
       new Map(
@@ -119,6 +134,7 @@ export function useTaskBadges(
       const host = hosts.get(task.conversationId);
       const origin = taskOriginKey(task.origin);
       const loop = loops.get(task.conversationId);
+      const pullRequest = pullRequests.get(task.conversationId);
       const labels =
         metaById
           .get(task.conversationId)
@@ -128,17 +144,28 @@ export function useTaskBadges(
         return (
           <>
             <TaskHostChip host={host} nested testId="task-card-host" />
-            {labels.length > 0 ? (
-              <TaskBadgeChips labels={labels} onOpen={onOpen} origin={undefined} />
+            {labels.length > 0 || pullRequest ? (
+              <TaskBadgeChips
+                labels={labels}
+                onOpen={onOpen}
+                origin={undefined}
+                pullRequest={pullRequest}
+              />
             ) : null}
           </>
         );
-      if (labels.length === 0 && !origin && !loop) return null;
+      if (labels.length === 0 && !pullRequest && !origin && !loop) return null;
       return (
-        <TaskBadgeChips labels={labels} loop={loop} onOpen={onOpen} origin={origin} />
+        <TaskBadgeChips
+          labels={labels}
+          loop={loop}
+          onOpen={onOpen}
+          origin={origin}
+          pullRequest={pullRequest}
+        />
       );
     },
-    [catalogById, hosts, loops, metaById, onOpen]
+    [catalogById, hosts, loops, metaById, onOpen, pullRequests]
   );
 
   return { catalog, catalogById, metaById, renderTaskBadges };
@@ -146,7 +173,7 @@ export function useTaskBadges(
 
 /**
  * The chips every Task card wears: the trigger type on a Loop Task, its labels, the
- * "+N labels" fold for squeezed list rows, then its platform. With `onOpen`
+ * "+N labels" fold for squeezed list rows, its pull request, then its platform. With `onOpen`
  * each chip opens the Tasks page narrowed to it; without, they are plain (a
  * hover card).
  */
@@ -155,12 +182,15 @@ export function TaskBadgeChips({
   loop,
   onOpen,
   origin,
+  pullRequest,
 }: {
   labels: readonly CommaTaskLabel[];
   /** A Loop Task: one a Loop runs or ran. */
   loop?: TaskLoop | undefined;
   onOpen?: ((filter: TasksFilterLink) => void) | undefined;
   origin: TaskOriginKey | undefined;
+  /** A coding Task's pull request; with `onOpen` its chip opens it, as the other chips act. */
+  pullRequest?: TaskPullRequest | undefined;
 }) {
   const messages = useCommaMessages();
   // A squeezed row keeps two chips; the trigger chip takes the first place.
@@ -188,6 +218,17 @@ export function TaskBadgeChips({
         />
       ))}
       {folded > 0 ? <TaskLabelOverflowChip count={folded} /> : null}
+      {pullRequest ? (
+        <TaskPullRequestChip
+          nested
+          onOpen={
+            onOpen
+              ? () => void openNativePlatformExternalUrl(pullRequest.url)
+              : undefined
+          }
+          pullRequest={pullRequest}
+        />
+      ) : null}
       {origin ? (
         <TaskPlatformChip
           label={taskOriginLabel(messages, origin)}

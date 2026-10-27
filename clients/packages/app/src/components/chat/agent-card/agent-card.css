@@ -1,0 +1,251 @@
+/* The Agent cards' shell: a card an Agent puts in the conversation for the person to answer (a question, a request),
+   and the one-line receipt it closes into. Each kind fills the body between the head and the foot.
+   The card's corner (radius-2xl) is the footer buttons' radius (radius-md) plus the footer's inset (spacing-md).
+   Nothing here transitions: answering and closing change at once.
+   A card is not a bubble: it keeps spacing-lg from the bubble above (as the Task cards do) and from the message
+   below, whose own consecutive-message gap is part of that space. */
+
+/* The card's width is its own, never its content's: it sits in a message column that shrinks to fit what it holds,
+   so a width that resolved against that column (100%, or min() with a percentage) would follow the card's
+   content, and the other answer's field, which grows with its text, would resize the card at every keystroke.
+   A definite width the column may only narrow keeps it still while it is answered. */
+.comma-agent-card {
+  width: var(--container-md);
+  max-width: 100%;
+  margin-block: var(--spacing-lg)
+    calc(var(--spacing-lg) - var(--comma-chat-consecutive-message-gap));
+  border-radius: var(--radius-2xl);
+  background: var(--color-bg-popup-secondary);
+  box-shadow:
+    0 0 0 var(--border-width-default) var(--color-border-primary),
+    var(--shadow-sm);
+  color: var(--color-text-primary);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm--line-height);
+}
+
+.comma-agent-card-head {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xxs);
+  padding: var(--spacing-xl) var(--spacing-xl) 0;
+}
+
+.comma-agent-card-title {
+  margin: 0;
+  font-size: var(--text-md);
+  line-height: var(--text-md--line-height);
+  font-weight: var(--font-weight-semibold);
+  text-wrap: balance;
+}
+
+.comma-agent-card-meta {
+  margin: 0;
+  color: var(--color-text-tertiary);
+  font-size: var(--text-xs);
+  line-height: var(--text-xs--line-height);
+}
+
+.comma-agent-card-note {
+  display: block;
+  margin: 0;
+  padding: var(--spacing-md) var(--spacing-xl) 0;
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+  line-height: var(--text-xs--line-height);
+}
+
+.comma-agent-card-note:empty {
+  padding: 0;
+}
+
+.comma-agent-card-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-lg);
+  padding: var(--spacing-lg) var(--spacing-md) var(--spacing-md) var(--spacing-xl);
+}
+
+.comma-agent-card-hint {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--spacing-xs);
+  color: var(--color-text-tertiary);
+  font-size: var(--text-xs);
+  line-height: var(--text-xs--line-height);
+}
+
+.comma-agent-card-hint kbd {
+  display: inline-grid;
+  min-width: var(--spacing-xl);
+  height: var(--spacing-xl);
+  place-items: center;
+  padding-inline: var(--spacing-xxs);
+  border-radius: var(--radius-xs);
+  background: var(--color-bg-secondary);
+  box-shadow: inset 0 0 0 var(--border-width-default) var(--color-border-menu-primary);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: 1;
+}
+
+.comma-agent-card-hint-sep {
+  margin-inline: var(--spacing-xs);
+  color: var(--color-fg-quinary);
+}
+
+.comma-agent-card-actions {
+  display: flex;
+  flex: none;
+  gap: var(--spacing-xs);
+}
+
+.comma-agent-receipt {
+  display: flex;
+  width: 100%;
+  max-width: var(--container-md);
+  margin-block: var(--spacing-lg)
+    calc(var(--spacing-lg) - var(--comma-chat-consecutive-message-gap));
+  align-items: flex-start;
+  gap: var(--spacing-lg);
+  padding: var(--spacing-lg) var(--spacing-xl) var(--spacing-lg) var(--spacing-lg);
+  border-radius: var(--radius-xl);
+  background: var(--color-bg-secondary);
+  box-shadow: 0 0 0 var(--border-width-default) var(--color-border-secondary);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm--line-height);
+}
+
+.comma-agent-receipt-icon {
+  display: grid;
+  flex: none;
+  width: var(--spacing-2xl);
+  height: var(--spacing-2xl);
+  margin-block-start: var(--spacing-md);
+  place-items: center;
+  border-radius: var(--radius-full);
+  background: var(--color-bg-brand-solid);
+  color: var(--color-text-white);
+}
+
+.comma-agent-receipt-icon.is-muted {
+  background: var(--color-bg-tertiary);
+  color: var(--color-fg-tertiary);
+}
+
+.comma-agent-receipt-icon svg {
+  width: var(--spacing-lg);
+  height: var(--spacing-lg);
+}
+
+.comma-agent-receipt-text {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: var(--spacing-xxs);
+}
+
+.comma-agent-receipt-prompt {
+  color: var(--color-text-tertiary);
+  font-size: var(--text-xs);
+  line-height: var(--text-xs--line-height);
+}
+
+.comma-agent-receipt-answer {
+  color: var(--color-text-primary);
+  font-weight: var(--font-weight-medium);
+  overflow-wrap: anywhere;
+}
+
+.comma-agent-receipt-answer.is-muted {
+  color: var(--color-text-secondary);
+  font-weight: normal;
+}
+
+.comma-agent-receipt-note {
+  color: var(--color-text-tertiary);
+  font-weight: normal;
+}
+
+/* A request's mark beside its title: the account's or the capability's. */
+.comma-agent-card-head[data-mark] {
+  display: grid;
+  grid-template-columns: var(--spacing-3xl) minmax(0, 1fr);
+  column-gap: var(--spacing-lg);
+  row-gap: var(--spacing-xxs);
+  align-items: start;
+}
+
+.comma-agent-card-mark {
+  display: grid;
+  grid-row: span 2;
+  width: var(--spacing-3xl);
+  height: var(--spacing-3xl);
+  place-items: center;
+  border-radius: var(--radius-lg);
+  background: var(--color-bg-secondary);
+  box-shadow: inset 0 0 0 var(--border-width-default) var(--color-border-secondary);
+}
+
+.comma-agent-card-mark svg {
+  width: var(--spacing-xl);
+  height: var(--spacing-xl);
+}
+
+.comma-agent-card-reason {
+  margin: 0;
+  color: var(--color-text-secondary);
+}
+
+/* What a request asks for, on the card's quiet surface: the account and its access. */
+.comma-agent-card-detail {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--spacing-xs) var(--spacing-xl);
+  margin: var(--spacing-lg) var(--spacing-md) 0;
+  padding: var(--spacing-md) var(--spacing-lg);
+  border-radius: var(--radius-lg);
+  background: var(--color-bg-secondary);
+  box-shadow: inset 0 0 0 var(--border-width-default) var(--color-border-secondary);
+}
+
+.comma-agent-card-detail dt {
+  color: var(--color-text-tertiary);
+}
+
+.comma-agent-card-detail dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+/* What is under way, in the foot's leading place. */
+.comma-agent-card-status {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: var(--spacing-sm);
+  color: var(--color-text-secondary);
+}
+
+.comma-agent-card-status svg {
+  flex: none;
+  width: var(--spacing-lg);
+  height: var(--spacing-lg);
+  color: var(--color-fg-tertiary);
+}
+
+/* The time a request has left; its last 30 seconds read as soon. */
+.comma-agent-card-time {
+  color: var(--color-text-tertiary);
+  font-size: var(--text-xs);
+  line-height: var(--text-xs--line-height);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.comma-agent-card-time[data-soon] {
+  color: var(--color-text-warning-primary);
+}

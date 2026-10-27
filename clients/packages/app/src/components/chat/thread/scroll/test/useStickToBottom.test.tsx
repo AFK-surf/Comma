@@ -32,6 +32,76 @@ function setElementRect(
 }
 
 describe("useStickToBottom", () => {
+  it("shows the return control from geometry without changing unseen counts", () => {
+    const { container, rerender } = render(<StickHarness dependencyKey="one" />);
+    const viewport = queryViewport(container);
+    setElementMetric(viewport, "clientHeight", 100);
+    setElementMetric(viewport, "scrollHeight", 500);
+    fireEvent.click(screen.getByTestId("content-resize"));
+    expect(screen.getByTestId("show-bottom")).toHaveTextContent("false");
+    fireEvent.click(screen.getByTestId("scroll-intent"));
+    viewport.scrollTop = 350;
+    fireEvent.scroll(viewport);
+    expect(screen.getByTestId("show-bottom")).toHaveTextContent("true");
+    expect(screen.getByTestId("unseen-count")).toHaveTextContent("0");
+    setElementMetric(viewport, "clientHeight", 120);
+    fireEvent.click(screen.getByTestId("viewport-resize"));
+    expect(screen.getByTestId("show-bottom")).toHaveTextContent("true");
+    rerender(<StickHarness dependencyKey="one|two" />);
+    expect(screen.getByTestId("unseen-count")).toHaveTextContent("1");
+    fireEvent.click(screen.getByTestId("scroll-to-bottom"));
+    expect(viewport.scrollTop).toBe(380);
+    expect(screen.getByTestId("show-bottom")).toHaveTextContent("false");
+    expect(screen.getByTestId("unseen-count")).toHaveTextContent("0");
+  });
+
+  it("cancels an unfinished smooth reveal before returning to the bottom", () => {
+    let follow!: ReturnType<typeof useStickToBottom>;
+    function RevealHarness() {
+      follow = useStickToBottom("one", { resolveNewestTurn: () => null });
+      return (
+        <div ref={follow.scrollRootRef} data-slot="scroll-area-viewport">
+          <article data-testid="reveal-target" />
+        </div>
+      );
+    }
+    const { container } = render(<RevealHarness />);
+    const viewport = queryViewport(container);
+    const target = screen.getByTestId("reveal-target");
+    setElementMetric(viewport, "clientHeight", 100);
+    setElementMetric(viewport, "scrollHeight", 1000);
+    setElementRect(viewport, () => ({ top: 0, bottom: 100, left: 0, right: 400 }));
+    setElementRect(target, () => ({
+      top: 200 - viewport.scrollTop,
+      bottom: 250 - viewport.scrollTop,
+      left: 0,
+      right: 400,
+    }));
+    const scrollTo = vi.fn((options?: ScrollToOptions | number, y?: number) => {
+      if (typeof options === "number") viewport.scrollTop = y ?? 0;
+      else if (options?.behavior === "instant") viewport.scrollTop = options.top ?? 0;
+    });
+    viewport.scrollTo = scrollTo;
+    const arrived = vi.fn();
+    const cancelled = vi.fn();
+    act(() => follow.scrollToBottom());
+    act(() => {
+      follow.revealElement(target, target, arrived, { onCancel: cancelled });
+    });
+    expect(scrollTo).toHaveBeenCalledWith(
+      expect.objectContaining({ behavior: "smooth" })
+    );
+    act(() => follow.scrollToBottom());
+    expect(scrollTo).toHaveBeenLastCalledWith({ top: 900, behavior: "instant" });
+    expect(cancelled).toHaveBeenCalledOnce();
+    act(() => {
+      viewport.dispatchEvent(new Event("scrollend"));
+      follow.handleContentResize();
+    });
+    expect(viewport.scrollTop).toBe(900);
+    expect(arrived).not.toHaveBeenCalled();
+  });
+
   it("starts at the bottom when a thread mounts with existing messages", () => {
     const scrollHeight = vi
       .spyOn(HTMLElement.prototype, "scrollHeight", "get")
@@ -444,17 +514,143 @@ describe("useStickToBottom", () => {
   it("commits focus-induced off-bottom geometry without a scroll event", () => {
     const { container } = render(<StickHarness dependencyKey="msg_1" />);
     const viewport = queryViewport(container);
+    const target = screen.getByTestId("focus-target");
     setElementMetric(viewport, "clientHeight", 100);
     setElementMetric(viewport, "clientWidth", 400);
     setElementMetric(viewport, "scrollHeight", 500);
     viewport.scrollTop = 500;
     fireEvent.scroll(viewport);
 
+    // The browser scrolled the viewport up to the element it focused.
+    setElementRect(viewport, () => ({ bottom: 100, left: 0, right: 400, top: 0 }));
+    setElementRect(target, () => ({ bottom: 30, left: 0, right: 40, top: 10 }));
     viewport.scrollTop = 0;
-    fireEvent.focus(screen.getByTestId("focus-target"));
+    act(() => target.focus());
     fireEvent.click(screen.getByTestId("viewport-resize"));
 
     expect(viewport.scrollTop).toBe(0);
+  });
+
+  it("leaves the reader at the tail when focus returns to an element above the viewport", () => {
+    // The window regaining focus, or an overlay closing, hands focus back to
+    // a chip the run scrolled away long ago. Nothing scrolls it in: the
+    // reader did not go there.
+    const { container, rerender } = render(<StickHarness dependencyKey="msg_1" />);
+    const viewport = queryViewport(container);
+    const target = screen.getByTestId("focus-target");
+    setElementMetric(viewport, "clientHeight", 100);
+    setElementMetric(viewport, "scrollHeight", 500);
+    viewport.scrollTop = 400;
+    fireEvent.scroll(viewport);
+    setElementRect(viewport, () => ({ bottom: 100, left: 0, right: 400, top: 0 }));
+    setElementRect(target, () => ({ bottom: -280, left: 0, right: 40, top: -300 }));
+    const frame = mockAnimationFrame();
+
+    act(() => target.focus());
+    act(() => frame.run());
+    expect(viewport.scrollTop).toBe(400);
+
+    setElementMetric(viewport, "scrollHeight", 700);
+    rerender(<StickHarness dependencyKey="msg_1|assistant_2" />);
+
+    expect(viewport.scrollTop).toBe(600);
+    expect(screen.getByTestId("unseen-count")).toHaveTextContent("0");
+  });
+
+  it("parks on an element the browser scrolled into view for its focus", () => {
+    // A keyboard move, or a control that focuses a field for the reader (a
+    // question card's first option when they submit nothing), lets the
+    // browser scroll the element in right after the focus event.
+    const { container, rerender } = render(<StickHarness dependencyKey="msg_1" />);
+    const viewport = queryViewport(container);
+    const target = screen.getByTestId("focus-target");
+    setElementMetric(viewport, "clientHeight", 100);
+    setElementMetric(viewport, "scrollHeight", 500);
+    viewport.scrollTop = 400;
+    fireEvent.scroll(viewport);
+    setElementRect(viewport, () => ({ bottom: 100, left: 0, right: 400, top: 0 }));
+    let targetTop = -300;
+    setElementRect(target, () => ({
+      bottom: targetTop + 20,
+      left: 0,
+      right: 40,
+      top: targetTop,
+    }));
+
+    const frame = mockAnimationFrame();
+
+    act(() => target.focus());
+    viewport.scrollTop = 100;
+    targetTop = 0;
+    act(() => frame.run());
+
+    setElementMetric(viewport, "scrollHeight", 700);
+    rerender(<StickHarness dependencyKey="msg_1|assistant_2" />);
+
+    expect(viewport.scrollTop).toBe(100);
+    expect(target).toHaveFocus();
+    expect(screen.getByTestId("unseen-count")).toHaveTextContent("1");
+  });
+
+  it("parks on a focus the browser scrolled in before the next frame when content grows first", () => {
+    const { container, rerender } = render(<StickHarness dependencyKey="msg_1" />);
+    const viewport = queryViewport(container);
+    const target = screen.getByTestId("focus-target");
+    setElementMetric(viewport, "clientHeight", 100);
+    setElementMetric(viewport, "scrollHeight", 500);
+    viewport.scrollTop = 400;
+    fireEvent.scroll(viewport);
+    setElementRect(viewport, () => ({ bottom: 100, left: 0, right: 400, top: 0 }));
+    let targetTop = -300;
+    setElementRect(target, () => ({
+      bottom: targetTop + 20,
+      left: 0,
+      right: 40,
+      top: targetTop,
+    }));
+
+    act(() => target.focus());
+    viewport.scrollTop = 100;
+    targetTop = 0;
+    // The resize reaches the hook before its own frame does.
+    setElementMetric(viewport, "scrollHeight", 700);
+    fireEvent.click(screen.getByTestId("content-resize"));
+
+    expect(viewport.scrollTop).toBe(100);
+    rerender(<StickHarness dependencyKey="msg_1|assistant_2" />);
+    expect(viewport.scrollTop).toBe(100);
+    expect(screen.getByTestId("unseen-count")).toHaveTextContent("1");
+  });
+
+  it("keeps following after a press on a visible element while the newest turn holds its top", () => {
+    // Following a long newest turn rests above the bottom. A press there is
+    // no more a move than one at the bottom is.
+    const { container, rerender } = render(
+      <StickHarness dependencyKey="msg_1" withResponse withTurn />
+    );
+    const viewport = queryViewport(container);
+    const target = screen.getByTestId("focus-target");
+    setElementMetric(viewport, "clientHeight", 100);
+    setElementMetric(viewport, "scrollHeight", 500);
+    setElementRect(viewport, () => ({ bottom: 100, left: 0, right: 400, top: 0 }));
+    setElementRect(screen.getByTestId("turn-anchor"), () => ({
+      bottom: 300,
+      left: 0,
+      right: 400,
+      top: 0,
+    }));
+    viewport.scrollTop = 300;
+    fireEvent.click(screen.getByTestId("content-resize"));
+    expect(viewport.scrollTop).toBe(300);
+    setElementRect(target, () => ({ bottom: 60, left: 0, right: 40, top: 40 }));
+
+    act(() => target.focus());
+    setElementMetric(viewport, "scrollHeight", 700);
+    rerender(<StickHarness dependencyKey="msg_1|assistant_2" withResponse withTurn />);
+
+    expect(viewport.scrollTop).toBe(300);
+    expect(target).toHaveFocus();
+    expect(screen.getByTestId("unseen-count")).toHaveTextContent("0");
   });
 
   it("drops a retained focus target after focus leaves the viewport", () => {
@@ -472,7 +668,9 @@ describe("useStickToBottom", () => {
     setElementRect(target, () => ({ bottom: -80, left: 0, right: 40, top: -100 }));
     fireEvent.click(screen.getByTestId("viewport-resize"));
 
-    expect(viewport.scrollTop).toBe(300);
+    // Following reaches the tail again: the target it would now hide no
+    // longer holds the focus, so it no longer holds the thread.
+    expect(viewport.scrollTop).toBe(400);
   });
 
   it("keeps away mode after passive shrink clamps to the exact bottom", () => {
@@ -766,6 +964,23 @@ describe("useStickToBottom", () => {
   });
 });
 
+/** The next animation frame, run when the test says (jsdom's own frames run on real time). */
+function mockAnimationFrame() {
+  let pending: FrameRequestCallback | undefined;
+  vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+    pending = callback;
+    return 1;
+  });
+  vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => {});
+  return {
+    run() {
+      const callback = pending;
+      pending = undefined;
+      callback?.(0);
+    },
+  };
+}
+
 function StickHarness({
   anchorKey,
   dependencyKey,
@@ -794,6 +1009,7 @@ function StickHarness({
     scrollRootRef,
     scrollToBottom,
     unseenCount,
+    showScrollToBottom,
   } = useStickToBottom(dependencyKey, {
     anchorKey,
     followTarget,
@@ -873,6 +1089,7 @@ function StickHarness({
       >
         scroll gesture start
       </button>
+      <output data-testid="show-bottom">{String(showScrollToBottom)}</output>
       <output data-testid="unseen-count">{unseenCount}</output>
     </div>
   );

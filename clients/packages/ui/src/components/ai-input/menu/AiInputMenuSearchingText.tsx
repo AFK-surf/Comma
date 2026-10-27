@@ -1,15 +1,11 @@
 import { aiInputMenuStateRow } from "../styles";
 
 /**
- * "Searching..." with the Home briefing's "Generating..." sweep: a quaternary
- * body with a primary shine gliding through on the shared loading-shine
- * cadence (`.comma-ai-input-menu-searching-text`, ai-input-menu.css).
+ * "Searching..." with the Home briefing's "Generating..." sweep: the shared
+ * loading shine (`.comma-shiny-text`, styles.css).
  */
 export const AiInputMenuSearchingText = ({ label }: { label: string }) => (
-  <span
-    className="comma-ai-input-menu-searching-text min-w-0 truncate"
-    data-shimmer="true"
-  >
+  <span className="comma-ai-input-menu-searching-text comma-shiny-text min-w-0 truncate">
     {label}
   </span>
 );

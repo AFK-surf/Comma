@@ -183,10 +183,30 @@ defmodule SalixIM.WeChatMessages do
 
   defp item_text(%{"type" => 1} = item), do: value_text(item["text_item"])
 
+  # WeChat's own speech recognition expects Chinese: a Japanese message comes
+  # back as wrong Chinese text or none. Its text is only a hint beside the
+  # audio, which WeChatFiles stages with the message when WeChat sends it.
   defp item_text(%{"type" => 3} = item) do
-    case value_text(item["voice_item"]) do
-      [] -> ["[WeChat voice attachment; no transcript supplied]"]
-      parts -> parts
+    voice = if is_map(item["voice_item"]), do: item["voice_item"], else: %{}
+
+    case {value_text(voice), is_map(voice["media"])} do
+      {[], true} ->
+        ["[WeChat voice message: transcribe the attached audio with audio.transcribe]"]
+
+      {[], false} ->
+        ["[WeChat voice attachment; no transcript supplied]"]
+
+      {[text], true} ->
+        [
+          "[WeChat voice message: transcribe the attached audio with audio.transcribe. " <>
+            "WeChat's own recognition, often wrong for languages other than Chinese: #{text}]"
+        ]
+
+      {[text], false} ->
+        [
+          "[WeChat voice message as recognized by WeChat, often wrong for languages other than Chinese]\n" <>
+            text
+        ]
     end
   end
 

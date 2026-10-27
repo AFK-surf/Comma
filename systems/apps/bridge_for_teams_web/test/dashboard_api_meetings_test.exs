@@ -162,6 +162,25 @@ defmodule BridgeForTeamsWeb.DashboardAPIMeetingsTest do
       assert {:ok, %{"personal_preparation" => false}} =
                SalixStore.MeetingCalendarSettings.get(project.salix_group_id)
 
+      # Turning off the channel notice keeps joining and drops calendar writeback.
+      conn
+      |> put(
+        meetings_path(org, project, "/settings"),
+        save_attrs(second, %{
+          "personal_preparation" => false,
+          "channel_notice" => false,
+          "calendar_writeback" => true,
+          "autojoin" => true
+        })
+      )
+      |> json_response(200)
+
+      assert {:ok, %{"channel_notice" => false, "calendar_writeback" => false, "mode" => "join"}} =
+               SalixStore.MeetingCalendarSettings.get(project.salix_group_id)
+
+      overview = conn |> get(meetings_path(org, project)) |> json_response(200) |> data()
+      assert overview["settings"]["channel_notice"] == false
+
       # Pausing keeps every other saved choice.
       conn
       |> put(meetings_path(org, project, "/settings"), %{"enabled" => false, "connect_id" => "x"})

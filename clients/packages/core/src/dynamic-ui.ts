@@ -1,12 +1,12 @@
-// A chat message's generated UI (a widget under its text answer): the JSON attached to the message, read when the
-// widget first shows and kept in memory for this account. A failure that time can fix (no answer from the network, a
-// read that took too long, or 408, 429, 502, 503, 504) is read once more 2 s later, on the core's Clock; the text
-// answer stays in place meanwhile. Another failure, or a second one, is `failed` with kind `load`; an attachment over
-// 256 KiB or that is no JSON is `failed` with kind `display`. A failure is not kept: a new `read` (the person's retry)
-// reads again.
+// A chat message's generated UI (a widget under its text answer): the JSON attached to the message, read when its
+// message first mounts in a live thread (ahead of the viewport) and kept in memory for this account. A failure that
+// time can fix (no answer from the network, a read that took too long, or 408, 429, 502, 503, 504) is read once more
+// 2 s later, on the core's Clock; the text answer stays in place meanwhile. Another failure, or a second one, is
+// `failed` with kind `load`; an attachment over 256 KiB or that is no JSON is `failed` with kind `display`. A failure
+// is not kept: a new `read` (the person's retry) reads again.
 //
 // Bounds: one read in flight per widget, at most one retry each; at most 64 answers kept (the least recently shown go
-// first, never one shown now).
+// first, never one a mounted message holds now).
 import { CoreError, type Topic, type Value } from "@comma/core-kernel";
 import { Duration, Effect, Option, Result } from "effect";
 import { route } from "./api.ts";

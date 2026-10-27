@@ -296,6 +296,66 @@ describe("BFT API client", () => {
     );
   });
 
+  it("reads an unconfigured daily brief and falls back on unknown values", async () => {
+    const { api, fetch } = apiReturning(
+      json(200, {
+        ok: true,
+        data: {
+          settings: null,
+          members: [
+            {
+              id: "m1",
+              email: "maya@acme.test",
+              name: null,
+              slack_user_id: "U1",
+              enabled: "yes",
+              timezone: "Etc/UTC",
+              deliver_at: "09:00:00",
+            },
+          ],
+          runs: [
+            {
+              id: "r1",
+              kind: "shared_extract",
+              status: "odd",
+              at: "2026-10-26T01:00:00Z",
+            },
+          ],
+        },
+      })
+    );
+    const brief = await api.dailyBrief("acme");
+    expect(fetch.mock.calls[0]?.[0]).toBe("/dashboard/api/v1/orgs/acme/daily-brief");
+    expect(brief.settings).toBeNull();
+    expect(brief.members[0]?.enabled).toBe(true);
+    expect(brief.runs[0]).toMatchObject({ kind: "personal_brief", status: "failed" });
+  });
+
+  it("saves daily brief settings", async () => {
+    const settings = {
+      project_id: "p1",
+      slack_connect_id: "slack-main",
+      enabled: true,
+      retention_days: 30,
+      team_names: "hidden" as const,
+      off_days: ["2026-10-01"],
+      work_days: [],
+      team_channel_id: "C0AQ0C0KVMH",
+      team_post_at: "10:20:00",
+    };
+    const fetch = vi.fn<typeof globalThis.fetch>(async () =>
+      json(200, { ok: true, data: settings })
+    );
+    const api = createBftApi({ fetch, csrfToken: () => "csrf" });
+    await expect(api.saveDailyBrief("acme", settings)).resolves.toMatchObject({
+      team_post_at: "10:20:00",
+    });
+    expect(fetch).toHaveBeenCalledWith(
+      "/dashboard/api/v1/orgs/acme/daily-brief/settings",
+      expect.objectContaining({ method: "PUT", body: JSON.stringify(settings) })
+    );
+  });
+
   it("reports a member's health request as org not found", async () => {
     const { api } = apiReturning(
       json(404, {
@@ -308,4 +368,36 @@ describe("BFT API client", () => {
       code: "org_not_found",
     });
   });
+});
+
+it("issues a Linux command for the selected project with CSRF and a stable request key", async () => {
+  const fetch = vi.fn<typeof globalThis.fetch>(async () =>
+    json(200, {
+      ok: true,
+      data: {
+        command: "linux-install",
+        expires_at: "2026-10-23T10:00:00Z",
+        operation: { id: "op" },
+      },
+    })
+  );
+  const api = createBftApi({ fetch, csrfToken: () => "csrf" });
+  await expect(
+    api.createComputeInstallCommand("org", "p 1", "request-1")
+  ).resolves.toEqual({
+    command: "linux-install",
+    expires_at: "2026-10-23T10:00:00Z",
+  });
+  expect(fetch).toHaveBeenCalledWith(
+    "/dashboard/api/v1/orgs/org/projects/p%201/compute-nodes/agent-vmm/install-commands",
+    expect.objectContaining({
+      method: "POST",
+      credentials: "same-origin",
+      body: "{}",
+      headers: expect.objectContaining({
+        "idempotency-key": "request-1",
+        "x-csrf-token": "csrf",
+      }),
+    })
+  );
 });

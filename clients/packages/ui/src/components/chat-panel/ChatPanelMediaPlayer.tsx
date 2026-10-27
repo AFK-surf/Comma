@@ -61,15 +61,20 @@ type MediaTone = "light" | "dark";
 interface PlaybackControllerOptions {
   defaultCurrentTime?: number | undefined;
   defaultPlaying?: boolean | undefined;
-  duration: number;
+  duration?: number | undefined;
   sourceKey?: string | undefined;
+  /**
+   * The URL the element plays. A new URL under the same `sourceKey` is the same file read again (a renewed stream): its
+   * position and play state carry over instead of starting over.
+   */
+  src?: string | undefined;
 }
 
 export interface MediaPlaybackController {
   bindMediaElement: RefCallback<MediaElement>;
   beginScrubbing: () => void;
   currentTime: number;
-  duration: number;
+  duration: number | undefined;
   endScrubbing: () => void;
   handleCanPlay: ReactEventHandler<MediaElement>;
   handleDurationChange: ReactEventHandler<MediaElement>;
@@ -103,6 +108,9 @@ export interface ChatPanelMediaPlayerProps {
 const clamp = (value: number, minimum: number, maximum: number) =>
   Math.min(maximum, Math.max(minimum, value));
 
+const normalizeMediaDuration = (value: number | undefined) =>
+  value !== undefined && Number.isFinite(value) && value >= 0 ? value : undefined;
+
 const getReducedMotionServerSnapshot = () => false;
 
 const usePrefersReducedMotion = () =>
@@ -112,7 +120,8 @@ const usePrefersReducedMotion = () =>
     getReducedMotionServerSnapshot
   );
 
-export const formatMediaTime = (seconds: number) => {
+export const formatMediaTime = (seconds: number | undefined) => {
+  if (seconds === undefined) return "--:--";
   const safeSeconds = Number.isFinite(seconds) ? Math.max(0, seconds) : 0;
   const minutes = Math.floor(safeSeconds / 60);
   const remainingSeconds = Math.floor(safeSeconds % 60);
@@ -150,11 +159,13 @@ const stepPlaybackRateValue = (current: number, direction: -1 | 1) => {
 export const useMediaPlaybackController = ({
   defaultCurrentTime = 0,
   defaultPlaying = false,
-  duration: durationFallback,
+  duration: suppliedDuration,
   sourceKey,
+  src,
 }: PlaybackControllerOptions): MediaPlaybackController => {
+  const durationFallback = normalizeMediaDuration(suppliedDuration);
   const [currentTime, setCurrentTimeState] = useState(() =>
-    clamp(defaultCurrentTime, 0, durationFallback)
+    clamp(defaultCurrentTime, 0, durationFallback ?? Infinity)
   );
   const [duration, setDuration] = useState(durationFallback);
   const [isPlaying, setIsPlaying] = useState(defaultPlaying);
@@ -180,6 +191,9 @@ export const useMediaPlaybackController = ({
     defaultPlaying ? "requesting" : "paused"
   );
   const sourceKeyRef = useRef(sourceKey);
+  const srcRef = useRef(src);
+  /** Set from a new URL of the same source until its metadata loads: the element's reload is not a new source. */
+  const swappingUrlRef = useRef(false);
   const latestStateRef = useRef({
     currentTime,
     isPlaying,
@@ -359,6 +373,7 @@ export const useMediaPlaybackController = ({
 
   const setCurrentTime = useCallback(
     (value: number) => {
+      if (duration === undefined) return;
       const nextValue = clamp(value, 0, duration);
       latestStateRef.current.currentTime = nextValue;
       setCurrentTimeState(nextValue);
@@ -430,10 +445,16 @@ export const useMediaPlaybackController = ({
   );
 
   useBrowserLayoutEffect(() => {
-    if (Object.is(sourceKeyRef.current, sourceKey)) return;
+    const urlChanged = !Object.is(srcRef.current, src);
+    srcRef.current = src;
+    if (Object.is(sourceKeyRef.current, sourceKey)) {
+      if (urlChanged) swappingUrlRef.current = true;
+      return;
+    }
     sourceKeyRef.current = sourceKey;
+    swappingUrlRef.current = false;
     resetForSource();
-  }, [resetForSource, sourceKey]);
+  }, [resetForSource, sourceKey, src]);
 
   const setPlaybackRate = useCallback((value: number) => {
     setPlaybackRateState(value);
@@ -474,7 +495,7 @@ export const useMediaPlaybackController = ({
       return;
     }
 
-    if (element.ended || element.currentTime >= duration) {
+    if (element.ended || (duration !== undefined && element.currentTime >= duration)) {
       element.currentTime = 0;
       latestStateRef.current.currentTime = 0;
       setCurrentTimeState(0);
@@ -508,15 +529,17 @@ export const useMediaPlaybackController = ({
       retryDesiredPlayback(event.currentTarget);
     },
     handleDurationChange: (event) => {
+      const nextDuration = normalizeMediaDuration(event.currentTarget.duration);
       if (
         event.currentTarget === mediaElementRef.current &&
-        Number.isFinite(event.currentTarget.duration)
+        nextDuration !== undefined
       ) {
-        setDuration(event.currentTarget.duration);
+        setDuration(nextDuration);
       }
     },
     handleEmptied: (event) => {
       if (event.currentTarget !== mediaElementRef.current) return;
+      if (swappingUrlRef.current) return;
       if (!initializedMediaElementsRef.current.has(event.currentTarget)) return;
       initializedMediaElementsRef.current.delete(event.currentTarget);
       resetForSource(event.currentTarget);
@@ -527,9 +550,10 @@ export const useMediaPlaybackController = ({
       resumeAfterScrubbingRef.current = false;
       invalidatePlayRequests();
       desiredPlayingRef.current = false;
-      const endedAt = Number.isFinite(event.currentTarget.duration)
-        ? event.currentTarget.duration
-        : duration;
+      const endedAt =
+        normalizeMediaDuration(event.currentTarget.duration) ??
+        duration ??
+        event.currentTarget.currentTime;
       latestStateRef.current.currentTime = endedAt;
       setCurrentTimeState(endedAt);
       setPlaybackPhase("paused");
@@ -539,9 +563,9 @@ export const useMediaPlaybackController = ({
       if (element !== mediaElementRef.current) return;
 
       initializedMediaElementsRef.current.add(element);
-      const maximumTime = Number.isFinite(element.duration)
-        ? element.duration
-        : durationFallback;
+      const metadataDuration = normalizeMediaDuration(element.duration);
+      if (metadataDuration !== undefined) setDuration(metadataDuration);
+      const maximumTime = metadataDuration ?? duration ?? Infinity;
       const handoffTime = clamp(latestStateRef.current.currentTime, 0, maximumTime);
       if (Math.abs(element.currentTime - handoffTime) > 0.05) {
         try {
@@ -552,6 +576,7 @@ export const useMediaPlaybackController = ({
       }
       latestStateRef.current.currentTime = handoffTime;
       setCurrentTimeState(handoffTime);
+      swappingUrlRef.current = false;
       retryDesiredPlayback(element);
     },
     handlePause: (event) => {
@@ -586,6 +611,8 @@ export const useMediaPlaybackController = ({
       setPlaybackRateState(nextPlaybackRate);
     },
     handleTimeUpdate: (event) => {
+      // A reloading URL reports its start; the position it resumes from is applied once its metadata loads.
+      if (swappingUrlRef.current) return;
       if (event.currentTarget === mediaElementRef.current) {
         initializedMediaElementsRef.current.add(event.currentTarget);
         latestStateRef.current.currentTime = event.currentTarget.currentTime;
@@ -760,7 +787,7 @@ export const ChatPanelMediaPlayer = ({
   const ratePointerPressActiveRef = useRef(false);
   const controlsPinned = rateMenuOpen || ratePopoverPresent || volumePopoverOpen;
   const progress =
-    controller.duration > 0
+    controller.duration !== undefined && controller.duration > 0
       ? clamp((controller.currentTime / controller.duration) * 100, 0, 100)
       : 0;
   const progressStyle = {
@@ -1024,7 +1051,8 @@ export const ChatPanelMediaPlayer = ({
             aria-valuetext={progressLabel}
             className="chat-panel-media-progress"
             data-no-press-feedback
-            max={controller.duration}
+            disabled={controller.duration === undefined || controller.duration <= 0}
+            max={controller.duration ?? 0}
             min={0}
             onChange={handleProgressChange}
             onKeyDown={handleProgressKeyDown}

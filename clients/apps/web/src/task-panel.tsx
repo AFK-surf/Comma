@@ -8,6 +8,8 @@ const target = {
   groupId: params.get("group_id") ?? "",
   conversationId: params.get("conversation_id") ?? "",
   workspaceId: params.get("workspace_id") ?? "",
+  // A Telegram app button opens this page to run that app alone.
+  appId: params.get("app_id") ?? undefined,
 };
 // UI and styles download without delaying authentication or the static first paint.
 const viewReady = import("./task-panel-view").catch(() => undefined);

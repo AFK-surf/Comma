@@ -21,7 +21,10 @@ vi.mock("../../chat/ChatProvider", async (importOriginal) => ({
 }));
 vi.mock("../../chat-sidebar/ChatSidebarContext", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../chat-sidebar/ChatSidebarContext")>()),
-  useChatSidebar: () => ({ closeDrivePreview: vi.fn(), openDrivePreview: vi.fn() }),
+  useChatSidebarActions: () => ({
+    closeDrivePreview: vi.fn(),
+    openDrivePreview: vi.fn(),
+  }),
   useRegisterChatSidebarHost: () => {},
 }));
 

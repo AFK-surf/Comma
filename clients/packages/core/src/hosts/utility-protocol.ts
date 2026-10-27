@@ -246,6 +246,8 @@ export type MeetingAnswer<O extends MeetingOp = MeetingOp> =
 export interface UtilitySessionStart {
   apiOrigin: string;
   clientPlatform: ClientPlatform;
+  /** The app's version, as the core's requests report it (`Host.client`). */
+  appVersion?: string;
   resumed: SessionAuthorityResume;
 }
 
@@ -304,7 +306,7 @@ export interface UtilityPresence {
 
 /**
  * A port the core asks Main for, by `id` (the session's, and the desktop's: presence, the system browser, the app's
- * return, a chat attachment pick); Main answers `session-done` with its value or why it failed.
+ * return, a chat attachment pick, a media stream); Main answers `session-done` with its value or why it failed.
  */
 export type UtilitySessionCall =
   | {
@@ -329,7 +331,22 @@ export type UtilitySessionCall =
   | { op: "updateDownload"; input: AppRelease }
   | { op: "updateApply"; input: AppRelease }
   | { op: "chatPick"; input: ChatPickRequest }
-  | { op: "saveDownload"; input: { fileName: string; content: Uint8Array } };
+  | { op: "saveDownload"; input: { fileName: string; content: Uint8Array } }
+  | { op: "saveOpen"; input: { fileName: string } }
+  | { op: "saveWrite"; input: { id: number; bytes: Uint8Array } }
+  | { op: "saveClose"; input: { id: number; keep: boolean } }
+  | { op: "openStream"; input: UtilityStreamRead & { type: string } }
+  | { op: "closeStream"; input: { url: string } }
+  | { op: "saveStream"; input: UtilityFileRead & { fileName: string } };
+
+/**
+ * Where Main reads a file's bytes for the core: the API's GET `path` under the session `lease` names, or a signed `url`
+ * that is its own authority (an attachment's, from the blob store), read with no credential.
+ */
+export type UtilityFileRead = { path: string; lease: UtilityLease } | { url: string };
+
+/** Where Main reads a stream's bytes: as a file read, or from the core (`core`: a file source it reads, as JSON). */
+export type UtilityStreamRead = UtilityFileRead | { core: string };
 
 /** Each session port's answer. */
 export type UtilitySessionAnswer = {
@@ -347,9 +364,22 @@ export type UtilitySessionAnswer = {
   updateApply: boolean;
   chatPick: ChatPickAnswer;
   saveDownload: { downloadRef: string; fileName: string } | null;
+  saveOpen: { id: number };
+  saveWrite: null;
+  saveClose: { downloadRef: string; fileName: string } | null;
+  openStream: string;
+  closeStream: null;
+  saveStream: SavedStream;
 };
 
+/** What a streamed save came to: the saved file, the server's refusal, or null when it was not written. */
+export type SavedStream =
+  | { downloadRef: string; fileName: string }
+  | { status: number; code: string }
+  | null;
+
 export type MainToCore =
+  | { type: "device-setup-done"; id: number; value?: unknown; error?: string }
   | {
       type: typeof CORE_START;
       dataDir: string;
@@ -368,6 +398,8 @@ export type MainToCore =
        * says (`clock`).
        */
       testClock?: true | undefined;
+      /** Where the test clock starts on the wall clock (Main's test clock now): both read one time. */
+      testClockStart?: number | undefined;
       /** An Electron e2e's (never a release's): where its stations are, by endpoint id (loopback addresses). */
       stationPeers?: Record<string, string[]> | undefined;
       /** The station's mesh addon (`mesh.node`) in the station the app carries: the core's endpoint to stations. */
@@ -394,12 +426,37 @@ export type MainToCore =
   | { type: "fail"; id: number; message: string }
   /** Main's preview of a workspace image (`preview`), or why it could not draw one. */
   | { type: "preview-done"; id: number; bytes?: Uint8Array; error?: string }
+  /** The part of a local file Main read (`local-read`), or why it could not. */
+  | { type: "local-read-done"; id: number; bytes?: Uint8Array; error?: string }
   /** Main's answer to a meeting command (`meeting`), or why it could not answer (`error`). */
   | { type: "meeting-done"; id: number; answer?: MeetingAnswer; error?: string }
   /** What Main's meeting recorder parts saw (presence, capture, the settings, the main window). */
-  | { type: "meeting-event"; event: MeetingEvent };
+  | { type: "meeting-event"; event: MeetingEvent }
+  /** What the voice call's socket did (`voice-call`). */
+  | { type: "voice-call-event"; event: VoiceCallSocketEvent };
+
+/**
+ * The voice call socket Main holds for the core (`VoiceCallPorts`): it opened, a `comma.voice.v1` text message came,
+ * or it closed with a WebSocket close code (0 when it never opened) and reason.
+ */
+export type VoiceCallSocketEvent =
+  | { kind: "open" }
+  | { kind: "message"; text: string }
+  | { kind: "closed"; code: number; reason: string };
+
+/** What the core asks of the voice call socket: open one with a voice key, send a text message, or close it. */
+export type VoiceCallSocketOp =
+  | { op: "open"; url: string; key: string }
+  | { op: "send"; text: string }
+  | { op: "close" };
 
 export type CoreToMain =
+  | {
+      type: "device-setup";
+      id: number;
+      op: Parameters<import("../host.ts").DeviceSetupPort["call"]>[0];
+      input: Record<string, unknown>;
+    }
   | {
       type: "fetch";
       id: number;
@@ -407,6 +464,8 @@ export type CoreToMain =
       path: string;
       headers: [string, string][];
       body: Uint8Array | null;
+      /** The body is this local file's bytes, which Main reads as it sends (an upload); `body` is then null. */
+      localFileRef?: string;
       lease: UtilityLease;
     }
   | { type: "abort"; id: number }
@@ -416,16 +475,32 @@ export type CoreToMain =
   | { type: "session-dropped"; id: number }
   /** The snapshot the core publishes and the lease it gives: Main's gate moves on it, in the order told. */
   | { type: "gate"; snapshot: unknown; lease: UtilityLease | null }
-  /** The core's test clock moved as `clock` asked, and what fell due settled; or why it could not move. */
-  | { type: "clock-done"; id: number; error?: string }
+  /**
+   * The core's test clock moved as `clock` asked, and what fell due settled; or why it could not move. `now` is its
+   * time after the move and `nextDue` when its earliest timer falls due, both on the wall clock.
+   */
+  | { type: "clock-done"; id: number; error?: string; now?: number; nextDue?: number }
   /** A workspace image the core read, for Main to draw again with the platform's decoder. */
   | { type: "preview"; id: number; bytes: Uint8Array; mediaType: string }
+  /**
+   * `length` bytes from `offset` of a local file a pick left with Main (`Host.readLocalFile`): a part of it going up to
+   * a station. Answered `local-read-done`, with fewer bytes only where the file ends.
+   */
+  | {
+      type: "local-read";
+      id: number;
+      localFileRef: string;
+      offset: number;
+      length: number;
+    }
   /** A request to the Drive node: its state, one page of a space's listing, or one of its operations (`run`). */
   | { type: "drive"; id: number; op: "state" }
   | { type: "drive"; id: number; op: "list"; input: LocalDriveListInput }
   | { type: "drive"; id: number; op: "run"; name: LocalDriveOp; input: unknown }
   /** A meeting command for Main (`MeetingOps`): answered `meeting-done`. */
   | ({ type: "meeting"; id: number } & MeetingCall)
+  /** The voice call socket (`VoiceCallSocketOp`); what it does comes back as `voice-call-event`. */
+  | ({ type: "voice-call" } & VoiceCallSocketOp)
   /**
    * The core cleared what it keeps (`app.reset`): Main resets the app and starts a new core; this process ends with
    * it, unanswered.

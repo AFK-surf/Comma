@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { realMainClock } from "../clock";
 import {
   CableCrypter,
   CableHandshake,
@@ -35,7 +36,7 @@ describe("caBLE v2 initiator", () => {
   it("names the QR code, tunnel and connection the way Chrome does", () => {
     const session = createCableQrSession("ga", {
       identityPrivateKey,
-      now: 1_767_225_600_000,
+      clock: { ...realMainClock, now: () => 1_767_225_600_000 },
       qrSecret,
     });
     expect(session.uri).toBe(
@@ -63,7 +64,11 @@ describe("caBLE v2 initiator", () => {
   });
 
   it("completes the KNpsk0 handshake and reads the phone's first message", () => {
-    const session = createCableQrSession("ga", { identityPrivateKey, qrSecret });
+    const session = createCableQrSession("ga", {
+      clock: { ...realMainClock, now: () => 1_767_225_600_000 },
+      identityPrivateKey,
+      qrSecret,
+    });
     const found = decryptCableAdvert(advert, session.eidKey)!;
     const handshake = new CableHandshake(session, found, Buffer.alloc(32, 0x22));
     expect(handshake.message.toString("hex")).toBe(

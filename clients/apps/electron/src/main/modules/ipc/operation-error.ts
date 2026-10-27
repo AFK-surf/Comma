@@ -8,7 +8,9 @@ export class NativeOperationError extends Error {
       | "COMPUTE_SETUP_UNKNOWN"
       | "COMPUTE_CLOUD_UNAVAILABLE"
       | "COMPUTE_CONNECTION_FAILED"
-      | "COMPUTE_RECOVERY_UNVERIFIED" = "OPERATION_FAILED",
+      | "COMPUTE_RECOVERY_UNVERIFIED"
+      | "LOCAL_STATION_UNAVAILABLE"
+      | "LOCAL_STATION_CONFLICT" = "OPERATION_FAILED",
     options?: ErrorOptions
   ) {
     super(message, options);

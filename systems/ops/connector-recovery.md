@@ -15,11 +15,10 @@ A crash, forced deletion, failed persistence, or exhausted shutdown deadline can
 A node missing from discovery or a disconnected device record **does not prove that its socket process stopped**.
 These cases need independent operator evidence. No server timeout forgives an unreachable owner.
 
-The desktop client bounds its own revoke-before-mint retry by the credential lifetime.
-When the requested TTL has elapsed and the server has refused the credential, two failed `DELETE /v1/comma/workspaces/:id/connector-token` attempts no longer block the client.
-It mints a replacement and reconnects.
-The server keeps the pending stop target and the expired token record for that generation.
-This bound does not confirm the owner stop, and it does not apply to a credential inside its TTL.
+The desktop client revokes the credentials it no longer uses: a renewed one after it expires, a refused one before it mints the next one, and all of them at sign-out.
+A failed `DELETE /v1/comma/workspaces/:id/connector-token` does not block the client. The credential's own lifetime bounds it.
+The server keeps the pending stop target and the token record for that generation.
+A failed revocation does not confirm the owner stop.
 
 ## Recover an already-stranded generation credential
 

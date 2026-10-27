@@ -5,6 +5,12 @@ defmodule SalixMCP.Provider do
 
   alias SalixMCP.{Credentials, Gateway, Store}
 
+  # Targets of MCP servers in the Comma desktop app, reached through the device's
+  # Connector (SalixMCP.Connection client_mcp).
+  @client_target_prefix "client:"
+  # Written only by a plugin's setup, never by an Agent's mcp_manager.
+  @setup_owned ["owner_user_id", :owner_user_id]
+
   @impl true
   def provider_state(agent_id) do
     with {:ok, scope} <- Store.scope_for_agent(agent_id) do
@@ -76,17 +82,42 @@ defmodule SalixMCP.Provider do
 
   @impl true
   def create_binding(agent_id, attrs) do
-    with {:ok, scope} <- Store.scope_for_agent(agent_id) do
-      Gateway.create_binding(scope.tenant_id, scope.group_id, attrs)
+    with {:ok, scope} <- Store.scope_for_agent(agent_id),
+         :ok <- not_client_binding(attrs) do
+      Gateway.create_binding(scope.tenant_id, scope.group_id, Map.drop(attrs, @setup_owned))
     end
   end
 
   @impl true
   def update_binding(agent_id, binding_id, attrs) do
-    with {:ok, scope} <- Store.scope_for_agent(agent_id) do
-      Gateway.update_binding(scope.tenant_id, scope.group_id, binding_id, attrs)
+    with {:ok, scope} <- Store.scope_for_agent(agent_id),
+         {:ok, current} <- Store.get_binding(scope.tenant_id, scope.group_id, binding_id),
+         :ok <- not_client_binding(current),
+         :ok <- not_client_binding(attrs) do
+      Gateway.update_binding(
+        scope.tenant_id,
+        scope.group_id,
+        binding_id,
+        Map.drop(attrs, @setup_owned)
+      )
     end
   end
+
+  # A Comma desktop app's own MCPs (the Mac apps) are connected only by their
+  # plugin's install from that device (Salix.Control.PluginSetup.connect_device/5).
+  defp not_client_binding(attrs) do
+    mcp_id = attrs["mcp_id"] || attrs[:mcp_id]
+    target_ref = to_string(attrs["target_ref"] || attrs[:target_ref] || "")
+
+    if mcp_id == SalixMCP.Builtins.mac_apps_mcp_id() or client_target?(target_ref),
+      do:
+        {:error,
+         {:bad_request,
+          "The Mac apps connect from Comma > Plugins on the Mac they run on, not through mcp_manager."}},
+      else: :ok
+  end
+
+  defp client_target?(target_ref), do: String.starts_with?(target_ref, @client_target_prefix)
 
   @impl true
   def set_binding_enabled(agent_id, binding_id, enabled) do
@@ -119,12 +150,78 @@ defmodule SalixMCP.Provider do
     with {:ok, scope} <- Store.scope_for_agent(agent_id),
          {:ok, binding} <-
            Store.find_binding_by_alias(scope.tenant_id, scope.group_id, binding_alias),
+         :ok <- requester_owns(binding, ctx),
          {:ok, tool_name} <- resolve_tool_name(binding, tool_alias) do
       Gateway.call_tool(scope.tenant_id, scope.group_id, binding["binding_id"], tool_name, args,
         agent_id: agent_id,
         session_id: ctx[:session_id] || ctx["session_id"],
         tool_call_id: ctx[:tool_call_id] || ctx["tool_call_id"]
       )
+    end
+  end
+
+  # A Comma desktop app's own MCP (the Mac apps: a person's calendar, messages
+  # and mail) runs only for the requests of the member who owns the device it
+  # reaches, never for another member's turn or for work no person asked for.
+  # The device's owner decides, not a field of the binding.
+  defp requester_owns(binding, ctx) do
+    if client_binding?(binding) do
+      with false <- unattended?(ctx),
+           {:ok, owner} <- device_owner(binding),
+           {:ok, ^owner} <- requester(ctx) do
+        :ok
+      else
+        _ ->
+          {:error,
+           "This MCP runs on one member's own Mac. Only that member's own requests can use it, not another member's or work no person asked for."}
+      end
+    else
+      :ok
+    end
+  end
+
+  # A schedule fire or a Loop wake carries the principal sealed when it was
+  # created (SalixAgent.IFC.principal/1), but no person asks for it when it runs.
+  defp unattended?(ctx) do
+    origin = ctx[:trusted_origin] || ctx["trusted_origin"] || %{}
+    to_string(origin["provider"] || origin[:provider] || "") in ["schedule", "loop"]
+  end
+
+  defp client_binding?(binding) do
+    binding["mcp_id"] == SalixMCP.Builtins.mac_apps_mcp_id() or
+      client_target?(to_string(binding["target_ref"] || ""))
+  end
+
+  defp device_owner(binding) do
+    with "device" <- binding["placement"],
+         {:ok, %{"device_id" => device_id}} when is_binary(device_id) <-
+           SalixEnv.Control.device_runtime_binding_status(
+             binding["device_runtime_id"],
+             binding["tenant_id"],
+             binding["group_id"]
+           ),
+         {:ok, device} <-
+           SalixEnv.Registry.get_device(binding["tenant_id"], binding["group_id"], device_id),
+         owner when is_binary(owner) and owner != "" <-
+           device["owner_user_id"] || get_in(device, ["meta", "owner_user_id"]) do
+      {:ok, owner}
+    else
+      _ -> {:error, :device_owner_unknown}
+    end
+  end
+
+  # The product that owns the Group maps provider users (Slack, WeChat, ...) to
+  # its users; without one, only a direct Comma user counts.
+  defp requester(ctx) do
+    case SystemsRuntime.get_env(:salix_mcp, :requester_mod) do
+      nil ->
+        case SalixAgent.IFC.principal(ctx[:trusted_origin]) do
+          {:comma_user, user_id} -> {:ok, user_id}
+          _ -> {:error, :requester_required}
+        end
+
+      mod ->
+        mod.requester(ctx)
     end
   end
 
@@ -239,10 +336,19 @@ defmodule SalixMCP.Provider do
         {:ok, name}
 
       _ ->
-        {:error,
-         "MCP tool not found in binding discovery cache; reconnect the binding with mcp_manager.reconnect or inspect mcp.list"}
+        {:error, tool_not_found(binding)}
     end
   end
+
+  # The Mac apps list only the tools of the apps the user turned on: a missing tool
+  # is an app turned off, which reconnecting cannot change.
+  defp tool_not_found(%{"target_ref" => "client:" <> _}),
+    do:
+      "This app is turned off on the user's Mac. Ask the user to turn it on in Comma > Plugins > Mac apps on that Mac."
+
+  defp tool_not_found(_binding),
+    do:
+      "MCP tool not found in binding discovery cache; reconnect the binding with mcp_manager.reconnect or inspect mcp.list"
 
   defp operation_id(binding_alias, tool_alias), do: "mcp." <> binding_alias <> "." <> tool_alias
 

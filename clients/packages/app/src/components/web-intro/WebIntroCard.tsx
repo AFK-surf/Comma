@@ -9,7 +9,7 @@ import {
   useCommaClientSettings,
   useCommaClientSettingsPending,
 } from "../commaClientSettings";
-import { commaMacDownloadUrl } from "../DesktopAppPrompt";
+import { commaDesktopDownloadUrl } from "../DesktopAppPrompt";
 import { OnboardingSwap } from "../onboarding/OnboardingCard";
 import { openNativePlatformExternalUrl } from "../../nativePlatformActions";
 import { WebIntroMotion, layerPosition, type WebIntroScene } from "./WebIntroMotion";
@@ -37,9 +37,9 @@ const tips: readonly WebIntroTip[] = [
   },
   {
     id: "mac",
-    title: (m) => m.web_intro_mac_title(),
-    body: (m) => m.web_intro_mac_body(),
-    action: { label: (m) => m.desktop_app_get_mac(), run: "download" },
+    title: (m) => m.web_intro_desktop_title(),
+    body: (m) => m.web_intro_desktop_body(),
+    action: { label: (m) => m.desktop_app_get(), run: "download" },
   },
 ];
 
@@ -138,7 +138,8 @@ export function WebIntroCard({ userId }: { userId: string }) {
   };
   const runAction = (run: "plugins" | "download") => {
     if (run === "plugins") void navigate({ to: "/plugins" });
-    if (run === "download") void openNativePlatformExternalUrl(commaMacDownloadUrl);
+    if (run === "download")
+      void openNativePlatformExternalUrl(commaDesktopDownloadUrl());
   };
 
   return (

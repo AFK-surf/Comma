@@ -94,7 +94,8 @@ defmodule SalixIM.Provider.Manuals do
         "Report participant activity, device connection, and runtime availability as separate status domains. Status queries do not probe, rebind, retry, wake, or repair anything.",
         "Use internal.send_message when you need to send a visible message to the conversation.",
         "Task labeling is a Router responsibility. Select matching existing ids from the catalog in internal.task.create and pass label_ids with the initial Task. Use internal.label.assign only to change an existing Task. Existing-label assignment needs no approval and preserves labels already on the Task. A name alone never decides; skip labels without an applicable description and leave the Task unchanged if none match. Prefer reusing existing labels. If a useful classification is missing, request one or more new labels together through internal.label.propose op=create, payload {conversation_id, labels: [{name, color?, description}, ...]}. A single Task can justify a new label; explain its reusable meaning and why existing labels are insufficient. The server creates and adds them to the target Task on approval. Catalog create/update/delete and explicit full replacement proposals obey the Group approval_policy: ask waits for human confirmation, auto executes immediately even with Comma closed. Always follow returned status and application_status; never claim a pending or conflicted change applied.",
-        "Routers use internal.update_conversation for Conversation lifecycle, or whenever no visible Message is needed. Workers publish ordinary result Messages. Task status never changes from ordinary Message metadata. For a product-assigned Triage investigation, internal.triage.complete submits the decision to the product owner, which settles Task status after delivery. Workers still cannot set status directly."
+        "Routers use internal.update_conversation for Conversation lifecycle, or whenever no visible Message is needed. Workers publish ordinary result Messages. Task status never changes from ordinary Message metadata. For a product-assigned Triage investigation, internal.triage.complete submits the decision to the product owner, which settles Task status after delivery. Workers still cannot set status directly.",
+        "When the user asks in their own words to rename a Task, the Router renames it itself: find the Task with internal.search or internal.task.list unless its conversation_id is already known, then set only title with internal.update_conversation, or with internal.update_conversation_titles for several Tasks in one request. Use the title the user gave verbatim; write one in the user's language only when they describe it instead. If several Tasks could match, ask which one. Never create a replacement Task, and never ask the Worker to rename it. Report the committed title, or the error without claiming the rename."
       ],
       "apis" => [
         %{
@@ -241,11 +242,12 @@ defmodule SalixIM.Provider.Manuals do
           "safety" => "write",
           "roles" => ["router"],
           "description" =>
-            "Create one distinct durable Task as an agent_task Conversation. Omit agent_id: the Group's own Task agent runs every Task. Choose the Task's model, and runs_on when it must run in a particular place. Do not use this operation to continue, clarify, correct, restart or retry work inside an exact existing Task, or add requirements to it. A new Task does not inherit another Conversation history, so content must be self-contained. A plain one-shot Task may be set to completed by its own Router after verified delivery with no remaining work or human decision. Delegated work that repeats or keeps watching something is one Loop Task: pass loop in this call, never one Task per run. Do not use schedule for new work, and never pair a Task create with schedule.create, loop.build or loop.create, because those target the calling Router and Session rather than the Task: the Task's Worker makes the Task's Loop. An exact transport retry preserves the same server-derived request identity: trusted internal-origin retries require the same source Message and immutable create command; Triage handoffs require the same original obligation and delegation ordinal across Sessions and still reject changed content/title; other runtimes require the same Session and tool-call identity. A newly issued create command does not continue an existing Task. Source Conversation provenance and retry identity are bound by the server and are not model parameters. Participant responses arrive later as ordinary Messages in the returned Task Conversation. For a Slack-sourced Task, the runtime records the selected original reply coordinates automatically and includes task_reply_source with each delivered Task message; do not invent or overwrite this source, and use it rather than an unrelated later request when returning the result. Select existing labels from the supplied catalog and pass label_ids in this call. A human Slack, Feishu, Lark or QQ source automatically receives its Task card through the runtime. Read task_card.status in the result. Do not publish again when it is queued. If publication failed, retry only the source provider's post_task_card for the returned conversation_id. If useful labels are missing, then request them together via internal.label.propose op=create with the returned conversation_id and labels array. Label approval never blocks the Worker from proceeding.",
-          "required_params" => ["content"],
+            "Create one distinct durable Task. Put its objective and context in content. Omit agent_id and model for the configured defaults. Always give runs_on: {kind: sandbox} with repo for code changes to a GitHub repository; its terminal_url, also in internal.task.list, opens the sandbox's terminal for a Workspace member signed in to it with Comma, so give it to a user who asks to work in the sandbox. Give {kind: default} for the configured place, or another place for an explicit machine choice. Continue, clarify or correct existing work in its exact Task instead of creating another. A new Task has no other Conversation history, so content must be self-contained. A plain one-shot Task may be completed by its Router after verified delivery, with no remaining work or human decision. For work that repeats, pass loop once. Do not use schedule for new work or create a separate Schedule or Loop for the Router. The server binds source provenance and request identity. A pending or uncertain result does not authorize a replacement Task. Reports arrive as Messages in the returned Task. For a Slack source, use the task_reply_source supplied with Task messages when returning results. Do not invent or overwrite it. Select existing label_ids from the supplied catalog. A human Slack, Feishu, Lark or QQ source receives a Task card automatically. Read task_card.status and do not publish again when it is queued. If publication failed, call the source provider's post_task_card for the returned conversation_id. Propose missing labels together through internal.label.propose after creation. Label approval does not block the work.",
+          "required_params" => ["content", "runs_on"],
           "example_params" => %{
             "connect_id" => "internal",
-            "content" => "required content"
+            "content" => "required content",
+            "runs_on" => %{"kind" => "default"}
           },
           "input_schema" => %{
             "type" => "object",
@@ -294,7 +296,7 @@ defmodule SalixIM.Provider.Manuals do
                 "additionalProperties" => false,
                 "required" => ["kind"],
                 "description" =>
-                  "Optional model for this Task only. Kind platform with tier worker, when agent.models lists the platform model: the platform's model, shown to people by its name. Kind catalog, from agent.models: the Task runs it; reasoning_effort must be one of that model's efforts, allow_paid true lets pay-per-use keys serve it, and profile_id pins one Profile that serves it. Kind runtime, with runs_on: provider codex or claude names the station runtime that runs the Task, and model one that station runs (its task_models in device.get or device.list); give only kind and provider to run that runtime's default model on the station (on the Cloud VM, the platform model with Codex), or omit model with runs_on to use the station's default. A product may limit catalog models, as an organization's allowed list does (model_not_allowed); agent.models lists only the ones it accepts. Some products reject model. Omit it, without runs_on, to use the Group's default Task model, which people set in the product's settings (the platform model unless they changed it); when the Group's default place to run Tasks is a station or the Cloud VM, that station runs its default model.",
+                  "Optional model for this Task. Omit it to use the configured default. Use kind catalog with a model from agent.models, or kind platform with tier worker when listed. Use kind runtime with provider codex or claude for machine work. Omit its model to use that runtime's default. A named runtime model must appear in the machine's task_models. Choose reasoning_effort from the model's supported efforts. Prefer a suitable subscription. Set allow_paid only when none exists and tell the user that pay-per-use credentials will serve the Task. profile_id pins an authorized profile. A refused model choice remains unfinished work.",
                 "properties" => %{
                   "kind" => %{"type" => "string", "enum" => ["catalog", "runtime", "platform"]},
                   "tier" => %{"type" => "string", "enum" => ["worker"]},
@@ -310,10 +312,48 @@ defmodule SalixIM.Provider.Manuals do
                 "additionalProperties" => false,
                 "required" => ["kind"],
                 "description" =>
-                  "Optional place this Task runs: {kind: cloud_vm} for this Workspace's Cloud VM (woken or created as needed; the Workspace's Cloud VM switch must be on), {kind: station, device_id} for a connected desktop station from device.list, or {kind: salix} for inside Salix. A Loop Task (loop) runs while every app is closed, so it cannot run on a person's own computer: use salix or cloud_vm. A model with cloud_vm or station must be of kind runtime. Omit it to run at the Group's default place to run Tasks, which people set in the product's settings (inside Salix unless they changed it); a Task with a model not of kind runtime runs inside Salix. A default place that cannot take the Task refuses it, as a place you named does.",
+                  "Required execution choice. Use {kind: sandbox} with repo for code changes to a GitHub repository. Use {kind: default} for configured defaults and automatic machine selection. Use {kind: station, device_id} from device.list for work on that connected machine's existing files. Use {kind: cloud_vm} for the Group's Cloud VM, which must be enabled and ready before this call. Use {kind: salix} for internal work. Personal machine logins require their user's opt-in. Managed locations use authorized cloud accounts. A model supplied for a machine or sandbox must have kind runtime. Explicit choices and configured defaults are preserved. A Loop runs inside Salix and does not use a machine default. Sandbox is an explicit isolated session, never an automatic machine candidate.",
                 "properties" => %{
-                  "kind" => %{"type" => "string", "enum" => ["cloud_vm", "station", "salix"]},
+                  "kind" => %{
+                    "type" => "string",
+                    "enum" => ["default", "cloud_vm", "station", "sandbox", "salix"]
+                  },
                   "device_id" => %{"type" => "string", "minLength" => 1}
+                }
+              },
+              "repo" => %{
+                "type" => "object",
+                "additionalProperties" => false,
+                "required" => ["owner", "name"],
+                "description" =>
+                  "GitHub repository for an isolated coding Task. Requires runs_on {kind: sandbox}. Omit base_ref for the repository's default branch. Omit branch for a new Task branch. To continue an existing branch, give that branch as both base_ref and branch. To continue or fix an open pull request of this repository, give pull_request alone, without base_ref or branch: the Task works on its head branch, and the Worker's pushes update that pull request. Other execution choices reject repo.",
+                "properties" => %{
+                  "owner" => %{"type" => "string", "minLength" => 1, "maxLength" => 100},
+                  "name" => %{"type" => "string", "minLength" => 1, "maxLength" => 100},
+                  "base_ref" => %{"type" => "string", "minLength" => 1, "maxLength" => 255},
+                  "branch" => %{
+                    "type" => "string",
+                    "minLength" => 1,
+                    "maxLength" => 255,
+                    "description" =>
+                      "Omit by default; the sandbox assigns the branch. Pass only a branch the user named or one you are continuing."
+                  },
+                  "pull_request" => %{
+                    "type" => "integer",
+                    "minimum" => 1,
+                    "description" =>
+                      "The number of an open pull request of this repository that the Task continues or fixes (review comments, failing checks). Do not combine with base_ref or branch."
+                  }
+                }
+              },
+              "mini_app" => %{
+                "type" => "object",
+                "additionalProperties" => false,
+                "required" => ["app_id"],
+                "description" =>
+                  "The app a build Task makes, from internal.apps.create. Requires runs_on {kind: sandbox} and repo {owner, name} of that app's repository. The Task's coding agent can then deploy preview versions of the app.",
+                "properties" => %{
+                  "app_id" => %{"type" => "string", "minLength" => 1, "maxLength" => 64}
                 }
               },
               "content" => %{
@@ -336,11 +376,107 @@ defmodule SalixIM.Provider.Manuals do
           }
         },
         %{
+          "name" => "internal.apps.create",
+          "safety" => "write",
+          "roles" => ["router"],
+          "description" =>
+            "Create a Comma app (a mini-app) for the user's Workspace, with its private GitHub repository in the Workspace's connected GitHub account. Without repo, the repository is made from the Comma app template. Give repo only for an existing repository that already has comma-app.json. Then build the app with one internal.task.create call: runs_on {kind: sandbox}, repo {owner, name, base_ref: \"main\"} from this result, mini_app {app_id} and a content that describes the app. Give the user this result's url: it opens the app in Comma. Read the mini-app-builder skill first. Without a connected GitHub account the app is not made: ask the user to connect GitHub in Settings > Plugins.",
+          "required_params" => ["name"],
+          "example_params" => %{
+            "connect_id" => "internal",
+            "name" => "Habit tracker"
+          },
+          "input_schema" => %{
+            "type" => "object",
+            "additionalProperties" => false,
+            "properties" => %{
+              "name" => %{
+                "type" => "string",
+                "minLength" => 1,
+                "maxLength" => 60,
+                "description" =>
+                  "Short app name in the user's language, shown in Comma's Apps list."
+              },
+              "description" => %{
+                "type" => "string",
+                "maxLength" => 500,
+                "description" => "Optional one-sentence description of what the app does."
+              },
+              "repo" => %{
+                "type" => "object",
+                "additionalProperties" => false,
+                "required" => ["owner", "name"],
+                "description" =>
+                  "Optional existing GitHub repository that has comma-app.json. Omit it to make a new repository from the template.",
+                "properties" => %{
+                  "owner" => %{"type" => "string", "minLength" => 1, "maxLength" => 100},
+                  "name" => %{"type" => "string", "minLength" => 1, "maxLength" => 100}
+                }
+              }
+            },
+            "required" => ["name"]
+          },
+          "returns" => %{
+            "app_id" => "The new app's id. Pass it as mini_app {app_id} to internal.task.create.",
+            "repo" => "{owner, name} of the app's GitHub repository. Pass it as the Task's repo.",
+            "url" =>
+              "The Comma page that runs the app for the Workspace's members: the latest preview until publication, then the live version. Give it to the user, also in Signal, Telegram and other chats where the Task's app cards do not show."
+          }
+        },
+        %{
+          "name" => "internal.apps.list",
+          "safety" => "read",
+          "roles" => ["router"],
+          "description" =>
+            "List the Workspace's shared and installed Comma apps, newest change first, at most 50. Member-private apps stay private. Use it when the user asks for an app's link, or names an app to change, and you do not have its app_id and url. To edit an owned app, pass its app_id and repo to internal.task.create. Remix an installed app before editing its source.",
+          "required_params" => [],
+          "example_params" => %{"connect_id" => "internal"},
+          "input_schema" => %{
+            "type" => "object",
+            "additionalProperties" => false,
+            "properties" => %{}
+          },
+          "returns" => %{
+            "apps" =>
+              "Each app includes {app_id, name, description, repo {owner, name}, url, visibility, status, live_version, latest_version, installed, install, capabilities, grants, secrets}. url opens the app in Comma for the Workspace's members; it runs only when latest_version is set. live_version is null until publication. status disabled means the app runs for nobody.",
+            "has_more" => "True when the Workspace has more apps than this list shows."
+          }
+        },
+        %{
+          "name" => "internal.apps.get",
+          "safety" => "read",
+          "roles" => ["router"],
+          "description" =>
+            "Read a shared or installed Comma app by app_id, including its URL, repository, Versions, capabilities, grants and secret names. Owner apps include up to 50 Versions. Use the Version number to publish or roll back. Use it before you give the user an app's url, or to check that a build Task deployed a preview.",
+          "required_params" => ["app_id"],
+          "example_params" => %{
+            "connect_id" => "internal",
+            "app_id" => "6f1c2a0e-6c43-4a8e-9a55-2b8f0f1d3c11"
+          },
+          "input_schema" => %{
+            "type" => "object",
+            "additionalProperties" => false,
+            "properties" => %{
+              "app_id" => %{"type" => "string", "minLength" => 1, "maxLength" => 64}
+            },
+            "required" => ["app_id"]
+          },
+          "returns" => %{
+            "app_id" => "The app's id.",
+            "url" =>
+              "The Comma page that runs the app for the Workspace's members. It runs only when latest_version is set.",
+            "repo" => "{owner, name} of the app's GitHub repository.",
+            "live_version" => "The published version, or null before publication.",
+            "latest_version" => "The newest deployed version, or null before the first deploy.",
+            "status" => "active, or disabled (the app runs for nobody)."
+          }
+        },
+        %{
           "name" => "internal.task.update",
           "safety" => "write",
           "roles" => ["router"],
           "description" =>
-            "Update the same Task's stored production command and/or future Schedule. Omit schedule to change only the command; pass a recurrence object to add or update the Schedule; pass schedule=null to remove future triggers while preserving the Task and command. Schedule updates affect future windows only and do not run the production command immediately. To restart an ended Loop in the same Task after a new user request, pass loop and command together. This sets the Task active, resets runs to zero, and delivers the new command to its Worker. It replaces all old cadence and limit values. Do not pass schedule with loop. An ordinary status change does not restart a Loop.",
+            "Update an existing Task. For a coding sandbox's GitHub access, pass github alone with conversation_id. It replaces the entire ACL, or false removes the grant. Include every repository and option to retain. Omitted options return to defaults: omitting push_refs removes branch restrictions. The proxy holds the token, which this operation does not change. L4ES saves the ACL and queues delivery without restarting the sandbox. This does not confirm proxy application, and requests in flight can finish under the previous ACL. A sandbox started without a grant needs another start to enable access. Do not pass command, schedule or loop with github. For a stored production command or future Schedule, omit schedule to change only the command. Pass a recurrence object to add or update the Schedule, or schedule=null to remove future triggers while preserving the Task and command. Schedule updates affect future windows only and do not run the production command immediately. To restart an ended Loop after a new user request, pass loop and command together. This sets the Task active, resets runs to zero, and delivers the new command to its Worker. It replaces all old cadence and limit values. Do not pass schedule with loop. An ordinary status change does not restart a Loop.",
           "required_params" => ["conversation_id"],
           "example_params" => %{
             "connect_id" => "internal",
@@ -363,6 +499,43 @@ defmodule SalixIM.Provider.Manuals do
                   "Required with loop: the complete work for one run with its conditions and people. With a Schedule: optional complete production command for future windows. Write this natural-language value in the dominant language of the current user request unless the user explicitly requested a different target language. Omit to preserve the current command."
               },
               "loop" => task_loop_schema(),
+              "github" => %{
+                "description" =>
+                  "Complete L4ES GitHub ACL, at most 16 KiB, or false to remove the grant. An existing sandbox is required. L4ES retains this configuration across stop/start. A deleted sandbox starts with the Task's initial grant when rebuilt.",
+                "anyOf" => [
+                  %{"type" => "boolean", "enum" => [false]},
+                  %{
+                    "type" => "object",
+                    "additionalProperties" => false,
+                    "properties" => %{
+                      "repos" => %{
+                        "type" => "object",
+                        "maxProperties" => 64,
+                        "description" =>
+                          "Repository access by owner/name or owner/*. Write includes read access across the repository. Defaults to no repositories.",
+                        "additionalProperties" => %{
+                          "type" => "string",
+                          "enum" => ["read", "write"]
+                        }
+                      },
+                      "push_refs" => %{
+                        "type" => "array",
+                        "maxItems" => 16,
+                        "description" =>
+                          "Allowed full ref globs for writes, such as refs/heads/comma/*. Reads remain repository-wide. Omit for unrestricted refs. An empty list blocks all pushes.",
+                        "items" => %{"type" => "string", "maxLength" => 255}
+                      },
+                      "user" => %{"type" => "boolean", "default" => false},
+                      "graphql" => %{
+                        "type" => "string",
+                        "enum" => ["gh", "off", "all"],
+                        "default" => "gh"
+                      },
+                      "anonymous" => %{"type" => "boolean", "default" => true}
+                    }
+                  }
+                ]
+              },
               "schedule" => %{
                 "description" =>
                   "Optional future recurrence. Pass null to remove future triggers while preserving the Task and command.",
@@ -373,7 +546,11 @@ defmodule SalixIM.Provider.Manuals do
               }
             },
             "required" => ["conversation_id"],
-            "anyOf" => [%{"required" => ["command"]}, %{"required" => ["schedule"]}]
+            "anyOf" => [
+              %{"required" => ["command"]},
+              %{"required" => ["schedule"]},
+              %{"required" => ["github"]}
+            ]
           }
         },
         %{
@@ -382,7 +559,7 @@ defmodule SalixIM.Provider.Manuals do
           "roles" => ["router"],
           "runtimes" => ["internal", "script"],
           "description" =>
-            "List one ordinary bounded page of the authenticated group's internal IM conversation and Task resources. Results are newest first and are not filtered by title or Conversation kind. A Loop Task carries loop: its cadence, runs so far (runs), the time of the last run, its limits and, once it ended, why (ended).",
+            "List one ordinary bounded page of the authenticated group's internal IM conversation and Task resources. Results are newest first and are not filtered by title or Conversation kind. A coding Task includes terminal_url when available. It opens the sandbox terminal for a Workspace member signed in with Comma. Give this URL to a user who asks to work in the sandbox. A Loop Task carries loop: its cadence, its status, runs so far (runs), the time of the last run, its limits and, once it ended, why (ended). Only an active Loop runs: pending means its Worker has not created the Loop yet, so never tell the user it runs.",
           "required_params" => [],
           "parameters" => %{
             "limit" => "Optional page size, default 200, max 1000.",
@@ -535,7 +712,7 @@ defmodule SalixIM.Provider.Manuals do
           "safety" => "write",
           "roles" => ["router"],
           "description" =>
-            "Update ordinary Conversation state without sending a Message. Only the Router can call this provider operation; the Router uses it for lifecycle changes such as active, ready_for_review, failed, or cancelled. Only the Task's own Router may set completed for a plain one-shot Task after actual delivery, with no remaining work or human decision. Legacy Workflow, Task Schedule and product-assigned Triage Tasks cannot use this completion path. A Loop Task (loop) stays active between runs and cannot be set ready_for_review while its Loop runs; escalated does not pause its Loop. When a Worker asks the user a question in its Task (a Message with a question block), set the Task escalated while it waits for the answer, and active when the work resumes; do not answer the question yourself. The server completes a Loop Task itself when its Loop reaches its run limit or end time. Complete it when the Worker reports that its stop condition holds, or when the user asks; completed, cancelled, failed and archive end its Loop for good. Report confirmed lifecycle changes to the user at the end of the source reply; if it was already sent, promptly send a short follow-up. Report update errors without claiming the intended status. The existing labels field replaces the Task's full label list. For automatic classification prefer internal.label.assign, which adds matching existing catalog ids without removing the user's labels. Catalog changes use internal.label.propose; an explicit full replacement can also be proposed for confirmation. Workers publish ordinary result Messages and cannot change Conversation status. The committed update or its error is returned directly.",
+            "Update ordinary Conversation state without sending a Message. It also renames a Task: set title alone. Only the Router can call this provider operation; the Router uses it for lifecycle changes such as active, ready_for_review, failed, or cancelled. Only the Task's own Router may set completed for a plain one-shot Task after actual delivery, with no remaining work or human decision. Legacy Workflow, Task Schedule and product-assigned Triage Tasks cannot use this completion path. A coding Task (runs_on sandbox) goes ready_for_review by itself when its Worker's turn ends. A Loop Task (loop) stays active between runs and cannot be set ready_for_review while its Loop runs; escalated does not pause its Loop. When a Worker asks the user a question in its Task (a Message with a question block), set the Task escalated while it waits for the answer, and active when the work resumes; do not answer the question yourself. The server completes a Loop Task itself when its Loop reaches its run limit or end time. Complete it when the Worker reports that its stop condition holds, or when the user asks; completed, cancelled, failed and archive end its Loop for good. Report confirmed lifecycle changes to the user at the end of the source reply; if it was already sent, promptly send a short follow-up. Report update errors without claiming the intended status. The existing labels field replaces the Task's full label list. For automatic classification prefer internal.label.assign, which adds matching existing catalog ids without removing the user's labels. Catalog changes use internal.label.propose; an explicit full replacement can also be proposed for confirmation. Workers publish ordinary result Messages and cannot change Conversation status. The committed update or its error is returned directly.",
           "required_params" => ["conversation_id"],
           "example_params" => %{
             "connect_id" => "internal",
@@ -575,6 +752,48 @@ defmodule SalixIM.Provider.Manuals do
             "conversation_id" => "The updated Conversation ID.",
             "status" => "The committed status when present.",
             "updated_at" => "The committed Conversation version timestamp."
+          }
+        },
+        %{
+          "name" => "internal.update_conversation_titles",
+          "safety" => "write",
+          "roles" => ["router"],
+          "description" =>
+            "Rename several Tasks in one call. Each entry sets the user-visible title of one Conversation, as internal.update_conversation title does, with the same authorization: this Router must be an active participant of each Conversation. Takes 1 to 20 entries with distinct conversation_id values. Titles may contain emoji. The information-flow check covers every named Conversation before anything is written: if any one may not receive the content, the whole call is refused and no title changes. Past that check, entries are applied independently: one failure does not undo the others. Read results per entry (updated true, or updated false with error) and report failed entries truthfully; updated_count and failed_count summarize them. Use it for a coordinated rename of a group of Tasks; for one Task or any other field use internal.update_conversation.",
+          "required_params" => ["titles"],
+          "example_params" => %{
+            "connect_id" => "internal",
+            "titles" => [
+              %{"conversation_id" => "cnv1_0123456789012345678", "title" => "🚀 Launch checklist"},
+              %{"conversation_id" => "cnv1_0123456789012345679", "title" => "🐛 Fix login timeout"}
+            ]
+          },
+          "input_schema" => %{
+            "type" => "object",
+            "additionalProperties" => false,
+            "properties" => %{
+              "titles" => %{
+                "type" => "array",
+                "minItems" => 1,
+                "maxItems" => 20,
+                "items" => %{
+                  "type" => "object",
+                  "additionalProperties" => false,
+                  "properties" => %{
+                    "conversation_id" => %{"type" => "string", "minLength" => 1},
+                    "title" => %{"type" => "string", "minLength" => 1}
+                  },
+                  "required" => ["conversation_id", "title"]
+                }
+              }
+            },
+            "required" => ["titles"]
+          },
+          "returns" => %{
+            "results" =>
+              "One entry per request entry, in order: conversation_id, updated, and title or error.",
+            "updated_count" => "Entries that committed.",
+            "failed_count" => "Entries that failed."
           }
         },
         %{
@@ -793,6 +1012,7 @@ defmodule SalixIM.Provider.Manuals do
         }
       ]
     }
+    |> Map.update!("apis", &(&1 ++ SalixIM.Provider.Apps.manual()))
   end
 
   defp task_loop_schema do
@@ -801,7 +1021,7 @@ defmodule SalixIM.Provider.Manuals do
       "additionalProperties" => false,
       "required" => ["cadence"],
       "description" =>
-        "The requested Loop: delegated work that repeats or keeps watching something, such as posting a digest every morning or handling each new comment on a pull request, until the Task ends, a run limit, an end time or a stop condition. The Task's Worker runs it with one Background Loop in the Task and reports each run in the Task. The server ends the Loop at max_runs and at ends_at and completes the Task, and ends the Loop when the Task ends. When the Loop stops on its own, the Worker says why in the Task. Keep the Task active between runs and never set ready_for_review. Pass only what the user asked for. If the user gave no cadence, or a day without a clock time, do not set the Loop yet: ask once and propose a concrete one. Do not combine with schedule.",
+        "The requested Loop: delegated work that repeats or keeps watching something, such as posting a digest every morning or handling each new comment on a pull request, until the Task ends, a run limit, an end time or a stop condition. The Task's Worker runs it with one Background Loop in the Task and reports each run in the Task. The server ends the Loop at max_runs and at ends_at and completes the Task, and ends the Loop when the Task ends. When the Loop stops on its own, the Worker says why in the Task. Keep the Task active between runs and never set ready_for_review. Pass only what the user asked for. If the user gave no cadence, or a day without a clock time, do not set the Loop yet: ask once and propose a concrete one. Do not combine with schedule. A Loop Task runs inside Salix: give runs_on {kind: default} or {kind: salix}.",
       "properties" => %{
         "cadence" => %{
           "type" => "object",
@@ -1553,7 +1773,7 @@ defmodule SalixIM.Provider.Manuals do
         "For a top-level group @mention reply, use feishu.reply_text with reply_in_thread=true and source chat_id. For an existing thread, pass source thread_id so participation remains active.",
         "Feishu cloud documents (Docx and Docx pages in a wiki) use this app's identity, for the Router and for Workers. The app opens a document only when it is shared with a chat that includes the bot, shared with the app, or open by link inside the tenant; on a permission error, ask the user to share the document with the source chat, and never claim a document is empty or missing. Read with feishu.fetch_doc (outline first for long documents), then edit with feishu.update_doc using block IDs from a detail=with-ids fetch, and fetch again after every write because block IDs change. Create with feishu.create_doc and share_chat_id set to the source chat unless the user names another audience, then reply with the returned URL. Comments, collaborators, link sharing, embedded media, and wiki discovery have their own feishu.*doc* operations. Sharing a document opens all of its content to that audience. Spreadsheets, Base, and legacy /doc/ documents are not supported.",
         "Feishu Minutes (妙记) recordings are read as this app, for the Router and for Workers: feishu.get_minute with include for the AI summary, todos, chapters, keywords, or transcript; feishu.list_minutes to find recordings; feishu.fetch_minute_media for the audio or video. The same sharing rule applies as for documents. Minutes cannot be edited here. Ask before calling feishu.request_minute_access, because Feishu notifies the owner.",
-        "Feishu shows a meeting, its AI meeting notes, its transcript and its recording only to people. When people of the Agent Swarm signed in (feishu.list_accounts), read them as those people without asking anyone to share: find the meeting with feishu.search_meetings, read it with feishu.get_meeting, then the notes with feishu.get_note and feishu.fetch_doc, and the recording with feishu.get_minute, passing the account that found the meeting. The document and Minutes reads take the same account parameter when the bot itself cannot open a link. When the person who asks has no signed-in account (or theirs expired), let them sign in from the chat: call oauth.request_authorization with provider feishu, an alias such as feishu-<their name> (an expired account's own alias to renew it) and a reason, send the returned authorization_url in the chat the request came from (like any answer), and continue once the authorization completes. Swarm admins can also add accounts on the swarm's Connections page.",
+        "Find Feishu content yourself; never ask a person to paste a link. The app and every person who signed in for the Agent Swarm (feishu.list_accounts) each see their own documents, wiki, meetings, AI meeting notes and Minutes, feishu.search_docs (documents and wiki pages by keyword), feishu.list_drive_files (a cloud space) and feishu.search_meetings run as the app and then as each signed-in person unless you name one account (account=app for the app alone); feishu.list_wiki_spaces, feishu.list_wiki_nodes and feishu.list_minutes run as the app, so call them again with each signed-in account to see what that person sees. Read what you found with the same account: documents and wiki pages with feishu.fetch_doc, a meeting with feishu.get_meeting and then its notes with feishu.get_note and feishu.fetch_doc, a recording with feishu.get_minute. A person sees far more than the app. When the person who asks has no signed-in account (or theirs expired) and the app finds nothing, let them sign in from the chat: call oauth.request_authorization with provider feishu, an alias such as feishu-<their name> (an expired account's own alias to renew it) and a reason, send the returned authorization_url in the chat the request came from (like any answer), and continue once the authorization completes. Swarm admins can also add accounts on the swarm's Connections page.",
         "The runtime publishes the native Task card after im_api.internal.task.create for a human Feishu source. Do not publish again when task_card.status is queued. If publication failed, use feishu.post_task_card with the returned Task conversation_id, the source chat_id and the source message to reply to. The card is a projection; it does not bind the thread to the Task.",
         "To edit or delete a previous bot reply, first obtain that reply's message_id from the successful send/reply result or history and verify its normalized sender is this app. Never use the current inbound human message_id for update/delete; those operations are bot-owned only.",
         "Keep ordinary proactive Feishu reminders owned by the current Router/session. Use schedule.create with run_at for one itinerary/reminder time, cron plus timezone for calendar recurrence, or interval_minutes for duration recurrence. Put the exact im_api.feishu.send_text call, connect_id, receive_id=chat_id, text, and structured mention parameters in the schedule prompt. Resolve named people through chat members or the visible directory first and pass mentions=[{user_id,name}]; use mention_all=true only when the chat permits the bot to @all. A reminder's delegated worker computes content and must return the result to the Router. For an ordinary personal Comma Task with an explicit execution_requests grant, the Worker can instead call its granted feishu.send_text operation at the fixed recipient; all provider and IFC checks still apply.",

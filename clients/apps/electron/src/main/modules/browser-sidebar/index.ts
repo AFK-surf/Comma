@@ -33,6 +33,7 @@ import {
   type SurfaceBounds,
 } from "@comma/native-bridge";
 import type { Session } from "electron";
+import { clockTimeoutSignal, realMainClock, type MainClock } from "../../clock";
 import type { BrowserSitePermissions } from "./site-permissions";
 import {
   importBrowserCookies,
@@ -366,7 +367,7 @@ interface PendingClientTabOpen {
   ownerWindowId: string;
   reject(error: Error): void;
   resolve(target: ClientBrowserTarget): void;
-  timer: ReturnType<typeof setTimeout>;
+  cancelTimer: () => void;
 }
 
 interface BrowserSidebarSurfaces {
@@ -407,13 +408,15 @@ export class NativeBrowserSidebarService implements BrowserSidebarProvider {
   ) => BrowserSidebarOwnerWindowLike | undefined;
   readonly #surfaces: BrowserSidebarSurfaces;
   readonly #sitePermissions: BrowserSitePermissions | undefined;
+  readonly #handleAppLink: ((url: string) => boolean) | undefined;
   readonly #browserImport: BrowserImportPlatform | undefined;
   #cookieImport: Promise<BrowserCookieImportResult> | undefined;
   readonly #hybridPasskeys: HybridPasskeys | undefined;
   /** The session each owner window shows last, even while an overlay hides it. */
   readonly #foregroundSessionIds = new Map<string, string>();
   #disposed = false;
-  readonly #meetingProbe = new BrowserMeetingProbe();
+  readonly #meetingProbe: BrowserMeetingProbe;
+  readonly #clock: MainClock;
 
   async showPermissions(input: BrowserSitePermissionsInput) {
     const parsed = browserSitePermissionsInputSchema.parse(input);
@@ -454,9 +457,11 @@ export class NativeBrowserSidebarService implements BrowserSidebarProvider {
 
   constructor({
     browserImport,
+    clock = realMainClock,
     createView,
     hybridPasskeys,
     sitePermissions,
+    handleAppLink,
     createComposerView,
     composerUrl,
     getCallerWindowId = () => getCurrentNativeCallerContext().windowId,
@@ -468,7 +473,9 @@ export class NativeBrowserSidebarService implements BrowserSidebarProvider {
   }: {
     /** Absent where cookies cannot be imported, such as on other platforms. */
     browserImport?: BrowserImportPlatform | undefined;
+    clock?: MainClock | undefined;
     sitePermissions?: BrowserSitePermissions | undefined;
+    handleAppLink?: ((url: string) => boolean) | undefined;
     createView: (ownerWindowId: string) => BrowserSidebarViewLike;
     /** Absent where no phone can answer, such as without Bluetooth. */
     hybridPasskeys?: HybridPasskeys | undefined;
@@ -488,9 +495,12 @@ export class NativeBrowserSidebarService implements BrowserSidebarProvider {
     surfaces: BrowserSidebarSurfaces;
   }) {
     this.#browserImport = browserImport;
+    this.#clock = clock;
+    this.#meetingProbe = new BrowserMeetingProbe({ clock });
     this.#createView = createView;
     this.#hybridPasskeys = hybridPasskeys;
     this.#sitePermissions = sitePermissions;
+    this.#handleAppLink = handleAppLink;
     this.#createComposerView = createComposerView;
     this.#composerUrl = composerUrl;
     this.#getCallerWindowId = getCallerWindowId;
@@ -540,19 +550,19 @@ export class NativeBrowserSidebarService implements BrowserSidebarProvider {
     }
 
     return new Promise<ClientBrowserTarget>((resolve, reject) => {
-      const timer = setTimeout(() => {
+      const cancelTimer = this.#clock.setTimer(CLIENT_BROWSER_OPEN_TIMEOUT_MS, () => {
         if (!this.#pendingClientTabOpens.delete(tabId)) return;
         reject(
           new Error(
             `Timed out waiting for in-app browser tab ${tabId} to become ready.`
           )
         );
-      }, CLIENT_BROWSER_OPEN_TIMEOUT_MS);
+      });
       this.#pendingClientTabOpens.set(tabId, {
         ownerWindowId,
         reject,
         resolve,
-        timer,
+        cancelTimer,
       });
 
       try {
@@ -789,7 +799,9 @@ export class NativeBrowserSidebarService implements BrowserSidebarProvider {
         }
       });
       installBrowserSidebarSecurity(webContents, {
+        clock: this.#clock,
         sitePermissions: this.#sitePermissions,
+        handleAppLink: this.#handleAppLink,
       });
       this.#sitePermissions?.register(
         webContents,
@@ -999,7 +1011,7 @@ export class NativeBrowserSidebarService implements BrowserSidebarProvider {
     const pending = this.#pendingClientTabOpens.get(active.tabId);
     if (!pending || pending.ownerWindowId !== active.ownerWindowId) return;
     this.#pendingClientTabOpens.delete(active.tabId);
-    clearTimeout(pending.timer);
+    pending.cancelTimer();
     pending.resolve(this.#clientTarget(active));
   }
 
@@ -1017,7 +1029,7 @@ export class NativeBrowserSidebarService implements BrowserSidebarProvider {
     const pending = this.#pendingClientTabOpens.get(tabId);
     if (!pending) return;
     this.#pendingClientTabOpens.delete(tabId);
-    clearTimeout(pending.timer);
+    pending.cancelTimer();
     pending.reject(error);
   }
 
@@ -1044,6 +1056,7 @@ export class NativeBrowserSidebarService implements BrowserSidebarProvider {
     debuggerApi.attach("1.3");
     try {
       const result = await withWallTimeout(
+        this.#clock,
         operation(debuggerApi),
         CLIENT_CDP_TIMEOUT_MS,
         "CDP command timed out."
@@ -1295,7 +1308,7 @@ export class NativeBrowserSidebarService implements BrowserSidebarProvider {
 
     let webContentsDestroyed = this.#isWebContentsDestroyed(active);
     if (!webContentsDestroyed) {
-      await waitForDestructionConfirmation(active);
+      await waitForDestructionConfirmation(this.#clock, active);
       webContentsDestroyed = this.#isWebContentsDestroyed(active);
     }
     if (!webContentsDestroyed) {
@@ -1406,6 +1419,7 @@ export class NativeBrowserSidebarService implements BrowserSidebarProvider {
     if (!this.#hybridPasskeys) return;
     const { webContents } = active;
     active.passkeys = new BrowserTabPasskeys({
+      clock: this.#clock,
       page: {
         origin: () => {
           try {
@@ -1529,9 +1543,12 @@ export class NativeBrowserSidebarService implements BrowserSidebarProvider {
     for (const url of urls) {
       const favicon = url.startsWith("data:")
         ? url
-        : await fetchFavicon(active.webContents.session, url, fetch.signal).catch(
-            () => undefined
-          );
+        : await fetchFavicon(
+            active.webContents.session,
+            url,
+            fetch.signal,
+            this.#clock
+          ).catch(() => undefined);
       if (fetch.signal.aborted || active.closing) return false;
       // A long `Content-Type` can push a fetched icon past the published limit.
       if (favicon && favicon.length <= maxBrowserSidebarFaviconDataUrlLength) {
@@ -2169,20 +2186,21 @@ export class NativeBrowserSidebarService implements BrowserSidebarProvider {
 }
 
 async function withWallTimeout<T>(
+  clock: MainClock,
   operation: Promise<T>,
   timeoutMs: number,
   message: string
 ): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
+  let cancelTimer: (() => void) | undefined;
   try {
     return await Promise.race([
       operation,
       new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+        cancelTimer = clock.setTimer(timeoutMs, () => reject(new Error(message)));
       }),
     ]);
   } finally {
-    if (timer) clearTimeout(timer);
+    cancelTimer?.();
   }
 }
 
@@ -2260,15 +2278,17 @@ function parseInspectionComposerMessage(
 export function installBrowserSidebarSecurity(
   webContents: BrowserSidebarWebContentsLike,
   {
-    now = Date.now,
+    clock = realMainClock,
     sitePermissions,
+    handleAppLink,
   }: {
-    now?: (() => number) | undefined;
+    clock?: MainClock | undefined;
     sitePermissions?: BrowserSitePermissions | undefined;
+    handleAppLink?: ((url: string) => boolean) | undefined;
   } = {}
 ) {
   const preventUnsafeNavigation = (event: NavigationEvent) => {
-    if (!isSafeBrowserSidebarUrl(event.url)) {
+    if (handleAppLink?.(event.url) || !isSafeBrowserSidebarUrl(event.url)) {
       event.preventDefault();
     }
   };
@@ -2285,19 +2305,20 @@ export function installBrowserSidebarSecurity(
   let userActivatedAt: number | undefined;
   webContents.on("before-input-event", (_event, input) => {
     if (isBrowserSidebarKeyboardActivation(input)) {
-      userActivatedAt = now();
+      userActivatedAt = clock.now();
     }
   });
   webContents.on("before-mouse-event", (_event, input) => {
     if (input.type === "mouseDown") {
-      userActivatedAt = now();
+      userActivatedAt = clock.now();
     }
   });
   webContents.setWindowOpenHandler(({ url }) => {
+    if (handleAppLink?.(url)) return { action: "deny" };
     if (
       !isSafeBrowserSidebarUrl(url) ||
       userActivatedAt === undefined ||
-      now() - userActivatedAt > BROWSER_SIDEBAR_USER_ACTIVATION_TIMEOUT_MS
+      clock.now() - userActivatedAt > BROWSER_SIDEBAR_USER_ACTIVATION_TIMEOUT_MS
     ) {
       return { action: "deny" };
     }
@@ -2313,7 +2334,11 @@ export function installBrowserSidebarSecurity(
   // it holds the same page privileges and needs the same guards. Electron ties
   // its lifetime to this WebContents, so closing the tab closes the popup.
   webContents.on("did-create-window", (window) => {
-    installBrowserSidebarSecurity(window.webContents, { now, sitePermissions });
+    installBrowserSidebarSecurity(window.webContents, {
+      clock,
+      sitePermissions,
+      handleAppLink,
+    });
   });
   webContents.on("will-frame-navigate", preventUnsafeNavigation);
   webContents.on("will-navigate", preventUnsafeNavigation);
@@ -2404,12 +2429,13 @@ function currentSafeUrl(webContents: BrowserSidebarWebContentsLike, fallback: st
 async function fetchFavicon(
   session: BrowserSidebarSessionLike,
   url: string,
-  signal: AbortSignal
+  signal: AbortSignal,
+  clock: MainClock
 ) {
   const response = await session.fetch(url, {
     signal: AbortSignal.any([
       signal,
-      AbortSignal.timeout(BROWSER_SIDEBAR_FAVICON_FETCH_TIMEOUT_MS),
+      clockTimeoutSignal(clock, BROWSER_SIDEBAR_FAVICON_FETCH_TIMEOUT_MS),
     ]),
   });
   const type = response.headers
@@ -2451,22 +2477,24 @@ function createDestructionSignal() {
   return { promise, resolve };
 }
 
-async function waitForDestructionConfirmation(active: ActiveBrowserSidebar) {
-  let confirmationTimeout: ReturnType<typeof setTimeout> | undefined;
+async function waitForDestructionConfirmation(
+  clock: MainClock,
+  active: ActiveBrowserSidebar
+) {
+  let cancelConfirmationTimer: (() => void) | undefined;
   try {
     await Promise.race([
       active.destructionObserved,
       new Promise<void>((resolve) => {
-        confirmationTimeout = setTimeout(
-          resolve,
-          BROWSER_SIDEBAR_CLOSE_CONFIRMATION_TIMEOUT_MS
+        // A fallback for Chromium not confirming: it runs while a test clock stands still.
+        cancelConfirmationTimer = realMainClock.setTimer(
+          BROWSER_SIDEBAR_CLOSE_CONFIRMATION_TIMEOUT_MS,
+          resolve
         );
       }),
     ]);
   } finally {
-    if (confirmationTimeout !== undefined) {
-      clearTimeout(confirmationTimeout);
-    }
+    cancelConfirmationTimer?.();
   }
 }
 

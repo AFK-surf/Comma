@@ -2,6 +2,10 @@ import { useCallback, useLayoutEffect, useRef, useState } from "react";
 import { isReducedMotionEnabled } from "@comma/ui/tokens";
 import { uiClock, type CancelUiTimer } from "@comma/ui/clock";
 import { isCommaSurfacePaused } from "../../../commaSurfacePause";
+import {
+  transcriptGlideOffset,
+  transcriptHeld,
+} from "../../motion/outgoingBubbleMotion";
 
 const BOTTOM_EPSILON_PX = 1;
 const INTERACTION_SETTLE_MS = 1_000;
@@ -42,16 +46,29 @@ export function useStickToBottom(
     forceKey?: string | undefined;
     followTarget?: "newest-turn" | "bottom" | undefined;
     /**
+     * Turns whose sent message is still flying. The flight anchors such a
+     * turn itself, once, as it launches, and turns that scroll into a glide:
+     * neither a new turn nor the flight that lands before it anchors again.
+     * Until a flight launches nothing else writes the scroll offset either
+     * (transcriptHeld).
+     */
+    heldTurnKeys?: ReadonlySet<string> | undefined;
+    /**
      * The newest turn's anchor element, handed over by whoever renders it.
      * Following it runs on every content resize — once a frame while a turn
      * streams — and finding it by attribute selector costs a walk of the
      * whole mounted transcript each time.
      */
     resolveNewestTurn: () => HTMLElement | null;
+    onCancelNavigation?: (() => void) | undefined;
   }
 ) {
   const followTarget = options.followTarget ?? "newest-turn";
   const rootRef = useRef<HTMLDivElement>(null);
+  // Read by this render's own layout effects, so it is current in the commit
+  // that inserts a held turn.
+  const heldTurnKeysRef = useRef(options.heldTurnKeys);
+  heldTurnKeysRef.current = options.heldTurnKeys;
   const resolveNewestTurnRef = useRef(options.resolveNewestTurn);
   const previousDependencyKey = useRef(dependencyKey);
   const previousForceKey = useRef(options.forceKey);
@@ -69,6 +86,11 @@ export function useStickToBottom(
   const revealFocusRef = useRef<Element | null>(null);
   const revealRef = useRef<{ cancel: () => void; reconcile: () => void } | null>(null);
   const focusReconcileFrameRef = useRef<CancelUiTimer | null>(null);
+  // A focus that landed out of view, with the scroll offset it found. The
+  // browser scrolling it in afterwards is what tells the reader's own move
+  // from focus that came back on its own (see handleFocusChange).
+  const pendingFocusRef = useRef<{ scrollTop: number; target: Element } | null>(null);
+  const pendingFocusFrameRef = useRef<CancelUiTimer | null>(null);
   const maxScrollTopRef = useRef(0);
   const stateRef = useRef<StickState>({
     deferredUnseen: 0,
@@ -76,10 +98,14 @@ export function useStickToBottom(
     interaction: { kind: "idle" },
     unseen: 0,
   });
+  // Keep the unseen-count contract independent of the count-free navigation control.
   const [unseenCount, setUnseenCount] = useState(0);
+  const [showScrollToBottom, setShowScrollToBottom] = useState(false);
+  const cancelNavigationRef = useRef(options.onCancelNavigation);
 
   useLayoutEffect(() => {
     resolveNewestTurnRef.current = options.resolveNewestTurn;
+    cancelNavigationRef.current = options.onCancelNavigation;
   });
 
   const viewport = useCallback(() => {
@@ -101,6 +127,11 @@ export function useStickToBottom(
       maxScrollTop,
       scrollTop: node.scrollTop,
     };
+  }, []);
+
+  // Use cached metrics here: scroll handlers must not force a layout read.
+  const syncShowScrollToBottom = useCallback((node: HTMLElement) => {
+    setShowScrollToBottom(maxScrollTopRef.current - node.scrollTop > BOTTOM_EPSILON_PX);
   }, []);
 
   const readMaxScrollTop = useCallback((node: HTMLElement) => {
@@ -145,12 +176,22 @@ export function useStickToBottom(
     }
   }, []);
 
+  const clearPendingFocus = useCallback(() => {
+    pendingFocusRef.current = null;
+    if (pendingFocusFrameRef.current !== null) {
+      pendingFocusFrameRef.current();
+      pendingFocusFrameRef.current = null;
+    }
+  }, []);
+
   const clearRetainedFocus = useCallback(() => {
     retainedFocusRef.current = null;
     clearFocusReconcileFrame();
-  }, [clearFocusReconcileFrame]);
+    clearPendingFocus();
+  }, [clearFocusReconcileFrame, clearPendingFocus]);
 
   const cancelReveal = useCallback(() => {
+    cancelNavigationRef.current?.();
     const reveal = revealRef.current;
     revealRef.current = null;
     reveal?.cancel();
@@ -167,8 +208,9 @@ export function useStickToBottom(
     if (node) {
       const maxScrollTop = readMaxScrollTop(node);
       node.scrollTop = maxScrollTop;
+      syncShowScrollToBottom(node);
     }
-  }, [readMaxScrollTop, viewport]);
+  }, [readMaxScrollTop, syncShowScrollToBottom, viewport]);
 
   const turnAnchorTarget = useCallback(
     (node: HTMLElement, turnKey: string, refresh = false) => {
@@ -191,6 +233,7 @@ export function useStickToBottom(
           0,
           node.scrollTop +
             anchorBox.top -
+            transcriptGlideOffset(anchored.element) -
             viewportBox.top -
             readTurnTopInset(anchored.element, node)
         );
@@ -416,6 +459,7 @@ export function useStickToBottom(
       };
       publishUnseen(0);
       node.scrollTop = target;
+      syncShowScrollToBottom(node);
     },
     [
       cancelReveal,
@@ -425,6 +469,7 @@ export function useStickToBottom(
       forceFollow,
       publishUnseen,
       turnAnchorTarget,
+      syncShowScrollToBottom,
       viewport,
     ]
   );
@@ -453,8 +498,9 @@ export function useStickToBottom(
     } else if (targetRect.bottom > viewportRect.bottom) {
       node.scrollTop += targetRect.bottom - viewportRect.bottom;
     }
+    syncShowScrollToBottom(node);
     return true;
-  }, [viewport]);
+  }, [syncShowScrollToBottom, viewport]);
 
   const followingWouldHideFocusedTarget = useCallback(
     (node: HTMLElement, targetScrollTop: number) => {
@@ -489,10 +535,79 @@ export function useStickToBottom(
     }
   }, [ensureFocusedTargetVisible]);
 
+  /** The reader is at `target`: the thread stops following and keeps it in view. */
+  const parkOnFocus = useCallback(
+    (target: Element) => {
+      clearInteraction();
+      retainedFocusRef.current = target;
+      enterAway();
+      ensureFocusedTargetVisible();
+      clearFocusReconcileFrame();
+      focusReconcileFrameRef.current = uiClock.frame(reconcileRetainedFocus);
+    },
+    [
+      clearFocusReconcileFrame,
+      clearInteraction,
+      enterAway,
+      ensureFocusedTargetVisible,
+      reconcileRetainedFocus,
+    ]
+  );
+
+  /**
+   * Ends the watch on a focus that landed out of view. The browser has
+   * scrolled it in since: the reader is there, and the thread parks on it.
+   * Nothing has scrolled, or the focus has moved on: the thread is left as
+   * it was.
+   */
+  const settlePendingFocus = useCallback(() => {
+    const pending = pendingFocusRef.current;
+    if (!pending) return false;
+    clearPendingFocus();
+    const node = viewport();
+    const activeElement = document.activeElement;
+    if (
+      !node ||
+      !node.contains(pending.target) ||
+      !(pending.target === activeElement || pending.target.contains(activeElement)) ||
+      node.scrollTop === pending.scrollTop
+    ) {
+      return false;
+    }
+    const viewportRect = node.getBoundingClientRect();
+    const targetRect = pending.target.getBoundingClientRect();
+    if (
+      targetRect.bottom <= viewportRect.top ||
+      targetRect.top >= viewportRect.bottom
+    ) {
+      return false;
+    }
+    cancelReveal();
+    anchoredTurnRef.current = null;
+    measure(node);
+    parkOnFocus(pending.target);
+    return true;
+  }, [cancelReveal, clearPendingFocus, measure, parkOnFocus, viewport]);
+
+  const watchPendingFocus = useCallback(
+    (target: Element, scrollTop: number) => {
+      clearPendingFocus();
+      pendingFocusRef.current = { scrollTop, target };
+      pendingFocusFrameRef.current = uiClock.frame(() => {
+        pendingFocusFrameRef.current = null;
+        settlePendingFocus();
+      });
+    },
+    [clearPendingFocus, settlePendingFocus]
+  );
+
   const reconcileFollowingLayout = useCallback(
     (refreshAnchor = false) => {
       const node = viewport();
       if (!node) return true;
+      // A focus the browser has brought into view since holds the reader
+      // there; the follow write would take it away again.
+      if (settlePendingFocus()) return false;
       const target = followingTarget(node, refreshAnchor);
       if (followingWouldHideFocusedTarget(node, target)) {
         enterAway();
@@ -501,6 +616,7 @@ export function useStickToBottom(
       }
 
       node.scrollTop = target;
+      syncShowScrollToBottom(node);
       return true;
     },
     [
@@ -508,6 +624,8 @@ export function useStickToBottom(
       enterAway,
       followingTarget,
       followingWouldHideFocusedTarget,
+      settlePendingFocus,
+      syncShowScrollToBottom,
       viewport,
     ]
   );
@@ -644,6 +762,7 @@ export function useStickToBottom(
 
   const commitScrollGeometry = useCallback(
     (geometry: ScrollGeometry) => {
+      setShowScrollToBottom(!isAtBottom(geometry));
       const node = viewport();
       if (!node) {
         return;
@@ -658,7 +777,7 @@ export function useStickToBottom(
       ) {
         // Initial/programmatic scrolls have no preceding intent event. Resolve
         // their geometry outside the user-scroll hot path and seed the cache.
-        reconcileFollowingLayout();
+        if (!transcriptHeld(viewport())) reconcileFollowingLayout();
         return;
       }
       if (
@@ -690,7 +809,7 @@ export function useStickToBottom(
 
       if (state.followMode === "following") {
         if (!isAtBottom(geometry)) {
-          reconcileFollowingLayout();
+          if (!transcriptHeld(viewport())) reconcileFollowingLayout();
         } else if (state.unseen !== 0) {
           publishUnseen(0);
         }
@@ -730,54 +849,63 @@ export function useStickToBottom(
     [commitScrollGeometry]
   );
 
+  /**
+   * Focus landed on `target` inside the transcript.
+   *
+   * In view, it is retained: following keeps it visible, or stops where it
+   * could not. Out of view, the event alone does not say whether the reader
+   * went there. Their own move, by keyboard or through a control that
+   * focuses a field for them, scrolls the element in: the browser does that
+   * right after this event unless the caller prevented it. Focus that came
+   * back on its own leaves the viewport where it is: the window regaining
+   * focus (Chromium fires focus on the active element again), an overlay or
+   * a media preview handing it back to its trigger. So an out-of-view target
+   * is watched until the next frame or follow write. Brought into view, the
+   * thread parks on it. Still away, nothing moves, or a chip the run
+   * scrolled past minutes ago would yank the thread back up to it and park
+   * the next message in the unseen pill.
+   */
   const handleFocusChange = useCallback(
     (target: Element | null) => {
       if (target && target === revealFocusRef.current) return;
-      cancelReveal();
       const node = viewport();
       if (!node || !target) {
+        cancelReveal();
         return;
       }
 
-      anchoredTurnRef.current = null;
-      const geometry = measure(node);
       const viewportRect = node.getBoundingClientRect();
       const targetRect = target.getBoundingClientRect();
       const targetIsOutsideViewport =
         targetRect.top < viewportRect.top || targetRect.bottom > viewportRect.bottom;
-      if (
-        stateRef.current.followMode === "following" &&
-        isAtBottom(geometry) &&
-        !targetIsOutsideViewport
-      ) {
+      if (targetIsOutsideViewport) {
+        watchPendingFocus(target, node.scrollTop);
+        return;
+      }
+
+      cancelReveal();
+      anchoredTurnRef.current = null;
+      measure(node);
+      if (stateRef.current.followMode === "following") {
         clearFocusReconcileFrame();
         retainedFocusRef.current = target;
         return;
       }
-
-      clearInteraction();
-      retainedFocusRef.current = target;
-      enterAway();
-      ensureFocusedTargetVisible();
-      clearFocusReconcileFrame();
-      focusReconcileFrameRef.current = uiClock.frame(reconcileRetainedFocus);
+      parkOnFocus(target);
     },
     [
       cancelReveal,
       clearFocusReconcileFrame,
-      clearInteraction,
-      ensureFocusedTargetVisible,
-      enterAway,
-      isAtBottom,
       measure,
-      reconcileRetainedFocus,
+      parkOnFocus,
       viewport,
+      watchPendingFocus,
     ]
   );
 
   const reconcilePassiveLayout = useCallback(
     (refreshAnchor = false) => {
-      if (isCommaSurfacePaused(viewport())) return;
+      if (isCommaSurfacePaused(viewport()) || transcriptHeld(viewport())) return;
       const state = stateRef.current;
       if (state.followMode === "away") {
         ensureFocusedTargetVisible();
@@ -795,13 +923,15 @@ export function useStickToBottom(
     if (node) measure(node);
     revealRef.current?.reconcile();
     reconcilePassiveLayout(true);
-  }, [measure, reconcilePassiveLayout, viewport]);
+    if (node) syncShowScrollToBottom(node);
+  }, [measure, reconcilePassiveLayout, syncShowScrollToBottom, viewport]);
   const handleViewportResize = useCallback(() => {
     const node = viewport();
     if (node) measure(node);
     revealRef.current?.reconcile();
     reconcilePassiveLayout(true);
-  }, [measure, reconcilePassiveLayout, viewport]);
+    if (node) syncShowScrollToBottom(node);
+  }, [measure, reconcilePassiveLayout, syncShowScrollToBottom, viewport]);
 
   useLayoutEffect(() => {
     if (!initializedRef.current) {
@@ -830,10 +960,17 @@ export function useStickToBottom(
     previousForceKey.current = forceKey;
     previousAnchorKey.current = anchorKey;
     if (anchorChanged && anchorKey) {
+      // A sent turn is anchored by its flight, in the frame it launches. Its
+      // message is not laid out yet, and moving the transcript now would
+      // show history jumping before anything flies.
+      if (heldTurnKeysRef.current?.has(anchorKey)) return;
       anchorTurn(anchorKey);
       return;
     }
     if (forceChanged && forceKey) {
+      // The earliest send still flying takes over the key when another lands;
+      // the newest flight already anchored the transcript for all of them.
+      if (heldTurnKeysRef.current?.has(forceKey)) return;
       anchorTurn(forceKey);
       return;
     }
@@ -847,6 +984,7 @@ export function useStickToBottom(
       state.deferredUnseen += 1;
       return;
     }
+    if (transcriptHeld(viewport())) return;
     if (!reconcileFollowingLayout()) {
       publishUnseen(stateRef.current.unseen + 1);
     }
@@ -859,6 +997,7 @@ export function useStickToBottom(
     publishUnseen,
     reconcileFollowingLayout,
     syncBottom,
+    viewport,
   ]);
 
   useLayoutEffect(() => {
@@ -891,9 +1030,10 @@ export function useStickToBottom(
       cancelReveal();
       clearInteractionTimeout();
       clearFocusReconcileFrame();
+      clearPendingFocus();
       retainedFocusRef.current = null;
     },
-    [cancelReveal, clearFocusReconcileFrame, clearInteractionTimeout]
+    [cancelReveal, clearFocusReconcileFrame, clearInteractionTimeout, clearPendingFocus]
   );
 
   return {
@@ -910,6 +1050,7 @@ export function useStickToBottom(
     revealElement,
     scrollRootRef: rootRef,
     scrollToBottom: pinToBottom,
+    showScrollToBottom,
     stopFollowing,
     unseenCount,
   };
@@ -935,6 +1076,7 @@ function newestTurnTopTarget(
   const documentTop =
     node.scrollTop +
     newest.getBoundingClientRect().top -
+    transcriptGlideOffset(newest) -
     node.getBoundingClientRect().top;
   return Math.min(
     Math.max(0, documentTop - readTurnTopInset(newest, node)),

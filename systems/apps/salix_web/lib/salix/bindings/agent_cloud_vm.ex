@@ -3,7 +3,7 @@ defmodule Salix.Bindings.AgentCloudVM do
 
   @behaviour SalixAgent.CloudVM
 
-  # Where the Group's VM goes is `SalixWeb.CloudVM.placement/2`; on
+  # Existing Group VMs keep their provider. New Cloud VMs use Cloudflare. On
   # Cloudflare it needs the Tenant's Cloudflare configuration.
   @impl true
   def validate_group_enabled(tenant_id, group_id) do

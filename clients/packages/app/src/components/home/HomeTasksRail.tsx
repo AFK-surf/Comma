@@ -2,7 +2,7 @@ import { HomeTasks } from "@comma/ui/components/home-tasks";
 import { openTaskTarget } from "../tasks/openTaskTarget";
 import type { VisibleTaskStatusBucket } from "@comma/i18n";
 import { uiClock } from "@comma/ui/clock";
-import { useNavigate, useSearch } from "@tanstack/react-router";
+import { useNavigate } from "@tanstack/react-router";
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { useOpenTasksFilter } from "../tasks/taskChips";
 import { TaskStepCards } from "../tasks/taskSteps";
@@ -65,19 +65,8 @@ export const HomeTasksRail = memo(function HomeTasksRail({
   enabled?: boolean;
 } = {}) {
   const navigate = useNavigate();
-  const search = useSearch({ strict: false }) as {
-    meetingTask?: string;
-    meetingGroup?: string;
-  };
   const { activeGroupId, activeWorkspaceId, loading, result, taskLoadError, tasks } =
-    useWorkspaceTasks({
-      enabled,
-      stationTasks: true,
-      includeTask:
-        search.meetingTask && search.meetingGroup
-          ? { conversationId: search.meetingTask, groupId: search.meetingGroup }
-          : undefined,
-    });
+    useWorkspaceTasks({ enabled, stationTasks: true });
   const { orders, setBucketOrder } = useTaskOrder(activeGroupId, tasks);
   // The Tasks board's Loops, label and platform chips, so a card reads the
   // same here.
@@ -89,7 +78,6 @@ export const HomeTasksRail = memo(function HomeTasksRail({
   const manualStatusRef = useRef(false);
   const knownIdsRef = useRef<Set<string> | null>(null);
   const knownWorkspaceRef = useRef(activeWorkspaceId);
-  const requestedMeetingRef = useRef<string | undefined>(undefined);
 
   const handleStatusChange = useCallback((bucket: VisibleTaskStatusBucket) => {
     manualAtRef.current = uiClock.now();
@@ -131,20 +119,6 @@ export const HomeTasksRail = memo(function HomeTasksRail({
         if (!arrived || task.updatedAt > arrived.updatedAt) arrived = task;
       }
     }
-    const requestedMeeting = `${search.meetingGroup ?? ""}:${search.meetingTask ?? ""}`;
-    if (requestedMeetingRef.current !== requestedMeeting) {
-      requestedMeetingRef.current = requestedMeeting;
-      manualStatusRef.current = false;
-    }
-    const selectedMeeting = shownTasks.find(
-      (task) =>
-        task.conversationId === search.meetingTask &&
-        task.groupId === search.meetingGroup
-    );
-    if (selectedMeeting && !manualStatusRef.current) {
-      setStatus(selectedMeeting.statusBucket);
-      return;
-    }
     if (arrived) {
       if (uiClock.now() - manualAtRef.current < MANUAL_SELECTION_HOLD_MS) return;
       manualStatusRef.current = false;
@@ -171,15 +145,7 @@ export const HomeTasksRail = memo(function HomeTasksRail({
       }
     }
     setStatus(target.statusBucket);
-  }, [
-    activeWorkspaceId,
-    loading,
-    result,
-    status,
-    tasks,
-    search.meetingTask,
-    search.meetingGroup,
-  ]);
+  }, [activeWorkspaceId, loading, result, status, tasks]);
 
   const openTask = useCallback(
     (task: TaskViewModel) => {
@@ -198,36 +164,7 @@ export const HomeTasksRail = memo(function HomeTasksRail({
         ready={!loading && taskLoadError === undefined}
         renderTaskBadges={renderTaskBadges}
         status={status}
-        taskOrder={
-          search.meetingTask &&
-          tasks.some(
-            (task) =>
-              task.conversationId === search.meetingTask &&
-              task.groupId === search.meetingGroup
-          )
-            ? {
-                ...orders,
-                [status]: [
-                  ...tasks
-                    .filter(
-                      (task) =>
-                        task.conversationId === search.meetingTask &&
-                        task.groupId === search.meetingGroup
-                    )
-                    .map((task) => task.id),
-                  ...(orders[status] ?? []).filter(
-                    (id) =>
-                      !tasks.some(
-                        (task) =>
-                          task.id === id &&
-                          task.conversationId === search.meetingTask &&
-                          task.groupId === search.meetingGroup
-                      )
-                  ),
-                ],
-              }
-            : orders
-        }
+        taskOrder={orders}
         tasks={tasks}
       />
     </TaskStepCards>

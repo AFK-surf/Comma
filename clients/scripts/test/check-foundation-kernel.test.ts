@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   findHasBeforeUniversalSubjects,
   findNativeSessionAdmissionViolations,
+  findUncappedLoops,
 } from "../check-foundation-kernel-lib.mjs";
 
 describe("check-foundation-kernel native Session admission", () => {
@@ -77,5 +78,41 @@ describe("check-foundation-kernel :has() anchors", () => {
       expect.stringMatching(/^line 6: @utility holds a :has\(\)/),
       expect.stringMatching(/^line 5: lightningcss could not parse this/),
     ]);
+  });
+});
+
+describe("check-foundation-kernel looping animations", () => {
+  it("finds loops that move on every display refresh", () => {
+    expect(
+      findUncappedLoops(`
+.spin {
+  animation: spin 1s linear infinite;
+}
+.pulse { animation-iteration-count: infinite; }
+`)
+    ).toEqual([
+      "line 3: animation: spin 1s linear infinite",
+      "line 5: animation-iteration-count: infinite",
+    ]);
+    expect(
+      findUncappedLoops(
+        `const style = { animation: "spin 1s linear infinite" };\nel.animate(frames, { duration: 900, iterations: Infinity });`
+      )
+    ).toHaveLength(2);
+  });
+
+  it("accepts capped, paused and exempted loops", () => {
+    expect(
+      findUncappedLoops(`
+.spin { animation: spin 1s steps(60) infinite; }
+.eye { animation: eye 1.6s var(--motion-loop-mascot-drift) infinite alternate; }
+.held { animation: hold 10s linear infinite paused; }
+.video {
+  /* motion-loop: exempt plays the frames of a video */
+  animation: frames 1s linear infinite;
+}
+.once { animation: fade 200ms ease-out; }
+`)
+    ).toEqual([]);
   });
 });

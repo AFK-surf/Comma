@@ -33,6 +33,16 @@ import { useNodeRealm } from "./support/world";
 // decides (its network policy for widget resources, the frame's process) is
 // apps/electron/e2e/dynamic-ui/runtime.spec.ts.
 
+// The height a widget asks for: its content and the runtime body's padding.
+const naturalHeight = (node: Element) => {
+  const style = getComputedStyle(document.body);
+  return Math.ceil(
+    node.getBoundingClientRect().height +
+      Number.parseFloat(style.paddingTop) +
+      Number.parseFloat(style.paddingBottom)
+  );
+};
+
 const leak = useNodeRealm<{ origin: string }>(
   "leak",
   "e2e/app-shell/fixtures/dynamic-ui/leak.ts"
@@ -481,14 +491,7 @@ test("table data stays readable at chat widths and markup remains inert text", a
     await expect(frame.getByRole("cell", { name: "28° / 22°" })).toBeVisible();
     await eventually(
       async () => {
-        const contentHeight = await frame.locator("body > div").evaluate((node) => {
-          const style = getComputedStyle(document.body);
-          return Math.ceil(
-            node.getBoundingClientRect().height +
-              Number.parseFloat(style.paddingTop) +
-              Number.parseFloat(style.paddingBottom)
-          );
-        });
+        const contentHeight = await frame.locator("body > div").evaluate(naturalHeight);
         const frameHeight = await page
           .locator("iframe")
           .evaluate((node) => node.clientHeight);
@@ -561,14 +564,7 @@ test("renders the recorded model-generated forecast in narrow and wide chats", a
     }, width);
     await eventually(
       async () => {
-        const height = await frame.locator("body > div").evaluate((node) => {
-          const style = getComputedStyle(document.body);
-          return Math.ceil(
-            node.getBoundingClientRect().height +
-              Number.parseFloat(style.paddingTop) +
-              Number.parseFloat(style.paddingBottom)
-          );
-        });
+        const height = await frame.locator("body > div").evaluate(naturalHeight);
         return (
           (await page.locator("iframe").evaluate((node) => node.clientHeight)) ===
           height
@@ -819,9 +815,7 @@ for (const scenario of ["weather", "journeys"]) {
         );
         await eventually(
           async () => {
-            const expected = await frame
-              .locator("body > div")
-              .evaluate((node) => Math.ceil(node.getBoundingClientRect().height + 4));
+            const expected = await frame.locator("body > div").evaluate(naturalHeight);
             return (
               (await page.locator("iframe").evaluate((node) => node.clientHeight)) ===
               Math.max(60, expected)
@@ -936,9 +930,7 @@ test("renders model-authored weather with semantic icons and motion", async ({
       );
       await eventually(
         async () => {
-          const expected = await frame
-            .locator("body > div")
-            .evaluate((node) => Math.ceil(node.getBoundingClientRect().height + 4));
+          const expected = await frame.locator("body > div").evaluate(naturalHeight);
           return (
             (await page.locator("iframe").evaluate((node) => node.clientHeight)) ===
             expected
@@ -1089,9 +1081,7 @@ test("keeps a model-authored seven-day forecast compact at chat widths", async (
     );
     await eventually(
       async () => {
-        const natural = await frame
-          .locator("body > div")
-          .evaluate((node) => Math.ceil(node.getBoundingClientRect().height + 4));
+        const natural = await frame.locator("body > div").evaluate(naturalHeight);
         return (
           (await page.locator("iframe").evaluate((node) => node.clientHeight)) ===
           natural
@@ -1370,7 +1360,12 @@ test("a feed card filters its own rows and shows each row's tags", async ({
   const choices = frame
     .getByRole("group", { name: "Recent Inbox" })
     .getByRole("button");
-  await expect(choices).toHaveText(["All", "Unread"]);
+  // Each choice names how many rows it shows.
+  await expect(choices).toHaveCount(2);
+  for (const name of ["All 2", "Unread 1"])
+    await expect(
+      frame.getByRole("group", { name: "Recent Inbox" }).getByRole("button", { name })
+    ).toBeVisible();
   await eventually(
     async () => {
       const box = await page.locator("iframe").boundingBox();

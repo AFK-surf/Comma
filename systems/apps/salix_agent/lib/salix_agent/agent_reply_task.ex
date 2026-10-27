@@ -110,7 +110,9 @@ defmodule SalixAgent.AgentReplyTask do
     kind, reason -> {:error, {:agent_actor_call_failed, kind, reason}}
   end
 
-  defp timeout_ms do
+  @doc "How long a reply task may run before it is killed."
+  @spec timeout_ms() :: pos_integer()
+  def timeout_ms do
     case SystemsRuntime.get_env(:salix_agent, :agent_reply_task_timeout_ms, @default_timeout_ms) do
       timeout when is_integer(timeout) and timeout > 0 -> timeout
       _invalid -> @default_timeout_ms

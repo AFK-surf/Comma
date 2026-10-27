@@ -19,6 +19,15 @@ const test = base.extend({
 });
 const screen = (page: Page, name: string) =>
   expect(page.locator(`[data-compute-screen="${name}"]`)).toBeVisible();
+/** Local settings: in this computer's menu on its card. */
+const openLocalSettings = async (page: Page, label = "本机设置") => {
+  await page
+    .locator('article[data-slot="device-card"]')
+    .first()
+    .getByRole("button", { name: /的更多操作$|^More actions for/ })
+    .click();
+  await page.getByRole("menuitem", { name: label, exact: true }).click();
+};
 const shot = async (page: Page, name: string) => {
   await page.locator('[data-slot="settings-content"]').screenshot({
     path: resolve(screenshotDir, `${name}.png`),
@@ -31,7 +40,7 @@ test("page tree separates component maintenance, storage, and trusted removal sc
   await page.goto("/preview.html?scene=ready");
   await screen(page, "home");
   await shot(page, "home");
-  await page.getByRole("button", { name: "本机设置", exact: true }).click();
+  await openLocalSettings(page);
   await screen(page, "settings");
   await shot(page, "settings");
 
@@ -120,23 +129,35 @@ for (const scene of [
       await shot(page, `scene-${scene}-create`);
     }
     if (scene === "authorization") {
-      await page.getByRole("button", { name: "重新授权这台 Mac", exact: true }).click();
-      const dialog = page.getByRole("dialog");
-      await expect(dialog).toBeVisible();
+      await page.getByRole("button", { name: "恢复管理", exact: true }).click();
+      // One candidate is confirmed on the page itself, not in a dialog.
+      await screen(page, "authorization");
+      await expect(page.getByRole("dialog")).toHaveCount(0);
+      // The navigation also has a 设备 (Devices) entry; the facts are in the page content.
+      const content = page.getByLabel("Settings content");
       for (const field of ["当前账号", "设备", "所属工作区", "服务地址"]) {
-        await expect(dialog.getByText(field, { exact: true })).toBeVisible();
+        await expect(content.getByText(field, { exact: true })).toBeVisible();
       }
       await expect(
-        dialog.getByText("Default workspace", { exact: true })
+        content.getByRole("definition").filter({ hasText: /^Default workspace$/ })
       ).toBeVisible();
-      await shot(page, "authorization-dialog");
+      await expect(
+        page.getByRole("button", { name: "恢复管理", exact: true })
+      ).toBeEnabled();
+      await shot(page, "authorization-confirm");
     }
     if (scene === "setup") {
-      await page.getByRole("button", { name: "查看进度", exact: true }).click();
-      await screen(page, "setup");
-      await shot(page, "setup");
+      // Setup shows its progress on the Sandbox row; the step list is only in diagnostics.
+      const sandbox = page.getByRole("region", { name: "沙箱" });
+      await expect(sandbox.getByRole("status").first()).toBeVisible();
+      await expect(sandbox.getByRole("button")).toHaveCount(0);
+      await expect(page.getByText("连接工作区", { exact: true })).toHaveCount(0);
     }
     if (scene === "maintenance-failed") {
+      await expect(
+        page.getByRole("button", { name: "继续维护", exact: true })
+      ).toBeVisible();
+      await openLocalSettings(page);
       await page.getByRole("button", { name: "查看进度", exact: true }).click();
       await screen(page, "maintenance");
       await shot(page, "maintenance-failed");
@@ -168,6 +189,9 @@ test("offline connection checks owner state without starting repair or setup", a
       configure: Number(document.documentElement.dataset.configureCount || 0),
     }));
   const before = await counts();
+  // The only manual status check is in the collapsed diagnostics of Local settings.
+  await openLocalSettings(page, "Local settings");
+  await page.getByText("Diagnostic details", { exact: true }).click();
   await page.getByRole("button", { name: "Check status", exact: true }).click();
   await expect
     .poll(async () => (await counts()).refresh)
@@ -181,7 +205,7 @@ for (const result of ["none", "failed"]) {
     page,
   }) => {
     await page.goto(`/preview.html?scene=authorization&recovery=${result}`);
-    await page.getByRole("button", { name: "重新授权这台 Mac", exact: true }).click();
+    await page.getByRole("button", { name: "恢复管理", exact: true }).click();
     await screen(page, "authorization");
     await expect(page.getByRole("dialog")).toHaveCount(0);
     await expect(
@@ -192,9 +216,7 @@ for (const result of ["none", "failed"]) {
         { exact: true }
       )
     ).toBeVisible();
-    await expect(
-      page.getByRole("button", { name: "重新授权这台 Mac", exact: true })
-    ).toBeEnabled();
+    await expect(page.getByRole("button", { name: "重试", exact: true })).toBeEnabled();
     if (result === "none") {
       const explanation = await page
         .getByText(
@@ -203,7 +225,7 @@ for (const result of ["none", "failed"]) {
         )
         .boundingBox();
       const action = await page
-        .getByRole("button", { name: "重新授权这台 Mac", exact: true })
+        .getByRole("button", { name: "重试", exact: true })
         .boundingBox();
       expect(action!.y).toBeGreaterThanOrEqual(
         explanation!.y + explanation!.height + 12
@@ -217,11 +239,10 @@ test("cloud retirement explains local files without claiming deletion", async ({
   page,
 }) => {
   await page.goto("/preview.html?scene=cloud-retired");
+  // A retired Shell stays in the list; its status says the cloud connection ended.
   await expect(
-    page.getByRole("button", { name: "Default Shell", exact: true })
-  ).toBeHidden();
-  await page.getByText("历史记录（本页）", { exact: true }).click();
-  await expect(page.getByText("云端连接已结束", { exact: true })).toBeVisible();
+    page.getByRole("button", { name: "Default Shell", exact: true }).getByRole("status")
+  ).toHaveText("云端连接已结束");
   await page.getByRole("button", { name: "Default Shell", exact: true }).click();
   await screen(page, "workload");
   await expect(page.getByText(/原设备上的数据尚未确认删除/)).toBeVisible();
@@ -236,7 +257,7 @@ test("offline Shell deletion explains the original device cleanup without report
 }) => {
   await page.goto("/preview.html?scene=deletion-offline");
   await screen(page, "home");
-  await expect(page.getByText("等待原 Mac", { exact: true })).toBeVisible();
+  await expect(page.getByText("原 Mac 上线后自动完成", { exact: true })).toBeVisible();
   await page.getByText("Default Shell", { exact: true }).click();
   await screen(page, "workload");
   await expect(
@@ -249,7 +270,7 @@ test("offline Shell deletion explains the original device cleanup without report
   await shot(page, "deletion-offline");
 });
 
-test("Shell retry remains visible and targets the selected workload revision", async ({
+test("Shell retry remains visible and targets the selected workload generation", async ({
   page,
 }) => {
   await page.goto("/preview.html?scene=shell-failed&locale=en");
@@ -261,7 +282,7 @@ test("Shell retry remains visible and targets the selected workload revision", a
         JSON.parse(document.documentElement.dataset.retryRequest || "null")
       )
     )
-    .toMatchObject({ id: "workload-default", revision: 1, generation: 1 });
+    .toEqual({ workspace: "workspace-visual", id: "workload-default", generation: 1 });
   await expect(
     page.getByRole("button", { name: "Retry preparation", exact: true })
   ).toHaveCount(0);
@@ -302,8 +323,7 @@ test("failed workspace removal shows its error after confirmation", async ({
 }) => {
   await page.goto("/preview.html?scene=removal-incomplete");
   await screen(page, "home");
-  await page.getByRole("button", { name: "本机设置", exact: true }).click();
-  await screen(page, "settings");
+  // The device card offers the removal's next step itself.
   await page.getByRole("button", { name: "完成移除", exact: true }).click();
   await expect(page.getByRole("dialog")).toBeVisible();
   await page
@@ -316,27 +336,21 @@ test("failed workspace removal shows its error after confirmation", async ({
   );
 });
 
-test("device permission explanation wraps inside its dialog", async ({ page }) => {
+test("device access levels say what each allows inside the menu", async ({ page }) => {
   await page.setViewportSize({ width: 680, height: 900 });
   await page.goto("/preview.html?scene=ready");
-  await page.getByRole("button", { name: "权限与详情", exact: true }).click();
-  const dialog = page.getByRole("dialog");
-  await expect(dialog).toBeVisible();
-  // Access is one of Off, Read and Full, each row with what it allows.
-  const access = dialog.getByRole("radiogroup");
-  await expect(access.getByRole("radio")).toHaveCount(3);
-  expect(
-    await access.evaluate((group) => {
-      const container = group.closest('[role="dialog"]')!.getBoundingClientRect();
-      return [...group.querySelectorAll("label")].every((label) => {
-        const hint = label.querySelector(".comma-choice-list-description")!;
-        const range = document.createRange();
-        range.selectNodeContents(hint);
-        return (
-          range.getBoundingClientRect().right <= container.right &&
-          label.scrollWidth <= label.clientWidth
-        );
-      });
-    })
-  ).toBe(true);
+  await page
+    .locator('article[data-slot="device-card"]')
+    .first()
+    .getByRole("button", { name: /访问权限/ })
+    .click();
+  // Access is one of Off, Read and Full, each option with what it allows.
+  const options = page.getByRole("option");
+  await expect(options).toHaveCount(3);
+  const width = page.viewportSize()!.width;
+  for (const option of await options.all()) {
+    const box = (await option.boundingBox())!;
+    expect(box.x + box.width).toBeLessThanOrEqual(width);
+  }
+  await shot(page, "access-menu");
 });

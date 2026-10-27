@@ -30,12 +30,6 @@ export function AddComputerCommand({ workspace }: { workspace: string }) {
       live = false;
     };
   }, [call, workspace]);
-  const copy = () =>
-    enrollment &&
-    void copyTextToClipboard(enrollment.command).then(
-      () => toast.success(m.common_copied(), { id: "copy-feedback" }),
-      () => toast.error(m.settings_devices_install_failed())
-    );
   if (failed)
     return (
       <p className="m-0 text-sm text-error-primary" role="alert">
@@ -44,18 +38,37 @@ export function AddComputerCommand({ workspace }: { workspace: string }) {
     );
   if (!enrollment)
     return <p className="m-0 text-sm text-tertiary">{m.common_loading()}</p>;
+  return (
+    <DeviceInstallCommand
+      enrollment={enrollment}
+      description={m.settings_devices_install_description()}
+    />
+  );
+}
+
+export function DeviceInstallCommand({
+  enrollment,
+  description,
+}: {
+  enrollment: { command: string; expiresAt: number };
+  description: string;
+}) {
+  const m = useCommaMessages();
+  const copy = () =>
+    void copyTextToClipboard(enrollment.command).then(
+      () => toast.success(m.common_copied(), { id: "copy-feedback" }),
+      () => toast.error(m.settings_devices_install_failed())
+    );
   const expires = new Date(enrollment.expiresAt * 1000).toLocaleTimeString([], {
     hour: "2-digit",
     minute: "2-digit",
   });
   return (
     <div className="flex flex-col gap-sm">
-      <p className="m-0 text-sm text-secondary">
-        {m.settings_devices_install_description()}
-      </p>
+      <p className="m-0 text-sm text-secondary">{description}</p>
       <div className="flex items-start gap-sm rounded-md border-[0.5px] border-primary bg-popup-secondary p-md">
         <code
-          className="min-w-0 flex-1 break-all font-mono text-xs leading-5 text-primary"
+          className="min-w-0 flex-1 whitespace-pre-wrap break-all font-mono text-xs leading-5 text-primary"
           data-testid="device-install-command"
         >
           {enrollment.command}

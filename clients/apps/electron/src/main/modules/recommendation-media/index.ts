@@ -1,3 +1,4 @@
+import { clockTimeoutSignal, realMainClock, type MainClock } from "../../clock";
 import { lookup as dnsLookup } from "node:dns/promises";
 import { request as httpsRequest, type RequestOptions } from "node:https";
 import { BlockList, isIP } from "node:net";
@@ -68,11 +69,13 @@ export class RecommendationMediaService implements RecommendationMediaProvider {
   readonly #resolveHostname: ResolveHostname;
 
   constructor({
-    createAbortSignal = () => AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    clock = realMainClock,
+    createAbortSignal = () => clockTimeoutSignal(clock, REQUEST_TIMEOUT_MS),
     createRasterImage = (bytes) => nativeImage.createFromBuffer(Buffer.from(bytes)),
     requestOnce = requestPinnedHttps,
     resolveHostname = resolveHostnameAddresses,
   }: {
+    clock?: MainClock;
     createAbortSignal?: CreateAbortSignal;
     createRasterImage?: CreateRasterImage;
     requestOnce?: RequestOnce;

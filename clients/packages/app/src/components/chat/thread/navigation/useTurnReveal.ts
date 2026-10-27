@@ -22,6 +22,7 @@ export function useTurnReveal({
   follow: { anchorTurn, revealElement, scrollRootRef, stopFollowing },
   historyReveal,
   historyScope,
+  cancelPendingRevealRef,
   revealTurnHandle,
   turnWindow: { getWindowViewport, hasOlder, revealWindowTurn, windowKeyByMessage },
 }: {
@@ -32,6 +33,7 @@ export function useTurnReveal({
   >;
   historyReveal: RefObject<PendingHistoryReveal | null>;
   historyScope: string;
+  cancelPendingRevealRef: RefObject<(() => void) | null>;
   revealTurnHandle: RevealTurnHandle | undefined;
   turnWindow: Pick<
     ThreadTurnWindow,
@@ -45,6 +47,22 @@ export function useTurnReveal({
     highlightInPlace: boolean;
     lifecycle?: ReplyChainReveal | undefined;
   } | null>(null);
+  const cancelPendingReveal = useCallback(() => {
+    const pending = pendingRevealMessageRef.current;
+    pendingRevealTurnKeyRef.current = null;
+    pendingRevealMessageRef.current = null;
+    pending?.lifecycle?.cancel();
+    const history = historyReveal.current;
+    historyReveal.current = null;
+    history?.lifecycle?.cancel();
+  }, [historyReveal]);
+  useLayoutEffect(() => {
+    cancelPendingRevealRef.current = cancelPendingReveal;
+    return () => {
+      cancelPendingRevealRef.current = null;
+      cancelPendingReveal();
+    };
+  }, [cancelPendingReveal, cancelPendingRevealRef]);
   const revealMountedMessage = useCallback(
     (
       messageId: string,
@@ -97,6 +115,7 @@ export function useTurnReveal({
         lifecycle?: ReplyChainReveal | undefined;
       } = {}
     ) => {
+      cancelPendingReveal();
       if (
         focusMessage &&
         highlightMessageId &&
@@ -118,7 +137,13 @@ export function useTurnReveal({
         lifecycle?.cancel();
       }
     },
-    [revealMountedMessage, revealWindowTurn, stopFollowing, windowKeyByMessage]
+    [
+      cancelPendingReveal,
+      revealMountedMessage,
+      revealWindowTurn,
+      stopFollowing,
+      windowKeyByMessage,
+    ]
   );
   useEffect(() => {
     if (!revealTurnHandle) return undefined;

@@ -21,6 +21,80 @@ export class ComputeNodeAuthorizationNotFoundError extends Error {
   }
 }
 
+/**
+ * The refusals of the install-operation routes that fail the same way again (`SalixStore.AgentVMMInstallations`
+ * reasons, sent by `compute_error`/`comma_error` in `comma_web/router.ex`): a gone or terminal registration, an
+ * operation that cannot move on, and request or environment validation. Main stops continuing these.
+ */
+const terminalRefusalReasons = [
+  "registration_not_found",
+  "terminal_registration",
+  "installation_not_handed_off",
+  "handoff_expired",
+  "handoff_complete",
+  "operation_not_retryable",
+  "invalid_request",
+  "invalid_install_request",
+  "invalid_install_environment",
+  "invalid_install_material",
+  "install_material_too_large",
+  "invalid_delivery_target",
+  "delivery_target_mismatch",
+  "environment_scope_required",
+  "scope_host_bound",
+  "not_found",
+] as const;
+/**
+ * Refusals that clear by themselves: a concurrent update, deletion or rollout, a lost race, a changed Session or
+ * permission. Main keeps continuing them within its budget, as for an unknown reason, 408, 429 and 5xx.
+ */
+const transientRefusalReasons = [
+  "update_in_progress",
+  "deletion_in_progress",
+  "idempotency_conflict",
+  "revision_conflict",
+  "environment_scope_rollout_pending",
+  "compute_node_not_ready",
+  "authorization_changed",
+  "rate_limited",
+  "expired",
+  "forbidden",
+] as const;
+/** The server's refusal reasons that Main tells apart. Any other code is `other`; Main never logs a raw code. */
+export type ComputeNodeCloudRefusalReason =
+  | (typeof terminalRefusalReasons)[number]
+  | (typeof transientRefusalReasons)[number]
+  | "other";
+
+/**
+ * The server answered and refused the request (HTTP 4xx or 5xx). `reason` is the server's error code mapped to
+ * {@link ComputeNodeCloudRefusalReason}. Only a known terminal reason outside 401, 403, 408, 429 and 5xx is
+ * `terminal`: the same request fails again. Every other refusal keeps its earlier retryable handling.
+ */
+export class ComputeNodeCloudRefusalError extends Error {
+  readonly terminal: boolean;
+  constructor(
+    operation: string,
+    readonly status: number,
+    readonly reason: ComputeNodeCloudRefusalReason,
+    options?: ErrorOptions
+  ) {
+    super(`Compute node ${operation} failed (${status} ${reason}).`, options);
+    this.terminal =
+      status >= 400 &&
+      status < 500 &&
+      ![401, 403, 408, 429].includes(status) &&
+      (terminalRefusalReasons as readonly string[]).includes(reason);
+  }
+}
+
+function cloudRefusalReason(code: unknown): ComputeNodeCloudRefusalReason {
+  return (terminalRefusalReasons as readonly unknown[]).includes(code) ||
+    (transientRefusalReasons as readonly unknown[]).includes(code)
+    ? (code as ComputeNodeCloudRefusalReason)
+    : "other";
+}
+
 export type ComputeNodeInstallAuthorizationPhase =
   ComputeNodeOperationValue["authorizationStatus"];
 export type LocalWorkloadTarget = ComputeLocalWorkloadTarget;
@@ -51,6 +125,8 @@ export interface ComputeNodeInstallAuthorizationOwner {
     workActivity: "idle" | "active" | "unknown";
     /** The server's failure code for an action-required operation. */
     errorCode?: string;
+    /** Why the server revoked the registration. Only `authorization_expired` is replaced automatically. */
+    registrationRevocationReason?: "authorization_expired" | "revoked";
     shellPhase?:
       | "not_initialized"
       | "preparing"
@@ -68,12 +144,6 @@ export interface ComputeNodeInstallAuthorizationOwner {
     operationId: string;
     workspaceId: string;
   }): Promise<ComputeNodeState["status"]>;
-  /** Waits for the node to read ready (at most `waitMs`), then initializes its workload once. */
-  initializeWorkload(input: {
-    operationId: string;
-    workspaceId: string;
-    waitMs?: number;
-  }): Promise<void>;
   revoke(input: {
     operationId: string;
     workspaceId: string;
@@ -144,20 +214,6 @@ export class ComputeNodeInstallAuthorization implements ComputeNodeInstallAuthor
         true
       )
     ).status;
-  }
-
-  async initializeWorkload(input: Operation & { waitMs?: number }): Promise<void> {
-    const client = this.client();
-    if (!client) throw unreachable();
-    try {
-      await client.call("computeNode.initializeWorkload", input);
-    } catch (error) {
-      const { code, message } = (error ?? {}) as { code?: string; message?: string };
-      if (code !== undefined && unreachableCodes.has(code)) throw unreachable();
-      throw new Error(message ?? "Compute node workload initialization failed.", {
-        cause: error,
-      });
-    }
   }
 
   async revoke(input: Operation) {
@@ -263,6 +319,13 @@ export class ComputeNodeInstallAuthorization implements ComputeNodeInstallAuthor
       if (scoped && status === 404) throw new ComputeNodeAuthorizationNotFoundError();
       if (code === "session_changed" || code === "signed_out")
         throw new Error(`Compute node ${operation} session changed.`, { cause: error });
+      if (typeof status === "number" && status >= 400 && status < 600)
+        throw new ComputeNodeCloudRefusalError(
+          operation,
+          status,
+          cloudRefusalReason(code),
+          { cause: error }
+        );
       throw new Error(
         `Compute node ${operation} failed (${status ?? code ?? "unknown"}).`,
         { cause: error }

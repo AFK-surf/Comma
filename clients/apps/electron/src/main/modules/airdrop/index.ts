@@ -5,6 +5,7 @@ import { lstat, mkdir, realpath } from "node:fs/promises";
 import { basename, isAbsolute, join, relative } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { z } from "zod";
+import { realMainClock, type MainClock } from "../../clock";
 import { spawnAirDropHelper, type SpawnAirDropHelper } from "./helper-process";
 
 const offerSchema = z.object({
@@ -94,6 +95,8 @@ export interface AirDropFile {
 }
 export interface AirDropOptions {
   binaryPath?: string | undefined;
+  /** Main's clock: the receiver's deadlines, and when a file was received. */
+  clock?: MainClock;
   dataDir: string;
   platform?: string;
   /** The name nearby devices see, read each time the receiver starts. */
@@ -107,7 +110,7 @@ export interface AirDropOptions {
 }
 interface PendingOffer {
   controller: AbortController;
-  timer: ReturnType<typeof setTimeout>;
+  cancelTimer: () => void;
   intake?: AirDropIntake;
   paths: string[];
 }
@@ -115,6 +118,7 @@ interface PendingOffer {
 /** Main owns a persistent anonymous listener. Every transfer requires local consent. */
 export class AirDropService {
   readonly #options: AirDropOptions;
+  readonly #clock: MainClock;
   readonly #offers = new Map<string, PendingOffer>();
   #prompting = false;
   #child: ChildProcessWithoutNullStreams | undefined;
@@ -133,6 +137,7 @@ export class AirDropService {
 
   constructor(options: AirDropOptions) {
     this.#options = options;
+    this.#clock = options.clock ?? realMainClock;
   }
 
   status() {
@@ -218,9 +223,8 @@ export class AirDropService {
         child.kill("SIGTERM");
         ready();
       };
-      const startupTimer = setTimeout(
-        () => fail("AirDrop did not start within 8 seconds."),
-        8_000
+      const cancelStartupTimer = this.#clock.setTimer(8_000, () =>
+        fail("AirDrop did not start within 8 seconds.")
       );
       child.stderr.on("data", (chunk: Buffer) => {
         stderr = (stderr + chunk.toString("utf8")).slice(-4096);
@@ -284,7 +288,7 @@ export class AirDropService {
           this.#error = error.message;
         });
         child.once("close", () => {
-          clearTimeout(startupTimer);
+          cancelStartupTimer();
           this.#port = undefined;
           this.#child = undefined;
           this.#cancelAll("AirDrop receiver stopped before the transfer completed.");
@@ -300,7 +304,7 @@ export class AirDropService {
         });
       });
       await startup;
-      clearTimeout(startupTimer);
+      cancelStartupTimer();
       if (this.status().status !== "receiving" && this.#child) {
         await this.#stop();
         this.#phase = "failed";
@@ -333,7 +337,9 @@ export class AirDropService {
     const pending: PendingOffer = {
       controller,
       paths: [],
-      timer: setTimeout(() => this.#cancelOffer(offer.requestId), 25_000),
+      cancelTimer: this.#clock.setTimer(25_000, () =>
+        this.#cancelOffer(offer.requestId)
+      ),
     };
     this.#offers.set(offer.requestId, pending);
     this.#prompting = true;
@@ -350,14 +356,12 @@ export class AirDropService {
         return;
       }
       pending.intake = intake;
-      clearTimeout(pending.timer);
-      pending.timer = setTimeout(
-        () =>
-          this.#cancelOffer(
-            offer.requestId,
-            "AirDrop transfer timed out. Received files remain on this Mac."
-          ),
-        5 * 60_000
+      pending.cancelTimer();
+      pending.cancelTimer = this.#clock.setTimer(5 * 60_000, () =>
+        this.#cancelOffer(
+          offer.requestId,
+          "AirDrop transfer timed out. Received files remain on this Mac."
+        )
       );
       respond(true);
     } catch (error) {
@@ -390,14 +394,14 @@ export class AirDropService {
         name: basename(path),
         kind: stat.isDirectory() ? "directory" : "file",
         size: stat.size,
-        receivedAt: new Date().toISOString(),
+        receivedAt: new Date(this.#clock.now()).toISOString(),
       });
       if (this.#files.length > 200) this.#files.shift();
     }
     if (pending.paths.length > 50) throw new Error("Too many received attachments.");
     if (event.complete) {
       await pending.intake.complete(pending.paths);
-      clearTimeout(pending.timer);
+      pending.cancelTimer();
       this.#offers.delete(event.requestId);
     }
   }
@@ -406,7 +410,7 @@ export class AirDropService {
     const pending = this.#offers.get(id);
     if (!pending) return;
     this.#offers.delete(id);
-    clearTimeout(pending.timer);
+    pending.cancelTimer();
     pending.intake?.cancel(reason);
     pending.controller.abort();
   }
@@ -449,11 +453,12 @@ export class AirDropService {
       this.#phase = "stopping";
       child.stdin.end();
       child.kill("SIGTERM");
-      const timer = setTimeout(() => child.kill("SIGKILL"), 2_000);
+      // A helper that ignores SIGTERM must still die while a test clock stands still.
+      const cancelKill = realMainClock.setTimer(2_000, () => child.kill("SIGKILL"));
       try {
         await this.#closed;
       } finally {
-        clearTimeout(timer);
+        cancelKill();
       }
     }
     await this.#records;

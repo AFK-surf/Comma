@@ -20,6 +20,7 @@ import {
   type SynchronicityState,
 } from "@comma/native-bridge";
 import { sessionProductLease } from "@comma/session-contract";
+import { realMainClock } from "../../../src/main/clock";
 import { AudioCaptureService } from "../../../src/main/modules/audio-capture";
 import { HelperRecordingEncoder } from "../../../src/main/modules/audio-capture/encoder";
 import { DriveRecordingStore } from "../../../src/main/modules/audio-capture/drive-recordings";
@@ -94,7 +95,7 @@ export async function compressionScenario(sampleRate: number, helperPath: string
     recordingsDir,
     drive: store,
     encoder: new HelperRecordingEncoder(helperPath),
-    now: () => new Date(2026, 8, 9, 23, 59).getTime(),
+    clock: { ...realMainClock, now: () => new Date(2026, 8, 9, 23, 59).getTime() },
     onStateChanged() {},
     onSaved: async (...args) => {
       try {

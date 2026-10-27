@@ -77,6 +77,56 @@ defmodule Comma.ConversationsParticipantStatusTest do
     end
   end
 
+  test "publishes the tool a call runs and when a wait began only for active work" do
+    for state <- ["active", "stopped", "error"] do
+      tool =
+        Comma.Conversations.public_participant_status(
+          %{
+            "state" => state,
+            "status" => "status",
+            "updated_at" => 1,
+            "wait_tool" => "cloud_vm.start",
+            "wait_started_at" => 1_780_000_000_000
+          },
+          @stream_context
+        )
+
+      assert tool["wait_tool"] == if(state == "active", do: "cloud_vm.start")
+      assert tool["wait_started_at"] == if(state == "active", do: 1_780_000_000_000)
+      refute Map.has_key?(tool, "waiting")
+
+      wait =
+        Comma.Conversations.public_participant_status(
+          %{
+            "state" => state,
+            "status" => "status",
+            "updated_at" => 1,
+            "waiting" => true,
+            "wait_started_at" => 1_780_000_000_000
+          },
+          @stream_context
+        )
+
+      assert wait["wait_started_at"] == if(state == "active", do: 1_780_000_000_000)
+    end
+
+    # A start without a wait or a tool, or an oversized tool name, is not published.
+    public =
+      Comma.Conversations.public_participant_status(
+        %{
+          "state" => "active",
+          "status" => "status",
+          "updated_at" => 1,
+          "wait_started_at" => 1,
+          "wait_tool" => String.duplicate("a", 129)
+        },
+        @stream_context
+      )
+
+    refute Map.has_key?(public, "wait_started_at")
+    refute Map.has_key?(public, "wait_tool")
+  end
+
   test "publishes the reason code for an error activity" do
     public =
       Comma.Conversations.public_participant_status(

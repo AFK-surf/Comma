@@ -1,16 +1,22 @@
 defmodule SalixIM.Provider.Feishu.Meetings do
   @moduledoc """
-  Feishu meetings read as a person who signed in (`im_api.feishu.*`).
+  Feishu meetings, AI meeting notes and recordings, and the documents and wiki
+  pages there are, found and read as the app or as a person who signed in
+  (`im_api.feishu.*`, `SalixIM.Ports.FeishuUserAccounts`), so the bot needs no
+  link.
 
-  Feishu shows a finished meeting, its notes (the AI meeting notes document and
-  the transcript document) and its recording only to people: the bot finds
-  and opens them as one of the Group's signed-in Feishu accounts
-  (`SalixIM.Ports.FeishuUserAccounts`). Without `account`, a search runs as
-  every account and a read tries each account until one may see the meeting.
+  Without `account`, a search (`feishu.search_docs`, `feishu.list_drive_files`,
+  `feishu.search_meetings`) runs as the app and then as every active account,
+  and a read (`feishu.get_meeting`, `feishu.get_note`) tries the app and then each
+  account until one may see the meeting; `account=app` is the app alone. A
+  person sees what they took part in or may open, the app what was shared
+  with it. A unified note's transcript is given only to a person. What the
+  search finds is read with the document, wiki and Minutes operations and the
+  same `account`.
 
   Request shapes follow the official
-  [larksuite/cli](https://github.com/larksuite/cli) `vc` and `note`
-  shortcuts. A result is labelled with the people Feishu names for it: the
+  [larksuite/cli](https://github.com/larksuite/cli) `vc`, `note`,
+  `docs +search` and `drive` shortcuts. A result is labelled with the people Feishu names for it: the
   meeting's participants, or else the account that read it.
   """
 
@@ -21,6 +27,11 @@ defmodule SalixIM.Provider.Feishu.Meetings do
   alias SalixIM.Provider.Feishu.{API, Minutes}
 
   @max_page_size 30
+  # The app's own identity, as an account of a read.
+  @app_alias "app"
+  @app %{"alias" => @app_alias, "open_id" => nil, "name" => "the app", "status" => "active"}
+  @max_doc_page_size 20
+  @identity_batch 10
   @max_query_chars 50
   @main_doc 1
   @verbatim_doc 2
@@ -35,67 +46,71 @@ defmodule SalixIM.Provider.Feishu.Meetings do
 
   defp do_call(_agent_id, connect, "feishu.list_accounts", _params) do
     with {:ok, accounts} <- accounts(connect) do
-      {:ok, %{"accounts" => accounts}}
+      {:ok, %{"accounts" => Enum.map(accounts, &Map.put(&1, "account", account_ref(&1)))}}
     end
   end
 
   defp do_call(agent_id, connect, "feishu.search_meetings", params) do
-    with {:ok, body} <- search_body(params),
-         {:ok, accounts} <- chosen_accounts(connect, params),
-         :ok <- one_account_per_page(accounts, params) do
+    with {:ok, body} <- search_body(params) do
       query = search_query(params)
 
-      results =
-        Enum.map(accounts, fn account ->
-          with {:ok, as_user} <- as_user(agent_id, connect, account),
-               {:ok, data} <-
-                 API.post_read(
-                   as_user,
-                   "/vc/v1/meetings/search?" <> URI.encode_query(query),
-                   body
-                 ) do
-            {:ok, account, data}
-          else
-            {:error, reason} -> {:error, account, reason}
-          end
-        end)
-
-      found =
-        for {:ok, account, data} <- results,
-            %{} = item <- List.wrap(data["items"]),
-            do: Map.put(item, "account", account["alias"])
-
-      case {found, results} do
-        {[], [{:error, _account, reason}]} ->
-          {:error, reason}
-
-        _ ->
-          {:ok,
-           labelled(
-             %{
-               "meetings" => found,
-               "has_more" => Enum.any?(results, &match?({:ok, _, %{"has_more" => true}}, &1)),
-               # A page token belongs to the account whose search made it.
-               "next_pages" =>
-                 for(
-                   {:ok, account, %{"has_more" => true} = data} <- results,
-                   token = blank_nil(data["page_token"]),
-                   do: %{"account" => account["alias"], "page_token" => token}
-                 ),
-               "failed_accounts" =>
-                 for({:error, account, reason} <- results, do: failure(account, reason))
-             },
-             connect,
-             Enum.map(accounts, & &1["open_id"])
-           )}
-      end
+      search_as_accounts(agent_id, connect, params, "meetings", fn as_user ->
+        with {:ok, data} <-
+               API.post_read(
+                 as_user,
+                 "/vc/v1/meetings/search?" <> URI.encode_query(query),
+                 body
+               ) do
+          {:ok, List.wrap(data["items"]), data["has_more"] == true, data["page_token"]}
+        end
+      end)
     end
+  end
+
+  # Documents and wiki pages the person may open, by keyword: Feishu's own
+  # search (`docs +search` of the official CLI, user identity only).
+  defp do_call(agent_id, connect, "feishu.search_docs", params) do
+    with {:ok, query} <- required(params, "query") do
+      size = (params["page_size"] || 15) |> int_or(15) |> min(@max_doc_page_size) |> max(1)
+
+      body =
+        %{
+          "query" => query,
+          "page_size" => size,
+          "doc_filter" => %{},
+          "wiki_filter" => %{}
+        }
+        |> maybe_put("page_token", blank_nil(params["page_token"]))
+
+      search_as_accounts(agent_id, connect, params, "documents", fn as_user ->
+        with {:ok, data} <- API.post_read(as_user, "/search/v2/doc_wiki/search", body) do
+          {:ok, Enum.map(List.wrap(data["res_units"]), &search_hit/1), data["has_more"] == true,
+           data["page_token"]}
+        end
+      end)
+    end
+  end
+
+  # The files and folders of the person's own cloud space, one folder at a
+  # time; without `folder` the root of their space.
+  defp do_call(agent_id, connect, "feishu.list_drive_files", params) do
+    query =
+      %{"page_size" => "50"}
+      |> maybe_put("folder_token", blank_nil(params["folder"]))
+      |> maybe_put("page_token", blank_nil(params["page_token"]))
+
+    search_as_accounts(agent_id, connect, params, "files", fn as_user ->
+      with {:ok, data} <- API.get(as_user, "/drive/v1/files", query) do
+        {:ok, List.wrap(data["files"]), data["has_more"] == true,
+         data["next_page_token"] || data["page_token"]}
+      end
+    end)
   end
 
   defp do_call(agent_id, connect, "feishu.get_meeting", params) do
     with {:ok, meeting_id} <- required(params, "meeting_id"),
          {:ok, accounts} <- chosen_accounts(connect, params) do
-      first_readable(accounts, fn account ->
+      first_readable(accounts, params, fn account ->
         with {:ok, as_user} <- as_user(agent_id, connect, account),
              {:ok, data} <-
                API.get(as_user, "/vc/v1/meetings/#{segment(meeting_id)}", %{
@@ -107,7 +122,7 @@ defmodule SalixIM.Provider.Feishu.Meetings do
 
           result =
             %{
-              "account" => account["alias"],
+              "account" => account_ref(account),
               "meeting_id" => meeting_id,
               "meeting" => meeting,
               "note_id" => blank_nil(meeting["note_id"])
@@ -118,7 +133,10 @@ defmodule SalixIM.Provider.Feishu.Meetings do
            labelled(
              result,
              connect,
-             [account["open_id"] | Enum.map(participants, &(&1["id"] || &1["user_id"]))]
+             Enum.reject(
+               [account["open_id"] | Enum.map(participants, &(&1["id"] || &1["user_id"]))],
+               &is_nil/1
+             )
            )}
         end
       end)
@@ -128,7 +146,7 @@ defmodule SalixIM.Provider.Feishu.Meetings do
   defp do_call(agent_id, connect, "feishu.get_note", params) do
     with {:ok, note_id} <- required(params, "note_id"),
          {:ok, accounts} <- chosen_accounts(connect, params) do
-      first_readable(accounts, fn account ->
+      first_readable(accounts, params, fn account ->
         with {:ok, as_user} <- as_user(agent_id, connect, account),
              {:ok, data} <- API.get(as_user, "/vc/v1/notes/#{segment(note_id)}") do
           note = data["note"] || %{}
@@ -136,7 +154,7 @@ defmodule SalixIM.Provider.Feishu.Meetings do
           type = display_type(note["note_display_type"] || note["display_type"])
 
           result = %{
-            "account" => account["alias"],
+            "account" => account_ref(account),
             "note_id" => note_id,
             "note_doc_token" => artifact_doc(artifacts, @main_doc),
             "verbatim_doc_token" => artifact_doc(artifacts, @verbatim_doc),
@@ -167,6 +185,8 @@ defmodule SalixIM.Provider.Feishu.Meetings do
   Other Feishu operations use it when the request names an `account`.
   """
   @spec as_account(String.t(), map(), String.t()) :: {:ok, map()} | {:error, String.t()}
+  def as_account(_agent_id, connect, @app_alias), do: {:ok, connect}
+
   def as_account(agent_id, connect, alias_name) do
     with {:ok, accounts} <- accounts(connect),
          {:ok, account} <- find_account(accounts, alias_name),
@@ -183,17 +203,18 @@ defmodule SalixIM.Provider.Feishu.Meetings do
     end
   end
 
+  # Who a read runs as: the app itself and then every active signed-in
+  # account, or the one `account` names (`app` for the app alone).
   defp chosen_accounts(connect, params) do
     with {:ok, accounts} <- accounts(connect) do
-      case {str(params["account"]), Enum.filter(accounts, &(&1["status"] == "active"))} do
-        {"", []} ->
-          {:error,
-           "no Feishu account is signed in for this Agent Swarm. Ask the person to sign in: call oauth.request_authorization with provider feishu, an alias such as feishu-<their name> and a reason, and send its authorization_url in the chat the request came from."}
+      case str(params["account"]) do
+        "" ->
+          {:ok, [@app | Enum.filter(accounts, &(&1["status"] == "active"))]}
 
-        {"", active} ->
-          {:ok, active}
+        @app_alias ->
+          {:ok, [@app]}
 
-        {alias_name, _active} ->
+        alias_name ->
           with {:ok, account} <- find_account(accounts, alias_name), do: {:ok, [account]}
       end
     end
@@ -207,6 +228,94 @@ defmodule SalixIM.Provider.Feishu.Meetings do
         {:error, "a page_token belongs to one account: pass the account of its next_pages entry"},
       else: :ok
   end
+
+  # One read per chosen account, as that person; the items name the account
+  # that found them, and a page token belongs to the account whose read made
+  # it. Only when the single account fails is the read an error.
+  defp search_as_accounts(agent_id, connect, params, key, read) do
+    with {:ok, identities} <- chosen_accounts(connect, params),
+         {accounts, next_from} = identity_batch(identities, params),
+         :ok <- one_account_per_page(accounts, params) do
+      results =
+        Enum.map(accounts, fn account ->
+          with {:ok, as_user} <- as_user(agent_id, connect, account),
+               {:ok, items, more?, token} <- read.(as_user) do
+            {:ok, account, items, more?, token}
+          else
+            {:error, reason} -> {:error, account, reason}
+          end
+        end)
+
+      found =
+        for {:ok, account, items, _more?, _token} <- results,
+            %{} = item <- items,
+            do: Map.put(item, "account", account_ref(account))
+
+      guidance =
+        if identities == [@app],
+          do:
+            "Searched as the app only: no Feishu account is signed in. A person sees more than the app; to search as them, call oauth.request_authorization with provider feishu, an alias such as feishu-<their name> and a reason, and send its authorization_url in the chat the request came from."
+
+      case {found, results} do
+        {[], [{:error, _account, reason}]} ->
+          {:error, reason}
+
+        _ ->
+          {:ok,
+           labelled(
+             %{
+               key => found,
+               "has_more" => Enum.any?(results, &match?({:ok, _, _, true, _}, &1)),
+               "next_pages" =>
+                 for(
+                   {:ok, account, _items, true, token} <- results,
+                   token = blank_nil(token),
+                   do: %{"account" => account_ref(account), "page_token" => token}
+                 ),
+               "failed_accounts" =>
+                 for({:error, account, reason} <- results, do: failure(account, reason))
+             }
+             |> maybe_put("guidance", guidance)
+             |> maybe_put(
+               "more_accounts",
+               if(next_from,
+                 do: %{
+                   "accounts_from" => next_from,
+                   "guidance" =>
+                     "More signed-in accounts remain: call again with accounts_from to search as them."
+                 }
+               )
+             ),
+             connect,
+             # Labelled by the identities whose items it returns: the app's
+             # unknown audience only when the app found something.
+             for({:ok, account, [_ | _], _more?, _token} <- results, do: account["open_id"])
+           )}
+      end
+    end
+  end
+
+  # A search hit, with its title without Feishu's highlight tags and the link
+  # and token the read operations take.
+  defp search_hit(%{} = unit) do
+    meta = unit["result_meta"] || %{}
+
+    %{
+      "title" =>
+        (unit["title_highlighted"] || unit["title"] || "")
+        |> str()
+        |> String.replace(~r{</?h>}, ""),
+      "type" => List.first(List.wrap(meta["doc_types"])) || unit["entity_type"],
+      "url" => meta["url"],
+      "token" => meta["token"],
+      "owner" => meta["owner_name"],
+      "update_time" => meta["update_time"],
+      "summary" => unit["summary_highlighted"] |> str() |> String.replace(~r{</?h>}, "")
+    }
+    |> Map.reject(fn {_key, value} -> value in [nil, ""] end)
+  end
+
+  defp search_hit(_unit), do: nil
 
   defp find_account(accounts, wanted) do
     case Enum.find(accounts, &(wanted in [&1["alias"], &1["open_id"]])) do
@@ -222,6 +331,8 @@ defmodule SalixIM.Provider.Feishu.Meetings do
     end
   end
 
+  defp as_user(_agent_id, connect, @app), do: {:ok, connect}
+
   defp as_user(agent_id, connect, account) do
     case FeishuUserAccounts.access_token(agent_id, account["alias"]) do
       {:ok, token} ->
@@ -235,7 +346,9 @@ defmodule SalixIM.Provider.Feishu.Meetings do
 
   # The first account whose read succeeds; else the last refusal, with every
   # account's reason when there were several.
-  defp first_readable(accounts, read) do
+  defp first_readable(identities, params, read) do
+    {accounts, next_from} = identity_batch(identities, params)
+
     Enum.reduce_while(accounts, [], fn account, failures ->
       case read.(account) do
         {:ok, _} = ok -> {:halt, ok}
@@ -246,18 +359,41 @@ defmodule SalixIM.Provider.Feishu.Meetings do
       {:ok, _} = ok ->
         ok
 
-      [only] ->
+      [only] when is_nil(next_from) ->
         {:error, only["error"]}
 
       failures ->
         {:error,
          "no signed-in Feishu account can read it: " <>
-           Enum.map_join(Enum.reverse(failures), "; ", &"#{&1["account"]}: #{&1["error"]}")}
+           Enum.map_join(Enum.reverse(failures), "; ", &"#{&1["account"]}: #{&1["error"]}") <>
+           if(next_from,
+             do: "; more accounts remain: call again with accounts_from #{next_from}",
+             else: ""
+           )}
     end
   end
 
   defp failure(account, reason),
-    do: %{"account" => account["alias"], "error" => reason_text(reason)}
+    do: %{"account" => account_ref(account), "error" => reason_text(reason)}
+
+  # How a result names the identity that read it, for the `account` of the
+  # next read: `app` is only ever the app, so an account a person labelled
+  # `app` is named by its open_id.
+  defp account_ref(@app), do: @app_alias
+  defp account_ref(%{"alias" => @app_alias} = account), do: account["open_id"]
+  defp account_ref(account), do: account["alias"]
+
+  # At most @identity_batch identities per call. The rest are read by the
+  # next call with `accounts_from`, so a Group may hold any number of
+  # accounts without one call fanning out to all of them.
+  defp identity_batch([_one] = identities, _params), do: {identities, nil}
+
+  defp identity_batch(identities, params) do
+    from = params["accounts_from"] |> int_or(0) |> max(0)
+    batch = Enum.slice(identities, from, @identity_batch)
+    next = from + @identity_batch
+    {batch, if(next < length(identities), do: next)}
+  end
 
   # ---------------------------------------------------------------------------
   # transcript of a unified note
@@ -446,8 +582,15 @@ defmodule SalixIM.Provider.Feishu.Meetings do
     end
   end
 
+  # Read as people, the result is labelled with them. What the app itself
+  # found has no audience this module can name, so it gets the fail-closed
+  # label.
   defp labelled(result, connect, open_ids) do
-    audience = fn -> {:ok, %{"user_ids" => open_ids |> Enum.map(&str/1) |> Enum.uniq()}} end
+    audience = fn ->
+      if nil in open_ids,
+        do: {:error, :read_as_app},
+        else: {:ok, %{"user_ids" => open_ids |> Enum.map(&str/1) |> Enum.uniq()}}
+    end
 
     case ReadLabels.for_document(connect, audience) do
       nil -> result

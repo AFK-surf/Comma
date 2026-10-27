@@ -500,6 +500,13 @@ export class CodexDriver implements AgentDriver {
     if (options.resume !== undefined) {
       common.threadId = options.resume;
       opened = await host.request("thread/resume", common);
+      // A thread still loaded is rejoined as it is, with the MCP connection it had: one that failed (the station's
+      // door was closed then) stays failed, and its turns have no station tools. Unloaded, it is loaded again with them.
+      if (await stationToolsFailed(host, options.resume)) {
+        log.warn("agents::codex", "a thread's station tools had failed; loading it again", { thread: options.resume });
+        await host.request("thread/unsubscribe", { threadId: options.resume });
+        opened = await host.request("thread/resume", common);
+      }
     } else {
       opened = await host.request("thread/start", common);
     }
@@ -551,6 +558,17 @@ export class CodexDriver implements AgentDriver {
   detach() {
     for (const host of this.hosts.values()) host.detach();
     this.hosts.clear();
+  }
+}
+
+/// Whether thread `threadId`'s connection to the station's MCP endpoint failed, as its app-server says (once its startup
+/// ended). An app-server that cannot say: not known to have failed.
+async function stationToolsFailed(host: Host, threadId: string): Promise<boolean> {
+  try {
+    const answer = await host.request("mcpServerStatus/list", { threadId, serverName: "stillfail", detail: "toolsAndAuthOnly" });
+    return Array.isArray(answer?.data) && answer.data.some((s: Json) => s?.name === "stillfail" && s?.runtimeStatus === "failed");
+  } catch {
+    return false;
   }
 }
 

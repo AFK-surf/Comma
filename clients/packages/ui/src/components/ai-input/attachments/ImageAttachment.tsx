@@ -21,7 +21,7 @@ export interface ImageAttachmentProps extends AttachmentTileProps {
 }
 
 /**
- * An image attachment through its upload. The three states share one 48px
+ * An image attachment through its upload. The three states share one 80px
  * tile so the row never reflows as an upload settles, and a failure keeps the
  * remove control alongside the retry so a bad file is never a dead end.
  *
@@ -51,7 +51,7 @@ export const ImageAttachment = ({
 
   return (
     <div
-      className={cx(aiInputAttachment, "size-12")}
+      className={cx(aiInputAttachment, "size-20")}
       data-slot="image-attachment"
       data-testid="image-attachment"
     >

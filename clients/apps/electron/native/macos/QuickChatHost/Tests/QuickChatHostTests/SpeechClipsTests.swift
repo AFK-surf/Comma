@@ -68,58 +68,6 @@ struct SpeechClipsTests {
         #expect(answers.count == 4)
     }
 
-    @Test(.timeLimit(.minutes(1))) func sendWaitsOnlyForPendingClipsAndTailWhileLocalFinishIsImmediate() async {
-        let probe = TranscriptionProbe()
-        let source = SpeechSession(
-            draft: "Draft:", transcribe: probe.transcribe, writesCJK: [false],
-            encodeAudio: probe.encode, finalizeInput: { true }
-        )
-        source.receive([
-            .init(start: 0, end: 10, text: "local first", confidences: []),
-            .init(start: 60, end: 70, text: "local second", confidences: []),
-            .init(start: 120, end: 130, text: "local tail", confidences: []),
-        ], from: 0, finalizedThrough: 130)
-        source.audioProgress(through: 130, paused: false)
-        await probe.waitForRequests(2)
-        // No response was supplied: editing/Esc still gets local text now.
-        #expect(await source.finish() == "Draft: local first local second local tail")
-        #expect(source.audio == nil)
-        let sending = Task { await source.serverWords(waitForSlot: true) }
-        probe.reply(60..<120, "server second")
-        await probe.waitForRequests(3)
-        probe.reply(120..<130, "server tail")
-        probe.reply(0..<60, "server first")
-        #expect(await sending.value == "Draft: server first server second server tail")
-        #expect(await source.serverWords() == "Draft: server first server second server tail")
-        #expect(probe.encoded == [0..<60, 60..<120, 120..<130])
-        #expect(probe.waitingPolicies == [false, false, true])
-        #expect(probe.mostActive == 2)
-    }
-
-    @Test(.timeLimit(.minutes(1))) func aFailedClipKeepsLocalWordsBetweenSuccessfulClips() async {
-        let probe = TranscriptionProbe()
-        let source = SpeechSession(
-            draft: "", transcribe: probe.transcribe, writesCJK: [false],
-            encodeAudio: probe.encode, finalizeInput: { true }
-        )
-        for (start, text) in [(0.0, "local first"), (60, "local middle"), (120, "local last")] {
-            source.receive([.init(start: start, end: start + 8, text: text, confidences: [])],
-                           from: 0, finalizedThrough: start + 8)
-        }
-        source.audioProgress(through: 130, paused: false)
-        await probe.waitForRequests(2)
-        let sending = Task { await source.serverWords(waitForSlot: true) }
-        probe.reply(0..<60, "server first")
-        await probe.waitForRequests(3)
-        probe.reply(60..<120, nil)
-        probe.reply(120..<130, "server last")
-        await probe.waitForRequests(4)
-        probe.reply(60..<120, nil)
-        #expect(await sending.value == "server first local middle server last")
-        #expect(probe.requested == [0..<60, 60..<120, 120..<130, 60..<120])
-        #expect(probe.waitingPolicies == [false, false, true, true])
-    }
-
     @Test(.timeLimit(.minutes(1))) func sendRetriesAnEarlierFailedBackgroundClipOnceWithAdmissionWaiting() async {
         let probe = TranscriptionProbe()
         let queue = ClipTranscriptions(encode: probe.encode, transcribe: probe.transcribe) { _, _ in }
@@ -135,39 +83,163 @@ struct SpeechClipsTests {
         #expect(probe.requested == [0..<60, 0..<60, 60..<70])
         #expect(probe.waitingPolicies == [false, true, true])
     }
+}
 
-    @Test(.timeLimit(.minutes(1))) func cancelAfterLocalFinishEndsWaitAndStartsNoMoreRequests() async {
-        let probe = TranscriptionProbe()
-        let source = SpeechSession(
-            draft: "", transcribe: probe.transcribe, writesCJK: [false],
-            encodeAudio: probe.encode, finalizeInput: { true }
-        )
-        source.audioProgress(through: 190, paused: false)
-        await probe.waitForRequests(2)
-        _ = await source.finish()
-        let sending = Task { await source.serverWords(waitForSlot: true) }
-        source.stop()
-        #expect(await sending.value == nil)
-        probe.reply(0..<60, "late first")
-        probe.reply(60..<120, "late second")
-        #expect(probe.requested.count == 2)
-        #expect(source.text.isEmpty)
+/// Live dictation's socket, played by the test.
+@MainActor
+private final class ScriptedSocket: DictationConnection {
+    let events: AsyncStream<DictationEvent>
+    private let continuation: AsyncStream<DictationEvent>.Continuation
+    private(set) var sent: [Data] = []
+    private(set) var ended = false
+    private(set) var cancelled = false
+    private var cancelWaiter: CheckedContinuation<Void, Never>?
+
+    init() {
+        (events, continuation) = AsyncStream.makeStream(of: DictationEvent.self)
     }
+
+    func send(_ pcm: Data) { sent.append(pcm) }
+    func end() { ended = true }
+    func cancel() {
+        cancelled = true
+        continuation.finish()
+        cancelWaiter?.resume()
+        cancelWaiter = nil
+    }
+
+    func waitForCancel() async {
+        if cancelled { return }
+        await withCheckedContinuation { cancelWaiter = $0 }
+    }
+
+    func say(_ event: DictationEvent) { continuation.yield(event) }
 }
 
 @MainActor
-struct SpeechFallbackTests {
-    @Test(.timeLimit(.minutes(1))) func failedLocalFinalizationKeepsTheLiveTailWhenServerAlsoFails() async {
-        let source = SpeechSession(
-            draft: "Draft:", transcribe: { _, _ in nil }, writesCJK: [false],
-            encodeAudio: { _ in Data([1]) }, finalizeInput: { false }
+private final class Dictation {
+    let socket = ScriptedSocket()
+    let probe = TranscriptionProbe()
+    private(set) var source: LiveDictation!
+    private var texts: [String] = []
+    private var textWaiter: CheckedContinuation<String, Never>?
+    private var connected = false
+    private var connectWaiter: CheckedContinuation<Void, Never>?
+
+    init(draft: String = "", ticket: DictationTicket? = DictationTicket(url: "wss://comma.test/v1/comma/dictation", ticket: "t")) {
+        source = LiveDictation(
+            draft: draft,
+            ticket: { ticket },
+            transcribe: probe.transcribe,
+            connect: { [unowned self] _ in
+                connected = true
+                connectWaiter?.resume()
+                connectWaiter = nil
+                return socket
+            },
+            encodeAudio: probe.encode,
+            listens: false
         )
-        source.receive([.init(start: 0, end: 5, text: "old prefix", confidences: [])],
-                       from: 0, finalizedThrough: 5)
-        source.receiveLive("all the latest words including the unfinished tail", from: 0, isFinal: false)
-        source.audioProgress(through: 10, paused: false)
-        let local = await source.finish()
-        #expect(local == "Draft: all the latest words including the unfinished tail")
-        #expect(await source.serverWords() == local)
+        source.onText = { [unowned self] text in
+            if let textWaiter {
+                self.textWaiter = nil
+                textWaiter.resume(returning: text)
+            } else {
+                texts.append(text)
+            }
+        }
+        source.start()
+    }
+
+    func waitForSocket() async {
+        if connected { return }
+        await withCheckedContinuation { connectWaiter = $0 }
+    }
+
+    /// The words shown next.
+    func shown() async -> String {
+        if !texts.isEmpty { return texts.removeFirst() }
+        return await withCheckedContinuation { textWaiter = $0 }
+    }
+}
+
+/// `seconds` of 16 kHz s16le audio, heard as the microphone gives it.
+private func pcm(_ seconds: Double) -> Data {
+    Data(count: Int(seconds * 16_000) * 2)
+}
+
+@MainActor
+struct LiveDictationTests {
+    @Test(.timeLimit(.minutes(1))) func liveWordsShowAsSaidAndASendWaitsForTheLastSegmentsFinalWords() async {
+        let dictation = Dictation(draft: "Draft:")
+        // Heard before the socket opened: it goes up first, in 128 ms frames.
+        dictation.source.hear(pcm(0.5), through: 0.5, paused: false)
+        await dictation.waitForSocket()
+        dictation.source.hear(pcm(0.5), through: 1, paused: false)
+        dictation.socket.say(.partial(segment: 0, text: "明日の"))
+        #expect(await dictation.shown() == "Draft: 明日の")
+        dictation.socket.say(.final(segment: 0, text: "明日の会議を予約して。"))
+        #expect(await dictation.shown() == "Draft: 明日の会議を予約して。")
+        dictation.socket.say(.partial(segment: 1, text: "资料"))
+        #expect(await dictation.shown() == "Draft: 明日の会議を予約して。资料")
+
+        // Enter: the words as shown at once, then the settled ones.
+        #expect(await dictation.source.finish() == "Draft: 明日の会議を予約して。资料")
+        #expect(dictation.socket.ended)
+        #expect(dictation.socket.sent.reduce(0) { $0 + $1.count } == pcm(1).count)
+        #expect(dictation.socket.sent.dropLast().allSatisfy { $0.count == LiveDictation.frameBytes })
+        let sending = Task { await dictation.source.serverWords(waitForSlot: true) }
+        dictation.socket.say(.final(segment: 1, text: "資料は前日までに送ります。"))
+        dictation.socket.say(.done)
+        #expect(await sending.value == "Draft: 明日の会議を予約して。資料は前日までに送ります。")
+        #expect(dictation.probe.requested.isEmpty)
+    }
+
+    @Test(.timeLimit(.minutes(1))) func withoutLiveDictationEveryPauseIsAClipFromTheStart() async {
+        let dictation = Dictation(ticket: nil)
+        // Before the ticket was refused: kept in the recording.
+        dictation.source.hear(pcm(1), through: 3, paused: true)
+        await dictation.probe.waitForRequests(1)
+        #expect(dictation.probe.requested == [0..<3])
+        dictation.source.hear(pcm(1), through: 70, paused: false)
+        await dictation.probe.waitForRequests(2)
+        dictation.probe.reply(0..<3, "first")
+        #expect(await dictation.shown() == "first")
+        _ = await dictation.source.finish()
+        let sending = Task { await dictation.source.serverWords(waitForSlot: true) }
+        await dictation.probe.waitForRequests(3)
+        dictation.probe.reply(3..<63, "second")
+        dictation.probe.reply(63..<70, "tail")
+        #expect(await sending.value == "first second tail")
+        #expect(dictation.probe.waitingPolicies == [false, false, true])
+    }
+
+    @Test(.timeLimit(.minutes(1))) func aSocketThatFailsKeepsItsWordsAndClipsTheRest() async {
+        let dictation = Dictation()
+        await dictation.waitForSocket()
+        dictation.source.hear(pcm(1), through: 4, paused: false)
+        dictation.socket.say(.final(segment: 0, text: "Draft a reply."))
+        #expect(await dictation.shown() == "Draft a reply.")
+        dictation.socket.say(.unavailable)
+        await dictation.socket.waitForCancel()
+        // From where the socket failed; what it settled stays.
+        dictation.source.hear(pcm(1), through: 9, paused: true)
+        await dictation.probe.waitForRequests(1)
+        #expect(dictation.probe.requested == [4..<9])
+        dictation.probe.reply(4..<9, "Then send it.")
+        #expect(await dictation.shown() == "Draft a reply. Then send it.")
+        #expect(await dictation.source.serverWords(waitForSlot: true) == "Draft a reply. Then send it.")
+    }
+
+    @Test(.timeLimit(.minutes(1))) func cancelEndsTheWaitForWords() async {
+        let dictation = Dictation()
+        await dictation.waitForSocket()
+        dictation.socket.say(.partial(segment: 0, text: "half"))
+        #expect(await dictation.shown() == "half")
+        _ = await dictation.source.finish()
+        let sending = Task { await dictation.source.serverWords(waitForSlot: true) }
+        dictation.source.stop()
+        #expect(await sending.value == nil)
+        #expect(dictation.socket.cancelled)
     }
 }

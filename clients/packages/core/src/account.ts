@@ -54,6 +54,11 @@ const STEPS: ((sql: Sql) => void)[] = [
     }
     sql.run("DELETE FROM doc WHERE substr(name, 1, 14) = 'stations.list.'");
   },
+  // The downloads index (`downloads`) an earlier core kept names files that its start removed while the account's
+  // database opened: it goes, and those files download again when shown.
+  (sql) => {
+    sql.run("DELETE FROM doc WHERE name = 'downloads'");
+  },
 ];
 
 const listedKey = (workspace: string) => `stations.listed:${workspace}`;

@@ -9,6 +9,7 @@ export * from "./model/visibleReplyPresentation";
 export * from "./model/inlineElementContract";
 export * from "./model/channelStateChange";
 export { taskActivity, transcriptMessages } from "./model/taskActivity";
+export { taskRunOptions, type TaskRunOption } from "./model/taskRunOptions";
 export {
   QUICK_CHAT_MESSAGE_TYPE,
   announcesTasks,

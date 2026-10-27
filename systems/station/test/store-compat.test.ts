@@ -21,15 +21,23 @@ after(() => {
   if (dir) rmSync(dir, { recursive: true, force: true });
 });
 
-/// Every table's columns, and every index's and view's SQL: what the schema is.
+/// Columns this station added in place after the Rust's, to tables the Rust has: left out of what the schema is.
+const LATER = [
+  { table: "entries", column: "milestones", sql: ", milestones TEXT" },
+  { table: "runtime_sessions", column: "runtime", sql: ", runtime TEXT" },
+];
+
+/// Every table's columns, and every index's and view's SQL: what the schema is (without LATER's columns).
 function shape(path: string): string[] {
   const db = new DatabaseSync(path, { readOnly: true });
   try {
     const out: string[] = [];
     for (const m of db.prepare("SELECT type, name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name").all() as any[]) {
-      out.push(`${m.type} ${m.name}: ${m.sql}`);
+      const later = LATER.filter((l) => l.table === m.name);
+      out.push(`${m.type} ${m.name}: ${later.reduce((sql: string, l) => sql.replace(l.sql, ""), m.sql)}`);
       if (m.type === "table") {
         for (const c of db.prepare(`SELECT name, type, "notnull", dflt_value, pk FROM pragma_table_info('${m.name}')`).all() as any[]) {
+          if (later.some((l) => l.column === c.name)) continue;
           out.push(`  ${m.name}.${c.name} ${c.type} ${c.notnull} ${c.dflt_value} ${c.pk}`);
         }
       }

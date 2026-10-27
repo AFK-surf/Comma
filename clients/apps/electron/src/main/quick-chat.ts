@@ -17,6 +17,9 @@ import {
   type SessionLifecycleSnapshot,
   type SessionProductLease,
 } from "@comma/session-contract";
+import type { HostCommand } from "../quick-chat-host/messages";
+import { joinSpoken } from "../quick-chat-host/spoken";
+import { realMainClock, type MainClock } from "./clock";
 import { readMainLocale, type MainLocaleSource } from "./main-locale";
 import { NOTCH_TASK_LIST_LENGTH, type MainNotchTasks } from "./notch";
 
@@ -28,12 +31,18 @@ export interface QuickChatNotch extends MainNotchTasks {
 
 type SpawnQuickChatHost = (
   executablePath: string,
-  environment: NodeJS.ProcessEnv
+  environment: NodeJS.ProcessEnv,
+  args: readonly string[]
 ) => ChildProcessWithoutNullStreams;
 
 export interface QuickChatServiceOptions {
-  /** The QuickChatHost executable. */
+  /**
+   * The QuickChatHost executable: on macOS the Swift helper, on Windows the
+   * native one (native/windows/QuickChatHost).
+   */
   hostPath: string;
+  /** Windows: Comma's AppUserModelID, which the helper notifies a failed send as. */
+  appUserModelId?: string | undefined;
   notch: QuickChatNotch;
   /** Main's language for the helper and message delivery rows. */
   locale: MainLocaleSource;
@@ -53,6 +62,11 @@ export interface QuickChatServiceOptions {
     audio: Uint8Array,
     purpose: "dictation" | "quick_chat_send"
   ): Promise<string>;
+  /**
+   * A ticket for live dictation (`quickChat.dictationTicket`), which the helper opens its socket with.
+   * Without it, or when it fails, the helper transcribes clips.
+   */
+  dictationTicket?: (() => Promise<{ url: string; ticket: string }>) | undefined;
   /** The client core's Task list of the workspace in focus; returns the unsubscribe. */
   subscribeTasks(listener: (list: ProductInboxListResult) => void): () => void;
   /** Makes `workspace` the one the app works in, as choosing it in the app does (`workspace.select`). */
@@ -63,7 +77,7 @@ export interface QuickChatServiceOptions {
   onAvailableChanged?: ((available: boolean) => void) | undefined;
   /** The person's setting (`quickChatEnabled`); off, no helper runs. Default on. */
   enabled?: boolean | undefined;
-  now?: (() => number) | undefined;
+  clock?: MainClock | undefined;
   osRelease?: (() => string) | undefined;
   pathExists?: ((path: string) => boolean) | undefined;
   platform?: NodeJS.Platform | undefined;
@@ -107,7 +121,7 @@ interface MainTask {
     | {
         host: QuickChatHostGeneration;
         text: string;
-        timer: ReturnType<typeof setTimeout>;
+        cancelTimer: () => void;
       }
     | undefined;
   /**
@@ -123,7 +137,7 @@ interface MainTask {
         text: string;
         epoch: number;
         host: QuickChatHostGeneration | undefined;
-        timer: ReturnType<typeof setTimeout>;
+        cancelTimer: () => void;
       }
     | undefined;
   /** A send that failed, waiting in the Notch: a click sends it again, or takes it out. */
@@ -134,9 +148,36 @@ interface MainTask {
   taskId?: string | undefined;
 }
 
-/** SpeechAnalyzer, which QuickChatHost transcribes with, starts in macOS 26 (Darwin 25). */
+/** QuickChatHost is built for macOS 26 (Darwin 25). */
 const MINIMUM_DARWIN_MAJOR = 25;
+/** Windows 10 2004 (build 19041) and later, which the helper is made and tried for. */
+const MINIMUM_WINDOWS_BUILD = 19_041;
 const QUICK_CHAT_ENVIRONMENT_KEYS = ["LANG", "LC_ALL", "LC_CTYPE", "PATH"] as const;
+/** What a Windows process, Electron's included, needs of its environment to start. */
+const WINDOWS_ENVIRONMENT_KEYS = [
+  "APPDATA",
+  "COMPUTERNAME",
+  "ComSpec",
+  "HOMEDRIVE",
+  "HOMEPATH",
+  "LOCALAPPDATA",
+  "NUMBER_OF_PROCESSORS",
+  "OS",
+  "PATH",
+  "PATHEXT",
+  "PROCESSOR_ARCHITECTURE",
+  "ProgramData",
+  "ProgramFiles",
+  "ProgramFiles(x86)",
+  "SystemDrive",
+  "SystemRoot",
+  "TEMP",
+  "TMP",
+  "USERDOMAIN",
+  "USERNAME",
+  "USERPROFILE",
+  "windir",
+] as const;
 /** The helper ends by itself on stdin EOF; after this it is killed. */
 const STOP_TIMEOUT_MS = 2_000;
 /** From Return: bound the wait for the helper's remaining clip transcripts. */
@@ -169,17 +210,20 @@ const MAX_FAILED_SENDS = 5;
  */
 export class QuickChatService {
   readonly #hostPath: string;
+  readonly #appUserModelId: string | undefined;
+  readonly #platform: NodeJS.Platform;
   readonly #notch: QuickChatNotch;
   readonly #locale: MainLocaleSource;
   readonly #productName: string;
   readonly #sendMessage: QuickChatServiceOptions["sendMessage"];
   readonly #transcribe: QuickChatServiceOptions["transcribe"];
+  readonly #dictationTicket: QuickChatServiceOptions["dictationTicket"];
   readonly #subscribeTasks: QuickChatServiceOptions["subscribeTasks"];
   readonly #selectWorkspace: QuickChatServiceOptions["selectWorkspace"];
   readonly #openRoute: QuickChatServiceOptions["openRoute"];
   readonly #onAvailableChanged: QuickChatServiceOptions["onAvailableChanged"];
   #available = false;
-  readonly #now: () => number;
+  readonly #clock: MainClock;
   readonly #supported: boolean;
   readonly #spawnHost: SpawnQuickChatHost;
   readonly #stopNotchEvents: () => void;
@@ -190,7 +234,7 @@ export class QuickChatService {
   #epoch = 0;
   #host: QuickChatHostGeneration | undefined;
   #nextGeneration = 0;
-  #restartTimer: ReturnType<typeof setTimeout> | undefined;
+  #cancelRestart: (() => void) | undefined;
   #restartDelay = RESTART_DELAY_MS;
   #unsubscribeTasks: (() => void) | undefined;
   #list: ProductInboxListResult | undefined;
@@ -200,17 +244,19 @@ export class QuickChatService {
 
   constructor({
     hostPath,
+    appUserModelId,
     notch,
     locale,
     productName,
     sendMessage,
     transcribe,
+    dictationTicket,
     subscribeTasks,
     selectWorkspace,
     openRoute,
     onAvailableChanged,
     enabled = true,
-    now = Date.now,
+    clock = realMainClock,
     osRelease = release,
     pathExists = existsSync,
     platform = process.platform,
@@ -223,16 +269,22 @@ export class QuickChatService {
     this.#productName = productName;
     this.#sendMessage = sendMessage;
     this.#transcribe = transcribe;
+    this.#dictationTicket = dictationTicket;
     this.#subscribeTasks = subscribeTasks;
     this.#selectWorkspace = selectWorkspace;
     this.#openRoute = openRoute;
     this.#onAvailableChanged = onAvailableChanged;
     this.#enabled = enabled;
-    this.#now = now;
+    this.#clock = clock;
     this.#spawnHost = spawnHost;
+    this.#appUserModelId = appUserModelId;
+    this.#platform = platform;
     this.#supported =
-      platform === "darwin" &&
-      Number.parseInt(osRelease().split(".")[0] ?? "", 10) >= MINIMUM_DARWIN_MAJOR &&
+      (platform === "darwin"
+        ? Number.parseInt(osRelease().split(".")[0] ?? "", 10) >= MINIMUM_DARWIN_MAJOR
+        : platform === "win32" &&
+          Number.parseInt(osRelease().split(".")[2] ?? "", 10) >=
+            MINIMUM_WINDOWS_BUILD) &&
       !isTestRun() &&
       pathExists(hostPath);
     this.#stopNotchEvents = this.#supported
@@ -277,7 +329,8 @@ export class QuickChatService {
   }
 
   /**
-   * The menu-bar item was clicked: Quick Chat listens, as when ⌘ is held.
+   * The menu-bar menu's Quick Chat row was chosen: Quick Chat listens, as
+   * after a double tap of ⌘.
    * False while its helper is not running, and nothing happens.
    */
   listen() {
@@ -322,8 +375,8 @@ export class QuickChatService {
   /** Stops the helper and the list, and takes Main's Tasks out of the Notch. */
   #end() {
     this.#epoch += 1;
-    if (this.#restartTimer) clearTimeout(this.#restartTimer);
-    this.#restartTimer = undefined;
+    this.#cancelRestart?.();
+    this.#cancelRestart = undefined;
     this.#stopHost();
     this.#unsubscribeTasks?.();
     this.#unsubscribeTasks = undefined;
@@ -332,8 +385,8 @@ export class QuickChatService {
     this.#sending = undefined;
     if (this.#tasks.size > 0) {
       for (const task of this.#tasks.values()) {
-        if (task.preparing) clearTimeout(task.preparing.timer);
-        if (task.unplaced) clearTimeout(task.unplaced.timer);
+        task.preparing?.cancelTimer();
+        task.unplaced?.cancelTimer();
       }
       this.#tasks.clear();
       this.#publish();
@@ -344,7 +397,11 @@ export class QuickChatService {
     if (this.#closed || !this.#enabled || !this.#lease) return;
     let child: ChildProcessWithoutNullStreams;
     try {
-      child = this.#spawnHost(this.#hostPath, quickChatHostEnvironment());
+      child = this.#spawnHost(
+        this.#hostPath,
+        quickChatHostEnvironment(this.#platform),
+        []
+      );
     } catch (error) {
       log.warn(`QuickChatHost could not start: ${errorMessage(error)}`);
       this.#scheduleRestart();
@@ -355,7 +412,7 @@ export class QuickChatService {
       child,
       generation: ++this.#nextGeneration,
       ready: false,
-      startedAt: this.#now(),
+      startedAt: this.#clock.now(),
     };
     this.#host = host;
     // Decoded as a stream: a character the pipe splits arrives whole.
@@ -397,21 +454,20 @@ export class QuickChatService {
       }
     }
     if (!host.child.killed) host.child.kill();
-    if (this.#now() - host.startedAt >= STABLE_RUN_MS) {
+    if (this.#clock.now() - host.startedAt >= STABLE_RUN_MS) {
       this.#restartDelay = RESTART_DELAY_MS;
     }
     this.#scheduleRestart();
   }
 
   #scheduleRestart() {
-    if (this.#closed || !this.#enabled || !this.#lease || this.#restartTimer) return;
+    if (this.#closed || !this.#enabled || !this.#lease || this.#cancelRestart) return;
     const delay = this.#restartDelay;
     this.#restartDelay = Math.min(delay * 2, MAX_RESTART_DELAY_MS);
-    this.#restartTimer = setTimeout(() => {
-      this.#restartTimer = undefined;
+    this.#cancelRestart = this.#clock.setTimer(delay, () => {
+      this.#cancelRestart = undefined;
       this.#startHost();
-    }, delay);
-    this.#restartTimer.unref?.();
+    });
   }
 
   #stopHost() {
@@ -419,14 +475,14 @@ export class QuickChatService {
     this.#host = undefined;
     this.#followAvailability();
     if (!host || host.child.killed) return;
-    // stdin EOF quits the helper; a helper that hangs is killed.
+    // stdin EOF quits the helper; a helper that hangs is killed, on the real clock so it is also while a test clock
+    // stands still.
     host.child.stdin.end();
-    const timer = setTimeout(() => {
+    realMainClock.setTimer(STOP_TIMEOUT_MS, () => {
       if (host.child.exitCode === null && host.child.signalCode === null) {
         host.child.kill();
       }
-    }, STOP_TIMEOUT_MS);
-    timer.unref?.();
+    });
   }
 
   #stdout(host: QuickChatHostGeneration, chunk: string) {
@@ -477,26 +533,41 @@ export class QuickChatService {
       this.#transcribeClip(host, event.clipId, event.audio, event.waitForSlot === true);
       return;
     }
+    if (event.type === "dictationTicket" && typeof event.requestId === "string") {
+      this.#giveDictationTicket(host, event.requestId);
+      return;
+    }
     log.warn(`QuickChatHost sent an unknown event: ${String(event.type)}`);
   }
 
   #configure(host: QuickChatHostGeneration) {
     const locale = { locale: readMainLocale(this.#locale) };
+    // Windows taps Ctrl, keeps a failed send's words for the next Quick Chat, and has no Notch.
+    const windows = this.#platform === "win32";
     this.#write(host, {
       strings: {
         close: messages.quick_chat_close({}, locale),
         listening: messages.quick_chat_listening({}, locale),
-        microphoneDenied: messages.quick_chat_microphone_denied(
-          { productName: this.#productName },
-          locale
-        ),
+        microphoneDenied: windows
+          ? messages.quick_chat_microphone_denied_windows({}, locale)
+          : messages.quick_chat_microphone_denied(
+              { productName: this.#productName },
+              locale
+            ),
         preparing: messages.quick_chat_preparing({}, locale),
-        resume: messages.quick_chat_resume({}, locale),
+        resume: windows
+          ? messages.quick_chat_resume_windows({}, locale)
+          : messages.quick_chat_resume({}, locale),
         send: messages.quick_chat_send({}, locale),
-        sendFailed: messages.quick_chat_send_failed({}, locale),
+        sendFailed: windows
+          ? messages.quick_chat_send_failed_windows({}, locale)
+          : messages.quick_chat_send_failed({}, locale),
         speechUnavailable: messages.quick_chat_speech_unavailable({}, locale),
       },
       type: "configure",
+      ...(windows && this.#appUserModelId
+        ? { appUserModelId: this.#appUserModelId }
+        : {}),
     });
   }
 
@@ -536,20 +607,19 @@ export class QuickChatService {
     this.#requests.add(requestId);
     const id = `quick-chat:${requestId}`;
     const task = this.#showSend(id, requestId, text);
-    const timer = setTimeout(() => {
+    const cancelTimer = this.#clock.setTimer(PREPARING_TIMEOUT_MS, () => {
       if (this.#tasks.get(id) === task && task.preparing?.host === host) {
         this.#failPreparing(id, task, "Quick Chat took too long to prepare the words.");
       }
-    }, PREPARING_TIMEOUT_MS);
-    timer.unref?.();
-    task.preparing = { host, text, timer };
+    });
+    task.preparing = { host, text, cancelTimer };
   }
 
   /** A failed preparation needs an explicit click; a late prepared submit is ignored. */
   #failPreparing(id: string, task: MainTask, message: string) {
     const preparing = task.preparing;
     if (!preparing) return;
-    clearTimeout(preparing.timer);
+    preparing.cancelTimer();
     task.preparing = undefined;
     this.#requests.delete(task.requestId);
     this.#fail(id, task.requestId, preparing.text, "retryable");
@@ -567,7 +637,7 @@ export class QuickChatService {
         status: "in_progress",
         subtitle: this.#sendingLabel(),
         title: oneLine(text),
-        updatedAt: this.#now(),
+        updatedAt: this.#clock.now(),
         workspaceId: focus.workspaceId ?? id,
       },
       provisional: true,
@@ -618,7 +688,7 @@ export class QuickChatService {
     }
     // A request already under way answers once.
     if (prepared && preparingTask?.preparing) {
-      clearTimeout(preparingTask.preparing.timer);
+      preparingTask.preparing.cancelTimer();
       preparingTask.preparing = undefined;
       preparingTask.item = { ...preparingTask.item, title };
       this.#publish();
@@ -658,6 +728,25 @@ export class QuickChatService {
         }
         this.#queue(requestId, id, words, epoch, host);
       });
+  }
+
+  /** A ticket for the helper's live dictation, answered once: without `url` when there is none. */
+  #giveDictationTicket(host: QuickChatHostGeneration, requestId: string) {
+    if (!REQUEST_ID.test(requestId)) return;
+    const epoch = this.#epoch;
+    const asked =
+      this.#dictationTicket?.() ?? Promise.reject(new Error("no live dictation"));
+    void asked.then(
+      ({ url, ticket }) => {
+        if (epoch === this.#epoch)
+          this.#write(host, { type: "dictationTicket", requestId, url, ticket });
+      },
+      (error: unknown) => {
+        log.warn(`Quick Chat has no live dictation: ${errorMessage(error)}`);
+        if (epoch === this.#epoch)
+          this.#write(host, { type: "dictationTicket", requestId });
+      }
+    );
   }
 
   /**
@@ -775,7 +864,7 @@ export class QuickChatService {
       ...task.item,
       status: "failed",
       subtitle: this.#subtitle(task),
-      updatedAt: this.#now(),
+      updatedAt: this.#clock.now(),
     };
     this.#publish();
     this.#drain();
@@ -802,7 +891,7 @@ export class QuickChatService {
       ...task.item,
       status: "in_progress",
       subtitle: this.#sendingLabel(),
-      updatedAt: this.#now(),
+      updatedAt: this.#clock.now(),
     };
     this.#publish();
     this.#queue(requestId, id, failed.text, this.#epoch);
@@ -822,7 +911,7 @@ export class QuickChatService {
     });
   }
 
-  #write(host: QuickChatHostGeneration, command: Record<string, unknown>) {
+  #write(host: QuickChatHostGeneration, command: HostCommand) {
     if (this.#host !== host || host.child.killed || !host.child.stdin.writable) return;
     try {
       host.child.stdin.write(`${JSON.stringify(command)}\n`);
@@ -839,7 +928,7 @@ export class QuickChatService {
     for (const [id, task] of this.#tasks) {
       const unplaced = task.unplaced;
       if (!unplaced) continue;
-      clearTimeout(unplaced.timer);
+      unplaced.cancelTimer();
       task.unplaced = undefined;
       task.workspace = focused;
       this.#queue(unplaced.requestId, id, unplaced.text, unplaced.epoch, unplaced.host);
@@ -861,7 +950,7 @@ export class QuickChatService {
       host: QuickChatHostGeneration | undefined;
     }
   ) {
-    const timer = setTimeout(() => {
+    const cancelTimer = this.#clock.setTimer(UNPLACED_TIMEOUT_MS, () => {
       if (this.#tasks.get(id) !== task || !task.unplaced) return;
       task.unplaced = undefined;
       this.#requests.delete(send.requestId);
@@ -873,9 +962,8 @@ export class QuickChatService {
           false,
           "Quick Chat has no workspace yet."
         );
-    }, UNPLACED_TIMEOUT_MS);
-    timer.unref?.();
-    task.unplaced = { ...send, timer };
+    });
+    task.unplaced = { ...send, cancelTimer };
   }
 
   /** The workspace for a new send: the one in focus, else the first one. */
@@ -1034,32 +1122,6 @@ export class QuickChatService {
 }
 
 /** The words as one line: every run of whitespace is one space. */
-const CJK =
-  /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\u3000-\u303F\uFF00-\uFFEF]/u;
-const CJK_LETTER =
-  /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
-const WORD = /[\p{L}\p{N}]/u;
-
-/**
- * The text a Quick Chat continued, then the server's words, joined as the
- * helper joins its own: Latin words keep a space between them, and so does an
- * English sentence's end before the next; Chinese and a Latin word, digit or
- * English punctuation get one (as Comma's Chinese text is written), CJK text
- * has none.
- */
-function joinSpoken(draft: string, words: string) {
-  const head = draft.trim();
-  const last = Array.from(head).at(-1);
-  const first = Array.from(words)[0];
-  if (!last || !first) return head + words;
-  const latin = (c: string) => WORD.test(c) && !CJK.test(c);
-  const spaced =
-    (latin(last) || /[.,!?;:]/u.test(last) || CJK_LETTER.test(last)) &&
-    (latin(first) || CJK_LETTER.test(first)) &&
-    !(CJK_LETTER.test(last) && CJK_LETTER.test(first));
-  return spaced ? `${head} ${words}` : head + words;
-}
-
 function oneLine(text: string) {
   return clip(text.replace(/\s+/gu, " ").trim());
 }
@@ -1087,9 +1149,14 @@ function failureOf(error: unknown): SendFailure {
   return "retryable";
 }
 
-function quickChatHostEnvironment(source = process.env): NodeJS.ProcessEnv {
+function quickChatHostEnvironment(
+  platform: NodeJS.Platform,
+  source = process.env
+): NodeJS.ProcessEnv {
   const environment: NodeJS.ProcessEnv = {};
-  for (const key of QUICK_CHAT_ENVIRONMENT_KEYS) {
+  const keys =
+    platform === "win32" ? WINDOWS_ENVIRONMENT_KEYS : QUICK_CHAT_ENVIRONMENT_KEYS;
+  for (const key of keys) {
     const value = source[key];
     if (value !== undefined) environment[key] = value;
   }
@@ -1098,9 +1165,10 @@ function quickChatHostEnvironment(source = process.env): NodeJS.ProcessEnv {
 
 function defaultSpawnQuickChatHost(
   executablePath: string,
-  environment: NodeJS.ProcessEnv
+  environment: NodeJS.ProcessEnv,
+  args: readonly string[]
 ) {
-  return spawn(executablePath, [], {
+  return spawn(executablePath, args, {
     cwd: dirname(executablePath),
     env: environment,
     stdio: ["pipe", "pipe", "pipe"],

@@ -139,6 +139,20 @@ defmodule SalixIM.ConversationServer do
   def set_task_status(_group_id, _conversation_id, _status, _version, _user_id),
     do: {:error, {:bad_request, "expected_updated_at must be a positive integer"}}
 
+  @doc """
+  Records where a Task runs now and its Worker participant as it is from now
+  on, and writes the Worker its `notice` (`SalixIM.TaskRun`): `run` carries
+  `runs_on` (nil inside Salix), `worker` (the participant's agent_id,
+  role_label, state, notification_filter and payload) and `notice` (a system
+  Message's attrs). The Task record, or why not.
+  """
+  def switch_task_run(
+        group_id,
+        conversation_id,
+        %{"worker" => %{}, "notice" => %{}} = run
+      ),
+      do: call(group_id, conversation_id, {:switch_task_run, run})
+
   def accept_task_review(group_id, conversation_id, review_version)
       when is_integer(review_version) and review_version > 0,
       do: call(group_id, conversation_id, {:accept_task_review, review_version})
@@ -486,6 +500,14 @@ defmodule SalixIM.ConversationServer do
 
   def reserve_task_conversation_id(group_id, delegator_agent_id, target_agent_id, attrs)
       when is_map(attrs) do
+    with {:ok, conversation_id, _attrs} <-
+           reserve_task_conversation(group_id, delegator_agent_id, target_agent_id, attrs),
+         do: {:ok, conversation_id}
+  end
+
+  @doc "Reserve a Task and recover the winning automatic placement before an invitation."
+  def reserve_task_conversation(group_id, delegator_agent_id, target_agent_id, attrs)
+      when is_map(attrs) do
     with :ok <- reject_caller_identity(attrs, "conversation_id") do
       reservation =
         attrs
@@ -493,8 +515,20 @@ defmodule SalixIM.ConversationServer do
         |> Map.put("target_agent_id", target_agent_id)
 
       case trim(attrs["client_request_id"] || attrs[:client_request_id]) do
-        "" -> reserve_generated_conversation_id(group_id, @generated_id_retries)
-        request_id -> reserve_requested_conversation_id(group_id, request_id, reservation)
+        "" ->
+          with {:ok, id} <- reserve_generated_conversation_id(group_id, @generated_id_retries),
+               do: {:ok, id, attrs}
+
+        request_id ->
+          with {:ok, binding} <-
+                 ensure_conversation_create_request(group_id, request_id, reservation) do
+            pinned =
+              if attrs["automatic_task_place"] == true,
+                do: Map.merge(attrs, binding["task_placement"] || %{}),
+                else: attrs
+
+            {:ok, binding["conversation_id"], pinned}
+          end
       end
     end
   end
@@ -535,6 +569,28 @@ defmodule SalixIM.ConversationServer do
 
   def lookup_task_create_request(_group_id, _request_identity),
     do: {:error, :invalid_conversation_create_request}
+
+  @doc "The automatic target already reserved by this exact creation request, if any."
+  def task_request_placement(group_id, request_identity)
+      when is_binary(request_identity) and request_identity != "" do
+    key = Keys.ctl_group_conversation_create_request(group_id, Crypto.hex(request_identity))
+
+    case CasRecord.get(key, :invalid_conversation_create_request) do
+      {:ok, %{"group_id" => ^group_id, "request_identity" => ^request_identity} = binding} ->
+        {:ok, binding["task_placement"]}
+
+      {:error, :not_found} ->
+        {:ok, nil}
+
+      {:error, _} = error ->
+        error
+
+      _ ->
+        {:error, :invalid_conversation_create_request}
+    end
+  end
+
+  def task_request_placement(_, _), do: {:ok, nil}
 
   defp lookup_reserved_task(group_id, conversation_id) do
     if Ids.valid_conversation_id?(conversation_id) do
@@ -590,6 +646,14 @@ defmodule SalixIM.ConversationServer do
   def task_loop_ended(group_id, conversation_id, loop, fact) when is_map(loop) and is_map(fact),
     do: call(group_id, conversation_id, {:task_loop_ended, loop, fact})
 
+  @doc """
+  The sandbox Session of a coding Task ended its turn with Message `seq`
+  (`SalixWeb.StationTasks`): an `active` coding Task whose latest Message
+  that still is goes into review.
+  """
+  def coding_turn_ended(group_id, conversation_id, seq) when is_integer(seq) and seq > 0,
+    do: call(group_id, conversation_id, {:coding_turn_ended, seq})
+
   def replace_task_schedule(group_id, conversation_id, current, replacement)
       when is_map(current) and is_map(replacement),
       do: call(group_id, conversation_id, {:replace_task_schedule, current, replacement})
@@ -638,6 +702,10 @@ defmodule SalixIM.ConversationServer do
         conversation_id,
         {:conversation_api, {:get_agent_participant_identity, agent_id}}
       )
+
+  # Whether the Agent is the Task's station Worker; nothing else of it.
+  def group_conversation_station_worker?(group_id, conversation_id, agent_id),
+    do: call(group_id, conversation_id, {:conversation_api, {:station_worker?, agent_id}})
 
   def get_group_conversation_participant_status(group_id, conversation_id, participant_id) do
     with {:ok, participant_id} <- require_participant_id(participant_id) do
@@ -807,12 +875,6 @@ defmodule SalixIM.ConversationServer do
     end
   end
 
-  defp reserve_requested_conversation_id(group_id, request_id, attrs) do
-    with {:ok, binding} <- ensure_conversation_create_request(group_id, request_id, attrs) do
-      {:ok, binding["conversation_id"]}
-    end
-  end
-
   defp create_with_reserved_id(group_id, request_identity, attrs, command, _attempts) do
     with {:ok, binding} <- ensure_conversation_create_request(group_id, request_identity, attrs) do
       conversation_id = binding["conversation_id"]
@@ -868,6 +930,11 @@ defmodule SalixIM.ConversationServer do
       "created_at" => now()
     }
 
+    candidate =
+      if attrs["automatic_task_place"] == true,
+        do: Map.put(candidate, "task_placement", Map.take(attrs, ~w(runs_on session_model))),
+        else: candidate
+
     with {:ok, _group} <- SalixIM.GroupDirectory.get_group(group_id),
          :ok <- require_nonblank(request_identity, "client_request_id") do
       CasRecord.update(key, fn
@@ -891,6 +958,9 @@ defmodule SalixIM.ConversationServer do
   end
 
   defp create_request_fingerprint(attrs) do
+    attrs =
+      if attrs["automatic_task_place"] == true, do: Map.delete(attrs, "runs_on"), else: attrs
+
     attrs
     |> Map.drop(["conversation_id", "created_at", "updated_at"])
     |> :erlang.term_to_binary([:deterministic])

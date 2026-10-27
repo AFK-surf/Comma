@@ -126,6 +126,127 @@ describe("useTaskBadges", () => {
     expect(onOpen).toHaveBeenCalledExactlyOnceWith({ schedule: "unknown" });
   });
 
+  it("shows a Task's pull request after its labels, and nothing for a Task without one", async () => {
+    const labels = labelsCore({ catalog: catalog() });
+    const url = "https://github.com/acme/api/pull/4248";
+    function Cards() {
+      const badges = useTaskBadges(GROUP, [
+        {
+          conversationId: "task-pr",
+          labels: ["lbl_work"],
+          pullRequest: { number: 4248, state: "merged", url },
+        },
+        // A pull request alone still makes a badge row.
+        { conversationId: "task-only", pullRequest: { number: 7, state: "open", url } },
+        { conversationId: "task-none", labels: [] },
+      ]);
+      return (
+        <>
+          {["task-pr", "task-only", "task-none"].map((id) => (
+            <div data-testid={id} key={id}>
+              {badges.renderTaskBadges({ conversationId: id })}
+            </div>
+          ))}
+        </>
+      );
+    }
+    render(<Cards />, { wrapper: labels.wrapper });
+    await flush();
+    const chips = [...screen.getByTestId("task-pr").querySelectorAll("[data-chip]")];
+    expect(
+      chips.map((chip) => [chip.getAttribute("data-chip"), chip.textContent])
+    ).toEqual([
+      ["label", "Work"],
+      ["pull-request", "PR #4248, Merged"],
+    ]);
+    expect(
+      within(screen.getByTestId("task-pr")).getByTitle("Merged")
+    ).toBeInTheDocument();
+    expect(screen.getByTestId("task-only")).toHaveTextContent("PR #7");
+    expect(screen.getByTestId("task-none")).toBeEmptyDOMElement();
+  });
+
+  it("opens the pull request from its chip without opening the card", async () => {
+    const open = vi.spyOn(window, "open").mockImplementation(() => null);
+    const onCard = vi.fn();
+    render(
+      <button onClick={onCard} type="button">
+        <TaskBadgeChips
+          labels={[]}
+          onOpen={vi.fn()}
+          origin={undefined}
+          pullRequest={{
+            number: 9,
+            state: "open",
+            url: "https://github.com/acme/api/pull/9",
+          }}
+        />
+      </button>
+    );
+    await userEvent
+      .setup({ advanceTimers: vi.advanceTimersByTime })
+      .click(screen.getByTestId("task-card-pull-request"));
+    expect(onCard).not.toHaveBeenCalled();
+    expect(open).toHaveBeenCalledWith(
+      "https://github.com/acme/api/pull/9",
+      expect.anything(),
+      expect.anything()
+    );
+    open.mockRestore();
+  });
+
+  it("only shows the pull request where the other chips do (a hover card)", async () => {
+    const open = vi.spyOn(window, "open").mockImplementation(() => null);
+    render(
+      <TaskBadgeChips
+        labels={[]}
+        origin={undefined}
+        pullRequest={{
+          number: 9,
+          state: "open",
+          url: "https://github.com/acme/api/pull/9",
+        }}
+      />
+    );
+    const chip = screen.getByTestId("task-card-pull-request");
+    expect(chip).not.toHaveAttribute("data-interactive");
+    await userEvent.setup({ advanceTimers: vi.advanceTimersByTime }).click(chip);
+    expect(open).not.toHaveBeenCalled();
+    open.mockRestore();
+  });
+
+  it("keeps the pull request after the label fold, so a squeezed row hides labels by position and keeps it", () => {
+    render(
+      <TaskBadgeChips
+        labels={[
+          { color: "blue", id: "a", name: "Work" },
+          { color: "pink", id: "b", name: "Coding" },
+          { color: "orange", id: "c", name: "Urgent" },
+        ]}
+        origin="comma"
+        pullRequest={{
+          number: 9,
+          state: "open",
+          url: "https://github.com/acme/api/pull/9",
+        }}
+      />
+    );
+    const chips = [...document.querySelectorAll("[data-chip]")].map((chip) =>
+      chip.getAttribute("data-chip")
+    );
+    // The row hides the third label chip and shows "+1 labels" for it: neither counts the pull request, which
+    // follows the fold and has a chip kind of its own.
+    expect(chips).toEqual([
+      "label",
+      "label",
+      "label",
+      "more",
+      "pull-request",
+      "platform",
+    ]);
+    expect(screen.getByText("+1 labels")).toBeInTheDocument();
+  });
+
   it("wears the channel's own mark on the platform chip", () => {
     render(<TaskBadgeChips labels={[]} origin="wechat" />);
     const chip = screen.getByTestId("task-card-platform");

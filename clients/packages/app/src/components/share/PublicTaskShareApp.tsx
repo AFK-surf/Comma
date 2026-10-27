@@ -248,7 +248,9 @@ function SharedTask({
       const address =
         typeof previewRef === "string"
           ? undefined
-          : shareImageAddress(previewRef.blobRef);
+          : previewRef.kind === "attachment"
+            ? { seq: Number(previewRef.messageId), index: previewRef.index }
+            : shareImageAddress(previewRef.blobRef);
       if (!address) return undefined;
       const url = URL.createObjectURL(
         await client.attachment(address.seq, address.index, signal)

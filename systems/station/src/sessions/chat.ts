@@ -33,8 +33,11 @@ export type ChatMessage = { ts: string; user: string; text: string; fromBot: boo
 
 export type Person = { name: string; email: string };
 
-/// Who posts, when it is a session's agent (chat_post): the session, and the state its post records.
-export type PostFrom = { session: string; declared?: string | null };
+/// Who posts, when it is a session's agent (chat_post): the session, the state its post records, and the milestones it
+/// carries (a post of milestones alone has no text).
+/// `cannotStart`: the post is the station's word that the Session's turn did not start, and why (the Task's host offers
+/// another model with it).
+export type PostFrom = { session: string; declared?: string | null; milestones?: string[] | null; cannotStart?: string };
 
 /// A platform's event; it must finish keeping it before it resolves: the platform is acknowledged only after.
 export type Handler = (event: ChatEvent) => Promise<void>;

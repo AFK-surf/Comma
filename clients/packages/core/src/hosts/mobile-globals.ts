@@ -19,6 +19,8 @@ export interface MobileNative {
   setTimer(id: number, ms: number): void;
   clearTimer(id: number): void;
   log(level: number, message: string): void;
+  /** The engine carries the phones' iroh: it answers the `mesh.*` operations itself (hosts/mobile-mesh.ts). */
+  mesh?: boolean;
 }
 
 // oxlint-disable-next-line typescript/no-explicit-any -- the global object, as each shim finds it

@@ -974,6 +974,46 @@ defmodule SalixIM.TaskExecutionTest do
     refute Enum.any?(messages, &(inspect(&1["content"]) =~ "PRIVATE_REPORT_CANARY"))
   end
 
+  test "a Worker's turn in an ordinary Task names the person whose request created it", f do
+    {_task, context} = create_task(f, %{"execution_requests" => nil})
+
+    assert {:ok, user} = SalixIM.TaskExecution.task_requester(context)
+    assert user == f.user
+
+    # Another Session, a turn that did not consume the command, or the Router
+    # itself names no one.
+    assert {:error, :requester_required} =
+             SalixIM.TaskExecution.task_requester(Map.put(context, "session_id", "another"))
+
+    assert {:error, :requester_required} =
+             SalixIM.TaskExecution.task_requester(Map.put(context, "source_message_ids", []))
+
+    assert {:error, :requester_required} =
+             SalixIM.TaskExecution.task_requester(Map.put(context, "agent_id", f.router))
+  end
+
+  test "a later command the Router sends into the Task names no one", f do
+    {task, _context} = create_task(f, %{"execution_requests" => nil})
+
+    # The Router continues the Task, as it does for another member's request or
+    # after a Worker's report: that command is not the creator's own request.
+    assert {:ok, _} =
+             Provider.call_api(f.router, "internal", "internal.send_message", %{
+               "connect_id" => "internal",
+               "tool_context" => router_request_context(f),
+               "params" => %{
+                 "conversation_id" => task["conversation_id"],
+                 "content" => [%{"type" => "text", "text" => "Now read the other chat"}]
+               }
+             })
+
+    worker = f.worker
+    settle_receive({:delivered, ^worker, payload})
+    follow_up = tool_context(f, worker, payload)
+
+    assert {:error, :requester_required} = SalixIM.TaskExecution.task_requester(follow_up)
+  end
+
   test "Router coordinates only its own live Task after a consumed Worker report", f do
     {:ok, _} =
       CasRecord.update(Keys.ctl_group(f.group), &Map.put(&1, "ifc", %{"mode" => "enforce"}))
@@ -1538,6 +1578,7 @@ defmodule SalixIM.TaskExecutionTest do
     %{
       "agent_id" => f.worker,
       "content" => "移除 Telegram 定位测试键盘，验证接口回执，然后报告。",
+      "runs_on" => %{"kind" => "default"},
       "execution_requests" => [
         %{
           "api" => "telegram.remove_reply_keyboard",

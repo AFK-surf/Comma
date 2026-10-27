@@ -1,11 +1,29 @@
-import { useCallback, useLayoutEffect, useRef, useState } from "react";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type KeyboardEvent,
+} from "react";
 import { createPortal } from "react-dom";
 import { Button as AriaButton } from "react-aria-components";
 import { spacing } from "../../tokens";
-import { cx } from "../utils";
+import {
+  clearContextSelectionHighlight,
+  paintContextSelectionHighlight,
+  snapshotLiveTextSelection,
+} from "../menu/preserveTextSelection";
+import { cx, isImeKeyEvent } from "../utils";
 import {
   selectionActionBar,
   selectionActionBarAction,
+  selectionActionBarExcerpt,
+  selectionActionBarReply,
+  selectionActionBarReplyError,
+  selectionActionBarReplyInput,
+  selectionActionBarReplyRow,
   selectionActionBarKey,
   selectionActionBarKeys,
   selectionActionBarLabel,
@@ -32,6 +50,36 @@ export interface SelectionActionBarAction {
 /** Which way the selection was drawn; the bar arrives along that path. */
 export type SelectionActionBarDirection = "forward" | "backward" | "none";
 
+/**
+ * A field of its own under the selected text: what the person types there is
+ * sent with the selection as its quote, without touching the main draft.
+ */
+export interface SelectionActionBarReply {
+  /** The selected text, shown above the field. */
+  excerpt: string;
+  /** Shown under the field when a submitted reply was refused. */
+  failedLabel: string;
+  /** Pressing outside the bar, or Escape in the field. */
+  onDismiss: () => void;
+  /**
+   * The field takes focus. The page selection moves into the field with it,
+   * so the owner must keep the selection's text and anchor from here on.
+   */
+  onEngage: () => void;
+  /**
+   * Sends the reply. A promise keeps the field's text until it settles: it is
+   * cleared when the promise resolves and kept, with `failedLabel`, when it
+   * rejects.
+   */
+  onSubmit: (text: string) => PromiseLike<unknown> | undefined;
+  /**
+   * The field's text whenever it changes, so an action pressed while the
+   * person is typing (such as quoting the selection) can carry it along.
+   */
+  onTextChange?: (text: string) => void;
+  placeholder: string;
+}
+
 export interface SelectionActionBarProps {
   actions: readonly SelectionActionBarAction[];
   anchor: SelectionActionBarAnchor | null;
@@ -39,6 +87,7 @@ export interface SelectionActionBarProps {
   className?: string;
   /** Defaults to "none" — appearing in place, with no travel. */
   direction?: SelectionActionBarDirection;
+  reply?: SelectionActionBarReply;
 }
 
 /** Gap between the anchored selection and the bar, both above and below. */
@@ -63,7 +112,12 @@ const anchorOnScreen = (
  * would take the bar down (and with it the pending press) before the pointer
  * ever came back up.
  */
-const keepSelection = (event: MouseEvent) => event.preventDefault();
+const keepSelection = (event: MouseEvent) => {
+  // The reply field is the one place a press must land: focusing it is how
+  // the person starts typing.
+  if (event.target instanceof HTMLTextAreaElement) return;
+  event.preventDefault();
+};
 
 const clamp = (value: number, min: number, max: number) =>
   Math.min(Math.max(value, min), max);
@@ -107,14 +161,22 @@ const placeBar = (
  * portal so scroll containers cannot clip it, and it swallows pointer-down so
  * pressing an action never collapses the selection it acts on.
  */
-export function SelectionActionBar({
+export const SelectionActionBar = memo(function SelectionActionBar({
   actions,
   anchor,
   ariaLabel,
   className,
   direction = "none",
+  reply,
 }: SelectionActionBarProps) {
   const barRef = useRef<HTMLDivElement | null>(null);
+  const [replyText, setReplyText] = useState("");
+  const [replyStatus, setReplyStatus] = useState<"idle" | "sending" | "failed">("idle");
+  // The selection the field took focus from, painted as a highlight while
+  // the real selection sits in the field.
+  const replyHighlightRef = useRef<Highlight | null>(null);
+  const replyOpen = Boolean(anchor && reply);
+  const onDismiss = reply?.onDismiss;
   const [layout, setLayout] = useState<{
     placement: Placement;
     side: "top" | "bottom";
@@ -123,7 +185,8 @@ export function SelectionActionBar({
     .map(
       (action) => `${action.id}\u0000${action.label}\u0000${action.shortcut?.join("")}`
     )
-    .join("\u0001");
+    .join("\u0001")
+    .concat("\u0002", reply?.excerpt ?? "", "\u0002", replyStatus);
   // A callback ref, not an effect: the bar mounts and unmounts with the
   // anchor, so the listener has to follow the element rather than the
   // component's own lifetime.
@@ -132,6 +195,90 @@ export function SelectionActionBar({
     barRef.current = element;
     element?.addEventListener("mousedown", keepSelection);
   }, []);
+
+  // A new selection, or the bar going away, starts the field over, and a
+  // reply still being sent for the old one no longer writes to it.
+  const replySubmissionRef = useRef(0);
+  const replyExcerpt = replyOpen ? reply?.excerpt : undefined;
+  useEffect(() => {
+    replySubmissionRef.current += 1;
+    setReplyText("");
+    setReplyStatus("idle");
+    clearContextSelectionHighlight(replyHighlightRef.current);
+    replyHighlightRef.current = null;
+  }, [replyExcerpt]);
+  // Reported for each selection too: a field emptied while no owner listened
+  // must not leave the next selection's owner with the old text.
+  const onTextChange = reply?.onTextChange;
+  useEffect(() => {
+    onTextChange?.(replyText);
+  }, [onTextChange, replyExcerpt, replyText]);
+  useEffect(
+    () => () => {
+      clearContextSelectionHighlight(replyHighlightRef.current);
+      replyHighlightRef.current = null;
+    },
+    []
+  );
+
+  // Pressing anywhere else puts a reply in progress away.
+  useEffect(() => {
+    if (!replyOpen || !onDismiss) return undefined;
+    const handlePointerDown = (event: PointerEvent) => {
+      if (event.target instanceof Node && barRef.current?.contains(event.target))
+        return;
+      onDismiss();
+    };
+    document.addEventListener("pointerdown", handlePointerDown, true);
+    return () => document.removeEventListener("pointerdown", handlePointerDown, true);
+  }, [onDismiss, replyOpen]);
+
+  const engageReply = useCallback(() => {
+    if (!reply) return;
+    if (!replyHighlightRef.current) {
+      replyHighlightRef.current = paintContextSelectionHighlight(
+        snapshotLiveTextSelection()
+      );
+    }
+    reply.onEngage();
+  }, [reply]);
+
+  const handleReplyKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (!reply) return;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      reply.onDismiss();
+      return;
+    }
+    if (event.key !== "Enter" || event.shiftKey || isImeKeyEvent(event.nativeEvent)) {
+      return;
+    }
+    event.preventDefault();
+    const text = replyText.trim();
+    if (!text || replyStatus === "sending") return;
+    const submission = ++replySubmissionRef.current;
+    const fail = () => {
+      if (replySubmissionRef.current === submission) setReplyStatus("failed");
+    };
+    const succeed = () => {
+      if (replySubmissionRef.current !== submission) return;
+      setReplyText("");
+      setReplyStatus("idle");
+    };
+    let result: PromiseLike<unknown> | undefined;
+    try {
+      result = reply.onSubmit(text);
+    } catch {
+      fail();
+      return;
+    }
+    if (!result) {
+      succeed();
+      return;
+    }
+    setReplyStatus("sending");
+    result.then(succeed, fail);
+  };
 
   // Measure after paint: the pill's width depends on the label and keycaps,
   // which are locale-dependent, so the placement math cannot be predicted.
@@ -160,18 +307,51 @@ export function SelectionActionBar({
         : (next ?? undefined)
     );
     // The action list is measured through the bar's own box, so a fresh array
-    // with the same contents must not re-trigger placement.
-  }, [anchor, actionsKey]);
+    // with the same contents must not re-trigger placement. A question that
+    // wraps onto another line grows the bar, which is placed again.
+  }, [anchor, actionsKey, replyText]);
 
   if (!anchor || actions.length === 0 || typeof document === "undefined") {
     return null;
   }
 
+  const actionButtons = actions.map((action, index) => (
+    <div className="contents" key={action.id}>
+      {index > 0 ? <span aria-hidden className={selectionActionBarSeparator} /> : null}
+      <AriaButton
+        className={selectionActionBarAction}
+        data-action-id={action.id}
+        onPress={action.onPress}
+      >
+        <span className={selectionActionBarLabel}>{action.label}</span>
+        {action.shortcut?.length ? (
+          <span
+            aria-hidden
+            className={selectionActionBarKeys}
+            data-slot="selection-action-bar-keys"
+          >
+            {action.shortcut.map((key, keyIndex) => (
+              <kbd
+                className={
+                  key.length > 1 ? selectionActionBarWideKey : selectionActionBarKey
+                }
+                // A shortcut can repeat a key, so position is part of identity.
+                key={`${key}-${keyIndex}`}
+              >
+                {key}
+              </kbd>
+            ))}
+          </span>
+        ) : null}
+      </AriaButton>
+    </div>
+  ));
+
   return createPortal(
     <div
       aria-hidden={layout ? undefined : true}
       aria-label={ariaLabel}
-      className={cx(selectionActionBar, className)}
+      className={cx(selectionActionBar, reply && selectionActionBarReply, className)}
       data-direction={direction}
       data-placement={layout?.side}
       data-slot="selection-action-bar"
@@ -182,40 +362,42 @@ export function SelectionActionBar({
       style={{ left: layout?.placement.left ?? 0, top: layout?.placement.top ?? 0 }}
       tabIndex={-1}
     >
-      {actions.map((action, index) => (
-        <div className="contents" key={action.id}>
-          {index > 0 ? (
-            <span aria-hidden className={selectionActionBarSeparator} />
-          ) : null}
-          <AriaButton
-            className={selectionActionBarAction}
-            data-action-id={action.id}
-            onPress={action.onPress}
+      {reply ? (
+        <>
+          <p
+            className={selectionActionBarExcerpt}
+            data-slot="selection-action-bar-excerpt"
           >
-            <span className={selectionActionBarLabel}>{action.label}</span>
-            {action.shortcut?.length ? (
-              <span
-                aria-hidden
-                className={selectionActionBarKeys}
-                data-slot="selection-action-bar-keys"
-              >
-                {action.shortcut.map((key, keyIndex) => (
-                  <kbd
-                    className={
-                      key.length > 1 ? selectionActionBarWideKey : selectionActionBarKey
-                    }
-                    // A shortcut can repeat a key, so position is part of identity.
-                    key={`${key}-${keyIndex}`}
-                  >
-                    {key}
-                  </kbd>
-                ))}
-              </span>
-            ) : null}
-          </AriaButton>
-        </div>
-      ))}
+            {reply.excerpt}
+          </p>
+          <div className={selectionActionBarReplyRow}>
+            <textarea
+              aria-label={reply.placeholder}
+              className={selectionActionBarReplyInput}
+              aria-busy={replyStatus === "sending" || undefined}
+              onChange={(event) => {
+                setReplyText(event.target.value);
+                if (replyStatus === "failed") setReplyStatus("idle");
+              }}
+              onFocus={engageReply}
+              onKeyDown={handleReplyKeyDown}
+              onPointerDown={engageReply}
+              placeholder={reply.placeholder}
+              rows={1}
+              value={replyText}
+            />
+            {actionButtons}
+          </div>
+          {replyStatus === "failed" ? (
+            <p className={selectionActionBarReplyError} role="alert">
+              {reply.failedLabel}
+            </p>
+          ) : null}
+        </>
+      ) : (
+        actionButtons
+      )}
     </div>,
     document.body
   );
-}
+});

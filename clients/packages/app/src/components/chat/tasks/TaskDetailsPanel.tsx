@@ -4,8 +4,11 @@ import { useCommaLocale, useCommaMessages } from "@comma/i18n/react";
 import {
   CheckIcon,
   CloudIcon,
+  DevicesIcon,
+  GlobeIcon,
+  MacbookAirIcon,
   MacbookIcon,
-  PeopleCircleIcon,
+  PhoneDynamicIslandIcon,
   PlusSmallIcon,
 } from "@comma/ui/components/icons";
 import { Menu, MenuItem, MenuPopover, MenuTrigger } from "@comma/ui/components/menu";
@@ -19,11 +22,19 @@ import { LabelDot } from "../../tasks/labelColor";
 import type { TasksFilterLink } from "../../tasks/taskChips";
 import { TaskOriginIcon, taskOriginKey, taskOriginLabel } from "../../tasks/taskOrigin";
 import { TaskLabelPicker } from "./labels/TaskLabelPicker";
+import {
+  CodingChangesSection,
+  CodingRecordSections,
+  CodingSandboxRow,
+  CodingSandboxRows,
+  type CodingPanelTarget,
+} from "./CodingSession";
 import { TaskActivitySection } from "./TaskActivitySection";
 import { TaskLoopSection } from "./TaskLoopSection";
 import { useTaskLabelsCatalog } from "./labels/useTaskLabelsCatalog";
 import type { ChatTaskRun } from "@comma/core/chat";
-import { taskRunLabel } from "./taskRunLabel";
+import { WorkerModelMark } from "../thread/activity/WorkerModelMark";
+import { taskRunModel, taskRunPlace } from "./taskRunLabel";
 
 export type TaskDetailsStatusState = "idle" | "pending" | "failed";
 
@@ -42,6 +53,17 @@ export interface TaskDetailsPanelProps {
   loop?: TaskLoop | undefined;
   /** Where the Task runs and its model; the panel names no Agent. */
   run?: ChatTaskRun | undefined;
+  /**
+   * A coding Task's sandbox, where the panel's coding actions and reads go (its changes, record, terminal and pull
+   * request); absent where the panel only shows the Task.
+   */
+  coding?: CodingPanelTarget | undefined;
+  /** Shows a coding Task's changes, at `file` when given (the sidebar's Changes tab); absent where no sidebar can show them. */
+  onOpenCodingChanges?: ((file?: string) => void) | undefined;
+  /** Shows a coding Task's terminal inside the app (a browser tab of the sidebar); absent where none can. */
+  onOpenCodingTerminal?: ((url: string) => void) | undefined;
+  /** Opens the picker that runs the Task on another model; absent when the viewer cannot switch it. */
+  onSwitchRun?: (() => void) | undefined;
   /** Opens the Tasks page narrowed to the clicked property. */
   onOpenTasksFilter?: ((filter: TasksFilterLink) => void) | undefined;
   /**
@@ -51,9 +73,7 @@ export interface TaskDetailsPanelProps {
   onSetStatus?: ((status: ManualTaskStatus) => unknown) | undefined;
   /** Replaces the Task's labels; absent when the viewer cannot edit labels. */
   onSetLabels?: ((labelIds: string[]) => unknown) | undefined;
-  /** Who made the Task, where the panel says so (a Task a station hosts). */
-  creator?: string | undefined;
-  /** Whether the Task can carry labels at all (a Task a station hosts cannot): without, no Label section. */
+  /** Whether the Task can carry labels at all: without, no Label section. */
   labeled?: boolean | undefined;
   /** Reads the Task's history the Activity has not read yet (`activity.earlier`). */
   onReadEarlierActivity?: (() => void) | undefined;
@@ -86,6 +106,22 @@ function platformKey(platform: string | undefined): PlatformKey | undefined {
   return PLATFORM_KEYS.find((key) => key === platform) ?? "unknown";
 }
 
+/** The device the Task was asked from, drawn the way a message's source is. */
+const PLATFORM_ICONS: Record<PlatformKey, typeof MacbookIcon> = {
+  macos: MacbookAirIcon,
+  windows: MacbookAirIcon,
+  linux: MacbookAirIcon,
+  ios: PhoneDynamicIslandIcon,
+  android: PhoneDynamicIslandIcon,
+  web: GlobeIcon,
+  unknown: DevicesIcon,
+};
+
+function PlatformIcon({ platform }: { platform: PlatformKey }) {
+  const Icon = PLATFORM_ICONS[platform];
+  return <Icon className="size-5 text-quaternary" />;
+}
+
 const manualStatusTargets: ReadonlyArray<{
   bucket: TaskStatusBucket;
   status: ManualTaskStatus;
@@ -102,12 +138,15 @@ export function TaskDetailsPanel({
   conversation,
   groupId,
   run,
+  coding,
+  onOpenCodingChanges,
+  onOpenCodingTerminal,
+  onSwitchRun,
   onOpenTasksFilter,
   onReadEarlierActivity,
   onRevealActivityStep,
   onSetLabels,
   onSetStatus,
-  creator,
   labeled = true,
   loop,
   open,
@@ -118,6 +157,7 @@ export function TaskDetailsPanel({
   const locale = useCommaLocale();
   const bucket = taskStatusBucket(conversation.status);
   const origin = taskOriginKey(conversation.origin);
+  const runModel = run ? taskRunModel(messages, run.model) : undefined;
   const platform =
     origin === "comma" ? platformKey(conversation.client_platform) : undefined;
   // At most the visible route and sidebar panels read once per membership change.
@@ -210,22 +250,23 @@ export function TaskDetailsPanel({
   }, [applied, pickerAnchor]);
   const canPickLabels = onSetLabels !== undefined && catalogLabels.length > 0;
 
-  const platformLabel = (key: PlatformKey): string => {
+  // Where the Task was asked from, not where it runs: Environment names that.
+  const createdOnLabel = (key: PlatformKey): string => {
     switch (key) {
       case "macos":
-        return messages.task_panel_platform_macos();
+        return messages.task_panel_created_on_macos();
       case "windows":
-        return messages.task_panel_platform_windows();
+        return messages.task_panel_created_on_windows();
       case "linux":
-        return messages.task_panel_platform_linux();
+        return messages.task_panel_created_on_linux();
       case "ios":
-        return messages.task_panel_platform_ios();
+        return messages.task_panel_created_on_ios();
       case "android":
-        return messages.task_panel_platform_android();
+        return messages.task_panel_created_on_android();
       case "web":
-        return messages.task_panel_platform_web();
+        return messages.task_panel_created_on_web();
       default:
-        return messages.task_panel_platform_unknown();
+        return messages.task_panel_created_on_unknown();
     }
   };
 
@@ -341,26 +382,6 @@ export function TaskDetailsPanel({
               )}
             </div>
           ) : null}
-          {run ? (
-            <div className="comma-task-panel-row" data-testid="task-panel-run">
-              <span className="comma-task-panel-pill">
-                {run.place.kind === "station" ? (
-                  <MacbookIcon className="size-5 text-quaternary" />
-                ) : (
-                  <CloudIcon className="size-5 text-quaternary" />
-                )}
-                {taskRunLabel(messages, run)}
-              </span>
-            </div>
-          ) : null}
-          {creator ? (
-            <div className="comma-task-panel-row" data-testid="task-panel-creator">
-              <span className="comma-task-panel-pill">
-                <PeopleCircleIcon className="size-5 text-quaternary" />
-                {messages.task_panel_created_by({ name: creator })}
-              </span>
-            </div>
-          ) : null}
           {platform ? (
             <div className="comma-task-panel-row" data-testid="task-panel-platform">
               <button
@@ -368,10 +389,11 @@ export function TaskDetailsPanel({
                 type="button"
                 disabled={!onOpenTasksFilter}
                 data-interactive={onOpenTasksFilter ? "true" : undefined}
+                data-platform={platform}
                 onClick={() => onOpenTasksFilter?.({ clientPlatform: platform })}
               >
-                <MacbookIcon className="size-5 text-quaternary" />
-                {platformLabel(platform)}
+                <PlatformIcon platform={platform} />
+                {createdOnLabel(platform)}
               </button>
             </div>
           ) : null}
@@ -451,11 +473,100 @@ export function TaskDetailsPanel({
           </section>
         ) : null}
 
+        {run ? (
+          <section
+            className="comma-task-panel-section"
+            data-testid="task-panel-environment"
+          >
+            <h2 className="comma-task-panel-heading">
+              {messages.task_panel_environment()}
+            </h2>
+            {run.place.kind === "sandbox" ? (
+              // A coding Task's place is its sandbox: the row says where it stands.
+              <CodingSandboxRow place={run.place} />
+            ) : (
+              <div className="comma-task-panel-row" data-testid="task-panel-run-place">
+                <span className="comma-task-panel-pill min-w-0">
+                  {run.place.kind === "station" ? (
+                    <MacbookIcon className="size-5 shrink-0 text-quaternary" />
+                  ) : (
+                    <CloudIcon className="size-5 shrink-0 text-quaternary" />
+                  )}
+                  <span className="truncate">{taskRunPlace(messages, run.place)}</span>
+                </span>
+              </div>
+            )}
+            {runModel || onSwitchRun ? (
+              <div className="comma-task-panel-row" data-testid="task-panel-run-model">
+                {onSwitchRun ? (
+                  // The model opens the picker that runs the Task on another one.
+                  <button
+                    aria-label={
+                      runModel
+                        ? `${runModel} · ${messages.task_run_switch()}`
+                        : messages.task_run_switch()
+                    }
+                    className="comma-task-panel-pill min-w-0"
+                    data-interactive="true"
+                    data-testid="task-panel-run-switch"
+                    onClick={onSwitchRun}
+                    title={messages.task_run_switch()}
+                    type="button"
+                  >
+                    <span className="flex size-5 shrink-0 items-center justify-center">
+                      <WorkerModelMark className="size-4" vendor={run.vendor} />
+                    </span>
+                    <span className="truncate">
+                      {runModel ?? messages.task_run_switch()}
+                    </span>
+                  </button>
+                ) : (
+                  <span className="comma-task-panel-pill min-w-0">
+                    {/* The mark sits in the glyphs' 20px slot at their 16px optical
+                        size, so it and its text line up with the row above. */}
+                    <span className="flex size-5 shrink-0 items-center justify-center">
+                      <WorkerModelMark className="size-4" vendor={run.vendor} />
+                    </span>
+                    <span className="truncate">{runModel}</span>
+                  </span>
+                )}
+              </div>
+            ) : null}
+            {run.place.kind === "sandbox" ? (
+              <CodingSandboxRows
+                coding={coding}
+                onOpenTerminal={onOpenCodingTerminal}
+                place={run.place}
+              />
+            ) : null}
+          </section>
+        ) : null}
+
         {loop ? (
           <TaskLoopSection loop={loop} onOpenTasksFilter={onOpenTasksFilter} />
         ) : null}
 
-        {activity ? (
+        {coding && run?.place.kind === "sandbox" ? (
+          // A coding Task's record stands in for its Activity: its steps come from the sandbox, not from milestones.
+          // Keyed by the Task, so another Task's changes and record never show while this one's are read.
+          <>
+            <CodingRecordSections
+              coding={coding}
+              facts={run.facts}
+              key={coding.taskId}
+              place={run.place}
+              working={activityWorking}
+            >
+              <CodingChangesSection
+                coding={coding}
+                facts={run.facts}
+                onOpenChanges={onOpenCodingChanges}
+                place={run.place}
+                working={activityWorking}
+              />
+            </CodingRecordSections>
+          </>
+        ) : activity ? (
           <TaskActivitySection
             activity={activity}
             onReadEarlier={onReadEarlierActivity}

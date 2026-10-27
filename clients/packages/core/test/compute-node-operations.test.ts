@@ -45,47 +45,62 @@ function setup() {
 }
 
 describe("a compute node's install operation", () => {
-  it("initializes the workload once the node reads ready, reading once a second", async () => {
+  it("reads the server's Shell phase and revocation reason, and drops an unknown reason", async () => {
     const t = setup();
-    let reads = 0;
-    t.api.on("GET", base, () =>
-      json(200, operation(++reads < 3 ? "processing" : "ready"))
-    );
-    t.api.on("POST", `${base}/initialize-workload`, operation("ready"));
-    const done = t.client.call("computeNode.initializeWorkload", target);
+    t.api.on("GET", base, {
+      operation: {
+        ...operation("action_required").operation,
+        authorization_status: "revoked",
+        shell_phase: "ready",
+        registration_revocation_reason: "authorization_expired",
+      },
+    });
+    const read = t.client.call("computeNode.inspect", { ...target, lease });
     await t.time.pass(100);
-    expect(t.api.seen("GET", base)).toHaveLength(1);
-    await t.time.pass(1_000, 500);
-    expect(t.api.seen("GET", base)).toHaveLength(2);
-    expect(t.api.seen("POST", `${base}/initialize-workload`)).toHaveLength(0);
-    await t.time.pass(1_000, 500);
-    await expect(done).resolves.toMatchObject({ status: "ready" });
-    expect(t.api.seen("GET", base)).toHaveLength(3);
-    expect(t.api.seen("POST", `${base}/initialize-workload`)).toHaveLength(1);
+    await expect(read).resolves.toEqual({
+      authorizationStatus: "revoked",
+      status: "action_required",
+      workActivity: "idle",
+      shellPhase: "ready",
+      registrationRevocationReason: "authorization_expired",
+    });
+    t.api.on("GET", base, {
+      operation: {
+        ...operation("action_required").operation,
+        registration_revocation_reason: "a_future_reason",
+      },
+    });
+    const later = t.client.call("computeNode.inspect", { ...target, lease });
+    await t.time.pass(100);
+    expect(await later).not.toHaveProperty("registrationRevocationReason");
   });
+});
 
-  it("gives up after the wait, or at once when the node needs action, without initializing", async () => {
+describe("Linux install command", () => {
+  it("lets a member window request a Group-bound command without exposing a Main descriptor", async () => {
     const t = setup();
-    t.api.on("GET", base, operation("processing"));
-    const waited = t.client.call("computeNode.initializeWorkload", {
-      ...target,
-      waitMs: 3_000,
+    const path = "/v1/comma/workspaces/wsp/compute-nodes/agent-vmm/install-commands";
+    t.api.on("POST", path, {
+      command:
+        "curl -fsSL 'https://api.comma.test/v1/compute/agent-vmm/install.sh' | sudo sh -s -- linux-op.secret",
+      expires_at: "2026-10-23T10:00:00Z",
+      operation: { id: "linux-op" },
     });
-    const outcome = expect(waited).rejects.toMatchObject({
-      code: "initialization_incomplete",
-    });
-    await t.time.pass(5_000, 500);
-    await outcome;
-    expect(t.api.seen("GET", base)).toHaveLength(4);
-
-    t.api.on("GET", base, operation("action_required"));
-    const refused = t.client.call("computeNode.initializeWorkload", target);
-    const refusal = expect(refused).rejects.toMatchObject({
-      code: "initialization_incomplete",
+    const answer = t.window.call("computeNode.installCommand", {
+      workspaceId: "wsp",
+      requestId: "linux-request",
     });
     await t.time.pass(100);
-    await refusal;
-    expect(t.api.seen("POST", `${base}/initialize-workload`)).toHaveLength(0);
+    await expect(answer).resolves.toEqual({
+      command:
+        "curl -fsSL 'https://api.comma.test/v1/compute/agent-vmm/install.sh' | sudo sh -s -- linux-op.secret",
+      expiresAt: "2026-10-23T10:00:00Z",
+    });
+    expect(t.api.seen("POST", path)[0]!.headers).toContainEqual([
+      "idempotency-key",
+      "linux-request",
+    ]);
+    expect(t.api.seen("POST", path)[0]!.body).toEqual({});
   });
 });
 

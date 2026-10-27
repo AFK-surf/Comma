@@ -13,6 +13,7 @@ import { latest as latestNote, untold } from "../agents/migrations.ts";
 import { unreadableDir, unreadableDirMessage } from "../ops/files.ts";
 import { log } from "../ops/log.ts";
 import { tr, stationLang } from "../ops/i18n.ts";
+import type { PostFrom } from "./chat.ts";
 
 /// How an agent ended its turn (chat_post / chat_state `kind`).
 export type DeclaredState = { kind: "all_done" } | { kind: "need_help" } | { kind: "waiting"; seconds: number };
@@ -64,7 +65,7 @@ export type SessionStore = {
 
 /// A chat surface, as far as a session uses one (chat/mod.rs `ChatSurface`).
 export type Surface = {
-  post(thread: { channel: string; threadTs: string }, text: string, files: unknown[]): Promise<string>;
+  post(thread: { channel: string; threadTs: string }, text: string, files: unknown[], from?: PostFrom): Promise<string>;
   userName?(user: string): Promise<string | null>;
   working?(thread: { channel: string; threadTs: string }, messageTs: string | null, status: string): void;
   botName?(): string;
@@ -83,13 +84,16 @@ export type SessionDeps = {
   mcpUrl(): string;
   reposDir(): string;
   memoryPath(): string;
+  /// What a Session working in `workspace` is told besides the station's instructions: a coding Session's checkout
+  /// and how it keeps its work (tasks/coding.ts); null for any other.
+  workspaceInstructions(workspace: string): string | null;
   maxNudges(): number;
   backgroundOnMessage(key: string): boolean;
   /// Where the runtime's live steps go, for whoever watches the session (and that it went on in a new runtime session).
   live?: { event(key: string, event: LiveEvent): void; turnEnded(key: string): void; moved?(key: string): void };
   /// What it is told when it goes on on `to` in a new runtime session rather than take up `id` (last run on `was`, when
   /// the store does not know); null: it takes it up (sessions/afresh.ts).
-  startsAfresh?(key: string, id: string, to: Profile, was: string | null): string | null;
+  startsAfresh?(key: string, id: string | null, to: Profile, was: string | null): string | null;
   /// The runtime session it runs in, on `profile` (null: not known).
   ranIn?(key: string, id: string, profile: string | null): void;
   idle(key: string): void;
@@ -97,8 +101,9 @@ export type SessionDeps = {
   restoreArchive(key: string): void | Promise<void>;
   /// An archived session's process is gone: its files may go to cold storage now (session.rs `clean_archive`).
   cleanArchive?(key: string): void | Promise<void>;
-  /// Turns are held (the station is about to stop or hand over): none starts, messages stay pending.
-  held(): boolean;
+  /// Turns are held (the station is about to stop or hand over, or this session's workspace is being prepared): none
+  /// starts, messages stay pending.
+  held(key?: string): boolean;
   /// Stopped while it waits: ends the session's jobs that would bring it back.
   stopJobs(key: string): Promise<void>;
   toolStatus(tool: string): string;
@@ -150,20 +155,23 @@ export const START_AGAIN_MAX_MS = 60_000;
 
 export class SessionActor {
   readonly key: string;
-  readonly runtime: "claude" | "codex";
+  /// The runtime it was made with; its session may go on with another (configure).
+  private readonly made: "claude" | "codex";
   private deps: SessionDeps;
   private lock = Semaphore.makeUnsafe(1);
   /// Runs an effect as a fiber of this actor's (its tasks, its wait's timer): they end when it closes.
   private run: (effect: Effect.Effect<void>) => Promise<void>;
   private scope: Scope.Closeable;
 
-  private agent: { generation: number; session: AgentSession } | null = null;
+  private agent: { generation: number; session: AgentSession; runtime: "claude" | "codex" } | null = null;
   private profile: string | null = null;
   private generation = 0;
   private phase: Phase = "idle";
   private turn: Turn | null = null;
   private nudges = 0;
   private stopRequested = false;
+  /// The stop asked is said nowhere (stop).
+  private quietStop = false;
   private resumeLost = false;
   /// Started afresh: what it is told of it with its next prompt.
   private afresh: string | null = null;
@@ -195,7 +203,7 @@ export class SessionActor {
 
   constructor(key: string, runtime: "claude" | "codex", deps: SessionDeps) {
     this.key = key;
-    this.runtime = runtime;
+    this.made = runtime;
     this.deps = deps;
     this.idleSince = deps.clock.currentTimeMillisUnsafe();
     this.scope = Effect.runSync(Scope.make());
@@ -205,6 +213,12 @@ export class SessionActor {
 
   private now(): number {
     return this.deps.clock.currentTimeMillisUnsafe();
+  }
+
+  /// The runtime its session runs now.
+  get runtime(): "claude" | "codex" {
+    const runtime = this.deps.store.getSession(this.key)?.runtime;
+    return runtime === "claude" || runtime === "codex" ? runtime : this.made;
   }
 
   // ── the queue ─────────────────────────────────────────────────────────────────────────────────────────────────
@@ -309,22 +323,24 @@ export class SessionActor {
     });
   }
 
-  /// Stops what it is doing: the running turn; or, while it waits on work it started, that work and the wait.
-  stop(): Promise<void> {
+  /// Stops what it is doing: the running turn; or, while it waits on work it started, that work and the wait. Said in
+  /// its chat, unless `quiet`: its Task runs elsewhere now (tasks.ts moveTo), which no one asked it to stop for.
+  stop(quiet = false): Promise<void> {
     return this.enqueue(async () => {
       if (this.agent?.session.busy()) {
         this.stopRequested = true;
+        this.quietStop = quiet;
         await this.agent.session.abort();
         return;
       }
-      if (!this.turn) await this.stopWaiting();
+      if (!this.turn) await this.stopWaiting(quiet);
     });
   }
 
   /// Its last turn stopped at its account's allowance and it was changed since: it goes on where it stopped.
   goOn(): Promise<void> {
     return this.enqueue(async () => {
-      if (this.deps.held() || this.turn || this.agent?.session.busy()) return;
+      if (this.deps.held(this.key) || this.turn || this.agent?.session.busy()) return;
       if (this.deps.store.pendingMessages(this.key).length > 0) return this.pump();
       await this.startTurn("resume", GO_ON_AFTER_SPENT);
     });
@@ -354,7 +370,7 @@ export class SessionActor {
   /// Starts the runtime process ahead of a message, so its start-up overlaps the typing.
   warm(): Promise<void> {
     return this.enqueue(async () => {
-      if (this.agent || this.deps.held()) return;
+      if (this.agent || this.deps.held(this.key)) return;
       log.info("session", "warming session process", { session: this.key });
       await this.ensureAgent();
       this.idleSince = this.now();
@@ -436,7 +452,8 @@ export class SessionActor {
   /// Takes up a session the previous station left (its snapshot), on its runtime session when the driver took that up:
   /// as the generation the caller opened it as (`nextGeneration`, whose `listener` the driver was given).
   adopt(snap: Snapshot, agent: AgentSession | null) {
-    this.agent = agent ? { generation: this.generation, session: agent } : null;
+    this.profile = this.deps.store.getSession(this.key)?.profile ?? null;
+    this.agent = agent ? { generation: this.generation, session: agent, runtime: this.runtime } : null;
     this.turn = snap.turn && {
       id: snap.turn.id,
       authRetried: snap.turn.authRetried,
@@ -488,7 +505,7 @@ export class SessionActor {
   }
 
   private async giveNotices() {
-    if (this.deps.held()) return;
+    if (this.deps.held(this.key)) return;
     if (this.agent?.session.busy()) {
       const text = this.takeNotices();
       if (text === null) return;
@@ -501,7 +518,7 @@ export class SessionActor {
   }
 
   private async pump() {
-    if (this.deps.held()) return; // they stay pending
+    if (this.deps.held(this.key)) return; // they stay pending
     const store = this.deps.store;
     const pending = store.pendingMessages(this.key);
     if (pending.length === 0) return;
@@ -672,7 +689,7 @@ export class SessionActor {
       this.startFailures++;
       this.lastStartFailure = Array.from(message).slice(0, LAST_FAILURE_CHARS).join("");
       // Said once: the tries that follow are the station's own, and say so in its log.
-      if (!this.tryingAgain) await this.notice(`⚠️ ${t("station.notice.cannotStart", { error: message })}`);
+      if (!this.tryingAgain) await this.notice(`⚠️ ${t("station.notice.cannotStart", { error: message })}`, null, { session: this.key, cannotStart: message });
       this.startAgain(message);
       throw error;
     } finally {
@@ -722,13 +739,22 @@ export class SessionActor {
   }
 
   private async ensureAgent(): Promise<AgentSession> {
-    if (this.agent) return this.agent.session;
+    const profile = this.deps.runOn(this.key);
+    const runtime = this.runtime;
+    // Its runtime process goes on while it is the runtime session the session runs in, as the store says: one left for
+    // a new one (store.leaveRuntimeSession) or of another runtime (configure) is not.
+    const current = this.deps.store.getSession(this.key)?.runtimeSessionId ?? null;
+    if (this.agent && this.profile === profile.id && this.agent.runtime === runtime && this.agent.session.id() === current) return this.agent.session;
+    if (this.agent) {
+      const previous = this.agent;
+      this.agent = null;
+      await previous.session.dispose();
+    }
     if (this.deps.archiveIsCold(this.key)) await this.deps.restoreArchive(this.key);
     const store = this.deps.store;
     const row = store.getSession(this.key);
     if (!row) throw new Error(`session ${this.key} disappeared`);
-    const driver = this.deps.driver(this.runtime);
-    const profile = this.deps.runOn(this.key);
+    const driver = this.deps.driver(runtime);
     const base = openOptions(row, profile, this.deps);
     // A runtime started where the station may not read exits at once with nothing to say why (macOS privacy protection
     // on a session continued in ~/Documents): told as it is instead.
@@ -737,7 +763,7 @@ export class SessionActor {
     let agent: AgentSession;
     // Recorded before it may be left, so the history reads on from it.
     if (row.runtimeSessionId) this.deps.ranIn?.(this.key, row.runtimeSessionId, null);
-    const afresh = row.runtimeSessionId ? (this.deps.startsAfresh?.(this.key, row.runtimeSessionId, profile, this.profile) ?? null) : null;
+    const afresh = this.deps.startsAfresh?.(this.key, row.runtimeSessionId ?? null, profile, this.profile) ?? null;
     if (afresh !== null) {
       log.info("session", "going on in a new runtime session on another account", { session: this.key, left: row.runtimeSessionId, profile: profile.id });
       agent = await driver.open(base, this.listener(generation));
@@ -758,7 +784,7 @@ export class SessionActor {
       if (row.runtimeSessionId) this.deps.live?.moved?.(this.key);
     }
     this.deps.ranIn?.(this.key, agent.id(), profile.id);
-    this.agent = { generation, session: agent };
+    this.agent = { generation, session: agent, runtime };
     this.profile = profile.id;
     return agent;
   }
@@ -805,7 +831,9 @@ export class SessionActor {
     this.phase = "idle";
     this.runningSince = null;
     const stopRequested = this.stopRequested;
+    const quiet = this.quietStop;
     this.stopRequested = false;
+    this.quietStop = false;
     store.setRunning(this.key, false);
     if (turn) {
       const detail = outcome.kind === "failed" ? `${outcome.reason}: ${outcome.message}` : null;
@@ -814,7 +842,7 @@ export class SessionActor {
     }
     // Reopen Claude once so it reads the current credentials (and refreshes an expiring machine token). Resume its
     // transcript with a continuation, never replay the original request: it may already have run tools.
-    if (this.runtime === "claude" && outcome.kind === "failed" && outcome.reason === "auth" && !stopRequested && !this.deps.held() && turn && !turn.authRetried && !turn.declared) {
+    if (this.runtime === "claude" && outcome.kind === "failed" && outcome.reason === "auth" && !stopRequested && !this.deps.held(this.key) && turn && !turn.authRetried && !turn.declared) {
       this.nudges = 0;
       const agent = this.agent;
       this.agent = null;
@@ -847,7 +875,7 @@ export class SessionActor {
       await this.notice(failureNotice(outcome), outcome.reason === "auth" ? this.profile : null);
     } else if (outcome.kind === "aborted") {
       this.nudges = 0;
-      if (stopRequested) await this.notice(t("station.notice.stopped"));
+      if (stopRequested && !quiet) await this.notice(t("station.notice.stopped"));
     }
 
     if (store.pendingMessages(this.key).length > 0) return this.pump();
@@ -864,7 +892,7 @@ export class SessionActor {
       this.nudges = 0;
       return;
     }
-    if (this.deps.held()) return;
+    if (this.deps.held(this.key)) return;
     if (this.nudges < this.deps.maxNudges()) {
       this.nudges++;
       log.info("session", "turn ended without a state; nudging", { session: this.key, attempt: this.nudges });
@@ -875,7 +903,7 @@ export class SessionActor {
   }
 
   /// Stopped while it waits: the wait ends, and so does the work that would bring it back (session.rs `stop_waiting`).
-  private async stopWaiting() {
+  private async stopWaiting(quiet = false) {
     const store = this.deps.store;
     const waited = this.waiting !== null;
     this.waiting = null;
@@ -894,7 +922,7 @@ export class SessionActor {
     this.agent = null;
     await agent?.session.dispose();
     store.stopWait(this.key);
-    await this.notice(t("station.notice.stopped"));
+    if (!quiet) await this.notice(t("station.notice.stopped"));
   }
 
   /// Asks the agent again after `seconds`, unless a turn has started by then.
@@ -916,7 +944,7 @@ export class SessionActor {
           Effect.promise(() =>
             this.enqueue(async () => {
               // Held: the wait stays, for the next station to take up.
-              if (this.deps.held() || this.waiting !== wait) return;
+              if (this.deps.held(this.key) || this.waiting !== wait) return;
               this.waiting = null;
               this.phase = "idle";
               // Keeping watch: the watch brings it back (its notices, its end), not the clock; it waits on.
@@ -930,9 +958,14 @@ export class SessionActor {
     ).catch(() => undefined);
   }
 
+  /// The station's own words about the session, in its queue (as `notice`).
+  tell(text: string): Promise<void> {
+    return this.enqueue(() => this.notice(text));
+  }
+
   /// The station's own words (not the agent's) go to the thread people spoke in last, and are recorded there; one about
   /// a profile (`profile`, its id) is linked to that profile's page.
-  private async notice(text: string, profile: string | null = null) {
+  private async notice(text: string, profile: string | null = null, from?: PostFrom) {
     const store = this.deps.store;
     const latest = store.latestThread(this.key);
     const chat = latest ? this.deps.chat(latest.connect) : undefined;
@@ -941,7 +974,7 @@ export class SessionActor {
       return;
     }
     try {
-      const ts = await chat.post({ channel: latest.thread.channel, threadTs: latest.thread.threadTs }, text, []);
+      const ts = await chat.post({ channel: latest.thread.channel, threadTs: latest.thread.threadTs }, text, [], from);
       store.insertMessage({ thread: latest.thread.id, ts, authorKind: "ember", author: "ember", text, profile, attachments: [], quotes: [], declared: null, client: null, card: null, options: null, agentIdentity: null });
     } catch (error) {
       log.warn("session", "notice failed", { session: this.key, error: (error as Error).message });
@@ -951,7 +984,7 @@ export class SessionActor {
 
 /// How a session's runtime session is opened (or taken up) on `profile`: its directory, model as the profile spells it,
 /// effort, instructions and MCP token.
-export function openOptions(row: any, profile: Profile & { spelling?(model: string): string | null }, deps: Pick<SessionDeps, "mcpUrl" | "reposDir" | "memoryPath">): OpenOptions {
+export function openOptions(row: any, profile: Profile & { spelling?(model: string): string | null }, deps: Pick<SessionDeps, "mcpUrl" | "reposDir" | "memoryPath" | "workspaceInstructions">): OpenOptions {
   // The model as this profile spells it (openai/gpt-6-astra on a router for gpt-6-astra).
   const model = row.model ? (profile.spelling?.(row.model) ?? row.model) : undefined;
   return {
@@ -961,12 +994,14 @@ export function openOptions(row: any, profile: Profile & { spelling?(model: stri
     model,
     effort: row.effort ?? undefined,
     // A session continued from a terminal keeps the system prompt it began with (its cache holds).
-    instructions: row.cwd ? "" : sessionInstructions(row.workspace, null, deps.reposDir(), deps.memoryPath()),
+    instructions: row.cwd ? "" : withWorkspace(sessionInstructions(row.workspace, null, deps.reposDir(), deps.memoryPath()), deps.workspaceInstructions(row.workspace)),
     mcpToken: row.token,
     mcpUrl: deps.mcpUrl(),
     route: row.key,
   };
 }
+
+const withWorkspace = (instructions: string, more: string | null) => (more === null ? instructions : `${instructions}\n\n${more}`);
 
 function failureNotice(outcome: TurnOutcome): string {
   if (outcome.kind !== "failed") return "";

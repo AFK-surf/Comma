@@ -64,12 +64,16 @@ const sharedClientInputs = new Set([
   "clients/vitest.config.ts",
 ]);
 
+const macAppsHostRoot = "clients/apps/electron/native/macos/MacAppsHost/";
+
 export function computerUseCiChanged(paths) {
   // The helper checks build the Swift helper and run its own tests; client code
   // reaches them only through the one Electron module the probe spec imports.
+  // The same macOS job runs the Mac apps MCP server's Swift tests.
   return paths.some(
     (path) =>
       isComputerUseCiPath(path) ||
+      path.startsWith(macAppsHostRoot) ||
       sharedClientInputs.has(path) ||
       path === "clients/apps/electron/src/main/open-wait.ts" ||
       path.startsWith(".github/actions/setup-macos-cache/")

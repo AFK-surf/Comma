@@ -1,3 +1,4 @@
+import { realMainClock, type MainClock } from "../../../clock";
 import { createCableQrSession, decryptCableAdvert, type CableAdvert } from "./cable";
 import { CableTransportError, runCableTransaction } from "./tunnel";
 import {
@@ -44,21 +45,25 @@ export type HybridPasskeyState =
  * as in Chromium.
  */
 export class HybridPasskeys {
+  readonly #clock: MainClock;
   readonly #scanner: CableScanner;
   readonly #tunnelOrigin: string | undefined;
   /** Steps and failures of each request, without keys or QR contents. */
   readonly logger: Pick<Console, "info" | "warn"> | undefined;
 
   constructor({
+    clock = realMainClock,
     logger,
     scanner,
     tunnelOrigin,
   }: {
+    clock?: MainClock | undefined;
     logger?: Pick<Console, "info" | "warn"> | undefined;
     scanner: CableScanner;
     /** Replaces the tunnel server origin for tests. */
     tunnelOrigin?: string | undefined;
   }) {
+    this.#clock = clock;
     this.logger = logger;
     this.#scanner = scanner;
     this.#tunnelOrigin = tunnelOrigin;
@@ -84,7 +89,9 @@ export class HybridPasskeys {
       request.options.challenge,
       new URL(origin).origin
     );
-    const session = createCableQrSession(request.kind === "create" ? "mc" : "ga");
+    const session = createCableQrSession(request.kind === "create" ? "mc" : "ga", {
+      clock: this.#clock,
+    });
     let bluetooth: BluetoothState = "pending";
     this.logger?.info(
       `[browser-passkeys] ${request.kind} for ${rpId}: showing the QR code`
@@ -105,6 +112,7 @@ export class HybridPasskeys {
     let reply;
     try {
       reply = await runCableTransaction({
+        clock: this.#clock,
         session,
         advert,
         signal,

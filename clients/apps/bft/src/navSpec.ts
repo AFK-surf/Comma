@@ -16,6 +16,7 @@ export type NavIconName =
   | "overview"
   | "swarms"
   | "meetings"
+  | "dailyBrief"
   | "triage"
   | "dataPolicy"
   | "health"
@@ -148,6 +149,8 @@ export function buildOrgNav({
         sub("meetings:past", t.meetingsPast, meetingsPaths.past),
         sub("meetings:settings", t.meetingsSettings, meetingsPaths.settings),
       ]),
+    capabilities.daily_brief &&
+      page("daily-brief", "dailyBrief", t.dailyBrief, "/daily-brief"),
     capabilities.triage &&
       page("triage", "triage", t.slackTriage, triagePaths.overview, [
         sub("triage:overview", t.triageOverview, triagePaths.overview),

@@ -139,6 +139,7 @@ object IconSources {
         outlined("ic_arrow_up_right", "Links that leave the app", "IconArrowUpRight"),
         outlined("ic_chevron_down_small", "Task sheet: details; status menus", "IconChevronDownSmall"),
         outlined("ic_circle_x", "Share: stop sharing", "IconCircleX"),
+        outlined("ic_circle_minus", "Routines: stop suggesting a pre-task's source item", "IconCircleMinus"),
         outlined("ic_composer_at", "Composer: mention a task", "IconAt", note = "source sets no line join"),
         outlined("ic_empty_planning", "Home: no tasks yet", "IconPlanning"),
         outlined("ic_filter_device", "Filters and task details: client platform", "IconMacbook", note = "square or miter caps and joins drawn round"),

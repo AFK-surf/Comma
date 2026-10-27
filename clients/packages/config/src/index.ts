@@ -4,6 +4,9 @@ export interface CommaConfig {
   channel: CommaChannel;
   productName: string;
   apiBaseUrl: string;
+  webBaseUrl: string;
+  /** The URL scheme the desktop app of this channel registers. */
+  urlScheme: string;
 }
 
 export const commaLogoUrl = "brand/comma/icon.png";
@@ -19,16 +22,22 @@ const commaConfigs: Record<CommaChannel, CommaConfig> = {
     channel: "dev",
     productName: "Comma Dev",
     apiBaseUrl: "http://127.0.0.1:4200",
+    webBaseUrl: "http://127.0.0.1:5173",
+    urlScheme: "comma-dev",
   },
   staging: {
     channel: "staging",
     productName: "Comma Staging",
     apiBaseUrl: "https://salix-staging.comma.surf",
+    webBaseUrl: "https://app-staging.comma.surf",
+    urlScheme: "comma-staging",
   },
   prod: {
     channel: "prod",
     productName: "Comma",
     apiBaseUrl: "https://salix.comma.surf",
+    webBaseUrl: "https://app.comma.surf",
+    urlScheme: "comma",
   },
 };
 
@@ -65,4 +74,69 @@ export function getActiveCommaConfig(): CommaConfig {
       ? undefined
       : COMMA_DEFINED_BUILD_FLAVOR
   );
+}
+
+export type MiniAppRunLink =
+  | { kind: "run"; workspace_id: string; app_id: string; route: string }
+  | { kind: "invalid" };
+
+/** Hosted channels, loopback development, and explicitly configured renderer origins own App links. */
+export function parseMiniAppRunLink(
+  value: string,
+  rendererOrigins: readonly string[] = []
+): MiniAppRunLink | undefined {
+  try {
+    const url = new URL(value);
+    if (!["http:", "https:"].includes(url.protocol) || url.username || url.password)
+      return undefined;
+    const origins = [
+      ...Object.values(commaConfigs).map((config) => config.webBaseUrl),
+      ...rendererOrigins,
+    ];
+    const local = ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+    if (
+      !local &&
+      !origins.some((origin) => {
+        try {
+          return new URL(origin).origin === url.origin;
+        } catch {
+          return false;
+        }
+      })
+    )
+      return undefined;
+    if (url.pathname !== "/") return undefined;
+    if (!url.hash.startsWith("#/apps/")) return undefined;
+    const route = new URL(url.hash.slice(1), "https://route.invalid");
+    if (!route.pathname.startsWith("/apps/") || !/\/run\/?$/.test(route.pathname))
+      return undefined;
+    const match = /^\/apps\/([^/]+)\/([^/]+)\/run\/?$/.exec(route.pathname);
+    if (!match) return { kind: "invalid" };
+    let workspace_id: string;
+    let app_id: string;
+    try {
+      workspace_id = decodeURIComponent(match[1]!);
+      app_id = decodeURIComponent(match[2]!);
+    } catch {
+      return { kind: "invalid" };
+    }
+    if (
+      [workspace_id, app_id].some(
+        (id) =>
+          !id.trim() ||
+          id.includes("/") ||
+          id.includes("\\") ||
+          [...id].some((character) => character.charCodeAt(0) < 32)
+      )
+    )
+      return { kind: "invalid" };
+    return {
+      kind: "run",
+      workspace_id,
+      app_id,
+      route: `/apps/${encodeURIComponent(workspace_id)}/${encodeURIComponent(app_id)}/run${route.search}`,
+    };
+  } catch {
+    return undefined;
+  }
 }

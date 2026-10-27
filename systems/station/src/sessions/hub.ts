@@ -29,17 +29,19 @@ import { runnerId } from "../agents/process.ts";
 import { allLeft, findRunner } from "../agents/runner.ts";
 import { log } from "../ops/log.ts";
 import { tr, stationLang } from "../ops/i18n.ts";
-import { iso, transcriptPaths } from "../read/transcript.ts";
+import { iso, type TimelineEntry, type Transcript, transcriptPaths } from "../read/transcript.ts";
 import { type Attachment, type SessionRow, type Store, STILLFAIL_SURFACE, slackSurface, type ThreadRow } from "../store/store.ts";
-import { Accounts } from "./accounts.ts";
+import { Accounts, type AccountsDeps } from "./accounts.ts";
 import { SessionActor, type SessionDeps, type SessionStatus, type Snapshot, openOptions } from "./actor.ts";
 import { isStopCommand } from "./args.ts";
 import type { ChatEvent, ChatSurface, InboundFile, InboundMessage, ThreadRef } from "./chat.ts";
 import { toolStatus } from "./chat.ts";
-import { type Connect, type HubConfig, profilesFor, runtimeNamed } from "./config.ts";
+import { type Connect, type HubConfig, runtimeNamed } from "./config.ts";
 import { INTERNAL_CONNECT, type InternalChat, nextTsAt } from "./internal.ts";
 import { TASK_CONNECT, TASK_SURFACE } from "../tasks/names.ts";
-import { LiveHub } from "./live.ts";
+import type { Coding } from "../tasks/coding.ts";
+import { codingInstructions } from "../agents/instructions.ts";
+import { ChainTail, LiveHub, type TranscriptUsage } from "./live.ts";
 import type { Jobs } from "./neighbours.ts";
 import { agentHomePaths } from "./agent-home.ts";
 import { startsAfresh } from "./afresh.ts";
@@ -64,7 +66,8 @@ export const newToken = () => randomBytes(24).toString("base64url");
 /// turns once the drain ends either.
 /// - drain: a restart or handover is coming.
 /// - unbound: the station is in no workspace (never joined one, or removed from it): it does no work until it is.
-export type Hold = "drain" | "unbound";
+/// - starting: the agents' door (their MCP endpoint) is not open yet: a runtime started now has no station tools.
+export type Hold = "drain" | "unbound" | "starting";
 
 /// Cold storage of archived sessions' files (archive.rs, footprint.rs): an archived, idle session's workspace and
 /// transcripts packed, and restored before its runtime starts again or when it is shown again. The station's is
@@ -102,6 +105,8 @@ export type HubOptions = {
   cold?: ColdStorage;
   /// Its time, and its sessions' (a TestClock in tests).
   clock?: Clock.Clock;
+  /// Which of a runtime's profiles a session from a host may run on (accounts/sources.ts): all when not given.
+  eligible?: AccountsDeps["eligible"];
 };
 
 /// The handover file, in the data directory.
@@ -118,6 +123,8 @@ export class Hub {
   readonly clock: Clock.Clock;
   /// What running turns are doing, for the pages' live view.
   readonly live: LiveHub;
+  /// Each session's transcript as `history` read it last (the next read takes only what was written since).
+  private readonly histories = new Map<string, ChainTail>();
   readonly actors = new Map<string, SessionActor>();
   /// When each idle process is next looked at for eviction.
   private deadlines = new Map<string, Fiber.Fiber<void>>();
@@ -125,6 +132,10 @@ export class Hub {
   readonly fibers = new Set<Fiber.Fiber<void>>();
   /// Why turns are held (SessionDeps.held): held while any reason stands.
   private holdsNow = new Set<Hold>();
+  /// Sessions whose workspace is being prepared (a coding Session's checkout): they start no turn until it is.
+  private preparing = new Set<string>();
+  /// Coding Sessions' repositories (tasks/coding.ts), on a station that runs them.
+  coding: Coding | null = null;
   /// Sessions taken up from the previous station: their turns run on, not cut off.
   private adopted = new Set<string>();
   /// Chats made lately by session key: the key their client gave them, and when (NewChat.clientKey).
@@ -154,24 +165,40 @@ export class Hub {
       store: this.store,
       running: () => [...this.actors.values()].filter((a) => a.processState() !== "cold").flatMap((a) => this.store.getSession(a.key)?.profile ?? []),
       clock: this.clock,
+      eligible: options.eligible,
+      hostOf: (key) => this.store.taskHostOf(key),
     });
-    this.live = new LiveHub(
-      (key) => {
-        const row = this.store.getSession(key);
-        const profile = row && this.config().profiles.find((p) => p.id === row.profile);
-        const runtime = row && runtimeNamed(row.runtime);
-        if (!row || !profile || !runtime || !row.runtimeSessionId) return null;
-        const homes = [profile.home, ...this.config().profiles.map((p) => p.home).filter((h) => h !== profile.home)];
-        const { paths, current } = transcriptPaths(runtime, homes, this.store.runtimeSessions(key));
-        return paths.length === 0 ? null : { runtime, paths, current };
-      },
-      this.clock,
-    );
+    this.live = new LiveHub((key) => this.transcripts(key), this.clock);
     this.deps = this.sessionDeps();
   }
 
   config(): HubConfig {
     return this.options.config();
+  }
+
+  /// Where session `key`'s transcripts are: those of the runtime sessions it ran in, the current one last, each with the
+  /// runtime that wrote it.
+  private transcripts(key: string): { paths: Transcript[]; current: boolean } | null {
+    const row = this.store.getSession(key);
+    const profile = row && this.config().profiles.find((p) => p.id === row.profile);
+    if (!row || !profile || !row.runtimeSessionId) return null;
+    const homes = [profile.home, ...this.config().profiles.map((p) => p.home).filter((h) => h !== profile.home)];
+    const { paths, current } = transcriptPaths(homes, this.store.runtimeSessions(key));
+    return paths.length === 0 ? null : { paths, current };
+  }
+
+  /// Session `key`'s execution history: its transcript as timeline entries, oldest first, and the tokens its model
+  /// calls used. Each read takes only what was written since the last; none before its first turn.
+  history(key: string): { entries: TimelineEntry[]; usage: TranscriptUsage } {
+    const found = this.transcripts(key);
+    if (found === null) return { entries: [], usage: { modelCalls: 0, inputTokens: 0, cachedTokens: 0, outputTokens: 0, model: null } };
+    let chain = this.histories.get(key);
+    if (!chain) {
+      chain = new ChainTail(found.paths);
+      this.histories.set(key, chain);
+    } else chain.extend(found.paths);
+    chain.read();
+    return { entries: chain.entries, usage: chain.usage };
   }
 
   /// Now, by its clock.
@@ -203,6 +230,24 @@ export class Hub {
       const row = this.store.getSession(key);
       if (row) void this.actor(row).kick();
     }
+  }
+
+  /// Holds session `key`'s turns until `work` is done (its workspace is being prepared), then lets what waited go on.
+  /// Answers `work`.
+  prepare<A>(key: string, work: Promise<A>): Promise<A> {
+    this.preparing.add(key);
+    return work.finally(() => {
+      this.preparing.delete(key);
+      if (this.holdsNow.size > 0) return;
+      const row = this.store.getSession(key);
+      if (row) void this.actor(row).release();
+    });
+  }
+
+  /// The station's own words about session `key`, in the thread people spoke in last.
+  async notice(key: string, text: string): Promise<void> {
+    const row = this.store.getSession(key);
+    if (row) await this.actor(row).tell(text);
   }
 
   /// Whether turns are held for `reason`.
@@ -538,8 +583,10 @@ export class Hub {
     }
   }
 
-  /// A process went idle: look again when it has idled past warmMs.
+  /// A process went idle: look again when it has idled past warmMs. A coding Session's branch is pushed: its turn
+  /// ended (tasks/coding.ts).
   idleNow(key: string) {
+    this.pushAfterTurn(key);
     // A manual archive may have arrived during the last turn. Finish that archive when the turn ends; never sweep old
     // directories on a clock or at startup.
     const row = this.store.getSession(key);
@@ -563,6 +610,13 @@ export class Hub {
     this.evictIdle();
   }
 
+  private pushAfterTurn(key: string) {
+    const coding = this.coding;
+    const row = this.store.getSession(key);
+    if (coding === null || !row || this.preparing.has(key) || coding.get(row.workspace) === null) return;
+    coding.push(row.workspace).catch((error) => log.warn("coding", "the session branch was not pushed", { session: key, error: (error as Error).message }));
+  }
+
   /// Ends the session's runtime process if it is idle; the conversation resumes on the next message.
   async evict(key: string) {
     await this.actors.get(key)?.evict();
@@ -574,11 +628,11 @@ export class Hub {
     if (row) await this.actor(row).warm();
   }
 
-  /// Interrupts the session's running turn, or what it waits on, as `-stop` in a thread would.
-  async stop(key: string) {
+  /// Interrupts the session's running turn, or what it waits on, as `-stop` in a thread would; `quiet`: said nowhere.
+  async stop(key: string, quiet = false) {
     const row = this.store.getSession(key);
     if (!row) throw new Error(`unknown session ${key}`);
-    await this.actor(row).stop();
+    await this.actor(row).stop(quiet);
   }
 
   /// A word from the station for a session's agent, outside any conversation (SessionActor.notify).
@@ -725,7 +779,7 @@ export class Hub {
   /// A session for a connect: the connect's own profile when it keeps to one (and it still can run it); else any of its
   /// runtime, the model's first (pool.ts).
   createSession(config: HubConfig, key: string, connect: Connect, scope: "thread" | "all", message: InboundMessage | null, title: string | null, createdBy: string | null) {
-    const fits = profilesFor(config, connect);
+    const fits = this.accounts.candidates(connect.bind.runtime, null);
     const model = connect.bind.model ?? null;
     const kept = connect.bind.profile !== undefined ? fits.find((p) => p.id === connect.bind.profile && serves(p, model)) : undefined;
     const profile = kept ?? this.accounts.pick(fits, model, false);
@@ -794,6 +848,10 @@ export class Hub {
       mcpUrl: () => (typeof this.options.mcpUrl === "string" ? this.options.mcpUrl : this.options.mcpUrl()),
       reposDir: () => this.reposDir(),
       memoryPath: () => agentHomePaths(this.config().agentHome)[0],
+      workspaceInstructions: (workspace) => {
+        const checkout = this.coding?.get(workspace) ?? null;
+        return checkout ? codingInstructions(checkout.owner, checkout.name, checkout.branch, checkout.pull_request) : null;
+      },
       maxNudges: () => this.config().maxNudges,
       backgroundOnMessage: (key) => {
         const row = this.store.getSession(key);
@@ -807,7 +865,7 @@ export class Hub {
       archiveIsCold: (key) => this.cold.isCold(key),
       restoreArchive: (key) => this.cold.restore(key),
       cleanArchive: (key) => this.cold.pack(key),
-      held: () => this.holdsNow.size > 0,
+      held: (key) => this.holdsNow.size > 0 || (key !== undefined && this.preparing.has(key)),
       stopJobs: async (key) => {
         const jobs = this.jobs;
         const running = this.store.listJobs(key).filter((j) => j.state === "running" && (j.watch || j.port === null));

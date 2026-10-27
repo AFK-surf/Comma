@@ -65,9 +65,9 @@ import XCTest
             app.at(0.5, 0.3).press(forDuration: 0.1, thenDragTo: app.at(0.5, 0.75), withVelocity: .slow, thenHoldForDuration: 0.3)
             Thread.sleep(forTimeInterval: 2)
         }
-        // The page lands with its oldest row at the top, as the pull leaves it. The transcript builds only the
-        // rows near the viewport, so the page's newest row (Note 125) need not exist.
-        let earlier = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", "Note 26.")).firstMatch
+        // The page lands above the rows shown, which take in its newest rows (`TranscriptWindow`) and the rest as the
+        // reader scrolls up to them.
+        let earlier = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", "Note 125.")).firstMatch
         XCTAssertTrue(earlier.waitForExistence(timeout: 5), "The pull must load the earlier page")
     }
 

@@ -3,6 +3,7 @@ package surf.comma.android.core
 import okhttp3.Call
 import okhttp3.Callback
 import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -35,6 +36,8 @@ fun interface GoogleIdTokens {
  *   [custody].
  * - The session ports (`session.*`) are [custody]'s and [google]'s.
  * - The databases (`sql.*`) are SQLite files in [dataDir], used at once on the core's thread.
+ * - A product request may send a file of [localFiles] as its body (`localFileRef`), and the core reads a part of one
+ *   to send it to a station (`localFiles.read`); without them the core asks neither.
  */
 class CoreHost(
     client: OkHttpClient,
@@ -46,6 +49,9 @@ class CoreHost(
     private val streams: ExecutorService = Executors.newCachedThreadPool { Thread(it, "comma-core-stream") },
     /** Told of each request that got no answer ([Throwable]) or a server error (its status), for diagnostics. */
     private val networkFailure: (Throwable?, Int?) -> Unit = { _, _ -> },
+    private val localFiles: HostLocalFiles? = null,
+    /** The app's version, as the core's requests report it. */
+    private val appVersion: String? = null,
 ) : CoreHostOps {
     private val http = client.newBuilder().followRedirects(false).followSslRedirects(false)
         .callTimeout(0, TimeUnit.SECONDS).build()
@@ -63,7 +69,9 @@ class CoreHost(
     private val grants = ConcurrentHashMap<String, Boolean>()
 
     override fun startConfig(): JSONObject = JSONObject().put("platform", "android").put("apiOrigin", custody.audience)
-        .put("resumed", custody.resume())
+        .put("resumed", custody.resume()).put("uploadsLocalFiles", localFiles != null)
+        .put("readsLocalFiles", localFiles != null)
+        .apply { if (appVersion != null) put("version", appVersion) }
 
     override fun attached(engine: Engine?) {
         this.engine = engine
@@ -110,6 +118,7 @@ class CoreHost(
                 streams.execute { runCatching { custody.dropped(aborted) } }
             }
             "fetch" -> product(id, input, bytes, reply, stream = false)
+            "localFiles.read" -> streams.execute { readLocal(input, reply) }
             "stream.open" -> product(id, input, bytes, reply, stream = true)
             "stream.read" -> streams.execute { read(input.optLong("id"), reply) }
             "stream.close" -> {
@@ -129,6 +138,15 @@ class CoreHost(
                     downloadLeases.remove(download)
                     reply.fail(e.message ?: e.javaClass.simpleName)
                 }
+            }
+            "download.create" -> streams.execute {
+                answering(reply) { reply.ok(JSONObject().put("id", downloads.create(input.getString("target")))) }
+            }
+            "download.append" -> streams.execute {
+                answering(reply) { reply.ok(JSONObject(downloads.append(input.optLong("id"), bytes ?: ByteArray(0)))) }
+            }
+            "download.finish" -> streams.execute {
+                answering(reply) { reply.ok(JSONObject(downloads.finish(input.optLong("id")))) }
             }
             "download.close" -> {
                 downloadLeases.remove(input.optLong("id"))
@@ -166,7 +184,7 @@ class CoreHost(
         try { block() } catch (e: Exception) { reply.fail(e.message ?: e.javaClass.simpleName) }
     }
 
-    private fun request(input: JSONObject, bytes: ByteArray?): Request.Builder {
+    private fun request(input: JSONObject, bytes: ByteArray?, local: HostLocalFile? = null): Request.Builder {
         val path = input.getString("path")
         require(path.startsWith("/")) { "The request names no path." }
         val url = (custody.audience + path).toHttpUrl()
@@ -185,6 +203,7 @@ class CoreHost(
             builder.header(name, pair.getString(1))
         }
         val body = when {
+            local != null -> LocalFileBody(local, contentType?.toMediaTypeOrNull())
             bytes != null -> bytes.toRequestBody(null)
             method == "GET" || method == "HEAD" -> null
             else -> ByteArray(0).toRequestBody(null)
@@ -237,15 +256,29 @@ class CoreHost(
         })
     }
 
+    /** [length] bytes from [offset] of a file of [localFiles] (`localFiles.read`): fewer only where the file ends. */
+    private fun readLocal(input: JSONObject, reply: CoreHostOps.Reply) {
+        try {
+            val ref = input.getString("ref")
+            val file = localFiles?.open(ref) ?: throw IOException("The app holds no file $ref.")
+            reply.ok(JSONObject(), file.read(input.getLong("offset"), input.getInt("length").coerceIn(0, MAX_LOCAL_PART)))
+        } catch (e: Exception) {
+            reply.fail(e.message ?: e.javaClass.simpleName)
+        }
+    }
+
     /** A product request: the lease's bearer added, the answer whole (`fetch`) or opened as a stream. */
     private fun product(id: Long, input: JSONObject, bytes: ByteArray?, reply: CoreHostOps.Reply, stream: Boolean) {
+        val local = input.optString("localFileRef").takeIf { it.isNotEmpty() }?.let { ref ->
+            localFiles?.open(ref) ?: throw IOException("The app holds no file $ref.")
+        }
         val lease = SessionLease.from(input.optJSONObject("lease"))
         val leased = lease?.let(custody::acquire)
         if (leased == null) {
             answer(reply, 409, LEASE_UNAVAILABLE, stream)
             return
         }
-        val builder = request(input, bytes).header("authorization", "Bearer ${leased.bearer()}")
+        val builder = request(input, bytes, local).header("authorization", "Bearer ${leased.bearer()}")
         // The account's own session endpoints (its list of signed-in devices) take a bearer only when told it is one.
         if (input.getString("path").startsWith("/v1/comma/auth/")) builder.header("x-comma-session-transport", "bearer")
         val call = (if (stream) streaming else http).newCall(builder.build())
@@ -403,6 +436,8 @@ class CoreHost(
 
     private companion object {
         const val CHUNK_BYTES = 65_536L
+        /** The most of a file one `localFiles.read` gives: the core reads a station's part (4 MB) at a time. */
+        const val MAX_LOCAL_PART = 16 * 1024 * 1024
         /** What the core may not set on a product request: the app adds the credential itself. */
         val WITHHELD = setOf("authorization", "cookie", "host", "content-length", "connection")
         val AUTH_REQUEST_HEADERS = setOf("accept", "content-type")

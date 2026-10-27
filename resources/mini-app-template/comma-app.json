@@ -1,0 +1,6 @@
+{
+  "name": "My Comma app",
+  "description": "A small app that runs inside Comma.",
+  "capabilities": ["identity.basic"],
+  "storage": ["user", "device"]
+}

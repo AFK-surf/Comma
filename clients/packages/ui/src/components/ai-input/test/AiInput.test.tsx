@@ -1340,11 +1340,13 @@ describe("AiInput", () => {
     expect(screen.getByText("PDF")).toBeInTheDocument();
     expect(fileName.closest("div.shadow-xs")).toHaveClass("pt-md");
 
-    const fileSurface = fileName.parentElement?.parentElement;
+    const fileSurface = fileName.closest('[data-slot="file-attachment"]');
     expect(fileSurface).toHaveClass("bg-popup-primary");
     expect(fileSurface).not.toHaveClass("bg-panel-bg-file");
 
-    const fileIconSurface = fileName.parentElement?.previousElementSibling;
+    const fileIconSurface = fileSurface?.querySelector(
+      '[data-slot="file-icon-surface"]'
+    );
     expect(fileIconSurface).toHaveClass(
       "bg-panel-bg-file",
       "text-ai-input-header-text-secondary"

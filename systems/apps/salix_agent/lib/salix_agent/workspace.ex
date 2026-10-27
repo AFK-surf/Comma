@@ -68,6 +68,37 @@ defmodule SalixAgent.Workspace do
   end
 
   @doc """
+  Write `stream` (binary chunks) to `path` without holding the whole body: the
+  chunks go to blob storage as they come, and the manifest commits once the
+  last one has. A failed write leaves the prepared blob to the prepared-blob
+  sweeper, which keeps or deletes it by whether a manifest committed it.
+  """
+  def write_stream(agent_id, raw_path, stream, opts \\ []) when is_list(opts) do
+    path = normalize_path(raw_path)
+
+    with {:ok, _agent} <- Control.get(agent_id),
+         :ok <- validate_mutable_path(path),
+         {:ok, opts} <-
+           authorize_storage_write(
+             agent_id,
+             [%{"type" => "vfs_write", "path" => path}],
+             opts,
+             "storage_write"
+           ),
+         {:ok, event} <- AgentWorkspace.prepare_managed_write_stream(agent_id, path, stream),
+         event = put_ifc_label(event, Keyword.get(opts, :ifc_label)),
+         file = file_json(path, event) do
+      SalixAgent.AgentActor.commit_workspace_operation(
+        agent_id,
+        operation_id("vfs:put", agent_id, path, opts, [event["hash"], event["size"]]),
+        file,
+        [event],
+        storage_auth_opts(opts, "storage_write")
+      )
+    end
+  end
+
+  @doc """
   Map `path` to an already-stored blob `ref` in the manifest. The bytes are
   uploaded out-of-band (e.g. a backpressured streaming download straight into S3
   multipart), so nothing is buffered here.

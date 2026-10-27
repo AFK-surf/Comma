@@ -10,7 +10,7 @@ import { closeSync, existsSync, type FSWatcher, openSync, readFileSync, readSync
 import { zstdDecompressSync } from "node:zlib";
 import type { LiveEvent } from "../agents/runtime.ts";
 import { Fibers } from "../ops/fibers.ts";
-import { type ReadState, type TimelineEntry, timelineOf } from "../read/transcript.ts";
+import { type ReadState, type TimelineEntry, type Transcript, timelineOf } from "../read/transcript.ts";
 
 type Json = any;
 type Phase = Extract<LiveEvent, { kind: "phase" }>["phase"];
@@ -159,14 +159,13 @@ export class TranscriptTail {
 }
 
 /// A session's transcripts read as one: those of the runtime sessions it ran in before (done, read whole) and then the
-/// one it runs in now, their entries one after another, so its history goes on across a new runtime session.
+/// one it runs in now, their entries one after another, so its history goes on across a new runtime session, of
+/// another runtime too. Each is read as its runtime writes it.
 export class ChainTail {
-  readonly runtime: "claude" | "codex";
   private tails: TranscriptTail[];
 
-  constructor(runtime: "claude" | "codex", paths: string[]) {
-    this.runtime = runtime;
-    this.tails = paths.map((path) => new TranscriptTail(runtime, path));
+  constructor(paths: Transcript[]) {
+    this.tails = paths.map(({ runtime, path }) => new TranscriptTail(runtime, path));
   }
 
   /// The transcript written to now.
@@ -191,12 +190,13 @@ export class ChainTail {
   }
 
   /// Goes on with the transcripts given (those it has, then new ones): the new ones are read after what it has.
-  extend(paths: string[]) {
-    if (paths.length < this.tails.length || this.tails.some((t, i) => t.path !== paths[i])) {
-      this.tails = paths.map((path) => new TranscriptTail(this.runtime, path));
+  extend(paths: Transcript[]) {
+    const same = (t: TranscriptTail, p: Transcript | undefined) => p !== undefined && t.path === p.path && t.runtime === p.runtime;
+    if (paths.length < this.tails.length || this.tails.some((t, i) => !same(t, paths[i]))) {
+      this.tails = paths.map(({ runtime, path }) => new TranscriptTail(runtime, path));
       return;
     }
-    for (const path of paths.slice(this.tails.length)) this.tails.push(new TranscriptTail(this.runtime, path));
+    for (const { runtime, path } of paths.slice(this.tails.length)) this.tails.push(new TranscriptTail(runtime, path));
   }
 
   /// New entries since the last read, with the index of the first (all from the first that changed when an earlier
@@ -222,7 +222,7 @@ type Watched = { tail: ChainTail; watcher: FSWatcher | null; reading: boolean; b
 
 /// Where a session's transcripts are: of the runtime sessions it ran in, the first first, ending with its current one
 /// (`current`: whether that one's is among them; when not given, it is).
-export type Locate = (key: string) => { runtime: "claude" | "codex"; paths: string[]; current?: boolean } | null;
+export type Locate = (key: string) => { paths: Transcript[]; current?: boolean } | null;
 
 export class LiveHub {
   private steps = new Map<string, LiveStep[]>();
@@ -338,7 +338,7 @@ export class LiveHub {
     if (watched) return slice(watched.tail.entries);
     const at = this.locate(key);
     if (!at) return null;
-    const tail = new ChainTail(at.runtime, at.paths);
+    const tail = new ChainTail(at.paths);
     tail.read();
     return slice(tail.entries);
   }
@@ -421,7 +421,7 @@ export class LiveHub {
     if (!this.listeners.has(key)) return false;
     const at = this.locate(key);
     if (!at) return false;
-    const tail = new ChainTail(at.runtime, at.paths);
+    const tail = new ChainTail(at.paths);
     tail.read(); // what is already there counts as known; subscribers ask for what they lack
     // The transcript written to now is watched: its file, or its `.zst` while packed (sessions/cold.ts): packed or
     // restored, it is another file, watched from then on (live.rs looks at whichever is there).

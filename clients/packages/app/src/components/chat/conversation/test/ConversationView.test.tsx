@@ -880,11 +880,12 @@ describe("ConversationView", () => {
         "“Team Claude key” has no balance left at Anthropic, and Comma credits don’t cover it."
       );
       expect(screen.queryByTestId("out-of-credits")).toBeNull();
-      expect(
-        screen.getByText(
-          "“Team Claude key” (Anthropic) is out of funds. Add funds, then send again."
-        )
-      ).toBeInTheDocument();
+      // The status line's card names the stop as the toast does.
+      const card = screen.getByTestId("participant-status-slot");
+      expect(card).toHaveTextContent("Anthropic API key is out of funds");
+      expect(card).toHaveTextContent(
+        "“Team Claude key” has no balance left at Anthropic, and Comma credits don’t cover it."
+      );
       fireEvent.click(
         within(provider).getByRole("button", { name: "Open Anthropic billing" })
       );
@@ -935,6 +936,20 @@ describe("ConversationView", () => {
       expect(limit).toHaveTextContent("Claude subscription hit its usage limit");
       expect(limit).toHaveTextContent("It resets at");
       expect(within(limit).getByRole("button", { name: "Switch model" })).toBeVisible();
+      // The card's title swaps in as the status line's text does.
+      expect(
+        await within(screen.getByTestId("participant-status-slot")).findByText(
+          "Claude subscription hit its usage limit"
+        )
+      ).toBeVisible();
+      expect(screen.getByTestId("participant-status-slot")).toHaveTextContent(
+        "It resets at"
+      );
+      expect(
+        within(screen.getByTestId("chat-funding-actions")).getByRole("button", {
+          name: "Switch model",
+        })
+      ).toBeVisible();
 
       // Without detail the copy still says who bills it and where to look.
       act(() => control.setStop?.({ issue: "provider_quota_exhausted" }));
@@ -1344,9 +1359,9 @@ describe("ConversationView", () => {
           ".comma-chat-user-bubble"
         )
       ).not.toHaveAttribute("data-outgoing-presentation");
-      // The turn, slot, bubble, its material plane, and text share one
-      // playback clock.
-      expect(animate).toHaveBeenCalledTimes(5);
+      // The bubble, its material plane, and text share one playback clock.
+      // The slot and turn keep their landed layout, so nothing animates them.
+      expect(animate).toHaveBeenCalledTimes(3);
       const originalAnimations = animate.mock.results.map((result) => result.value);
       for (const animation of originalAnimations) {
         expect(animation.pause).toHaveBeenCalledOnce();
@@ -1395,7 +1410,7 @@ describe("ConversationView", () => {
       expect(view.container.querySelectorAll(".comma-chat-user-bubble")).toHaveLength(
         2
       );
-      expect(animate).toHaveBeenCalledTimes(5);
+      expect(animate).toHaveBeenCalledTimes(3);
       for (const animation of originalAnimations) {
         expect(animation.cancel).not.toHaveBeenCalled();
         expect(animation.play).toHaveBeenCalledOnce();
@@ -1640,6 +1655,43 @@ describe("ConversationView", () => {
     expect(screen.queryByRole("button", { name: "Stop waiting" })).toBeNull();
   });
 
+  it("a model nothing can serve names the fix in the status card, without a toast", async () => {
+    const previousHash = window.location.hash;
+    try {
+      renderConversation(
+        <CommaI18nProvider locale="zh-CN">
+          <ConversationViewWithDraft
+            actions={createActions()}
+            state={state({
+              messages: [message("msg_model", "user", "继续")],
+              participantStatus: {
+                conversationId: "cnv_1",
+                issue: "model_unavailable",
+                participantId: "ptp_1",
+                state: "error",
+                status: "error: model unavailable",
+                updatedAt: 1_780_000_000_200,
+              },
+            })}
+          />
+        </CommaI18nProvider>
+      );
+
+      const title = await screen.findByText("这个模型现在用不了");
+      const card = screen.getByTestId("participant-status-slot");
+      expect(title.closest('[data-slot="ai-activity"]')).toHaveAttribute(
+        "data-status",
+        "failed"
+      );
+      expect(card).toHaveTextContent("换一个模型，或在模型与 API 里启用能用它的账户。");
+      expect(screen.queryByTestId("provider-quota")).toBeNull();
+      fireEvent.click(within(card).getByRole("button", { name: "模型与 API" }));
+      expect(window.location.hash).toBe("#/settings?category=models");
+    } finally {
+      window.location.hash = previousHash;
+    }
+  });
+
   it("words a participant error from its issue code, never the runtime's text", async () => {
     renderConversation(
       <CommaI18nProvider locale="zh-CN">
@@ -1649,7 +1701,7 @@ describe("ConversationView", () => {
             messages: [message("msg_error", "user", "继续")],
             participantStatus: {
               conversationId: "cnv_1",
-              issue: "model_unavailable",
+              issue: "rate_limited",
               participantId: "ptp_1",
               state: "error",
               status: "error: model request failed.",
@@ -1660,7 +1712,7 @@ describe("ConversationView", () => {
       </CommaI18nProvider>
     );
 
-    const status = await screen.findByText("模型暂时不可用，请稍后再试或换一个模型。");
+    const status = await screen.findByText("请求太频繁，请稍后再试。");
     expect(screen.queryByText("error: model request failed.")).toBeNull();
     expect(status.closest('[data-slot="ai-activity"]')).toHaveAttribute(
       "data-status",
@@ -2759,6 +2811,134 @@ describe("ConversationView", () => {
     }
   });
 
+  it("keeps a selection reply the runtime refused and sends it on retry", async () => {
+    const user = userEvent.setup();
+    const actions = createActions();
+    let rejectAccepted!: (error: Error) => void;
+    const refused = new Promise<void>((_resolve, reject) => {
+      rejectAccepted = reject;
+    });
+    actions.send = vi
+      .fn()
+      .mockReturnValueOnce(sendWithAdmission(refused))
+      .mockReturnValueOnce(sendWithAdmission(Promise.resolve()));
+    const rect = vi
+      .spyOn(Range.prototype, "getBoundingClientRect")
+      .mockReturnValue(domRect(120, 200, 180, 20));
+
+    try {
+      renderConversation(
+        <ConversationViewWithDraft
+          actions={actions}
+          state={state({
+            draft: "Main draft stays.",
+            messages: [message("msg_reply_quote", "assistant", "Quoted passage here.")],
+          })}
+        />
+      );
+
+      selectChatText(await screen.findByText("Quoted passage here."), 0, 6);
+      const field = await screen.findByRole("textbox", { name: "Ask about this…" });
+      await user.click(field);
+      await user.type(field, "What does it mean?{Enter}");
+      expect(actions.send).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(actions.send).mock.calls[0]![0]).toBe(
+        "Quoted from this conversation:\n> Quoted\n\nWhat does it mean?"
+      );
+      expect(vi.mocked(actions.send).mock.calls[0]![1]).toMatchObject({
+        consumeDraft: false,
+      });
+
+      await act(async () => {
+        rejectAccepted(new Error("reservation_busy"));
+        await Promise.resolve();
+      });
+
+      // Refused before any turn exists: the card keeps the passage and reply.
+      expect(await screen.findByRole("alert")).toHaveTextContent(
+        "Couldn't send. Try again."
+      );
+      expect(field).toHaveValue("What does it mean?");
+      expect(
+        document.querySelector('[data-slot="selection-action-bar-excerpt"]')
+      ).toHaveTextContent("Quoted");
+
+      await user.type(field, "{Enter}");
+      expect(actions.send).toHaveBeenCalledTimes(2);
+      await waitFor(() =>
+        expect(document.querySelector('[data-slot="selection-action-bar"]')).toBeNull()
+      );
+      expect(screen.getByRole("textbox", { name: "AI prompt" })).toHaveTextContent(
+        "Main draft stays."
+      );
+    } finally {
+      rect.mockRestore();
+    }
+  });
+
+  it("leaves a new selection alone when an earlier selection reply is taken", async () => {
+    const user = userEvent.setup();
+    const actions = createActions();
+    let acceptReply!: () => void;
+    actions.send = vi.fn(() =>
+      sendWithAdmission(
+        new Promise<void>((resolve) => {
+          acceptReply = resolve;
+        })
+      )
+    );
+    const rect = vi
+      .spyOn(Range.prototype, "getBoundingClientRect")
+      .mockReturnValue(domRect(120, 200, 180, 20));
+
+    try {
+      renderConversation(
+        <ConversationViewWithDraft
+          actions={actions}
+          state={state({
+            messages: [
+              message("msg_first_passage", "assistant", "First passage."),
+              message("msg_second_passage", "assistant", "Second passage."),
+            ],
+          })}
+        />
+      );
+
+      selectChatText(await screen.findByText("First passage."), 0, 5);
+      const field = await screen.findByRole("textbox", { name: "Ask about this…" });
+      await user.click(field);
+      await user.type(field, "Why?{Enter}");
+      expect(actions.send).toHaveBeenCalledTimes(1);
+
+      // While the send waits, the reader puts the card away and selects
+      // something else.
+      await user.keyboard("{Escape}");
+      selectChatText(await screen.findByText("Second passage."), 0, 6);
+      await waitFor(() =>
+        expect(
+          document.querySelector('[data-slot="selection-action-bar-excerpt"]')
+        ).toHaveTextContent("Second")
+      );
+
+      const secondField = screen.getByRole("textbox", { name: "Ask about this…" });
+      expect(secondField).toHaveValue("");
+      await user.click(secondField);
+      await user.type(secondField, "Second question");
+
+      await act(async () => {
+        acceptReply();
+        await Promise.resolve();
+      });
+
+      expect(
+        document.querySelector('[data-slot="selection-action-bar-excerpt"]')
+      ).toHaveTextContent("Second");
+      expect(secondField).toHaveValue("Second question");
+    } finally {
+      rect.mockRestore();
+    }
+  });
+
   it("quotes the selection with the Cmd+L shortcut and drops it on request", async () => {
     const user = userEvent.setup();
     const rect = vi
@@ -2794,6 +2974,46 @@ describe("ConversationView", () => {
 
       expect(screen.queryByLabelText("Quoted text: 圆橡皮")).toBeNull();
       expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
+    } finally {
+      rect.mockRestore();
+    }
+  });
+
+  it("carries a question typed in the selection field into the composer with its quote", async () => {
+    const user = userEvent.setup();
+    const actions = createActions();
+    const rect = vi
+      .spyOn(Range.prototype, "getBoundingClientRect")
+      .mockReturnValue(domRect(120, 200, 180, 20));
+
+    try {
+      renderConversation(
+        <ConversationViewWithDraft
+          actions={actions}
+          state={state({
+            draft: "Before",
+            messages: [message("msg_typed_quote", "assistant", "Quoted passage here.")],
+          })}
+        />
+      );
+
+      selectChatText(await screen.findByText("Quoted passage here."), 0, 6);
+      const field = await screen.findByRole("textbox", { name: "Ask about this…" });
+      await user.click(field);
+      await user.type(field, "What does it mean?");
+      await user.click(screen.getByRole("button", { name: "Add to chat" }));
+
+      expect(await screen.findByLabelText("Quoted text: Quoted")).toBeInTheDocument();
+      expect(actions.setDraft).toHaveBeenCalledTimes(1);
+      expect(actions.setDraft).toHaveBeenCalledWith("Before\n\nWhat does it mean?");
+      expect(document.querySelector('[data-slot="selection-action-bar"]')).toBeNull();
+
+      // The next selection's field starts empty and adds nothing to the draft.
+      selectChatText(await screen.findByText("Quoted passage here."), 7, 14);
+      await screen.findByRole("textbox", { name: "Ask about this…" });
+      fireEvent.keyDown(window, { key: "l", metaKey: true });
+      expect(await screen.findByLabelText("Quoted text: passage")).toBeInTheDocument();
+      expect(actions.setDraft).toHaveBeenCalledTimes(1);
     } finally {
       rect.mockRestore();
     }
@@ -2932,9 +3152,9 @@ describe("ConversationView", () => {
     );
 
     const quote = await screen.findByTestId("chat-message-quote");
-    // Icon-only tile, matching the composer's staged quote chip: the text
-    // lives in the hover card and on the trigger's label, not in the flow.
-    expect(quote).not.toHaveTextContent("圆橡皮");
+    // The same tile as the composer's staged quote chip: the passage's opening
+    // lines on the tile, the whole of it in the hover card and on the label.
+    expect(quote).toHaveTextContent("圆橡皮");
     expect(within(quote).getByLabelText("Quoted text: 圆橡皮")).toBeInTheDocument();
 
     const article = quote.closest('[data-slot="chat-user-output"]');
@@ -5621,6 +5841,73 @@ describe("ConversationThread", () => {
     geometry.mockRestore();
   });
 
+  it("anchors a sent turn with no bubble to fly, a snippet alone, at once", () => {
+    const messages = [message("msg_1", "assistant", "已整理前三项。")];
+    const { container, rerender } = render(
+      <ConversationThread
+        messages={messages}
+        onDiscard={() => {}}
+        onRetry={() => {}}
+        groupId="grp_1"
+        workspaceId="wsp_1"
+      />
+    );
+    const viewport = queryViewport(container);
+    setElementMetric(viewport, "clientHeight", 100);
+    setElementMetric(viewport, "scrollHeight", 620);
+    viewport.scrollTop = 0;
+    fireEvent.wheel(viewport, { deltaY: -120 });
+    fireEvent.scroll(viewport);
+    const geometry = vi
+      .spyOn(HTMLElement.prototype, "getBoundingClientRect")
+      .mockImplementation(function (this: HTMLElement) {
+        if (this === viewport) return elementRect(100);
+        if (this.dataset.turnKey === "req_1") return elementRect(640);
+        return elementRect(0);
+      });
+    const launch: ChatOutgoingLaunch = {
+      existingTurnKeys: new Set(),
+      expiresAt: Date.now() + 4_000,
+      id: 42,
+      sourceFrame: {
+        bottom: 736,
+        height: 64,
+        left: 144,
+        right: 536,
+        top: 672,
+        width: 392,
+      },
+      text: "Help me reply to Dana",
+    };
+
+    rerender(
+      <ConversationThread
+        messages={[
+          ...messages,
+          message("pending:req_1", "user", "Help me reply to Dana", {
+            clientRequestId: "req_1",
+            delivery: "sending",
+            display: {
+              body: "",
+              files: [],
+              quotes: [],
+              texts: [{ text: "Help me reply to Dana" }],
+            },
+            source: "pending",
+          }),
+        ]}
+        onDiscard={() => {}}
+        onRetry={() => {}}
+        outgoingLaunches={[launch]}
+        groupId="grp_1"
+        workspaceId="wsp_1"
+      />
+    );
+
+    expect(viewport.scrollTop).toBe(520);
+    geometry.mockRestore();
+  });
+
   it("keeps cold pending user messages static without a local launch transaction", () => {
     const pending = message("pending:req_motion", "user", "带动画进入", {
       clientRequestId: "req_motion",
@@ -6478,6 +6765,112 @@ describe("Composer", () => {
     expect(screen.queryByTestId("chat-heic-unsupported")).toBeNull();
   });
 
+  it("attaches files dropped anywhere on the conversation, showing the composer's overlay", async () => {
+    const actions = createActions();
+    const rendered = renderStatefulConversation(state(), actions);
+    const zone = await waitFor(() => {
+      const element = rendered.container.querySelector<HTMLElement>(
+        ".comma-chat-drop-zone"
+      );
+      expect(element).not.toBeNull();
+      return element!;
+    });
+    const thread = zone.querySelector<HTMLElement>(".comma-chat-thread-zone");
+    expect(thread).not.toBeNull();
+    const file = new File(["png"], "shot.png", { type: "image/png" });
+    const dataTransfer = { types: ["Files"], files: [file], dropEffect: "none" };
+
+    const overlay = within(screen.getByTestId("ai-input-shell")).getByTestId(
+      "ai-input-drop-overlay"
+    );
+    expect(screen.getAllByTestId("ai-input-drop-overlay")).toEqual([overlay]);
+    fireEvent.dragEnter(thread!, { dataTransfer });
+    expect(overlay).toHaveAttribute("data-drop-active", "true");
+
+    fireEvent.drop(thread!, { dataTransfer });
+
+    expect(actions.attachFiles).toHaveBeenCalledTimes(1);
+    expect(actions.attachFiles).toHaveBeenCalledWith([
+      { data: file, name: "shot.png", size: 3 },
+    ]);
+    expect(overlay).not.toHaveAttribute("data-drop-active");
+  });
+
+  it("leaves files dropped on a question card to its answer, with the composer's overlay down", async () => {
+    const actions = {
+      ...createActions(),
+      answerQuestion: vi.fn(async () => undefined),
+    };
+    renderStatefulConversation(
+      state({
+        messages: [
+          message("msg_question", "assistant", "Which plan?", {
+            parts: [
+              {
+                kind: "question",
+                messageId: "msg_question",
+                prompt: "Which plan?",
+                choices: [{ id: "c1", label: "Ship it" }],
+                multiSelect: false,
+                allowOther: true,
+                state: { status: "open" },
+              },
+            ],
+          }),
+        ],
+      }),
+      actions
+    );
+    const card = await waitFor(() => {
+      const element = document.querySelector<HTMLElement>(".comma-agent-card");
+      expect(element).not.toBeNull();
+      return element!;
+    });
+    const thread = document.querySelector<HTMLElement>(".comma-chat-thread-zone")!;
+    const overlay = within(screen.getByTestId("ai-input-shell")).getByTestId(
+      "ai-input-drop-overlay"
+    );
+    const file = new File(["png"], "shot.png", { type: "image/png" });
+    const dataTransfer = { types: ["Files"], files: [file], dropEffect: "none" };
+
+    fireEvent.dragEnter(thread, { dataTransfer });
+    expect(overlay).toHaveAttribute("data-drop-active", "true");
+    // Into the card: it enters the card, then leaves the thread around it.
+    fireEvent.dragEnter(card, { dataTransfer });
+    fireEvent.dragLeave(thread, { dataTransfer });
+    expect(overlay).not.toHaveAttribute("data-drop-active");
+    fireEvent.dragOver(card, { dataTransfer });
+    fireEvent.drop(card, { dataTransfer });
+
+    expect(actions.attachFiles).toHaveBeenCalledTimes(1);
+    expect(actions.attachFiles).toHaveBeenCalledWith(
+      [{ data: file, name: "shot.png", size: 3 }],
+      "msg_question"
+    );
+    expect(overlay).not.toHaveAttribute("data-drop-active");
+  });
+
+  it("ends the composer's drop overlay when a drop inside the conversation is stopped", async () => {
+    const actions = createActions();
+    renderStatefulConversation(state(), actions);
+    const thread = await waitFor(() => {
+      const element = document.querySelector<HTMLElement>(".comma-chat-thread-zone");
+      expect(element).not.toBeNull();
+      return element!;
+    });
+    const overlay = within(screen.getByTestId("ai-input-shell")).getByTestId(
+      "ai-input-drop-overlay"
+    );
+    const dataTransfer = { types: ["Files"], files: [], dropEffect: "none" };
+    thread.addEventListener("drop", (event) => event.stopPropagation(), { once: true });
+
+    fireEvent.dragEnter(thread, { dataTransfer });
+    expect(overlay).toHaveAttribute("data-drop-active", "true");
+    fireEvent.drop(thread, { dataTransfer });
+
+    expect(overlay).not.toHaveAttribute("data-drop-active");
+  });
+
   it.each([
     {
       name: "passes dropped files to the channel attachment handler",
@@ -6793,6 +7186,29 @@ describe("Composer", () => {
     expect(textbox.querySelector("[data-ai-input-token]")).toHaveTextContent("Codex");
     fireEvent.keyDown(textbox, { key: "Enter" });
     expect(onSend).toHaveBeenCalledWith("Use @codex ", { skills: [] });
+  });
+
+  it("shows the Mac apps plugin in the @ menu with the Mac icon, not its initial", () => {
+    render(
+      <ComposerHarness
+        mentionSources={{
+          models: { items: [], status: "ready" },
+          drive: { items: [], status: "ready" },
+          plugins: { items: [{ id: "mac-apps", name: "Mac apps" }], status: "ready" },
+          routines: { items: [], status: "ready" },
+          tasks: { items: [], status: "ready" },
+        }}
+        onSend={vi.fn()}
+        skills={[]}
+      />
+    );
+    const textbox = screen.getByRole("textbox", { name: "AI prompt" });
+
+    typeIntoComposerRichEditor(textbox, "@mac");
+    const option = screen.getByRole("option", { name: /Mac apps/ });
+    const icon = option.querySelector('[data-slot="ai-input-menu-item-icon"]');
+    expect(icon?.querySelector("svg")).not.toBeNull();
+    expect(icon).toHaveTextContent("");
   });
 
   it("names a model through @ in the Router chat, with its default effort or one chosen", () => {
@@ -7875,7 +8291,8 @@ function selectChatText(
   end: number,
   options: { backward?: boolean; clickCount?: number } = {}
 ) {
-  const textNode = element.firstChild;
+  // The first text inside it: a title wraps its text in a swap layer.
+  const textNode = document.createTreeWalker(element, NodeFilter.SHOW_TEXT).nextNode();
   if (!textNode) throw new Error("expected a text node to select");
   const selection = window.getSelection();
   selection?.removeAllRanges();

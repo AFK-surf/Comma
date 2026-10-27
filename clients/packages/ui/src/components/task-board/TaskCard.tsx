@@ -1,4 +1,5 @@
-import type { HTMLAttributes, ReactNode } from "react";
+import type { HTMLAttributes, Key, ReactNode } from "react";
+import { TitleSwap } from "../title-swap";
 import { cx } from "../utils";
 import {
   taskCardBadges,
@@ -22,6 +23,11 @@ export interface TaskCardProps extends Omit<HTMLAttributes<HTMLDivElement>, "tit
   /** Status icon shown on the first title line (18px). */
   icon: ReactNode;
   title: ReactNode;
+  /**
+   * What the card names, such as its Task id: a text title renamed for the same
+   * one blurs across (`TitleSwap`); a card reused for another shows it at once.
+   */
+  titleIdentity?: Key | undefined;
   /** Secondary line aligned under the title, e.g. a worker status. */
   meta?: ReactNode;
   /** Inline badges/tags such as a schedule indicator. */
@@ -41,6 +47,7 @@ export interface TaskCardProps extends Omit<HTMLAttributes<HTMLDivElement>, "tit
 export const TaskCard = ({
   icon,
   title,
+  titleIdentity,
   meta,
   badges,
   footer,
@@ -73,9 +80,23 @@ export const TaskCard = ({
         <span aria-hidden className={taskCardIconSlot} data-slot="task-card-icon">
           <span className={taskCardIcon}>{icon}</span>
         </span>
-        <span className={cx(taskCardTitle, titleClassName)} data-slot="task-card-title">
-          {title}
-        </span>
+        {typeof title === "string" ? (
+          // The clamp belongs on the text: the host stacks the leaving title over it.
+          <TitleSwap
+            className={taskCardTitle}
+            data-slot="task-card-title"
+            identity={titleIdentity}
+            text={title}
+            textClassName={titleClassName}
+          />
+        ) : (
+          <span
+            className={cx(taskCardTitle, titleClassName)}
+            data-slot="task-card-title"
+          >
+            {title}
+          </span>
+        )}
       </div>
       {meta ? (
         <div className={taskCardRow} data-slot="task-card-meta-row">

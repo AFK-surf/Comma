@@ -375,7 +375,7 @@ defmodule Salix.Control.Groups do
   # `cloud_vm_enabled` is the Group's Cloud VM switch, the one thing that
   # decides whether the Group's Agents may start its Cloud VM and place Tasks
   # there (`SalixAgent.CloudVM.allowed?/1`). Turning it on checks that the
-  # Group's VM has somewhere to go (`SalixWeb.CloudVM.placement/2`). A guest
+  # Group's Cloudflare provider is configured. A guest
   # (router-only) Tenant has no Cloud VM.
   defp validate_cloud_vm_enabled(attrs, group) do
     case Map.fetch(attrs, "cloud_vm_enabled") do

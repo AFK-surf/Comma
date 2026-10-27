@@ -10,7 +10,7 @@ import type { ChatPanelFileOpenInAction } from "@comma/ui/components/chat-panel"
 import type { ChatRegistryAttempt } from "../components/chat/ChatProvider";
 import {
   conversationFileSourceKey,
-  resolveConversationFile,
+  saveConversationFile,
   type ConversationFileSource,
 } from "./fileSources";
 import { revealLabel } from "./fileDownloads";
@@ -43,31 +43,38 @@ export function createFileOpenInAction({
     owner: beginAttempt,
     sourceKey: conversationFileSourceKey(source),
     fileName: source.fileName,
-    resolveBytes: (signal) => resolveConversationFile(call, source, signal),
+    // Main writes it into Downloads as it arrives, so a file of any size opens.
+    save: saveConversationFile(call, source),
     bridge,
     locale,
     beginAttempt,
   });
 }
 
-/** Adapters supply their existing byte owner; this layer never interprets source identity. */
+/**
+ * Adapters supply their existing byte owner (`resolveBytes`, saved here up to
+ * the native save's bound) or a save of their own (`save`, of any size); this
+ * layer never interprets source identity.
+ */
 export function createResolvedFileOpenInAction({
   owner,
   sourceKey,
   fileName,
-  resolveBytes,
   bridge,
   locale,
   beginAttempt,
+  ...from
 }: {
   owner: object;
   sourceKey: string;
   fileName: string;
-  resolveBytes: (signal: AbortSignal) => Promise<Blob>;
   bridge: Pick<CommaNativeBridge, "files" | "os" | "platform">;
   locale: CommaLocale;
   beginAttempt: () => Attempt;
-}): ChatPanelFileOpenInAction | undefined {
+} & (
+  | { resolveBytes: (signal: AbortSignal) => Promise<Blob> }
+  | { save: () => Promise<{ downloadRef: string; fileName: string } | null> }
+)): ChatPanelFileOpenInAction | undefined {
   if (bridge.platform !== "electron" || bridge.os !== "macos") return undefined;
   let receipts = receiptStores.get(owner);
   if (!receipts) {
@@ -76,6 +83,22 @@ export function createResolvedFileOpenInAction({
   }
   const store = receipts;
   const key = sourceKey;
+
+  const saveBytes = async (
+    resolveBytes: (signal: AbortSignal) => Promise<Blob>,
+    signal: AbortSignal,
+    assertCurrent: () => void
+  ) => {
+    const blob = await resolveBytes(signal);
+    assertCurrent();
+    if (blob.size > fileDownloadMaxBytes)
+      throw new Error(
+        messages.file_download_too_large_description({ fileName: fileName }, { locale })
+      );
+    const content = new Uint8Array(await blob.arrayBuffer());
+    assertCurrent();
+    return bridge.files.saveDownload({ content, fileName: fileName });
+  };
 
   const run = async (
     effect: (saved: SavedFile) => Promise<boolean>,
@@ -92,22 +115,13 @@ export function createResolvedFileOpenInAction({
       assertCurrent();
       let receipt = store.get(key);
       if (!receipt) {
-        const blob = await resolveBytes(operationSignal);
-        assertCurrent();
-        if (blob.size > fileDownloadMaxBytes)
-          throw new Error(
-            messages.file_download_too_large_description(
-              { fileName: fileName },
-              { locale }
-            )
-          );
-        const content = new Uint8Array(await blob.arrayBuffer());
-        assertCurrent();
-        const result = await bridge.files.saveDownload({
-          content,
-          fileName: fileName,
-        });
-        if (result.status !== "saved")
+        const result =
+          "save" in from
+            ? await from
+                .save()
+                .then((saved) => saved && { ...saved, status: "saved" as const })
+            : await saveBytes(from.resolveBytes, operationSignal, assertCurrent);
+        if (result?.status !== "saved")
           throw new Error(
             messages.file_download_failed_description(
               { fileName: fileName },

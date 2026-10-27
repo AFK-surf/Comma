@@ -1,11 +1,9 @@
 defmodule SalixMeet.RuntimeDriver.SalixConnect do
   @moduledoc """
-  Connector implementation of `SalixMeet.RuntimeDriver`.
+  Meeting placement driver through the composition host's dispatch port.
 
-  Instead of posting to a fixed runtime URL, the join is dispatched to a
-  connected environment that advertises the meeting runtime capability. The
-  connector drives a co-located meetnative process and streams runtime events
-  back over the connector socket.
+  New product Meetings use automatic placement. Explicit sources and persisted
+  targets retain their chosen carrier across retries.
   """
 
   @behaviour SalixMeet.RuntimeDriver
@@ -36,6 +34,9 @@ defmodule SalixMeet.RuntimeDriver.SalixConnect do
       "runtime_ref" => state["runtime_ref"],
       "runtime_source" => state["runtime_source"],
       "runtime_policy" => state["runtime_policy"],
+      "runtime_target" => state["runtime_target"],
+      "join_dispatch_generation" => get_in(state, ["join_dispatch", "generation"]),
+      "runtime_rejections" => get_in(state, ["join_dispatch", "runtime_rejections"]) || [],
       "compute_environment_id" => state["compute_environment_id"],
       "workload_id" => state["workload_id"],
       "attempt" => state["attempt"],

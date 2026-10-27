@@ -13,35 +13,29 @@ defmodule SalixAgent.Tools.DynamicUI do
                   {kind, ExJsonSchema.Schema.resolve(schema)}
                 end)
   @card_manual Enum.join(@card_contract["manual"], "\n")
+  # comma.card sends its data in one Worker message, and the client stops a
+  # widget whose message passes 32 KiB; this leaves room for the call's id,
+  # kind and variant.
+  @card_data_limit 31 * 1024
   # The brand keys the client card host ships logos for.
   @card_brands ~w(apple apple-music app-store google google-play nvidia bitcoin ethereum github linear notion slack figma jira atlassian vercel supabase framer webflow todoist npm stack-overflow product-hunt replit x reddit discord telegram wechat whatsapp tiktok instagram facebook linkedin threads bluesky pinterest snapchat medium substack youtube spotify twitch steam playstation xbox nintendo-switch chrome safari firefox duolingo openai anthropic claude gemini deepseek qwen kimi minimax mistral meta-ai grok perplexity midjourney microsoft-copilot)
 
+  # The first paragraph is the summary every Worker prompt shows, so it names
+  # the card kinds: a Worker that never opens help still knows they exist.
   @description """
-  Create a Comma widget from supplied data.
+  Show a structured result as a Comma card (#{Enum.join(@card_kinds, ", ")}): the card template supplies the layout and design, the call supplies plain data. Custom HTML covers results that no card kind fits.
 
   Returns a content block for delivery through the Task result path.
   Widgets can present and filter data, but cannot fetch it or perform business actions.
-  No credentials or private data in external resource URLs. Help contains the SDK and presentation contract.
+  No credentials or private data in external resource URLs. Help lists each card kind's fields and the SDK.
   """
 
   @presentation """
   ## Presentation
 
-  Widgets suit forecasts, comparisons, trends, and interactive results with useful data. Simple answers and missing-data reports remain text.
-  Partial coverage can show known facts with the missing range stated. The original user's format choice governs.
+  Widgets suit structured results: forecasts, options to pick from, comparisons, metrics, trends, schedules, and lists of places, items or updates. Simple answers and missing-data reports remain text. The original user's format choice governs.
   Sources and observation times belong in the visible widget and the fallback summary.
   Widget data gives observation times as ISO times; the widget shows them in the viewer's time zone.
-
-  Comma card templates provide layout, typography, icons, color, and theme for common results. Custom HTML is for questions no template fits.
-  Archetype, information density, liveness, and interaction are independent choices. Size controls detail rather than fixed height:
-  sm has one main object and label, md adds a supporting band, and lg supports 4-6 list rows.
-  The primary decision should stand out. Long requested detail can remain accessible through local filtering or paging.
-
-  The shared shell uses the Comma primary surface, 0.5px border, 16px radius and padding, and 8px internal gaps.
-  Text roles are 12px title, 24px main value, and 13px body. Semantic accents follow the content and current theme.
-  Nested cards, decorative controls, copied palettes, entrance animations, and expand/collapse controls are excluded.
-  Height follows content. Whole-item HTTPS links open detail in the App sidebar.
-
   The widget owns its detailed data. Accompanying text supplies a short conclusion and necessary caveats rather than duplicate rows.
   Creation is part of the existing Task. Rejected input permits one repair attempt before a text result.
   Creation does not deliver the result. The returned content block belongs in the Task Message.
@@ -76,7 +70,7 @@ defmodule SalixAgent.Tools.DynamicUI do
         "html" => %{
           "type" => "string",
           "description" =>
-            "Comma HTML fragment. Elements: section, div, p, span, h2, h3, strong, small, label, button, input, select, option, ul, li, table, thead, tbody, tr, th, td, br, progress, comma-chart, comma-icon, img, link, script, a. Attributes: id, title, aria-label, for, type (button/text/number/range/checkbox), value, min, max, step, checked, disabled, selected, hidden, src (img/script, HTTPS), alt (img), href (link/a, HTTPS), rel (link, stylesheet). name (clock/check/info/sun/moon/cloud/partly-cloudy/rain/snow/train for comma-icon). class tokens: stack, row, grid, muted, metric, card, widget-grid, span-2, widget-head, widget-title, widget-meta, widget-body, widget-footer, hero, unit, sub, divider, list-item, grow, badge, primary, success, danger, icon-lg, icon-hero, tone-warm, tone-cool, feature, compact-grid, motion-enter, motion-stagger, spread, align-end, strip. External stylesheet class names are also allowed. HTTPS resource URLs only; no inline style or event handlers."
+            "Comma HTML fragment. A card needs one empty element, such as <section id=\"card\"></section>. Elements: section, div, p, span, h2, h3, strong, small, label, button, input, select, option, ul, li, table, thead, tbody, tr, th, td, br, progress, comma-chart, comma-icon, img, link, script, a. Attributes: id, title, aria-label, for, type (button/text/number/range/checkbox), value, min, max, step, checked, disabled, selected, hidden, src (img/script, HTTPS), alt (img), href (link/a, HTTPS), rel (link, stylesheet). name (clock/check/info/sun/moon/cloud/partly-cloudy/rain/snow/train for comma-icon). class tokens: stack, row, grid, muted, metric, card, widget-grid, span-2, widget-head, widget-title, widget-meta, widget-body, widget-footer, hero, unit, sub, divider, list-item, grow, badge, primary, success, danger, icon-lg, icon-hero, tone-warm, tone-cool, feature, compact-grid, motion-enter, motion-stagger, spread, align-end, strip. External stylesheet class names are also allowed. HTTPS resource URLs only; no inline style or event handlers."
         },
         # A static widget passes an empty script, as the manual and the
         # correction below advise. The shared required-param check treats ""
@@ -85,7 +79,7 @@ defmodule SalixAgent.Tools.DynamicUI do
           "type" => "string",
           "minLength" => 0,
           "description" =>
-            "Worker JS SDK: comma.data and comma.state are initial JSON; comma.on(id, event, fn) handles click/input/change with {value,checked}; comma.text(id,plainText) (never HTML or table containers), comma.value(id,value), comma.visible(id,bool), comma.save(json), comma.request(text), comma.every(milliseconds,fn), comma.chart(id,{labels,values,type}), comma.card(id,kind,data,variant?) renders a Comma card template from plain data into an empty element (kinds and fields in help), comma.onState(fn). Charts have at most 64 finite values and type bar or line. Date.now() is available. No DOM or connection APIs. Declare HTTPS dependencies with script src in html. All handlers must finish within one second."
+            "Worker JS SDK: comma.card(id,kind,data,variant?) renders a Comma card template from plain data into an empty element (kinds and fields in help); comma.data and comma.state are initial JSON; comma.on(id, event, fn) handles click/input/change with {value,checked}; comma.text(id,plainText) (never HTML or table containers), comma.value(id,value), comma.visible(id,bool), comma.save(json), comma.request(text), comma.every(milliseconds,fn), comma.chart(id,{labels,values,type}), comma.onState(fn). Charts have at most 64 finite values and type bar or line. Date.now() is available. No DOM or connection APIs. Declare HTTPS dependencies with script src in html. All handlers must finish within one second."
         },
         "data" => %{
           "type" => "object",
@@ -241,9 +235,16 @@ defmodule SalixAgent.Tools.DynamicUI do
 
   defp card_data_problem(kind, source, data) do
     case fetch_card_data(data, source |> String.split(".") |> Enum.drop(2)) do
-      {:ok, value} when is_map(value) -> card_contract_problem(kind, omit_unknown(value))
-      {:ok, _value} -> "#{source} must be an object"
-      :error -> "#{source} is missing"
+      {:ok, value} when is_map(value) ->
+        if byte_size(Jason.encode!(value)) > @card_data_limit,
+          do: "#{source} is over 31 KiB of JSON; shorten or drop text, or show fewer items",
+          else: card_contract_problem(kind, omit_unknown(value))
+
+      {:ok, _value} ->
+        "#{source} must be an object"
+
+      :error ->
+        "#{source} is missing"
     end
   end
 
@@ -504,165 +505,132 @@ defmodule SalixAgent.Tools.DynamicUI do
       @presentation <>
       """
 
-      SDK v1 budgets: HTML, script and data together <= 256 KiB. State <= 32 KiB.
-      Use <= 500 nodes, depth <= 20, <= 8 charts and <= 60 updates per second.
-      The comma calls made in one run of the script, one handler or one tick are one update.
-      comma.every intervals must be >= 1000 ms. comma.save replaces the local JSON state.
-      comma.onState(fn) receives state changes from another open copy on this device.
-      Render received state without calling comma.save again. Save only user changes.
-      Keep IDs unique. Use the allowed elements and attributes in the input schema. External stylesheet classes are supported.
-      The runtime uses Comma theme tokens, native keyboard controls and managed scrolling.
-      Sources and observation times belong in visible text and in the summary.
-      comma.text is plain text, not HTML. Never concatenate HTML into comma.text.
-      Author repeated items directly in html with stable IDs. Populate their leaf text
-      with comma.text and filter them with comma.visible. Keep user choices in comma.save.
-      Update existing controls with comma.value. No dynamic HTML insertion is available.
-      If all requested data is missing, deliver a text limitation instead of an empty card.
-      For partial coverage, display only known facts and state the missing range.
+      ## Cards
 
-      Card templates (comma.card):
-      Comma ships native templates for common results. Use one when it fits the question.
-      A template that holds every requested item wins over extra controls. Put secondary
-      facts in its excerpt or tags instead of leaving it. When a card needs filters (see
-      size below), feed and options filter their own rows with filters and filterKeys;
-      never hand-author a filter around a card. An item shows under the filters its
-      filterKeys name, or under every filter when it has none. The first filter starts
-      selected, so every keyed item lists its key.
-      Author html by hand only when no template fits. Example:
+      A card presents any result that fits a kind below. Comma renders it natively: layout,
+      type, color, icons, theme and narrow widths come from the template, the same in every
+      widget. A requested list or table describes the information; the card that fits shows it.
+      The help example is a complete call. Its core:
         html: <section id="card"></section>
-        script: comma.card('card', 'forecast', comma.data.forecast);
-      Supply facts only. The template sets layout, type, color, icons, motion and theme.
-      Comma picks a layout that the data can fill and keeps it stable for this widget.
-      Omit variant. Pass one only when the user asks for that presentation.
-      Comma ignores a variant that the data cannot fill.
-      Use one empty element per card. Do not change its contents with other SDK calls.
-      To replace a card, call comma.card again with the same id.
-      Pass card data as comma.data or comma.data.<key>, as in the example: ui.create checks
-      it against the fields below and names each mismatch. Repair it once. Data built
-      in the script is checked only when the card renders.
-      Text is plain text. Links must be HTTPS. Omit unknown values: null and blank text
-      count as omitted. Lists keep only their first entries, up to the limits below.
-      For a running countdown, set endsAt to an absolute ISO deadline. It counts down
-      by itself: do not add comma.every. remainingSeconds is a static duration for a
-      paused timer: also set paused to true. daysLeft is a static event-day display.
-      Checklist progress stays on this device: do not call comma.save for it.
-      A card uses 20 to 210 of the 500 nodes.
+        script: comma.card('card', 'place', comma.data.place);
+      Each card fills one empty element, and a widget can hold several cards. Comma picks a
+      layout that the data can fill and keeps it stable for this widget. A variant is passed
+      only when the user asks for that presentation; Comma ignores one the data cannot fill.
+      Other SDK calls leave a card's element alone. To replace a card, call comma.card again
+      with the same id. ui.create checks data passed as comma.data or comma.data.<key> against
+      the fields below and names each mismatch. Repair it once. Data built in the script is
+      checked only when the card renders.
+
+      Fields hold display facts:
+      - Each text field is one short fact in the reader's language, as its field describes:
+        a status is a state such as "营业中", reviews is a count, meta is a few words of
+        header context, title names the result.
+      - A value that is unknown or unverified is left out, and the card shows the facts it
+        has. Placeholder text such as "unknown", "N/A", "暂无" or "未核验" in a field reads as
+        a fact. Gaps, caveats and verification notes belong in the accompanying text.
+      - Numbers are JSON numbers without units. Moments are ISO times in the time fields.
+        Text is plain text. Links are real HTTPS source or detail URLs.
+      - A list holds the entries that answer the question, up to its limit; entries past the
+        limit are dropped. A count in the title matches the entries the card shows.
+      - feed and options filter their own rows with filters and filterKeys. An item shows
+        under the filters its filterKeys name, or under every filter when it has none. The
+        first filter starts selected, so every keyed item lists its key. A list of 6 rows or
+        fewer shows them all, without filters unless the user asks.
+      - A running countdown sets endsAt to an absolute ISO deadline and counts down by itself,
+        without comma.every. remainingSeconds is a static duration for a paused timer, with
+        paused set to true. daysLeft is a static event-day display.
+      - Checklist progress stays on this device, without comma.save.
+      A card uses 20 to 270 of the 500 nodes, and a feed of more than 12 items up to 390,
+      so such a feed takes a widget of its own.
 
       #{@card_manual}
       brand and sourceBrand take one of these keys. Other names show an initial:
       #{Enum.join(@card_brands, ", ")}.
 
-      Layout contract (adapted from the supplied index.html, "12 archetypes",
-      "Three orthogonal axes" and "Shared shell"):
-      A widget is an archetype + its properties + size, liveness and interaction.
-      These are composition rules, not fixed business templates or new tool parameters.
-      Record these choices internally, then author html and script with the existing SDK.
-      No named design skill is required.
+      ## Custom HTML
 
-      Before layout, plan internally: what decision will the user make; which value must be
-      noticed first; which facts support it; which details belong behind local filtering/paging.
-      Apply the main-value type role to that value, not automatically to the card title.
-      For departure choices, departure/arrival times usually outrank route and service labels.
-      This is a hierarchy example, not a transport template. Pick emphasis from the actual question.
-      The widget owns the detailed result. Never deliver the same rows again as a Markdown table
-      or bullet list. Accompany it with a short conclusion and only additional necessary caveats.
-      summary is the accessible/text-only/error fallback, not a second full visual presentation.
+      Custom HTML covers a result that no card kind fits. It is composed from the elements,
+      attributes and class tokens in the input schema on the Comma theme; inline styles are
+      unavailable.
+      - One shell: <section class="card"> with widget-head (widget-title and an optional
+        widget-meta), widget-body for the content, and widget-footer only for actions. A card
+        element stands on its own, outside any shell.
+      - hero or metric marks the one main value; unit and sub add short context. list-item
+        rows hold lists, badge holds short labels, success and danger mark status text that
+        carries its own label. Icons: clock, check, info, sun, moon, cloud, partly-cloudy,
+        rain, snow, train, each with an aria-label. Images have meaningful alt text, or empty
+        alt when decorative.
+      - Repeated items are authored in html with stable IDs. comma.text fills their leaf text
+        as plain text and comma.visible filters them. comma.value updates existing controls.
+        No dynamic HTML insertion is available.
+      - Whole-item navigation wraps the item in a href with a real HTTPS source or detail URL,
+        which opens in the App sidebar, and holds no other controls. A labeled button does
+        local UI work or proposes a follow-up through comma.request; no button reports a
+        business operation as done. Controls have keyboard focus and a 44px hit area.
+      - Widgets have no entrance animations, expand/collapse controls or media playback.
+      - A chart uses already fetched labels and values:
+          html: <comma-chart id="trend" aria-label="Temperature trend"></comma-chart>
+          script: comma.chart('trend',{labels:comma.data.labels,values:comma.data.values,type:'line'});
 
-      1. Choose the archetype by the question and the subject, not by the industry.
-      One number: metric, gauge or composition. One moment: timer.
-      A sequence: schedule, checklist, trend or pipeline.
-      Entities: player, controls, place or feed.
+      ## Facts and liveness
 
-      Archetype | Question | Required facts | Optional facts
-      metric | What is the value? | label, value, unit | delta, deltaDirection, caption, icon
-      gauge | How far from the target? | label, current, target | unit, shape (ring/bar/segments), threshold
-      timer | How much time remains or elapsed? | mode, elapsed, running | duration, transport
-      schedule | What happens next? | date, events with time and title | location, source, state, emptyText
-      checklist | What remains to do? | items with id, title and done | metadata, progress, overflowCount
-      trend | How is it changing? | time/value series, latest | ranges, activeRange, unit, baseline
-      pipeline | Which stage is current? | subject, labeled stage states, currentIndex | eta, failureReason
-      player | What is playing or recording? | title, position, duration | subtitle, artwork, waveform, transport
-      controls | What can I change here? | controls with id, icon, label and on | disabledReason
-      composition | What are the parts? | total, segments with label and value | unit, segment tone
-      place | Where is it or how far away? | title, address | distance, eta, coordinates, map tone
-      feed | What did I miss? | items with id, title and time | avatar, excerpt, source, moreCount
-
-      Required facts must be known or explicitly unavailable. Do not invent numbers, current
-      readings, prices, availability, progress or operating controls to complete an archetype.
-      Select another archetype if it better fits the known facts. Explain gaps in accompanying text.
-      player describes the reference's media archetype; playback/recording is not supported here.
-      Do not simulate working media controls. Present available media metadata as a readonly feed.
-      gauge and composition can use progress, text or supported charts; ring/SVG drawing is not
-      an SDK capability. Do not claim unsupported rendering or business capabilities.
-
-      2. Choose three independent axes.
-      size changes optional information, never the archetype:
-      - sm: one main object plus one label. Drop optional facts. Do not squeeze trend or pipeline into sm.
-      - md: the same main object plus one supporting band.
-      - lg: the same main object plus 4-6 list rows. Show a truthful remaining count when useful.
-      The reference's 1x1, 2x1 and 2x2 describe density, not fixed chat dimensions.
-      Width can fill the chat. Height is natural. Never clip facts to enforce a square.
-      Keep all user-requested details available. A list of 6 rows or fewer shows them all:
-      add no filters or paging unless the user asks. Longer lists use functional local filters or paging.
-      Narrow width reflows the same content; it must not silently change the requested coverage.
-
-      liveness determines how displayed facts change:
-      - static: show the already supplied snapshot. Opening the widget performs no data request.
-      - ticking: use local elapsed time or an absolute deadline; timer is the natural case.
-      - polled and streamed: described by the reference, but unavailable in this runtime.
-      External assets are presentation resources, not permission to poll APIs or fake live facts.
-      A service reminder must already exist. A local countdown does not own notification delivery.
-
-      interaction determines the actual affordance:
-      - readonly: no controls or whole-card hover/click affordance.
-      - navigate: wrap the whole item in a href="https://..." using a real source/detail URL.
-        A user click opens the App sidebar browser. Never fabricate a deep link. No script is needed.
-      - act: a labeled button performs local UI work or proposes a follow-up through comma.request.
-      - toggle: a checkbox/select changes local view state. Persist with comma.save when useful.
-      - scrub: a range input changes a local value and immediately updates its visible label.
-      Interactive targets need keyboard focus and a 44px hit area. Do not combine whole-card
-      navigation with internal actions. No button may imply a business operation already succeeded.
-
-      3. Compose inside one shared shell.
-      card: Comma primary background (not the window canvas), 0.5px primary border, 16px radius,
-      subtle xs shadow, 16px padding, 8px internal gaps, border-box sizing.
-      Choose visual treatment for the scene using semantic theme roles. A quiet shell is a base,
-      not a mandatory monochrome style: tone-cool emphasizes a key value/action; tone-warm adds
-      a warm semantic accent; feature provides a subtle accent surface. Use icons and imagery
-      when informative. Weather can be more colorful; a dense comparison benefits from restraint.
-      Keep one dominant emphasis and readable contrast in both themes. Do not copy a weather
-      background into unrelated results or force a fixed palette by topic.
-      Header: optional 16px semantic icon, short title, optional quiet trailing context.
-      Title: 12px / weight 500 / tertiary text. Main value: 24px / weight 600 / primary text,
-      with tabular numbers. Body: 13px / weight 450 / secondary text. Avoid extra type tiers.
-      hero or metric provides the main value. unit and sub provide short subordinate context.
-      widget-body holds the chosen archetype. widget-footer holds only necessary actions.
-      Keep alignments consistent, labels short, related facts grouped, and empty space intentional.
-      A supporting band is not mandatory. Neither are large numbers, tables, buttons or charts.
-      widget-grid and span-2 can compose related groups responsively, but the reference page's
-      four-column gallery is not the layout of an individual chat widget. Avoid nested card shells.
-      Status uses success/danger text with an explicit label. Do not pair same-tone tinted
-      backgrounds and text, which can lose contrast in dark themes.
-      Use only known semantic icons; aria-label supplies their meaning. Do not invent a matching
-      icon for unknown facts. Available: clock, check, info, sun, moon, cloud, partly-cloudy,
-      rain, snow, train. External images require meaningful alt text or empty alt for decoration.
-      No entrance animations or widget expand/collapse controls. Native buttons provide brief
-      press feedback and respect reduced motion.
-
-      4. Review before delivery.
-      Does the main object answer the question? Are its required facts honest? Did size remove
-      optional clutter rather than shrink the text? Do controls work? Check narrow layout,
-      Comma theme contrast, keyboard focus and natural height. Keep the review out of the answer.
-
-      Chart, using already fetched labels and values:
-        html: <comma-chart id="trend" aria-label="Temperature trend"></comma-chart>
-        script: comma.chart('trend',{labels:comma.data.labels,values:comma.data.values,type:'line'});
-      Countdown, only after the scheduling tool confirms success:
-        html: <p id="remaining" class="metric"></p><small>Notification delivery is separate from this countdown.</small>
-        script: const render=()=>comma.text('remaining',Math.max(0,Math.ceil((comma.data.dueAt-Date.now())/1000))+' s'); render(); comma.every(1000,render);
-      Use an absolute dueAt timestamp. Zero seconds does not prove notification delivery.
+      Every number, price, availability, progress value and control comes from fetched data.
+      A fact the data does not hold stays out of the widget, and the accompanying text names
+      the gap. If all requested data is missing, the result is text instead of an empty card.
+      A widget shows the supplied snapshot or ticks locally, as a timer does. Opening it
+      performs no data request; polling and streaming are unavailable. A countdown does not
+      deliver notifications: it accompanies a reminder that the scheduling tool confirmed.
       Reopening a widget restores UI state. It cannot rerun a business operation.
+
+      ## SDK budgets
+
+      HTML, script and data together <= 256 KiB. One comma.card call's data <= 31 KiB.
+      State <= 32 KiB.
+      Use <= 500 nodes, depth <= 20, <= 8 charts and <= 60 updates per second.
+      The comma calls made in one run of the script, one handler or one tick are one update.
+      comma.every intervals must be >= 1000 ms. comma.save replaces the local JSON state.
+      comma.onState(fn) receives state changes from another open copy on this device.
+      Render received state without calling comma.save again. Save only user changes.
+      Keep IDs unique. External stylesheet classes are supported.
       """
+  end
+
+  @doc "The complete call that help shows for ui.create: one card from plain data."
+  def example_params do
+    %{
+      "html" => ~s(<section id="card"></section>),
+      "script" => "comma.card('card', 'place', comma.data.place);",
+      "data" => %{
+        "place" => %{
+          "title" => "Cafés near Jing'an Temple",
+          "source" => "Amap",
+          "observedAt" => "2026-10-21T09:00:00Z",
+          "places" => [
+            %{
+              "name" => "Seesaw Yuyuan Road",
+              "category" => "Café",
+              "note" => "Roastery in an old villa, quiet on weekends",
+              "rating" => 4.5,
+              "reviews" => "1,120 reviews",
+              "status" => %{"label" => "Open", "tone" => "success"},
+              "distance" => "1.6 km",
+              "eta" => "8 min by bike"
+            },
+            %{
+              "name" => "% Arabica Jing'an",
+              "category" => "Café",
+              "note" => "Kyoto-style lattes, mostly takeaway",
+              "rating" => 4.5,
+              "reviews" => "1,842 reviews",
+              "distance" => "900 m",
+              "eta" => "12 min walk"
+            }
+          ]
+        }
+      },
+      "summary" =>
+        "Two cafés near Jing'an Temple: Seesaw Yuyuan Road (4.5, open, 1.6 km) and % Arabica Jing'an (4.5, 900 m). Source: Amap."
+    }
   end
 
   @tags ~w(section div p span h2 h3 strong small label button input select option ul li table thead tbody tr th td br progress comma-chart comma-icon img link script a)

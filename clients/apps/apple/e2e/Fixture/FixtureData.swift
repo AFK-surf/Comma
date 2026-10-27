@@ -138,12 +138,16 @@ enum FixtureData {
         return #"{"message_id":"message\#(index)","kind":"message","actor_type":"agent","content":[{"type":"text","text":"History message \#(index). This is a reply in the Home conversation."}\#(reference)]}"#
     }
 
-    /// A Task's messages as JSON, oldest first: review0 holds a Worker's history long enough to scroll; the others none.
+    /// A Task's messages as JSON, oldest first: review0 holds a Worker's history long enough to scroll, then with
+    /// `--task-question` the Worker's question in the words of a card a member reported, two of whose choices'
+    /// descriptions run to a second line on a phone; the others none.
     static func taskMessages(id: String) -> [String] {
         guard id == "review0" else { return [] }
-        return (0..<20).map { index in
+        let history = (0..<20).map { index in
             #"{"message_id":"review0-m\#(index)","kind":"message","actor_type":"agent","content":[{"type":"text","text":"Worker update \#(index). Checked another part of the launch list and noted what is left."}]}"#
         }
+        guard ProcessInfo.processInfo.arguments.contains("--task-question") else { return history }
+        return history + [#"{"message_id":"review0-question","kind":"message","actor_type":"agent","agent_id":"worker","content":[{"type":"question","prompt":"订哪一个？确定之后，请用户登录同程或携程，并提供核对后的 18 位身份证号。","choices":[{"id":"a","label":"9C8953 不含托运 ¥780","description":"不带托运行李，只能带 7kg 手提，总价最低"},{"id":"b","label":"CZ3677 含 20kg 托运 ¥800","description":"浦东 07:40 起飞，含 20kg 托运，退改费也最低"},{"id":"c","label":"9C8953 含 20kg 托运 ¥860","description":"虹桥 07:45 起飞，含 20kg 托运"}]}]}"#]
     }
 
     static func routerConversation(_ messages: ArraySlice<String>) -> String {
@@ -186,9 +190,10 @@ enum FixtureData {
     """#
 
     /// A sent message as the server echoes it: the member's text under the send's request id.
-    static func sentMessage(text: String, requestID: String) -> String {
+    static func sentMessage(text: String, requestID: String, seq: Int? = nil) -> String {
         let quoted = String(decoding: try! JSONEncoder().encode(text), as: UTF8.self)
-        return #"{"message_id":"sent-\#(requestID)","kind":"message","actor_type":"user","user_id":"u","client_request_id":"\#(requestID)","content":[{"type":"text","text":\#(quoted)}]}"#
+        let sequence = seq.map { #","seq":\#($0)"# } ?? ""
+        return #"{"message_id":"sent-\#(requestID)","kind":"message","actor_type":"user","user_id":"u","client_request_id":"\#(requestID)"\#(sequence),"content":[{"type":"text","text":\#(quoted)}]}"#
     }
 
     static let recommendations = #"""
@@ -202,9 +207,13 @@ enum FixtureData {
       "summary":[{"kind":"markdown","text":"Your work briefing\n\nTwo things need you before the **3 pm launch sync**: Ada is waiting on the final launch date, and the #launch thread moved fast this morning. "},
         {"kind":"inline-task","task":{"label":"Review the launch checklist","conversationId":"review0","sourceId":"conn-slack"}},
         {"kind":"markdown","text":" is ready for your review, and a pull request waits on you in GitHub."}],
-      "prompts":{"p2":{"sourceId":"conn-slack","objective":"Reply to Ada about the launch date",
+      "prompts":{"p1":{"sourceId":"conn-slack","sourceUrl":"https://acme.slack.com/archives/C04LAUNCH/p1700000100","objective":"Decide whether to ship the launch build after its green CI rerun",
+        "context":"Grace Hopper: <@U02ADA|ada> the rerun is green: 17 checks passed, 14 skipped, none failed.\nhttps://github.com/acme/app/pull/3986","contextLabel":"Original context (quoted)"},
+        "p2":{"sourceId":"conn-slack","objective":"Reply to Ada about the launch date",
         "context":"Ada asked in #launch whether the launch date is final.","contextLabel":"Slack"}},
       "cards":[{"id":"card-slack","title":"Slack","template":"text-list@1","sourceIds":["conn-slack"],"fallbackText":"Slack","items":[
+        {"id":"item-0","parts":[{"kind":"inline-link","link":{"label":"Decide whether to ship the launch build after its green CI rerun","href":"https://acme.slack.com/archives/C04LAUNCH/p1700000100","sourceId":"conn-slack","promptId":"p1"}}],
+         "action":{"type":"send_to_comma","label":"Decide on the launch build","promptId":"p1","requiresConfirmation":true}},
         {"id":"item-1","parts":[{"kind":"markdown","text":"Summarize the "},
           {"kind":"inline-link","link":{"label":"#launch","href":"https://acme.slack.com/archives/C04LAUNCH","sourceId":"conn-slack"}},
           {"kind":"markdown","text":" thread before the 3 pm sync"}],

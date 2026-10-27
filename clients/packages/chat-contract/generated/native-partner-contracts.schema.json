@@ -238,11 +238,6 @@
       "oneOf": [
         {
           "properties": {
-            "clickId": {
-              "maxLength": 256,
-              "minLength": 1,
-              "type": "string"
-            },
             "closeId": {
               "maxLength": 256,
               "minLength": 1,

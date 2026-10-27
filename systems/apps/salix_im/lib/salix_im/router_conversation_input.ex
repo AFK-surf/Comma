@@ -207,7 +207,7 @@ defmodule SalixIM.RouterConversationInput do
          "agent_group_id" => group_id,
          "router_agent_id" => router_agent["agent_id"],
          "kind" => "user_chat",
-         "title" => "Bridge chat",
+         "title" => "Comma",
          "status" => "active",
          "activity_status" => "idle",
          "created_by_agent_id" => router_agent["agent_id"],

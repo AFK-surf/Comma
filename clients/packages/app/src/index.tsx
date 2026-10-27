@@ -1,3 +1,4 @@
+import { installMiniAppRunLinkClicks, openMiniAppRunLink } from "./miniAppRunLink";
 import {
   RouterProvider,
   createHashHistory,
@@ -20,7 +21,6 @@ import {
 import { CommaAppShortcutsProvider } from "./components/shortcuts/commaAppShortcuts";
 import { ConversationRoute } from "./components/chat/conversation/ConversationRoute";
 import { DriveRoute } from "./components/drive/DriveRoute";
-import { StationTaskRoute } from "./components/tasks/station/StationTaskPage";
 import { InboxWorkspace } from "./components/inbox/InboxRoute";
 import { PluginsRoute } from "./components/plugins/PluginsRoute";
 import {
@@ -31,8 +31,13 @@ import {
 } from "./components/shellGeometry";
 import { TasksRoute } from "./components/tasks/TasksRoute";
 import { validateTasksSearch } from "./components/tasks/tasksSearch";
+import { AppsRoute } from "./components/apps/AppsRoute";
+import { AppLinkRoute } from "./components/apps/AppLinkRoute";
+import { AppWindowRoute } from "./components/apps/AppWindowRoute";
+import { adoptMiniAppLinkLocation } from "./miniAppLink";
 
 export { CommaAnalyticsLifecycle } from "./analytics/CommaAnalyticsLifecycle";
+export { miniAppLinkTokenFromLocation } from "./miniAppLink";
 export { startCommaAnalytics, reportCommaClientError } from "./analytics/client";
 
 declare module "@tanstack/router-core" {
@@ -135,15 +140,9 @@ const indexRoute = createRoute({
   validateSearch: (
     search: Record<string, unknown>
   ): {
-    meetingTask?: string | undefined;
-    meetingGroup?: string | undefined;
     workspace?: string | undefined;
   } => ({
     workspace: typeof search.workspace === "string" ? search.workspace : undefined,
-    meetingTask:
-      typeof search.meetingTask === "string" ? search.meetingTask : undefined,
-    meetingGroup:
-      typeof search.meetingGroup === "string" ? search.meetingGroup : undefined,
   }),
   staticData: {
     commaPrimaryContentMinWidth: commaHomeContentMinWidth,
@@ -209,22 +208,76 @@ const taskDetailRoute = createRoute({
   component: ConversationRoute,
 });
 
-// A Task a station hosts: read and written on the station, over this device's link to it.
-const stationTaskRoute = createRoute({
-  getParentRoute: () => shellRoute,
-  path: "tasks/$workspaceId/station/$station/$thread",
-  component: function StationTaskRouteView() {
-    const { station, thread, workspaceId } = stationTaskRoute.useParams();
-    return (
-      <StationTaskRoute station={station} thread={thread} workspace={workspaceId} />
-    );
-  },
-});
-
 const pluginsRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: "plugins",
   component: PluginsRoute,
+});
+
+// Mini Apps: the Apps gallery, an app's settings over it, an app beside it, and an app link.
+const appsRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "apps",
+  component: AppsRoute,
+});
+
+const appLinkRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "apps/link/$token",
+  component: function AppLinkRouteView() {
+    const { token } = appLinkRoute.useParams();
+    return <AppLinkRoute key={token} token={token} />;
+  },
+});
+
+// An app's settings are a dialog over the Apps gallery; this address opens them there.
+const appSettingsRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "apps/$workspaceId/$appId",
+  component: function AppSettingsRouteView() {
+    const { workspaceId, appId } = appSettingsRoute.useParams();
+    return <AppsRoute settingsFor={{ workspaceId, appId }} />;
+  },
+});
+
+// A Task card's preview Version of an app; the live Version where absent.
+function validateAppVersionSearch(search: Record<string, unknown>): {
+  version?: number;
+} {
+  const version = Number(search["version"]);
+  return Number.isSafeInteger(version) && version > 0 ? { version } : {};
+}
+
+// An app's address (the link the Router gives): the gallery, with the app opened in the right panel beside it.
+const appRunRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "apps/$workspaceId/$appId/run",
+  validateSearch: validateAppVersionSearch,
+  component: function AppRunRouteView() {
+    const { workspaceId, appId } = appRunRoute.useParams();
+    const { version } = appRunRoute.useSearch();
+    return <AppsRoute openFor={{ workspaceId, appId, version }} />;
+  },
+});
+
+// An app in its own window (Mac "Open in window"): inside the signed-in session, outside the product shell, so the
+// window shows the app alone rather than another Comma.
+const appWindowRoute = createRoute({
+  getParentRoute: () => authedRoute,
+  path: "apps/$workspaceId/$appId/window",
+  validateSearch: validateAppVersionSearch,
+  component: function AppWindowRouteView() {
+    const { workspaceId, appId } = appWindowRoute.useParams();
+    const { version } = appWindowRoute.useSearch();
+    return (
+      <AppWindowRoute
+        appId={appId}
+        key={`${appId}:${version ?? ""}`}
+        version={version}
+        workspaceId={workspaceId}
+      />
+    );
+  },
 });
 
 // URL for Settings. The product layout renders the Settings surface itself
@@ -237,16 +290,20 @@ const settingsRoute = createRoute({
 
 const shellRouteTree = shellRoute.addChildren({
   indexRoute,
+  appsRoute,
+  appLinkRoute,
+  appSettingsRoute,
+  appRunRoute,
   inboxRouteTree,
   driveRoute,
   pluginsRoute,
   settingsRoute,
-  stationTaskRoute,
   taskDetailRoute,
   tasksRoute,
 });
 
 const authedRouteTree = authedRoute.addChildren({
+  appWindowRoute,
   shellRouteTree,
 });
 
@@ -300,7 +357,20 @@ declare module "@tanstack/react-router" {
 }
 
 export function CommaApp() {
-  const router = useMemo(() => createCommaRouter(), []);
+  // The current document owns its hash route, including when served from a preview path.
+  const initialUrl = useMemo(
+    () => new URL(`/${window.location.hash}`, window.location.href).href,
+    []
+  );
+  const router = useMemo(() => {
+    // A page opened at an app link continues at its hash route.
+    adoptMiniAppLinkLocation(window.location, window.history);
+    return createCommaRouter();
+  }, []);
+  useEffect(() => installMiniAppRunLinkClicks(document), []);
+  useEffect(() => {
+    openMiniAppRunLink(initialUrl);
+  }, [initialUrl]);
   useEffect(() => router.subscribe("onResolved", captureCommaPageView), [router]);
 
   return (

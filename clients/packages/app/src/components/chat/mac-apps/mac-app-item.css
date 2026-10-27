@@ -1,0 +1,135 @@
+/* Mac app cards (MacAppItemCards): each item an Agent made or found on the user's Mac,
+   drawn as its app draws it: an event with its calendar's colour bar, a reminder with its
+   list-coloured circle, a person with initials. The card shares the question card's surface. */
+.comma-mac-item-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-sm);
+  /* One width for every card, whatever its text: the message row sizes to its content. */
+  width: var(--container-xs);
+  max-width: 100%;
+  margin: var(--spacing-md) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.comma-mac-item {
+  --mac-item-accent: var(--color-fg-brand-primary);
+  border-radius: var(--radius-2xl);
+  background: var(--color-bg-popup-secondary);
+  box-shadow:
+    0 0 0 var(--border-width-default) var(--color-border-primary),
+    var(--shadow-sm);
+  color: var(--color-text-primary);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm--line-height);
+}
+
+.comma-mac-item-head {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  padding: var(--spacing-md) var(--spacing-md) 0 var(--spacing-xl);
+  min-height: var(--spacing-4xl);
+}
+
+.comma-mac-item-icon {
+  display: inline-flex;
+  width: var(--spacing-xl);
+  height: var(--spacing-xl);
+  flex: none;
+  color: var(--color-fg-tertiary);
+}
+
+.comma-mac-item-icon > * {
+  width: 100%;
+  height: 100%;
+}
+
+.comma-mac-item-app {
+  flex: 1;
+  min-width: 0;
+  color: var(--color-text-tertiary);
+  font-size: var(--text-xs);
+  line-height: var(--text-xs--line-height);
+}
+
+.comma-mac-item-open {
+  flex: none;
+}
+
+.comma-mac-item-body {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--spacing-md);
+  padding: var(--spacing-sm) var(--spacing-xl) var(--spacing-lg);
+}
+
+.comma-mac-item-text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xxs);
+  min-width: 0;
+}
+
+.comma-mac-item-title {
+  margin: 0;
+  font-size: var(--text-md);
+  line-height: var(--text-md--line-height);
+  font-weight: var(--font-weight-semibold);
+  overflow-wrap: anywhere;
+}
+
+.comma-mac-item-meta {
+  margin: 0;
+  color: var(--color-text-tertiary);
+}
+
+.comma-mac-item-meta:empty {
+  display: none;
+}
+
+/* Calendar: the calendar's colour as a bar beside the event, as Calendar draws it. */
+.comma-mac-item-bar {
+  align-self: stretch;
+  flex: none;
+  width: var(--spacing-xxs);
+  border-radius: var(--radius-full);
+  background: var(--mac-item-accent);
+}
+
+/* Reminders: the list-coloured circle; filled when done. */
+.comma-mac-item-check {
+  flex: none;
+  width: var(--spacing-xl);
+  height: var(--spacing-xl);
+  margin-top: var(--spacing-xxs);
+  border-radius: var(--radius-full);
+  box-shadow: inset 0 0 0 calc(var(--border-width-default) * 2) var(--mac-item-accent);
+}
+
+/* Done: the circle filled inside a thin gap, as Reminders marks a completed item. */
+.comma-mac-item-check[data-completed] {
+  background: var(--mac-item-accent);
+  box-shadow:
+    inset 0 0 0 calc(var(--border-width-default) * 2) var(--mac-item-accent),
+    inset 0 0 0 calc(var(--border-width-default) * 4) var(--color-bg-popup-secondary);
+}
+
+.comma-mac-item-reminder [data-completed] + .comma-mac-item-text .comma-mac-item-title {
+  color: var(--color-text-quaternary);
+}
+
+/* Contacts: white initials on a grey circle, as Contacts shows a person without a photo. */
+.comma-mac-item-initials {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: var(--spacing-4xl);
+  height: var(--spacing-4xl);
+  border-radius: var(--radius-full);
+  background: var(--color-fg-quaternary);
+  color: var(--color-text-white);
+  font-weight: var(--font-weight-semibold);
+}

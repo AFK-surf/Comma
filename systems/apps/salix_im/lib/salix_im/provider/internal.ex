@@ -28,6 +28,7 @@ defmodule SalixIM.Provider.Internal do
   @task_list_cursor_max_length 1_024
   @conversation_update_string_fields ~w(kind status activity_status title owner_user_id)
   @conversation_update_map_fields ~w(metadata latest_artifact artifact_manifest source_refs)
+  @title_batch_limit 20
   @send_message_params ~w(conversation_id content request_id delivery_filter mentions reply_to_message_id)
   @router_task_apis ~w(internal.task.create internal.task.update internal.task.list)
   @router_label_apis ~w(internal.label.list internal.label.assign internal.label.propose)
@@ -79,7 +80,8 @@ defmodule SalixIM.Provider.Internal do
              command.attrs
            ) do
         {:ok, result} ->
-          task_create_response(result, command)
+          with {:ok, response} <- task_create_response(result, command),
+               do: {:ok, put_terminal_url(response, scope.group_id, command.attrs["runs_on"])}
 
         {:error, {:conflict, _} = reason} ->
           task_create_conflict(scope, command, reason)
@@ -88,6 +90,34 @@ defmodule SalixIM.Provider.Internal do
           {:error, control_error(reason)}
       end
     else
+      {:error, reason} -> {:error, control_error(reason)}
+    end
+  end
+
+  def call(
+        %{agent: %{"role" => "router"}} = scope,
+        "internal.task.update",
+        %{"github" => github} = params
+      ) do
+    with :ok <-
+           validate_param_keys(params, ~w(conversation_id github), "im_api.internal.task.update"),
+         {:ok, id} <- required_string(params, "conversation_id"),
+         :ok <- authorize_task_update(scope),
+         {:ok, %{"kind" => "agent_task", "runs_on" => %{"kind" => "sandbox"}}} <-
+           get_conversation(scope.group_id, id),
+         :ok <- authorize_conversation_update(scope, id),
+         {:ok, saved} <- SalixIM.Ports.TaskStations.update_github(scope.group_id, id, github) do
+      {:ok,
+       %{
+         "conversation_id" => id,
+         "conversation_kind" => "agent_task",
+         "github" => saved,
+         "updated" => true,
+         "next_action" =>
+           "L4ES saved the complete GitHub ACL. Proxy delivery is asynchronous, and requests already in flight can finish under the previous ACL. A sandbox started without a grant needs another start to enable access."
+       }}
+    else
+      {:ok, _} -> {:error, "The Task must run on a coding sandbox"}
       {:error, reason} -> {:error, control_error(reason)}
     end
   end
@@ -175,7 +205,9 @@ defmodule SalixIM.Provider.Internal do
     with {:ok, opts} <- task_list_options(params),
          {:ok, page} <- Conversations.list_group_conversations(scope.group_id, opts),
          {:ok, loops} <- task_list_loops(scope.group_id, page["data"]) do
-      tasks = Enum.map(page["data"], &task_list_entry(&1, loops))
+      tasks =
+        Enum.map(page["data"], &task_list_entry(&1, loops)) |> put_terminal_urls(scope.group_id)
+
       station_tasks = if opts[:cursor], do: [], else: station_task_entries(scope.group_id)
 
       {:ok,
@@ -200,6 +232,73 @@ defmodule SalixIM.Provider.Internal do
 
   def call(_scope, api, _params) when api in @router_task_apis,
     do: {:error, "operation is not authorized for this agent role"}
+
+  # ---- Mini Apps (router only; the product owns the app and its repository) ----
+
+  def call(%{agent: %{"role" => "router"}} = scope, "internal.apps.create", params)
+      when is_map(params) do
+    with :ok <-
+           validate_param_keys(params, ~w(name description repo), "im_api.internal.apps.create"),
+         {:ok, name} <- required_string(params, "name"),
+         {:ok, app_params} <- apps_create_params(params, name),
+         {:ok,
+          %{
+            "app_id" => app_id,
+            "repo" => %{"owner" => owner, "name" => repo_name},
+            "url" => url
+          }}
+         when is_binary(url) <-
+           SalixIM.MiniApps.create(
+             %{tenant_id: scope.tenant_id, group_id: scope.group_id, agent_id: scope.agent_id},
+             app_params
+           ) do
+      {:ok,
+       %{"app_id" => app_id, "repo" => %{"owner" => owner, "name" => repo_name}, "url" => url}}
+    else
+      {:ok, _other} -> {:error, "the app owner answered without app_id, repo and url"}
+      {:error, reason} -> {:error, apps_create_error(reason)}
+    end
+  end
+
+  def call(%{agent: %{"role" => "router"}}, "internal.apps.create", _params),
+    do: {:error, "params must be a JSON object"}
+
+  def call(_scope, "internal.apps.create", _params),
+    do: {:error, "operation is not authorized for this agent role"}
+
+  def call(%{agent: %{"role" => "router"}} = scope, "internal.apps.list", params)
+      when is_map(params) do
+    with :ok <- validate_param_keys(params, [], "im_api.internal.apps.list"),
+         {:ok, %{"apps" => apps, "has_more" => has_more}} when is_list(apps) <-
+           SalixIM.MiniApps.list(scope.group_id) do
+      {:ok, %{"apps" => apps, "has_more" => has_more == true}}
+    else
+      {:ok, _other} -> {:error, "the app owner answered without apps"}
+      {:error, reason} -> {:error, apps_read_error(reason)}
+    end
+  end
+
+  def call(%{agent: %{"role" => "router"}} = scope, "internal.apps.get", params)
+      when is_map(params) do
+    with :ok <- validate_param_keys(params, ~w(app_id), "im_api.internal.apps.get"),
+         {:ok, app_id} <- required_string(params, "app_id"),
+         {:ok, %{"app_id" => _} = app} <- SalixIM.MiniApps.get(scope.group_id, app_id) do
+      {:ok, app}
+    else
+      {:ok, _other} -> {:error, "the app owner answered without the app"}
+      {:error, reason} -> {:error, apps_read_error(reason)}
+    end
+  end
+
+  def call(%{agent: %{"role" => "router"}}, api, _params)
+      when api in ["internal.apps.list", "internal.apps.get"],
+      do: {:error, "params must be a JSON object"}
+
+  def call(_scope, api, _params) when api in ["internal.apps.list", "internal.apps.get"],
+    do: {:error, "operation is not authorized for this agent role"}
+
+  def call(scope, "internal.apps." <> _action = api, params),
+    do: SalixIM.Provider.Apps.call(scope, api, params)
 
   # ---- task labels (router only; catalog writes are human-confirmed proposals) ----
 
@@ -361,6 +460,61 @@ defmodule SalixIM.Provider.Internal do
 
   def call(%{agent: %{"role" => "router"}} = scope, "internal.update_conversation", params)
       when is_map(params) do
+    case update_conversation(scope, params) do
+      {:ok, updated} -> {:ok, updated}
+      {:error, reason} -> {:error, control_error(reason)}
+    end
+  end
+
+  def call(%{agent: %{"role" => "router"}}, "internal.update_conversation", _params),
+    do: {:error, "params must be a JSON object"}
+
+  def call(_scope, "internal.update_conversation", _params),
+    do: {:error, "operation is not authorized for this agent role"}
+
+  def call(%{agent: %{"role" => "router"}} = scope, "internal.update_conversation_titles", params)
+      when is_map(params) do
+    with :ok <-
+           validate_param_keys(params, ["titles"], "im_api.internal.update_conversation_titles"),
+         {:ok, titles} <- validate_title_batch(params["titles"]) do
+      results =
+        Enum.map(titles, fn %{"conversation_id" => id, "title" => title} ->
+          case update_conversation(scope, %{"conversation_id" => id, "title" => title}) do
+            {:ok, updated} ->
+              %{"conversation_id" => id, "updated" => true, "title" => updated["title"]}
+
+            {:error, reason} ->
+              %{"conversation_id" => id, "updated" => false, "error" => control_error(reason)}
+          end
+        end)
+
+      {:ok,
+       %{
+         "results" => results,
+         "updated_count" => Enum.count(results, & &1["updated"]),
+         "failed_count" => Enum.count(results, &(not &1["updated"]))
+       }}
+    else
+      {:error, reason} -> {:error, control_error(reason)}
+    end
+  end
+
+  def call(%{agent: %{"role" => "router"}}, "internal.update_conversation_titles", _params),
+    do: {:error, "params must be a JSON object"}
+
+  def call(_scope, "internal.update_conversation_titles", _params),
+    do: {:error, "operation is not authorized for this agent role"}
+
+  def call(scope, "internal.send_message", params) when is_map(params) do
+    SalixIM.SendTiming.run("im_send_total", fn -> send_message(scope, params) end)
+  end
+
+  def call(_scope, "internal.send_message", _params),
+    do: {:error, "params must be a JSON object"}
+
+  def call(_scope, _api, _params), do: {:error, "unsupported internal provider api"}
+
+  defp update_conversation(scope, params) do
     mutable_fields =
       @conversation_update_string_fields ++ @conversation_update_map_fields ++ ["labels"]
 
@@ -407,25 +561,34 @@ defmodule SalixIM.Provider.Internal do
          ~w(conversation_id kind status activity_status title owner_user_id labels metadata latest_artifact artifact_manifest source_refs updated_at)
        )
        |> Map.put("updated", true)}
-    else
-      {:error, reason} -> {:error, control_error(reason)}
     end
   end
 
-  def call(%{agent: %{"role" => "router"}}, "internal.update_conversation", _params),
-    do: {:error, "params must be a JSON object"}
+  defp validate_title_batch(titles)
+       when is_list(titles) and titles != [] and length(titles) <= @title_batch_limit do
+    ids = Enum.map(titles, &(is_map(&1) && &1["conversation_id"]))
 
-  def call(_scope, "internal.update_conversation", _params),
-    do: {:error, "operation is not authorized for this agent role"}
+    cond do
+      not Enum.all?(titles, &valid_title_entry?/1) ->
+        {:error, "each titles entry needs a non-empty conversation_id and title string"}
 
-  def call(scope, "internal.send_message", params) when is_map(params) do
-    SalixIM.SendTiming.run("im_send_total", fn -> send_message(scope, params) end)
+      length(Enum.uniq(ids)) != length(ids) ->
+        {:error, "titles must not repeat a conversation_id"}
+
+      true ->
+        {:ok, titles}
+    end
   end
 
-  def call(_scope, "internal.send_message", _params),
-    do: {:error, "params must be a JSON object"}
+  defp validate_title_batch(_titles),
+    do: {:error, "titles must be a list of 1 to #{@title_batch_limit} entries"}
 
-  def call(_scope, _api, _params), do: {:error, "unsupported internal provider api"}
+  defp valid_title_entry?(%{"conversation_id" => id, "title" => title} = entry),
+    do:
+      map_size(entry) == 2 and is_binary(id) and String.trim(id) != "" and is_binary(title) and
+        String.trim(title) != ""
+
+  defp valid_title_entry?(_entry), do: false
 
   defp authorize_conversation_update(scope, conversation_id) do
     with {:ok, participants} <-
@@ -451,6 +614,11 @@ defmodule SalixIM.Provider.Internal do
     origin_metadata = task_origin_metadata(scope, tool_context)
 
     with :ok <-
+           if(Enum.any?(~w(requester_user_id automatic_task_place), &Map.has_key?(params, &1)),
+             do: {:error, "requester_user_id is not a Task parameter"},
+             else: :ok
+           ),
+         :ok <-
            if(Map.has_key?(params, "workflow"),
              do: {:error, "Task graph creation is retired; supply agent_id and content"},
              else: :ok
@@ -464,15 +632,36 @@ defmodule SalixIM.Provider.Internal do
          {:ok, provenance_refs} <-
            task_create_provenance(scope, tool_context, schedule || loop),
          {:ok, trusted_origin} <- task_create_trusted_origin(scope, tool_context),
+         {:ok, params} <- task_create_place(params),
          {:ok, target_agent_id, public_target} <-
            task_create_target(scope, target_agent_id),
          {:ok,
           %{
             params: params,
             runs_on: runs_on,
+            repo: repo,
+            mini_app: mini_app,
             session_model: session_model,
             source: place_source
-          }} <- task_create_placement(scope, target_agent_id, params, is_map(loop)),
+          }} <-
+           task_create_placement(
+             Map.put(
+               scope,
+               :task_request_identity,
+               task_create_request_id(
+                 scope,
+                 tool_context,
+                 trusted_origin,
+                 task_create_target_identity(target_agent_id, params["model"], nil),
+                 content,
+                 title,
+                 if(loop, do: %{"loop" => loop}, else: schedule)
+               )
+             ),
+             target_agent_id,
+             params,
+             is_map(loop)
+           ),
          {:ok, execution_refs} <-
            SalixIM.TaskExecution.prepare(scope, tool_context, params, target_agent_id) do
       session_id = context_value(tool_context, "session_id")
@@ -510,7 +699,10 @@ defmodule SalixIM.Provider.Internal do
               task_create_target_identity(
                 target_agent_id,
                 session_model,
-                if(place_source == :default, do: nil, else: runs_on)
+                if(place_source in [:default, :automatic],
+                  do: nil,
+                  else: place_identity(runs_on, repo, mini_app)
+                )
               ),
               content,
               title,
@@ -530,6 +722,9 @@ defmodule SalixIM.Provider.Internal do
         )
         |> put_present("session_model", session_model)
         |> put_present("runs_on", runs_on)
+        |> put_present("repo", repo)
+        |> put_present("mini_app", mini_app)
+        |> put_present("automatic_task_place", if(place_source == :automatic, do: true))
 
       attrs =
         if triage do
@@ -595,6 +790,7 @@ defmodule SalixIM.Provider.Internal do
   defp request_restarted_loop(scope, id, request, human_at) do
     with {:ok, conversation} <- Conversations.get_group_conversation(scope.group_id, id),
          :ok <- SalixIM.TaskLoop.restart_allowed(conversation, scope.agent_id, human_at),
+         :ok <- restart_inside_salix(scope, id, conversation),
          {:ok, view} <- SalixIM.TaskLoop.get(scope.group_id, id) do
       case view do
         %{"trigger" => %{}, "status" => "pending"} ->
@@ -620,6 +816,30 @@ defmodule SalixIM.Provider.Internal do
         _none ->
           {:error, {:bad_request, "This Task has no Loop to restart"}}
       end
+    end
+  end
+
+  # A Loop runs only inside Salix (`SalixIM.TaskPlacement`). A Loop Task made
+  # on a station before that has a station Worker, which cannot create a new
+  # Loop, so it gets none.
+  defp restart_inside_salix(scope, id, conversation) do
+    case SalixIM.ConversationServer.group_conversation_station_worker?(
+           scope.group_id,
+           id,
+           conversation["task_worker_agent_id"]
+         ) do
+      {:ok, true} ->
+        {:error, {:bad_request, TaskPlacement.message({:runs_on, :station_for_loop, :task})}}
+
+      {:ok, false} ->
+        :ok
+
+      # No Worker: the restart refuses that itself.
+      {:error, :not_found} ->
+        :ok
+
+      {:error, _reason} = error ->
+        error
     end
   end
 
@@ -848,8 +1068,42 @@ defmodule SalixIM.Provider.Internal do
   defp task_create_target_identity(target_agent_id, session_model, runs_on),
     do: {target_agent_id, session_model, runs_on}
 
+  # A coding Task's repository, and the app a build Task makes, are part of
+  # where it runs; a Task without them keeps its earlier identity.
+  defp place_identity(runs_on, repo, mini_app) do
+    runs_on
+    |> then(&if(is_nil(repo), do: &1, else: Map.put(&1, "repo", repo)))
+    |> then(&if(is_nil(mini_app), do: &1, else: Map.put(&1, "mini_app", mini_app)))
+  end
+
+  # A Router names where every Task runs, so a code change is never placed by
+  # omission. `{"kind": "default"}` leaves the place to the configured
+  # defaults (`SalixIM.TaskPlacement`), as an omitted place did before.
+  defp task_create_place(%{"runs_on" => %{"kind" => "default"} = place} = params)
+       when map_size(place) == 1,
+       do: {:ok, Map.delete(params, "runs_on")}
+
+  defp task_create_place(%{"runs_on" => %{"kind" => "default"}}),
+    do: {:error, ~s(runs_on {"kind":"default"} takes no other fields)}
+
+  defp task_create_place(%{"runs_on" => %{"kind" => kind}} = params)
+       when is_binary(kind),
+       do: {:ok, params}
+
+  defp task_create_place(_params),
+    do:
+      {:error,
+       ~s(runs_on.kind is required: {"kind":"sandbox"} with repo for code changes to a GitHub repository, {"kind":"default"} for the configured defaults, or salix, cloud_vm or station)}
+
   # Where the Task runs and its Session's model (`SalixIM.TaskPlacement`).
   defp task_create_placement(scope, target_agent_id, params, loop?) do
+    scope =
+      Map.put(
+        scope,
+        :trusted_origin,
+        context_value(SalixIM.Provider.current_tool_context(), "trusted_origin")
+      )
+
     case TaskPlacement.resolve(scope, target_agent_id, params, loop?) do
       {:ok, placement} -> {:ok, placement}
       {:error, {:agent, reason}} -> {:error, reason}
@@ -1064,6 +1318,83 @@ defmodule SalixIM.Provider.Internal do
     end
   end
 
+  defp apps_create_params(params, name) do
+    with {:ok, description} <- optional_text(params["description"], "description", 500),
+         {:ok, repo} <- apps_create_repo(params["repo"]) do
+      cond do
+        String.length(name) > 60 ->
+          {:error, "name is at most 60 characters"}
+
+        true ->
+          {:ok,
+           %{"name" => name}
+           |> put_present("description", description)
+           |> put_present("repo", repo)}
+      end
+    end
+  end
+
+  defp optional_text(nil, _key, _max), do: {:ok, nil}
+
+  defp optional_text(value, key, max) when is_binary(value) do
+    value = String.trim(value)
+
+    if String.length(value) <= max,
+      do: {:ok, if(value == "", do: nil, else: value)},
+      else: {:error, "#{key} is at most #{max} characters"}
+  end
+
+  defp optional_text(_value, key, _max), do: {:error, "#{key} must be a string"}
+
+  defp apps_create_repo(nil), do: {:ok, nil}
+
+  defp apps_create_repo(%{"owner" => owner, "name" => name} = repo)
+       when map_size(repo) == 2 and is_binary(owner) and is_binary(name) and owner != "" and
+              name != "",
+       do: {:ok, %{"owner" => String.trim(owner), "name" => String.trim(name)}}
+
+  defp apps_create_repo(_repo), do: {:error, "repo must be {owner, name}"}
+
+  # What a Router reads when the product did not make the app.
+  defp apps_create_error(:github_not_connected),
+    do:
+      "the Workspace has no GitHub account connected, and an app keeps its source in GitHub. " <>
+        github_request() <> " The app was not made."
+
+  defp apps_create_error(:github_reauthorization_required),
+    do:
+      "the Workspace's GitHub connection needs the user to sign in again. " <>
+        github_request() <> " The app was not made."
+
+  defp apps_create_error({:repo_not_found, repo}),
+    do:
+      "the connected GitHub account cannot read #{repo}, or it has no comma-app.json; check " <>
+        "the owner and name, or omit repo to start from the template. The app was not made."
+
+  defp apps_create_error({:invalid, message}) when is_binary(message),
+    do: "#{message}. The app was not made."
+
+  defp apps_create_error(:mini_apps_unavailable),
+    do: "apps are not set up here. The app was not made."
+
+  defp apps_create_error(reason) when is_binary(reason), do: reason
+  defp apps_create_error(reason), do: "the app was not made: #{inspect(reason)}"
+
+  # The same binding Settings > Plugins makes (provider and alias github, its scopes), so either way connects it.
+  defp github_request,
+    do:
+      ~s(Ask the user to connect it: call oauth.request_authorization with {"provider":"github","alias":"github",) <>
+        ~s("scopes":["repo","read:org","read:user","user:email"],"reason":"..."}, the reason one sentence in the ) <>
+        "user's language on why the app needs GitHub. The Comma app shows the user a card with an authorize " <>
+        "button; the call returns when they connect or decline. Once it returns connected, call apps.create again."
+
+  defp apps_read_error(:not_found),
+    do: "no app of this Workspace has that app_id; read internal.apps.list"
+
+  defp apps_read_error(:mini_apps_unavailable), do: "apps are not set up here"
+  defp apps_read_error(reason) when is_binary(reason), do: reason
+  defp apps_read_error(reason), do: "the apps could not be read: #{inspect(reason)}"
+
   defp add_agent_participant_attrs(params, agent_id) do
     role_label = params["role_label"]
 
@@ -1126,7 +1457,7 @@ defmodule SalixIM.Provider.Internal do
            "through_seq" => answer["through"],
            "messages" =>
              Enum.map(List.wrap(answer["messages"]), fn m ->
-               Map.take(m, ~w(seq author_kind author text at declared))
+               Map.take(m, ~w(seq author_kind author text at declared milestones))
              end)
          }}
 
@@ -1240,6 +1571,32 @@ defmodule SalixIM.Provider.Internal do
 
   defp maybe_put_keyword(opts, _key, nil), do: opts
   defp maybe_put_keyword(opts, key, value), do: Keyword.put(opts, key, value)
+
+  # A coding Task's sandbox terminal link (`SalixIM.Ports.TaskStations.terminal_urls/2`),
+  # for the Router to give the user who asks to work in the sandbox.
+  defp put_terminal_url(response, group_id, %{"kind" => "sandbox"}) do
+    id = response["conversation_id"]
+
+    case SalixIM.Ports.TaskStations.terminal_urls(group_id, [id]) do
+      %{^id => url} -> Map.put(response, "terminal_url", url)
+      _ -> response
+    end
+  end
+
+  defp put_terminal_url(response, _group_id, _runs_on), do: response
+
+  # The page's coding Tasks' links, in one read.
+  defp put_terminal_urls(tasks, group_id) do
+    ids = for %{"kind" => "agent_task", "task_id" => id} <- tasks, do: id
+    urls = SalixIM.Ports.TaskStations.terminal_urls(group_id, ids)
+
+    Enum.map(tasks, fn task ->
+      case urls[task["task_id"]] do
+        nil -> task
+        url -> Map.put(task, "terminal_url", url)
+      end
+    end)
+  end
 
   defp task_list_entry(conversation, loops) do
     task_id = conversation["conversation_id"]
@@ -1458,7 +1815,16 @@ defmodule SalixIM.Provider.Internal do
   # These hints are for the owner's Home display. Agents query a Participant's
   # progress, not the other Conversations that its shared Session answers.
   defp drop_home_display_hints(%{"activity" => %{} = activity} = status),
-    do: %{status | "activity" => Map.drop(activity, ["working_conversation_ids", "waiting"])}
+    do: %{
+      status
+      | "activity" =>
+          Map.drop(activity, [
+            "working_conversation_ids",
+            "waiting",
+            "wait_tool",
+            "wait_started_at"
+          ])
+    }
 
   defp drop_home_display_hints(status), do: status
 
@@ -1748,6 +2114,7 @@ defmodule SalixIM.Provider.Internal do
     client_request_id = internal_send_client_request_id(scope, conversation_id, request_id)
 
     with {:ok, content} <- SalixIM.ConversationQuestion.normalize_agent_content(content),
+         {:ok, content} <- SalixIM.MacAppItem.normalize_agent_content(content),
          {:ok, content} <-
            SalixIM.SendTiming.measure("im_send_attachments", fn ->
              ConversationAttachments.bind_sender_files(scope.agent_id, content)

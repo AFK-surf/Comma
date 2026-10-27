@@ -18,6 +18,9 @@ import type {
   LoopbackVisit,
   Presence,
   ProviderRequest,
+  FileRead,
+  StreamRead,
+  SavedStream,
 } from "../host.ts";
 
 type Listener = {
@@ -131,7 +134,24 @@ export class FakeDesktop implements DesktopPorts {
   } | null> = (fileName) => ({ downloadRef: `download:${fileName}`, fileName });
   /** Each file the core saved into Downloads. */
   readonly saved: { fileName: string; content: Uint8Array }[] = [];
+  /** What Main answers a stream's opening; by default a new URL. */
+  stream: (input: StreamRead & { type: string }) => Scripted<string> = () =>
+    `comma-file://stream/${++this.#nextStream}`;
+  /** The streams open now, by URL: what each reads, as what, under which session. */
+  readonly streams = new Map<string, StreamRead & { type: string }>();
+  /** Each URL the core closed, in order. */
+  readonly closedStreams: string[] = [];
+  /** What Main answers a streamed save; by default it saves under the name asked. */
+  saveStreamed: (input: FileRead & { fileName: string }) => Scripted<SavedStream> = ({
+    fileName,
+  }) => ({
+    downloadRef: `download:${fileName}`,
+    fileName,
+  });
+  /** Each streamed save the core asked Main for. */
+  readonly streamedSaves: (FileRead & { fileName: string })[] = [];
   #nextPort = 49_152;
+  #nextStream = 0;
 
   saveDownload(
     fileName: string,
@@ -140,6 +160,71 @@ export class FakeDesktop implements DesktopPorts {
     return scripted(() => {
       this.saved.push({ fileName, content });
       return this.save(fileName, content);
+    });
+  }
+
+  /** Saves the core writes a part at a time, by id: their name and the parts written so far. */
+  readonly #writing = new Map<number, { fileName: string; parts: Uint8Array[] }>();
+  #nextSave = 1;
+
+  saveOpen(fileName: string): Effect.Effect<{ id: number }, HostError> {
+    return scripted(() => {
+      const id = this.#nextSave++;
+      this.#writing.set(id, { fileName, parts: [] });
+      return { id };
+    });
+  }
+
+  saveWrite(id: number, bytes: Uint8Array): Effect.Effect<void, HostError> {
+    return scripted(() => {
+      const writing = this.#writing.get(id);
+      if (!writing) return new HostError("no such save");
+      writing.parts.push(bytes.slice());
+    });
+  }
+
+  /** Kept, the file is saved whole as `saveDownload` saves one. */
+  saveClose(
+    id: number,
+    keep: boolean
+  ): Effect.Effect<{ downloadRef: string; fileName: string } | null, HostError> {
+    return scripted(() => {
+      const writing = this.#writing.get(id);
+      if (!writing) return new HostError("no such save");
+      this.#writing.delete(id);
+      if (!keep) return null;
+      const content = new Uint8Array(
+        writing.parts.reduce((sum, part) => sum + part.length, 0)
+      );
+      let at = 0;
+      for (const part of writing.parts) {
+        content.set(part, at);
+        at += part.length;
+      }
+      this.saved.push({ fileName: writing.fileName, content });
+      return this.save(writing.fileName, content);
+    });
+  }
+
+  openStream(input: StreamRead & { type: string }): Effect.Effect<string, HostError> {
+    return scripted(() => this.stream(input)).pipe(
+      Effect.tap((url) => Effect.sync(() => void this.streams.set(url, input)))
+    );
+  }
+
+  saveStream(
+    input: FileRead & { fileName: string }
+  ): Effect.Effect<SavedStream, HostError> {
+    return scripted(() => {
+      this.streamedSaves.push(input);
+      return this.saveStreamed(input);
+    });
+  }
+
+  closeStream(url: string): Effect.Effect<void, HostError> {
+    return Effect.sync(() => {
+      this.streams.delete(url);
+      this.closedStreams.push(url);
     });
   }
 

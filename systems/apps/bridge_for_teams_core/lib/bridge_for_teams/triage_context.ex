@@ -1043,7 +1043,7 @@ defmodule BridgeForTeams.TriageContext do
   defp persona_revision_bytes(agent) do
     CanonicalJSON.encode(%{
       "llm_config" => agent.salix["llm_config"] || %{},
-      "system_prompt" => agent.salix["system_prompt"] || "",
+      "system_prompt" => BridgeForTeams.Schema.Agent.instructions(agent) || "",
       "model" => agent.salix["model"] || %{}
     })
   end

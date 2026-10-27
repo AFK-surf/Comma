@@ -84,6 +84,11 @@ export type AiInputProps = AiInputNativeAttributes & {
   /** File drops on the shell. When set, enables the drop overlay and drag handlers. */
   onDropFiles?: (dataTransfer: DataTransfer) => void;
   /**
+   * Files are being dragged over a surface around the input that takes the drop for it. When set, the shell shows
+   * its drop overlay by this value and has no drag handlers of its own; leave `onDropFiles` out.
+   */
+  surfaceDropActive?: boolean | undefined;
+  /**
    * Files on the clipboard at paste time. When set, a paste carrying files
    * routes here instead of inserting text, so Cmd/Ctrl+V attaches the same way
    * a drop does. Text-only pastes are untouched.

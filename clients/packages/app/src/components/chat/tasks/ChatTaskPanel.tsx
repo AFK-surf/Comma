@@ -1,6 +1,7 @@
 import { formatNumber, taskStatusBucketLabel, taskStatusLabel } from "@comma/i18n";
 import { useCommaLocale, useCommaMessages } from "@comma/i18n/react";
 import { ChevronDownSmallIcon } from "@comma/ui/components/icons";
+import { TitleSwap } from "@comma/ui/components/title-swap";
 import {
   TaskArchiveMenu,
   type TaskArchiveAction,
@@ -24,7 +25,13 @@ import {
   type CSSProperties,
   type RefObject,
 } from "react";
+import { flushSync } from "react-dom";
 import { Button as AriaButton } from "react-aria-components";
+import { scheduleLayoutRead } from "@comma/ui/clock";
+import {
+  setChatTaskPanelCollapsed,
+  useChatTaskPanelCollapsed,
+} from "./chatTaskPanelCollapse";
 import type { ChatCreatedTask } from "./useChatCreatedTasks";
 
 /** "chat" opens the Task's chat beside this one; "page" opens the Task itself. */
@@ -39,8 +46,11 @@ type ChatTaskActions = {
 
 /** Rows on screen at once; past this the list scrolls inside the panel. */
 const VISIBLE_ROWS = 5;
+
+type RowGeometry = { block: number; gap: number };
+
 /** Token geometry at the default font size, until the probe has been read. */
-const DEFAULT_ROW_GEOMETRY = { block: 28, gap: 2 };
+const DEFAULT_ROW_GEOMETRY: RowGeometry = { block: 28, gap: 2 };
 
 /**
  * The Tasks the agent created in this conversation, pinned above the composer
@@ -54,8 +64,9 @@ const DEFAULT_ROW_GEOMETRY = { block: 28, gap: 2 };
  *
  * A header names the count and doubles as the disclosure. Collapsed, the list
  * is not rendered at all, so the panel is its one header line and nothing
- * behind it keeps animating, updating, or taking focus. The state is
- * view-local, so it lasts as long as the conversation stays open.
+ * behind it keeps animating, updating, or taking focus. The fold is the
+ * reader's choice for every conversation and outlives the app
+ * (chatTaskPanelCollapse.ts), so a panel folded away stays folded.
  *
  * Five rows show at a time and only those rows (plus a short overscan) are
  * mounted: a long-lived conversation docks every Task it ever announced, and
@@ -71,7 +82,7 @@ export const ChatTaskPanel = memo(function ChatTaskPanel({
   const messages = useCommaMessages();
   const locale = useCommaLocale();
   const listId = useId();
-  const [collapsed, setCollapsed] = useState(false);
+  const collapsed = useChatTaskPanelCollapsed();
   // Expanding is the reader asking for the list back, not Tasks arriving: the
   // list fades in as one piece instead of replaying each row's arrival.
   const [listArrival, setListArrival] = useState<"dock" | "expand">("dock");
@@ -105,7 +116,7 @@ export const ChatTaskPanel = memo(function ChatTaskPanel({
         data-testid="chat-task-panel-toggle"
         onPress={() => {
           setListArrival("expand");
-          setCollapsed((current) => !current);
+          setChatTaskPanelCollapsed(!collapsed);
         }}
       >
         <span className="comma-chat-task-panel-count">
@@ -162,19 +173,31 @@ function ChatTaskList({
   useLayoutEffect(() => {
     const probe = probeRef.current;
     if (!probe) return undefined;
-    const read = () => {
+    const measure = () => {
       const { height, width } = probe.getBoundingClientRect();
-      if (height <= 0) return;
-      setGeometry((current) =>
+      if (height <= 0) return undefined;
+      return (current: RowGeometry) =>
         current.block === height && current.gap === width
           ? current
-          : { block: height, gap: width }
-      );
+          : { block: height, gap: width };
     };
-    read();
-    const observer = new ResizeObserver(read);
+    // The first read waits for the frame's shared read phase: in the commit
+    // it would lay the mounting page out again. Its write renders there, so
+    // the panel first paints at the probe's size, not the default's, and the
+    // observer's first report then finds nothing changed.
+    const cancelFirstRead = scheduleLayoutRead(() => {
+      const next = measure();
+      return next && (() => flushSync(() => setGeometry(next)));
+    });
+    const observer = new ResizeObserver(() => {
+      const next = measure();
+      if (next) setGeometry(next);
+    });
     observer.observe(probe);
-    return () => observer.disconnect();
+    return () => {
+      cancelFirstRead();
+      observer.disconnect();
+    };
   }, []);
 
   // The scroller is sized by the same tokens, so its height is known without
@@ -377,7 +400,12 @@ const ChatTaskRow = memo(function ChatTaskRow({
             >
               <span className="comma-chat-task-item-dot-inner" />
             </span>
-            <span className="comma-chat-task-item-title">{title}</span>
+            <TitleSwap
+              className="comma-chat-task-item-title"
+              // The placeholder giving way to the first title is no rename.
+              identity={task.title ? task.conversationId : undefined}
+              text={title}
+            />
             <span
               className={
                 settled

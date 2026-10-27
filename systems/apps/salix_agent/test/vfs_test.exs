@@ -161,6 +161,25 @@ defmodule SalixAgent.VFSTest do
       assert workspace_state.operations["workspace-op-1"]["result"]["version"] == 1
     end
 
+    test "a streamed write past the whole-body cap commits the file it was given", %{agent: a} do
+      chunk = :binary.copy("s", 1_048_576)
+      chunks = List.duplicate(chunk, div(Blob.max_bytes(), byte_size(chunk)) + 2)
+      size = Enum.sum(Enum.map(chunks, &byte_size/1))
+
+      assert {:ok, %{"path" => "/uploads/big.bin", "size" => ^size}} =
+               SalixAgent.Workspace.write_stream(a, "/uploads/big.bin", chunks)
+
+      assert {:ok, stream, ^size} = AgentWorkspace.stream(a, "/uploads/big.bin")
+      assert IO.iodata_to_binary(Enum.to_list(stream)) == IO.iodata_to_binary(chunks)
+    end
+
+    test "a streamed write whose body fails commits nothing", %{agent: a} do
+      failing = Stream.concat(["partial"], Stream.map([:boom], fn _ -> raise "read failed" end))
+
+      assert {:error, _} = SalixAgent.Workspace.write_stream(a, "/uploads/broken.bin", failing)
+      assert {:error, :not_found} = AgentWorkspace.read(a, "/uploads/broken.bin")
+    end
+
     test "low-level workspace commit only accepts the local agent owner", %{agent: a} do
       {:ok, write_event} = AgentWorkspace.prepare_write(a, "/notes/not-owner.txt", "blocked")
 

@@ -1,6 +1,7 @@
 // Ported from systems/connector/salix-connect/main_test.go: the connection to Salix (same test names).
 // The connector dials /v1/connect with its token, sends metadata first, answers heartbeats without metadata-only
-// fields, re-reports system info on a timer without probing runtimes and keeps doing so after a failed publish, fails a
+// fields, closes a connection that hears nothing within the read timeout and dials again, keeps one whose heartbeats
+// come, re-reports system info on a timer without probing runtimes and keeps doing so after a failed publish, fails a
 // send blocked by a slow peer within the write deadline, and stops reconnecting once a cleanup failure is fatal.
 // Salix is the in-memory Sockets service; timers run on the connector's TestClock.
 import assert from "node:assert/strict";
@@ -8,13 +9,25 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { Deferred, Duration, Effect, Exit, Fiber, Queue } from "effect";
-import { CLEANUP_QUEUE_SIZE, ConnectorFatal, MAX_FILE_BYTES, WEBSOCKET_WRITE_TIMEOUT, makeConnector } from "../../src/connector/connector.ts";
+import { CLEANUP_QUEUE_SIZE, type Connector, ConnectorFatal, MAX_FILE_BYTES, WEBSOCKET_READ_TIMEOUT, WEBSOCKET_WRITE_TIMEOUT, makeConnector } from "../../src/connector/connector.ts";
 import { settle } from "./support/memory-net.ts";
-import { memorySockets } from "./support/memory-socket.ts";
+import { type Peer, memorySockets } from "./support/memory-socket.ts";
 import { tempDir } from "./support/temp.ts";
 
 const run = <A, E>(effect: Effect.Effect<A, E>) => Effect.runPromise(effect);
 const isolated = { env: { HOME: tempDir(), PATH: "/usr/bin:/bin:/usr/sbin:/sbin" } };
+
+/** 15 seconds pass and Salix sends its heartbeat: the frames the connector sent before its reply. */
+const heartbeatTick = (c: Connector, peer: Peer) =>
+  Effect.gen(function* () {
+    yield* settle;
+    yield* c.advanceClockForTest(Duration.seconds(15));
+    yield* settle;
+    yield* peer.send({ type: "heartbeat" });
+    const frames: any[] = [];
+    for (let frame = yield* peer.receive; frame.type !== "heartbeat"; frame = yield* peer.receive) frames.push(frame);
+    return frames;
+  });
 
 test("TestRunRemoteOnceRepliesToHeartbeat", () =>
   run(
@@ -32,6 +45,49 @@ test("TestRunRemoteOnceRepliesToHeartbeat", () =>
       assert.ok(!("skills" in reply), "the heartbeat carried metadata-only skills");
       yield* peer.close;
       yield* Fiber.await(session);
+      yield* c.close();
+    }),
+  ));
+
+test("TestRemoteSilentSalixIsDialedAgainAfterReadTimeout", () =>
+  run(
+    Effect.gen(function* () {
+      const salix = yield* memorySockets();
+      const c = makeConnector({ ...isolated, server: "https://salix.test", token: "token", name: "silent-salix", root: tempDir(), reconnect: true, testClock: true }, salix.layer);
+      const remote = yield* Effect.forkChild(c.runRemote);
+      const first = yield* Queue.take(salix.accepted);
+      assert.equal((yield* first.receive).type, "metadata");
+      // Salix then sends nothing and its socket stays open, as when the path died (a sleep, a network change).
+      yield* settle;
+      yield* c.advanceClockForTest(Duration.millis(Duration.toMillis(WEBSOCKET_READ_TIMEOUT) - 1_000));
+      yield* settle;
+      assert.equal(salix.dials.length, 1, "the connector dialed again before the read timeout");
+      yield* c.advanceClockForTest(Duration.seconds(1));
+      yield* settle;
+      // The first reconnect backoff is at most 1.2 seconds.
+      yield* c.advanceClockForTest(Duration.seconds(2));
+      yield* settle;
+      assert.equal(salix.dials.length, 2, "the connector kept a connection that heard nothing past the read timeout");
+      yield* first.closed;
+      yield* Fiber.interrupt(remote);
+      yield* c.close();
+    }),
+  ));
+
+test("TestRemoteHeartbeatsKeepConnectionPastReadTimeout", () =>
+  run(
+    Effect.gen(function* () {
+      const salix = yield* memorySockets();
+      const c = makeConnector({ ...isolated, server: "https://salix.test", token: "token", name: "heartbeating-salix", root: tempDir(), testClock: true }, salix.layer);
+      const session = yield* Effect.forkChild(c.runRemoteOnce);
+      const peer = yield* Queue.take(salix.accepted);
+      assert.equal((yield* peer.receive).type, "metadata");
+      // Salix sends a heartbeat every 15 seconds: each frame starts the read timeout again.
+      for (let beat = 0; beat < 8; beat++) yield* heartbeatTick(c, peer);
+      yield* settle;
+      assert.equal(session.pollUnsafe(), undefined, "the connector closed a connection whose heartbeats kept coming");
+      assert.equal(salix.dials.length, 1);
+      yield* Fiber.interrupt(session);
       yield* c.close();
     }),
   ));
@@ -56,6 +112,8 @@ test("TestRemoteWebSocketBlockedDataSendFailsWithinWriteDeadline", () =>
       }
       const exit = yield* Fiber.await(session);
       assert.ok(Exit.isFailure(exit), "a blocked websocket send returned no error");
+      // The write deadline ended it, not the read timeout: Salix is silent here as well.
+      assert.match(String(exit.cause), /websocket write deadline exceeded/);
       yield* c.close();
     }),
   ));
@@ -161,41 +219,97 @@ test("TestPeriodicSystemInfoPublishesCachedMetadataWithoutRuntimeProbe", () =>
     }),
   ));
 
-// A Compute Workload's station presents its bootstrap credential once: `connected` replaces it with a short-lived
-// one, the bootstrap leaves the environment, the next connection presents the new one, and it is renewed over the
-// connection at half its life.
-test("a workload exchanges its bootstrap credential and renews the short-lived one", () =>
+/** The next frame of `method` the connector sends, past any other (metadata, probes). */
+const nextRequest = (peer: Peer, method: string) =>
+  Effect.gen(function* () {
+    for (;;) {
+      const frame = yield* peer.receive;
+      if (frame.method === method) return frame;
+    }
+  });
+
+// The app writes the device's next credential before the current one expires. When Salix takes one over the
+// connection, the live connection presents it and stays: no dial, and a later connection presents the new one.
+test("a device connection presents the app's next credential to Salix and keeps serving", () =>
   run(
     Effect.gen(function* () {
       const salix = yield* memorySockets();
-      const env = { ...isolated.env, SALIX_WORKLOAD_CREDENTIAL: "bootstrap" };
-      const c = makeConnector({ ...isolated, env, server: "https://salix.test", workloadCredential: "bootstrap", name: "worker", root: tempDir(), testClock: true }, salix.layer);
-      const session = yield* Effect.forkChild(c.runRemoteOnce);
+      const c = makeConnector({ ...isolated, server: "https://salix.test", token: "first", name: "laptop", root: tempDir(), reconnect: true, testClock: true }, salix.layer);
+      const remote = yield* Effect.forkChild(c.runRemote);
       const peer = yield* Queue.take(salix.accepted);
-      assert.equal(peer.headers.authorization, "Bearer bootstrap");
-      assert.equal(peer.headers["X-Salix-Credential-Kind"], "workload");
-      yield* peer.receive;
-      const expires = Math.floor(c.nowForTest() / 1000) + 600;
-      yield* peer.send({ type: "connected", connector_run_id: "run-1", workload_credential: { token: "short-1", expires_at: expires } });
+      assert.equal(peer.headers.authorization, "Bearer first");
+      yield* peer.send({ type: "connected", connector_run_id: "run-1", credential_renewal: true });
       yield* settle;
-      assert.equal(c.workloadCredentialForTest().token, "short-1");
-      assert.equal(c.cfg.env.SALIX_WORKLOAD_CREDENTIAL, undefined, "the bootstrap credential stayed in the agents' environment");
-      // Half its life later, a renewal request; the answer replaces it.
-      yield* c.advanceClockForTest(Duration.seconds(301));
+      yield* c.renewCredential("second");
+      const renew = yield* nextRequest(peer, "connector_credential_renew");
+      assert.equal(renew.params.token, "second");
+      yield* peer.send({ id: renew.id, type: "response", result: { expires_at: 1 } });
       yield* settle;
-      const renew = yield* peer.receive;
-      assert.equal(renew.method, "workload_credential_renew");
-      yield* peer.send({ id: renew.id, type: "response", result: { token: "short-2", expires_at: expires + 600 } });
+      yield* c.advanceClockForTest(Duration.seconds(5));
       yield* settle;
-      assert.equal(c.workloadCredentialForTest().token, "short-2");
+      assert.equal(salix.dials.length, 1, "the connection was dialed again after Salix took the credential");
       yield* peer.close;
-      yield* Fiber.await(session);
-      // The next connection presents the renewed credential.
-      const again = yield* Effect.forkChild(c.runRemoteOnce);
+      yield* settle;
+      yield* c.advanceClockForTest(Duration.seconds(2));
+      yield* settle;
       const next = yield* Queue.take(salix.accepted);
-      assert.equal(next.headers.authorization, "Bearer short-2");
-      yield* next.close;
-      yield* Fiber.await(again);
+      assert.equal(next.headers.authorization, "Bearer second");
+      yield* Fiber.interrupt(remote);
+      yield* c.close();
+    }),
+  ));
+
+// A Salix that refuses the next credential, or does not take one over the connection, gets a new connection that
+// presents it, at once rather than when the current credential expires.
+test("a device connection whose Salix refuses or cannot take the next credential dials again with it", () =>
+  run(
+    Effect.gen(function* () {
+      const salix = yield* memorySockets();
+      const c = makeConnector({ ...isolated, server: "https://salix.test", token: "first", name: "laptop", root: tempDir(), reconnect: true, testClock: true }, salix.layer);
+      const remote = yield* Effect.forkChild(c.runRemote);
+      const refusing = yield* Queue.take(salix.accepted);
+      yield* refusing.send({ type: "connected", connector_run_id: "run-1", credential_renewal: true });
+      yield* settle;
+      yield* c.renewCredential("second");
+      const renew = yield* nextRequest(refusing, "connector_credential_renew");
+      yield* refusing.send({ id: renew.id, type: "error", error: "connector credential not renewed" });
+      yield* refusing.closed;
+      yield* c.advanceClockForTest(Duration.seconds(2));
+      yield* settle;
+      const older = yield* Queue.take(salix.accepted);
+      assert.equal(older.headers.authorization, "Bearer second");
+      // A Salix from before renewal says nothing of it in `connected`.
+      yield* older.send({ type: "connected", connector_run_id: "run-2" });
+      yield* settle;
+      yield* c.renewCredential("third");
+      yield* older.closed;
+      yield* c.advanceClockForTest(Duration.seconds(2));
+      yield* settle;
+      const next = yield* Queue.take(salix.accepted);
+      assert.equal(next.headers.authorization, "Bearer third");
+      yield* Fiber.interrupt(remote);
+      yield* c.close();
+    }),
+  ));
+
+// A Compute Workload's station presents its connect credential on every connection: it has no expiry, so after a
+// connection ends the station connects again with the same one.
+test("a workload presents its connect credential on every connection", () =>
+  run(
+    Effect.gen(function* () {
+      const salix = yield* memorySockets();
+      const c = makeConnector({ ...isolated, server: "https://salix.test", workloadCredential: "connect-credential", name: "worker", root: tempDir(), testClock: true }, salix.layer);
+      for (const runId of ["run-1", "run-2"]) {
+        const session = yield* Effect.forkChild(c.runRemoteOnce);
+        const peer = yield* Queue.take(salix.accepted);
+        assert.equal(peer.headers.authorization, "Bearer connect-credential", `${runId} presented another credential`);
+        assert.equal(peer.headers["X-Salix-Credential-Kind"], "workload");
+        yield* peer.receive;
+        yield* peer.send({ type: "connected", connector_run_id: runId });
+        yield* settle;
+        yield* peer.close;
+        yield* Fiber.await(session);
+      }
       yield* c.close();
     }),
   ));

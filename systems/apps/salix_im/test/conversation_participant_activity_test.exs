@@ -43,6 +43,28 @@ defmodule SalixIM.ConversationParticipantActivityTest do
     end
   end
 
+  test "a running tool call names its tool; only another wait is waiting; both say when they began" do
+    snapshot = %{"state" => "active", "status" => "is waiting...", "updated_at" => 1}
+
+    tool =
+      project(Map.put(snapshot, "wait", %{"tool_name" => "web.search", "started_at_ms" => 7}))
+
+    assert tool["wait_tool"] == "web.search"
+    assert tool["wait_started_at"] == 7
+    refute Map.has_key?(tool, "waiting")
+
+    wait = project(Map.put(snapshot, "wait", %{"reason" => "private", "started_at_ms" => 42}))
+    assert wait["waiting"] == true
+    assert wait["wait_started_at"] == 42
+    refute Map.has_key?(wait, "wait_tool")
+    refute inspect(wait) =~ "private"
+
+    stopped =
+      project(%{snapshot | "state" => "stopped"} |> Map.put("wait", %{"tool_name" => "x"}))
+
+    refute Map.has_key?(stopped, "wait_tool")
+  end
+
   defp project(snapshot, conversation_id \\ "conversation") do
     ConversationParticipantActivity.status_result(
       "group",

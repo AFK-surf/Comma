@@ -370,6 +370,11 @@ test("adds, switches off and removes profiles, and shows subscription quota", as
   expect(
     await page.evaluate(() => JSON.stringify(localStorage) + document.cookie)
   ).not.toContain("sk-or-secret-42");
+  // The first profile added asks once whether the Router may use it; Continue
+  // keeps it on and the later profiles are not asked again.
+  const turnOn = page.getByRole("dialog", { name: "Turn on OpenRouter?", exact: true });
+  await turnOn.getByRole("button", { name: "Continue", exact: true }).click();
+  await expect(turnOn).toHaveCount(0);
 
   // A gateway on the reader's own endpoint speaks the protocol chosen for it.
   await page.getByRole("button", { name: "Add profile", exact: true }).click();

@@ -1,15 +1,22 @@
+import { openMiniAppRunLink } from "../../miniAppRunLink";
 import { uiClock, type CancelUiTimer } from "@comma/ui/clock";
 import { useApplicationMenu } from "../application-menu/useApplicationMenu";
 import { useTaskSummary } from "../tasks/useTaskArchive";
 import { openUrlInExternalBrowser } from "../chat/thread/inline/linkActions";
 import { Button } from "@comma/ui/components/Button";
 import {
+  BranchIcon,
+  ConsoleSimpleIcon,
   ExpandSimpleIcon,
   FileIcon,
   GlobeIcon,
   MacbookIcon,
+  SquareGridCircleIcon,
+  WindowAppIcon,
 } from "@comma/ui/components/icons";
 import { DeviceScreenPanel } from "../remote-screen/DeviceScreenPanel";
+import { SidebarMiniApp } from "../apps/SidebarMiniApp";
+import { miniAppWindowRoute, useMiniAppWindows } from "../apps/miniAppOpen";
 import { taskStatusBucket, taskStatusIcon } from "@comma/ui/components/task-workspace";
 import {
   RightSidebar,
@@ -56,6 +63,7 @@ import {
   type ConversationViewActions,
 } from "../chat/conversation/ConversationView";
 import { type TasksFilterLink, useOpenTasksFilter } from "../tasks/taskChips";
+import type { ChatConversationFile } from "@comma/chat-contract";
 import type { AttachmentUploadInput, ChatConversationRef } from "@comma/core/chat";
 import { useChatRegistry } from "../chat/ChatProvider";
 import { useConversation } from "../chat/conversation/useConversation";
@@ -70,6 +78,8 @@ import {
   type ChatSidebarHost,
   type ChatSidebarSession,
   useChatSidebar,
+  useChatSidebarActions,
+  useChatSidebarOpen,
   useChatSidebarWidth,
 } from "./ChatSidebarContext";
 import {
@@ -77,6 +87,7 @@ import {
   buildBrowserElementInspectionMessage,
 } from "./browserElementInspection";
 import { FilePreviewPanel } from "./FilePreviewPanel";
+import { CodingChangesPanel } from "../chat/tasks/CodingChangesPanel";
 import { DrivePreviewPanel } from "../drive/DrivePreviewPanel";
 import {
   SessionHistoryPage,
@@ -96,8 +107,11 @@ const fileTabPrefix = "file:";
 const driveTabPrefix = "drive:";
 const driveTabId = (fileId: string) => `${driveTabPrefix}${fileId}`;
 const screenTabPrefix = "screen:";
+const appTabPrefix = "app:";
 const historyTabPrefix = "history:";
 const historyTabId = (pageId: string) => `${historyTabPrefix}${pageId}`;
+const changesTabPrefix = "changes:";
+const changesTabId = (pageId: string) => `${changesTabPrefix}${pageId}`;
 const driveFileIdFromTab = (tabId: string) =>
   tabId.startsWith(driveTabPrefix) ? tabId.slice(driveTabPrefix.length) : undefined;
 
@@ -183,7 +197,9 @@ export function ChatSidebarSurface({
     closeFilePreview,
     selectFilePreview,
     closeHistoryPage,
+    closeChangesPage,
     closeScreenPage,
+    closeAppPage,
     getNativeBrowserCapacityBlockedEpoch,
     isOpen,
     toggleActive,
@@ -196,7 +212,9 @@ export function ChatSidebarSurface({
     selectChat,
     selectDrivePreview,
     selectHistoryPage,
+    selectChangesPage,
     selectScreenPage,
+    selectAppPage,
     trailingRef,
     updateBrowserPage,
     updateBrowserPageMetadata,
@@ -285,6 +303,25 @@ export function ChatSidebarSurface({
     [displayedHost, registry]
   );
 
+  const attachPreviewConversationFiles = useCallback(
+    (files: ChatConversationFile[]) => {
+      if (!displayedHost) return;
+      const attempt = registry.beginAttempt();
+      return attempt
+        .run(() =>
+          attempt
+            .retain(
+              displayedHost.workspaceId,
+              displayedHost.groupId,
+              displayedHost.conversationId
+            )
+            .channel.attachConversationFiles?.(files)
+        )
+        .finally(() => attempt.release());
+    },
+    [displayedHost, registry]
+  );
+
   const activeChat = activeSidebarChat(displayedSession);
   const chats = displayedSession?.chats ?? [];
   const browserPages = displayedSession?.browserPages ?? [];
@@ -300,10 +337,19 @@ export function ChatSidebarSurface({
   const activeHistoryPage =
     historyPages.find((page) => page.id === displayedSession?.activeHistoryPageId) ??
     historyPages[0];
+  const changesPages = displayedSession?.changesPages ?? [];
+  const activeChangesPage =
+    changesPages.find((page) => page.id === displayedSession?.activeChangesPageId) ??
+    changesPages[0];
   const screenPages = displayedSession?.screenPages ?? [];
   const activeScreenPage =
     screenPages.find((page) => page.id === displayedSession?.activeScreenPageId) ??
     screenPages[0];
+  const appPages = displayedSession?.appPages ?? [];
+  const appWindows = useMiniAppWindows();
+  const activeAppPage =
+    appPages.find((page) => page.id === displayedSession?.activeAppPageId) ??
+    appPages[0];
   const activeBrowserPageId = displayedSession?.activeBrowserPageId;
   const activeBrowserPage =
     browserPages.find((page) => page.id === activeBrowserPageId) ?? browserPages[0];
@@ -321,12 +367,23 @@ export function ChatSidebarSurface({
     file: filePreviews.length > 0,
     history: historyPages.length > 0,
     screen: screenPages.length > 0,
+    changes: changesPages.length > 0,
+    app: appPages.length > 0,
   };
   const activeSurface = availableSurfaces[requestedSurface]
     ? requestedSurface
-    : ((["chat", "browser", "drive", "history", "file", "screen"] as const).find(
-        (surface) => availableSurfaces[surface]
-      ) ?? "chat");
+    : ((
+        [
+          "chat",
+          "app",
+          "browser",
+          "drive",
+          "history",
+          "changes",
+          "file",
+          "screen",
+        ] as const
+      ).find((surface) => availableSurfaces[surface]) ?? "chat");
   const activeTab =
     activeSurface === "file"
       ? `${fileTabPrefix}${activeFilePreview?.id ?? ""}`
@@ -334,13 +391,17 @@ export function ChatSidebarSurface({
         ? activeChat
           ? chatTabId(activeChat)
           : ""
-        : activeSurface === "screen"
-          ? `${screenTabPrefix}${activeScreenPage?.id ?? ""}`
-          : activeSurface === "history"
-            ? historyTabId(activeHistoryPage?.id ?? "")
-            : activeSurface === "drive"
-              ? driveTabId(activeDrivePreview?.id ?? "")
-              : (activeBrowserPage?.id ?? browserPages[0]?.id ?? "");
+        : activeSurface === "app"
+          ? `${appTabPrefix}${activeAppPage?.id ?? ""}`
+          : activeSurface === "screen"
+            ? `${screenTabPrefix}${activeScreenPage?.id ?? ""}`
+            : activeSurface === "history"
+              ? historyTabId(activeHistoryPage?.id ?? "")
+              : activeSurface === "changes"
+                ? changesTabId(activeChangesPage?.id ?? "")
+                : activeSurface === "drive"
+                  ? driveTabId(activeDrivePreview?.id ?? "")
+                  : (activeBrowserPage?.id ?? browserPages[0]?.id ?? "");
 
   const expandChat = () => {
     if (!activeChat) return;
@@ -384,6 +445,18 @@ export function ChatSidebarSurface({
       label: preview.name,
       panelId: `chat-sidebar-drive-panel-${preview.id}`,
     })),
+    ...appPages.map((page) => ({
+      closable: true,
+      // An app running in a window of its own says so on its tab.
+      icon: appWindows.has(miniAppWindowRoute(page)) ? (
+        <WindowAppIcon className="size-5" />
+      ) : (
+        <SquareGridCircleIcon className="size-5" />
+      ),
+      id: `${appTabPrefix}${page.id}`,
+      label: page.name,
+      panelId: `chat-sidebar-app-panel-${page.id}`,
+    })),
     ...screenPages.map((page) => ({
       closable: true,
       icon: <MacbookIcon className="size-5" />,
@@ -397,9 +470,23 @@ export function ChatSidebarSurface({
       label: `${messages.session_history_title()} · ${sessionParticipantName(page.participant, routerName, messages.chat_actor_worker())}`,
       panelId: `chat-sidebar-history-panel-${page.id}`,
     })),
+    ...changesPages.map((page) => ({
+      closable: true,
+      icon: <BranchIcon className="size-5" />,
+      id: changesTabId(page.id),
+      label: page.branch
+        ? `${messages.coding_changes()} · ${page.branch}`
+        : messages.coding_changes(),
+      panelId: `chat-sidebar-changes-panel-${page.id}`,
+    })),
     ...browserPages.map((page) => ({
       closable: true,
-      icon: <BrowserPageIcon favicon={page.favicon} />,
+      icon:
+        page.kind === "terminal" ? (
+          <ConsoleSimpleIcon className="size-5" />
+        ) : (
+          <BrowserPageIcon favicon={page.favicon} />
+        ),
       id: page.id,
       label: browserPageLabel(page),
       panelId: `chat-sidebar-browser-panel-${page.id}`,
@@ -415,8 +502,16 @@ export function ChatSidebarSurface({
       selectScreenPage(displayedHost, tabId.slice(screenTabPrefix.length));
       return;
     }
+    if (tabId.startsWith(appTabPrefix)) {
+      selectAppPage(displayedHost, tabId.slice(appTabPrefix.length));
+      return;
+    }
     if (tabId.startsWith(historyTabPrefix)) {
       selectHistoryPage(displayedHost, tabId.slice(historyTabPrefix.length));
+      return;
+    }
+    if (tabId.startsWith(changesTabPrefix)) {
+      selectChangesPage(displayedHost, tabId.slice(changesTabPrefix.length));
       return;
     }
     if (tabId.startsWith(chatTabPrefix)) {
@@ -440,8 +535,16 @@ export function ChatSidebarSurface({
       closeScreenPage(displayedHost, tabId.slice(screenTabPrefix.length));
       return;
     }
+    if (tabId.startsWith(appTabPrefix)) {
+      closeAppPage(displayedHost, tabId.slice(appTabPrefix.length));
+      return;
+    }
     if (tabId.startsWith(historyTabPrefix)) {
       closeHistoryPage(displayedHost, tabId.slice(historyTabPrefix.length));
+      return;
+    }
+    if (tabId.startsWith(changesTabPrefix)) {
+      closeChangesPage(displayedHost, tabId.slice(changesTabPrefix.length));
       return;
     }
     if (tabId.startsWith(chatTabPrefix)) {
@@ -557,6 +660,7 @@ export function ChatSidebarSurface({
               source={activeFilePreview.source}
               panelId="chat-sidebar-file-panel"
               onAttachFiles={attachPreviewImage}
+              onAttachConversationFiles={attachPreviewConversationFiles}
               onOpenBrowser={(url) => openBrowser(displayedHost, { url })}
             />
           ) : null}
@@ -569,6 +673,26 @@ export function ChatSidebarSurface({
               panelId={`chat-sidebar-drive-panel-${activeDrivePreview.id}`}
             />
           ) : null}
+          {appPages.map((page) => {
+            const shown = activeSurface === "app" && activeAppPage?.id === page.id;
+            return (
+              <section
+                key={page.id}
+                role="tabpanel"
+                id={`chat-sidebar-app-panel-${page.id}`}
+                aria-label={page.name}
+                hidden={!shown}
+                style={{ display: shown ? "flex" : "none" }}
+                className="min-h-0 min-w-0 flex-1 flex-col"
+              >
+                <SidebarMiniApp
+                  host={displayedHost}
+                  page={page}
+                  windowId={appWindows.get(miniAppWindowRoute(page))}
+                />
+              </section>
+            );
+          })}
           {screenPages.map((page) => {
             const shown =
               activeSurface === "screen" && activeScreenPage?.id === page.id;
@@ -612,6 +736,23 @@ export function ChatSidebarSurface({
               />
             </section>
           ))}
+          {changesPages.map((page) => {
+            const shown =
+              activeSurface === "changes" && activeChangesPage?.id === page.id;
+            return (
+              <section
+                key={page.id}
+                role="tabpanel"
+                id={`chat-sidebar-changes-panel-${page.id}`}
+                aria-label={messages.coding_changes()}
+                hidden={!shown}
+                style={{ display: shown ? "flex" : "none" }}
+                className="min-h-0 min-w-0 flex-1 flex-col"
+              >
+                <CodingChangesPanel active={open && shown} page={page} />
+              </section>
+            );
+          })}
           {activeSurface === "chat" && activeChat ? (
             <ChatSidebarConversation
               key={chatSidebarHostKey(activeChat)}
@@ -635,7 +776,8 @@ export function ChatSidebarSurface({
 
 /** Window bar control for the Chat Sidebar; the bar owns its placement. */
 export function ChatSidebarToggle() {
-  const { isOpen, toggleActive } = useChatSidebar();
+  const isOpen = useChatSidebarOpen();
+  const { toggleActive } = useChatSidebarActions();
   const rightSidebarShortcut = useOptionalAppShortcutBinding("toggle-right-sidebar");
 
   return (
@@ -708,11 +850,12 @@ function ChatSidebarConversation({
   const skills = useWorkspaceSkills(target.workspaceId);
   // Depend on the stable per-channel action identities, not the conversation
   // object (whose identity changes on every state emit).
-  const { acceptTaskReview, refresh, setTaskStatus } = conversation;
+  const { acceptTaskReview, refresh, setTaskRun, setTaskStatus } = conversation;
   const actions = useMemo<ConversationViewActions>(
     () => ({
       acceptTaskReview,
       setTaskStatus,
+      setTaskRun,
       setTaskLabels: async (labelIds) => {
         try {
           await call("taskLabels.assign", {
@@ -744,6 +887,7 @@ function ChatSidebarConversation({
     [
       acceptTaskReview,
       setTaskStatus,
+      setTaskRun,
       call,
       target.conversationId,
       target.groupId,
@@ -1026,6 +1170,7 @@ function BrowserSidebarPanel({
       setAddressError("Enter a valid http or https address.");
       return;
     }
+    if (openMiniAppRunLink(url)) return;
     const panelGeneration = panelGenerationRef.current;
     const requestGeneration = panelRequestGenerationRef.current + 1;
     panelRequestGenerationRef.current = requestGeneration;
@@ -1107,62 +1252,65 @@ function BrowserSidebarPanel({
       id={`chat-sidebar-browser-panel-${page.id}`}
       role="tabpanel"
     >
-      <RightSidebarBrowserToolbar
-        address={address}
-        addressInvalid={Boolean(addressError)}
-        canGoBack={Boolean(browserState.canGoBack)}
-        canGoForward={Boolean(browserState.canGoForward)}
-        disabled={!browserState.active}
-        loading={Boolean(browserState.loading)}
-        inspecting={inspecting}
-        onAddressBlur={() => setEditingAddress(false)}
-        onAddressChange={setAddress}
-        onAddressFocus={() => setEditingAddress(true)}
-        onAddressSubmit={() => {
-          void submitAddress();
-        }}
-        onBack={() => {
-          void navigate("back");
-        }}
-        onForward={() => {
-          void navigate("forward");
-        }}
-        onInspect={
-          onInspectElement
-            ? () => {
-                void toggleInspection();
-              }
-            : undefined
-        }
-        onOpenExternal={openExternal}
-        onPageMenu={
-          bridge.platform === "electron"
-            ? (anchor) => {
-                void bridge.browserSidebar
-                  .showPermissions({ sessionId, anchor })
-                  .then((result) => {
-                    if (result.status === "unavailable")
-                      toast.error(result.reason ?? "The page menu is unavailable.");
-                    else if (result.picked === "import-sign-ins") setImportOpen(true);
-                    else if (result.picked === "open-external") openExternal();
-                  })
-                  .catch((error) =>
-                    toast.error(
-                      error instanceof Error
-                        ? error.message
-                        : "The page menu is unavailable."
-                    )
-                  );
-              }
-            : undefined
-        }
-        onReload={() => {
-          void navigate("reload");
-        }}
-        onStop={() => {
-          void navigate("stop");
-        }}
-      />
+      {/* A terminal is not a page to browse: no address bar, no page menu, no sign-in import. */}
+      {page.kind === "terminal" ? null : (
+        <RightSidebarBrowserToolbar
+          address={address}
+          addressInvalid={Boolean(addressError)}
+          canGoBack={Boolean(browserState.canGoBack)}
+          canGoForward={Boolean(browserState.canGoForward)}
+          disabled={!browserState.active}
+          loading={Boolean(browserState.loading)}
+          inspecting={inspecting}
+          onAddressBlur={() => setEditingAddress(false)}
+          onAddressChange={setAddress}
+          onAddressFocus={() => setEditingAddress(true)}
+          onAddressSubmit={() => {
+            void submitAddress();
+          }}
+          onBack={() => {
+            void navigate("back");
+          }}
+          onForward={() => {
+            void navigate("forward");
+          }}
+          onInspect={
+            onInspectElement
+              ? () => {
+                  void toggleInspection();
+                }
+              : undefined
+          }
+          onOpenExternal={openExternal}
+          onPageMenu={
+            bridge.platform === "electron"
+              ? (anchor) => {
+                  void bridge.browserSidebar
+                    .showPermissions({ sessionId, anchor })
+                    .then((result) => {
+                      if (result.status === "unavailable")
+                        toast.error(result.reason ?? "The page menu is unavailable.");
+                      else if (result.picked === "import-sign-ins") setImportOpen(true);
+                      else if (result.picked === "open-external") openExternal();
+                    })
+                    .catch((error) =>
+                      toast.error(
+                        error instanceof Error
+                          ? error.message
+                          : "The page menu is unavailable."
+                      )
+                    );
+                }
+              : undefined
+          }
+          onReload={() => {
+            void navigate("reload");
+          }}
+          onStop={() => {
+            void navigate("stop");
+          }}
+        />
+      )}
       {visible && browserState.active && browserState.passkey ? (
         <BrowserPasskeyDialog
           onDismiss={() => {
@@ -1174,7 +1322,9 @@ function BrowserSidebarPanel({
           prompt={browserState.passkey}
         />
       ) : null}
-      {bridge.platform === "electron" && !unavailableReason ? (
+      {bridge.platform === "electron" &&
+      !unavailableReason &&
+      page.kind !== "terminal" ? (
         <BrowserImportOffer onImport={() => setImportOpen(true)} />
       ) : null}
       {importOpen ? (
@@ -1930,19 +2080,19 @@ function NativeBrowserViewport({
         ? undefined
         : new ResizeObserver(scheduleSync);
     const sidebar = element.closest(".comma-chat-sidebar");
+    const surface = sidebar?.querySelector(":scope > .comma-chat-sidebar-surface");
+    // The surface slides in by transform, which moves the view's box without
+    // resizing it: place the native view again once the slide ends.
     const syncAfterSidebarTransition = (event: Event) => {
       const transition = event as TransitionEvent;
-      if (event.target === sidebar && transition.propertyName === "width") {
+      if (event.target === surface && transition.propertyName === "transform") {
         scheduleSync();
       }
     };
-    // The claim tracks the sidebar's own box rather than the viewport's. The
-    // viewport keeps its width through the open transition — the sidebar clips
-    // it instead of resizing it — so an observer on the viewport alone never
-    // fires and the claim latches on a mid-transition rect a few pixels wide.
-    // Watching the sidebar republishes on every frame of that transition, and
-    // also covers the widths `transitionend` never reports: a `max-width`
-    // clamp, an interrupted transition, or none at all under reduced motion.
+    // The claim tracks the sidebar's own box rather than the viewport's: the
+    // aside takes its width in one step as it opens and closes, while the
+    // viewport keeps its own. Watching the aside also covers the widths a
+    // `max-width` clamp gives it.
     const obstructionObserver =
       typeof ResizeObserver === "undefined"
         ? undefined
@@ -2011,7 +2161,7 @@ function BrowserUnavailable({
           onPress={() => requestDesktopApp("browser")}
           size="sm"
         >
-          {messages.desktop_app_get_mac()}
+          {messages.desktop_app_get()}
         </Button>
       ) : null}
       {canOpenExternal ? (

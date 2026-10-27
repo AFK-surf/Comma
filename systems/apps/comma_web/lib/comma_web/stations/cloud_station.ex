@@ -1,15 +1,14 @@
 defmodule CommaWeb.Stations.CloudStation do
   @moduledoc """
-  The control plane for `SalixWeb.StationPlace`: a Group's Cloud VM station is
-  placed in that Group's roster (`Comma.Stations.admit_cloud_station/6`),
-  whichever product owns the Group.
+  The control plane for `SalixWeb.StationPlace`. Local roster admission joins
+  the Workload owner's transaction; notifications follow its commit.
   """
 
   @behaviour SalixWeb.StationPlace
 
   @impl true
-  def admit(tenant_id, group_id, station_id, previous_station_id, version) do
-    Comma.Stations.admit_cloud_station(
+  def prepare(tenant_id, group_id, station_id, previous_station_id, version) do
+    Comma.Stations.prepare_cloud_station(
       tenant_id,
       group_id,
       station_id,
@@ -18,6 +17,9 @@ defmodule CommaWeb.Stations.CloudStation do
       public_origin()
     )
   end
+
+  @impl true
+  def publish(admission), do: Comma.Stations.publish_cloud_station(admission)
 
   # The Cloud VM's station reaches this server at its public URL, as an
   # enrolled station reaches the host its install command named.

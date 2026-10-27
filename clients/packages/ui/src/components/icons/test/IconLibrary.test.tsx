@@ -56,9 +56,8 @@ describe("Central icon wrappers", () => {
       )
     );
 
-    // 1.5 comes from the glyphs taken pre-thinned: Central ships them fill-only
-    // in the stroke-2 package, so they are sourced from stroke-1.5 instead,
-    // where BookIcon happens to be a real stroke already at 1.5.
+    // 1.5 comes from the few glyphs taken from the stroke-1.5 package, where
+    // they are a real stroke and the stroke-2 package's are not.
     expect(Array.from(nominalStrokeWidths).toSorted()).toEqual([
       "0.5",
       "0.75",

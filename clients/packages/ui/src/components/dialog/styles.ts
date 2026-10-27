@@ -67,6 +67,31 @@ export const dialogShortcutKeyTone = {
  */
 export const dialogCloseButton = "absolute top-md right-md [&_.comma-icon-slot]:size-6";
 
+/**
+ * Compose shell — Linear's New issue: the default shell's surface with softer
+ * corners and tighter insets, the breadcrumb row lg from the top and the body
+ * lg below it. A whole class list rather than overrides of `dialogShell`:
+ * tailwind-merge does not see the theme's named sizes (`rounded-xl` against
+ * `rounded-2xl`, `w-dialog-default` against `w-dialog-compose`) as one group.
+ */
+export const dialogComposeShell =
+  "relative m-0 flex w-dialog-compose max-w-full flex-col gap-lg overflow-hidden rounded-2xl " +
+  "border-[0.5px] border-solid border-primary bg-popup-primary px-xl py-lg text-left shadow-md outline-none";
+
+/** Compose title row: the leading chip, a chevron, then the title, one chip tall (3xl and xs, the Tasks toolbar's button). */
+export const dialogComposeHeader =
+  "flex h-[calc(var(--spacing-3xl)+var(--spacing-xs))] w-full min-w-0 items-center gap-xs";
+
+/** Compose title: the breadcrumb's last step, set like its text rather than as a heading. */
+export const dialogComposeTitle = "truncate text-sm font-regular text-primary";
+
+/**
+ * Compact close control: an xs (4xl) icon button centred on the compose title row, lg from the top. Its glyph is
+ * 20px, a step up from xs's 16px, so it reads beside the title as the default dialog's does.
+ */
+export const dialogComposeCloseButton =
+  "absolute top-[calc(var(--spacing-lg)-var(--spacing-xxs))] right-md [&_.comma-icon-slot]:size-5";
+
 /** The Settings close control's hover fill. */
 export const dialogCloseButtonStyle = {
   "--comma-button-hover-bg": "var(--color-sidebar-bg-item)",

@@ -198,7 +198,10 @@ describe("the meeting recorder", () => {
     expect(t.state()).toMatchObject({
       phase: "detected",
       meeting: { key: meeting.key },
-      taskSync: { status: "synced", task: { groupId: "group", taskId: "task-0" } },
+      taskSync: {
+        status: "synced",
+        task: { groupId: "group", taskId: "task-0", workspaceId: "workspace" },
+      },
     });
     expect(t.main.seen("start")).toEqual([]);
     await t.act("start");
@@ -284,7 +287,7 @@ describe("the meeting recorder", () => {
       saved: {
         recording,
         summary: "queued",
-        task: { groupId: "group", taskId: "task-0" },
+        task: { groupId: "group", taskId: "task-0", workspaceId: "workspace" },
       },
     });
     expect(t.server.commands.at(-1)).toBe("task-0 finalize v2");
@@ -759,6 +762,62 @@ describe("the meeting Task lane", () => {
     await retried;
     expect(t.state().saved).toMatchObject({ archive: "done" });
     expect(t.main.seen("write")).toHaveLength(3);
+  });
+
+  it("shows a Task that ended without outputs once, then archives them quietly once it attached them", async () => {
+    const t = setup();
+    await t.settle();
+    await t.act("start");
+    const conversation = "/v1/comma/groups/group/conversations/task-0";
+    const attach = (attached: boolean) =>
+      t.host.api.on("GET", conversation, {
+        status: "ready_for_review",
+        messages: attached
+          ? [
+              {
+                message_id: "result",
+                actor_type: "agent",
+                content: ["transcript.txt", "transcript.json", "summary.md"].map(
+                  (ext) => ({ type: "file", file_name: `meeting.${ext}` })
+                ),
+              },
+            ]
+          : [],
+      });
+    attach(false);
+    t.host.api.on("GET", `${conversation}/messages/result/attachments/*`, {
+      status: 200,
+      headers: [],
+      body: utf8("output"),
+    });
+    await t.act("stop");
+    await t.settle(1_000);
+    const shown = t.state().saved;
+    expect(shown).toMatchObject({ archive: "missing" });
+    expect(t.main.seen("write")).toEqual([]);
+    // Kept, so a launch knows it was shown.
+    expect(t.journal()[0]).toMatchObject({ archiveFailureShown: true });
+
+    // A later try (a new session, as at launch) with the Task still without outputs: read again, not shown again.
+    t.core.observeSession(signedIn("alice"));
+    await t.settle(1_000);
+    expect(t.host.api.seen("GET", conversation)).toHaveLength(2);
+    expect(t.state().saved).toBe(shown);
+    // A person's Retry shows it again.
+    const retried = t.client.call("meetingRecorder.retryTaskSync", {});
+    await t.settle(1_000);
+    await retried;
+    expect(t.host.api.seen("GET", conversation)).toHaveLength(3);
+    expect(t.state().saved).toMatchObject({ archive: "missing" });
+    expect(t.state().saved?.receiptId).not.toBe(shown?.receiptId);
+
+    // The person continued the Task and it attached its outputs: the next try saves them without a Retry.
+    attach(true);
+    t.core.observeSession(signedIn("alice"));
+    await t.settle(1_000);
+    expect(t.state().saved).toMatchObject({ archive: "done" });
+    expect(t.main.seen("write")).toHaveLength(3);
+    expect(t.journal()[0]).not.toHaveProperty("archiveFailureShown");
   });
 });
 

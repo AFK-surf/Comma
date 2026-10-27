@@ -10,12 +10,9 @@ defmodule CommaCore.SalixAgentStorageAuthorizationTest do
     :ok
   end
 
-  setup_all do
-    {:ok, _, _} =
-      Ecto.Migrator.with_repo(BillingCore.Repo, fn repo ->
-        Ecto.Migrator.run(repo, :up, all: true)
-      end)
-
+  setup do
+    billing_owner = Ecto.Adapters.SQL.Sandbox.start_owner!(BillingCore.Repo, shared: true)
+    on_exit(fn -> Ecto.Adapters.SQL.Sandbox.stop_owner(billing_owner) end)
     :ok
   end
 
@@ -95,8 +92,6 @@ defmodule CommaCore.SalixAgentStorageAuthorizationTest do
   end
 
   defp issue_unlimited_grant(account_id) do
-    ensure_billing_repo_started()
-
     :ok =
       BillingCore.Accounts.ensure_account(%{
         repo: BillingCore.Repo,
@@ -137,8 +132,6 @@ defmodule CommaCore.SalixAgentStorageAuthorizationTest do
   end
 
   defp revoke_default_entitlement(account_id) do
-    ensure_billing_repo_started()
-
     Ecto.Adapters.SQL.query!(
       BillingCore.Repo,
       """
@@ -150,12 +143,6 @@ defmodule CommaCore.SalixAgentStorageAuthorizationTest do
     )
 
     :ok
-  end
-
-  defp ensure_billing_repo_started do
-    unless SystemsRuntime.Proc.whereis(BillingCore.Repo) do
-      start_supervised!(BillingCore.Repo)
-    end
   end
 
   defp future_expiry do

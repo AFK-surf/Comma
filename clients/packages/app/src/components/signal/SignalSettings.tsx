@@ -2,6 +2,7 @@ import { useCommaMessages } from "@comma/i18n/react";
 import { CreatedSecretPanel } from "@comma/ui/components/settings";
 import { Dialog } from "@comma/ui/components/dialog";
 import { useState } from "react";
+import { nativePlatformClipboard } from "../../nativePlatformActions";
 
 const E164 = /^\+[1-9]\d{6,14}$/;
 
@@ -25,6 +26,7 @@ export function SignalCodePanel({
       doneLabel={m.settings_inbound_api_done()}
       label={m.settings_signal_code_title()}
       name={number}
+      onCopy={nativePlatformClipboard.writeText}
       onDismiss={onDismiss}
       secret={command}
       testIds={{ root: "signal-code", secret: "signal-code-message" }}

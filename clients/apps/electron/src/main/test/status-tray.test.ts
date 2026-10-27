@@ -22,6 +22,7 @@ import {
   type StatusTrayTask,
 } from "../status-tray";
 import type { StatusTrayUsageSnapshot } from "../status-tray-usage";
+import { realMainClock } from "../clock";
 
 describe("createCommaStatusTrayIcon", () => {
   it("loads the transparent Comma Center template asset without runtime SVG rasterization", () => {
@@ -64,13 +65,11 @@ const trayHandlers = () => ({
 
 /** Electron's Tray: the left and right clicks it reports, and the menu it pops up. */
 function fakeTray() {
-  const listeners = new Map<string, (event?: { ctrlKey?: boolean }) => void>();
+  const listeners = new Map<string, () => void>();
   return {
     destroy: vi.fn(),
-    emit: (event: "click" | "right-click", details?: { ctrlKey?: boolean }) =>
-      listeners.get(event)?.(details),
-    on: (event: string, listener: (event?: { ctrlKey?: boolean }) => void) =>
-      listeners.set(event, listener),
+    emit: (event: "click" | "right-click" | "mouse-enter") => listeners.get(event)?.(),
+    on: (event: string, listener: () => void) => listeners.set(event, listener),
     popUpContextMenu: vi.fn(),
     setContextMenu: vi.fn(),
     setToolTip: vi.fn(),
@@ -139,12 +138,14 @@ function trayHarness(
         },
         createTray: () => tray,
         platform,
-        schedule: (run) => scheduled.push(run),
+        schedule: (run) => {
+          scheduled.push(run);
+        },
         toolTip,
       }),
     ...(locale ? { locale } : {}),
     ...handlers,
-    ...(now ? { now } : {}),
+    ...(now ? { clock: { ...realMainClock, now } } : {}),
     productName: "Comma",
   });
   const rows = () =>
@@ -171,7 +172,7 @@ describe("createCommaStatusTray", () => {
       settingsAccelerator: "Super+,",
     });
 
-    expect(tray.setToolTip).toHaveBeenCalledWith("Comma is running");
+    expect(tray.setToolTip).toHaveBeenCalledWith("Comma");
     expect(rows()).toEqual([
       "Open Comma [Alt+Space]",
       "---",
@@ -204,7 +205,7 @@ describe("createCommaStatusTray", () => {
   it("omits the Task section without an In progress Task, and unset shortcuts, in Simplified Chinese too", () => {
     const { rows, tray } = trayHarness({ inProgressTasks: [] }, { locale: "zh-CN" });
 
-    expect(tray.setToolTip).toHaveBeenCalledWith("Comma 正在运行");
+    expect(tray.setToolTip).toHaveBeenCalledWith("Comma");
     expect(rows()).toEqual(["打开 Comma", "---", "设置...", "---", "退出 Comma"]);
   });
 
@@ -278,69 +279,77 @@ describe("createCommaStatusTray", () => {
 });
 
 describe("electronStatusTrayHost", () => {
-  it("pops the menu up on macOS with its times said from then, and leaves the left click to Quick Chat", () => {
+  it("restores the Windows tooltip on hover after Explorer rebuilds the icon", () => {
+    const tray = fakeTray();
+    let shellTooltip = "";
+    tray.setToolTip.mockImplementation((value: string) => {
+      shellTooltip = value;
+    });
+    const host = electronStatusTrayHost({
+      buildMenu: () => ({ on: vi.fn() }),
+      createTray: () => tray,
+      platform: "win32",
+      toolTip: "Comma",
+    });
+    expect(shellTooltip).toBe("Comma");
+    // Electron 42 re-adds the icon without its tooltip after TaskbarCreated.
+    shellTooltip = "";
+    tray.emit("mouse-enter");
+    expect(shellTooltip).toBe("Comma");
+    host.destroy();
+    shellTooltip = "";
+    tray.emit("mouse-enter");
+    expect(shellTooltip).toBe("");
+  });
+
+  it("pops the menu up on macOS on either click, with its times said from then; its row starts Quick Chat", () => {
     let time = start;
-    const { controller, handlers, menus, tray } = trayHarness(
+    const { handlers, menus, tray } = trayHarness(
       { inProgressTasks: [], quickChat: true, usage },
       { now: () => time, platform: "darwin" }
     );
-    const refreshed = () =>
-      menus.at(-1)!.items.find((item) => item.id === "usage:refresh");
+    const row = (id: string) => menus.at(-1)!.items.find((item) => item.id === id);
     expect(tray.setContextMenu).toHaveBeenLastCalledWith(null);
+    // A left click opens the menu: it never starts Quick Chat by itself.
     tray.emit("click");
+    expect(handlers.onQuickChat).not.toHaveBeenCalled();
+    expect(tray.popUpContextMenu).toHaveBeenLastCalledWith(menus.at(-1));
+    row("quick-chat")!.click!();
     expect(handlers.onQuickChat).toHaveBeenCalledOnce();
 
     time += 2 * 60 * 60_000;
     tray.emit("right-click");
-    expect(handlers.onMenuOpened).toHaveBeenCalledOnce();
-    expect(tray.popUpContextMenu).toHaveBeenLastCalledWith(menus.at(-1));
-    expect(refreshed()?.label).toBe("Refresh · Updated 2h ago");
-    // Control-click is a right click.
-    tray.emit("click", { ctrlKey: true });
+    expect(handlers.onMenuOpened).toHaveBeenCalledTimes(2);
     expect(tray.popUpContextMenu).toHaveBeenCalledTimes(2);
-    expect(handlers.onQuickChat).toHaveBeenCalledOnce();
-
-    // Without Quick Chat a left click opens the menu, as a menu-bar item does.
-    controller.update({ inProgressTasks: [], usage });
-    tray.emit("click");
-    expect(tray.popUpContextMenu).toHaveBeenCalledTimes(3);
-    expect(tray.setContextMenu).not.toHaveBeenCalledWith(menus.at(-1));
+    expect(row("usage:refresh")?.label).toBe("Refresh · Updated 2h ago");
   });
 
-  it("pops the menu up on a right click on Windows; a left click opens nothing", () => {
+  it("pops the menu up on either click on Windows; its row starts Quick Chat", () => {
     const { handlers, menus, tray } = trayHarness(
-      { inProgressTasks: [] },
+      { inProgressTasks: [], quickChat: true },
       { platform: "win32" }
     );
     tray.emit("click");
-    expect(tray.popUpContextMenu).not.toHaveBeenCalled();
-    tray.emit("right-click");
+    expect(handlers.onQuickChat).not.toHaveBeenCalled();
     expect(handlers.onMenuOpened).toHaveBeenCalledOnce();
     expect(tray.popUpContextMenu).toHaveBeenCalledWith(menus.at(-1));
+    tray.emit("right-click");
+    expect(tray.popUpContextMenu).toHaveBeenCalledTimes(2);
+    menus.at(-1)!.items.find((item) => item.id === "quick-chat")!.click!();
+    expect(handlers.onQuickChat).toHaveBeenCalledOnce();
   });
 
-  it("on Linux sets the tray's context menu, unless a left click starts Quick Chat", () => {
-    const { controller, handlers, menus, tray } = trayHarness({
+  it("on Linux sets the tray's context menu, Quick Chat's row included", () => {
+    const { handlers, menus, tray } = trayHarness({
       inProgressTasks: [],
       quickChat: true,
     });
-    // Not the context menu, which the left click would open.
-    expect(tray.setContextMenu).toHaveBeenLastCalledWith(null);
-    tray.emit("click");
-    expect(handlers.onQuickChat).toHaveBeenCalledOnce();
-    tray.emit("right-click");
-    expect(tray.popUpContextMenu).toHaveBeenCalledWith(menus.at(-1));
-    // Control-click is a right click.
-    tray.emit("click", { ctrlKey: true });
-    expect(tray.popUpContextMenu).toHaveBeenCalledTimes(2);
-    expect(handlers.onQuickChat).toHaveBeenCalledOnce();
-
-    controller.update({ inProgressTasks: [], quickChat: false });
     expect(tray.setContextMenu).toHaveBeenLastCalledWith(menus.at(-1));
+    expect(menus.at(-1)!.items.some((item) => item.id === "quick-chat")).toBe(true);
     tray.emit("click");
     tray.emit("right-click");
-    expect(handlers.onQuickChat).toHaveBeenCalledOnce();
-    expect(tray.popUpContextMenu).toHaveBeenCalledTimes(2);
+    expect(handlers.onQuickChat).not.toHaveBeenCalled();
+    expect(tray.popUpContextMenu).not.toHaveBeenCalled();
     // The tray shows it, and it is told as it shows.
     const opened = handlers.onMenuOpened.mock.calls.length;
     menus.at(-1)!.emit("menu-will-show");
@@ -367,7 +376,9 @@ function helperHarness(
         toolTip,
       }),
     ...handlers,
-    ...(now ? { now } : {}),
+    ...(now ? { clock: { ...realMainClock, now } } : {}),
+    // The menu-bar helper is macOS's.
+    platform: "darwin",
     productName: "Comma",
   });
   const select = (id: string) =>
@@ -408,7 +419,7 @@ describe("helperStatusTrayHost", () => {
           { kind: "separator" },
           { id: "quit", kind: "item", title: "Quit Comma", shortcut: "⌘ Q" },
         ],
-        toolTip: "Comma is running",
+        toolTip: "Comma",
         width: 260,
       },
       expect.any(Function),
@@ -444,31 +455,24 @@ describe("helperStatusTrayHost", () => {
     expect(helper.hideStatusMenu).toHaveBeenCalledOnce();
   });
 
-  it("starts Quick Chat on a left click while it runs, and from its row, which shows its gesture", () => {
+  it("starts Quick Chat from its row while it runs, which shows its gesture", () => {
     const { controller, handlers, helper, select } = helperHarness({
       inProgressTasks: [],
       quickChat: true,
     });
     const shown = () =>
-      helper.showStatusMenu.mock.lastCall![0] as {
-        clickId?: string;
-        rows: StatusMenuRow[];
-      };
+      helper.showStatusMenu.mock.lastCall![0] as { rows: StatusMenuRow[] };
 
-    select(shown().clickId!);
-    expect(handlers.onQuickChat).toHaveBeenCalledOnce();
-    expect(handlers.onOpenMainApp).not.toHaveBeenCalled();
     expect(shown().rows.slice(0, 2)).toEqual([
       { id: "open-comma", kind: "item", title: "Open Comma" },
       { id: "quick-chat", kind: "item", shortcut: "Double-tap ⌘", title: "Quick Chat" },
     ]);
     select("quick-chat");
-    expect(handlers.onQuickChat).toHaveBeenCalledTimes(2);
+    expect(handlers.onQuickChat).toHaveBeenCalledOnce();
+    expect(handlers.onOpenMainApp).not.toHaveBeenCalled();
 
-    // Signed out, or its helper down: any click opens the menu again, and
-    // Quick Chat has no row.
+    // Signed out, or its helper down: Quick Chat has no row.
     controller.update({ inProgressTasks: [], quickChat: false });
-    expect(shown().clickId).toBeUndefined();
     expect(shown().rows.some((row) => row.id === "quick-chat")).toBe(false);
   });
 });
@@ -663,7 +667,7 @@ describe("fallbackStatusTrayHost", () => {
     const onLost = helper.showStatusMenu.mock.lastCall![2] as () => void;
     onLost();
     // The rows come again, labeled for the menu Electron draws.
-    expect(tray.setToolTip).toHaveBeenCalledWith("Comma is running");
+    expect(tray.setToolTip).toHaveBeenCalledWith("Comma");
     const taskRow = menus.at(-1)!.find(({ id }) => id === "task:grp_1/cnv_1")!;
     expect(taskRow.label).toMatch(/…$/);
     taskRow.click!();

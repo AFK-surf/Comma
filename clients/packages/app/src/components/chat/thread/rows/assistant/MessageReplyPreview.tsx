@@ -72,6 +72,7 @@ export const MessageReplyPreview = memo(function MessageReplyPreview({
               ? (target.actorRole ?? defaultRole)
               : undefined
           }
+          system={target?.actorType === "system"}
           user={target?.role === "user"}
           unavailable={!target}
           preview

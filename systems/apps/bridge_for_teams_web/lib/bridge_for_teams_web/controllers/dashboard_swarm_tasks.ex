@@ -118,6 +118,10 @@ defmodule BridgeForTeamsWeb.DashboardSwarmTasks do
     content = text(params["content"])
 
     cond do
+      Map.has_key?(params, "requester_user_id") or Map.has_key?(params, "automatic_task_place") ->
+        {:error, 422, "invalid_task",
+         gettext("The Task requester comes from your signed-in session."), %{}}
+
       is_nil(content) ->
         message = gettext("Say what the task should do.")
         {:error, 422, "invalid_task", message, %{"fields" => %{"content" => [message]}}}
@@ -182,11 +186,6 @@ defmodule BridgeForTeamsWeb.DashboardSwarmTasks do
     do:
       {:error, 422, "cloud_vm_disabled", gettext("The Cloud VM is turned off for this swarm."),
        %{}}
-
-  defp place_error(:cloud_vm_not_running),
-    do:
-      {:error, 422, "cloud_vm_not_running",
-       gettext("The Cloud VM is not running. Start it on the Devices page, then try again."), %{}}
 
   defp place_error(:device_offline),
     do:

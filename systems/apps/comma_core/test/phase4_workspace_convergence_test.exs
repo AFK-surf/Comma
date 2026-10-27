@@ -172,10 +172,6 @@ defmodule Comma.Phase4WorkspaceConvergenceTest do
   end
 
   setup do
-    unless SystemsRuntime.Proc.whereis(BillingCore.Repo) do
-      start_supervised!(BillingCore.Repo)
-    end
-
     billing_owner = Ecto.Adapters.SQL.Sandbox.start_owner!(BillingCore.Repo, shared: true)
     comma_owner = Ecto.Adapters.SQL.Sandbox.start_owner!(Comma.Repo, shared: true)
     previous_client = SystemsRuntime.get_env(:comma_core, :salix_client)

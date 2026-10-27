@@ -35,6 +35,12 @@ if [ "$platform" = win32-x64 ]; then
 else
   mkdir -p "$out/node/bin"
   cp "$node" "$out/node/bin/node"
+  # nodejs.org's macOS build keeps its local symbols (24 MB of its 122): they go, its exports (Node-API, for mesh.node)
+  # stay. Stripping breaks nodejs.org's signature, so it is signed ad hoc until the desktop app signs what it carries.
+  if [ "$platform" = darwin-arm64 ] && [ "$(uname)" = Darwin ]; then
+    strip -x "$out/node/bin/node" 2>/dev/null
+    codesign --sign - --force --identifier node "$out/node/bin/node"
+  fi
 fi
 cp "$launcher" "$out/mesh/target/release/stillfail-station$x"
 cp "$mesh" "$runner" "$out/station/"

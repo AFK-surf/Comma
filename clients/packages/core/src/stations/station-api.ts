@@ -4,6 +4,8 @@
 import { z } from "zod";
 
 const text = z.string().max(100_000);
+/** The most of a message a quote holds, in characters (the station cuts it there). */
+export const QUOTE_MAX = 4_000;
 const name = z.string().max(4_096);
 const nullable = <S extends z.ZodType>(schema: S) =>
   schema.nullish().transform((v) => v ?? null);
@@ -69,6 +71,14 @@ export const agentSchema = z.object({
 export type StationAgent = z.output<typeof agentSchema>;
 
 /** One chat a member has on a station (`GET /chats`, and `event: chat`). */
+/** A Task that runs on another station: there, its Session, and the runtime and model it was started with. */
+const runsOnSchema = z.object({
+  station: z.string().min(1).max(256),
+  session: nullable(z.string().max(256)),
+  runtime: nullable(z.string().max(64)),
+  model: nullable(z.string().max(256)),
+});
+
 export const chatRowSchema = z.object({
   id: name,
   session: name,
@@ -92,6 +102,7 @@ export const chatRowSchema = z.object({
   archiveReminderDismissed: z.boolean().optional(),
   archiveRecommended: z.boolean().optional(),
   archiveReviewed: z.boolean().optional(),
+  runsOn: runsOnSchema.optional(),
 });
 export type StationChatRow = z.output<typeof chatRowSchema>;
 
@@ -152,13 +163,29 @@ export const entrySchema = z.object({
     )
     .max(50)
     .default([]),
+  /** What it quotes: a message of the chat (`ts`), or a passage, a page or an image marked elsewhere. */
   quotes: z
-    .array(z.object({ ts: z.string().max(256).nullish() }))
+    .array(
+      z.object({
+        ts: z.string().max(256).nullish(),
+        author: name.nullish(),
+        text: z
+          .string()
+          .max(QUOTE_MAX * 2)
+          .nullish(),
+      })
+    )
     .max(50)
     .default([]),
   card: cardSchema.optional(),
   ending: z.string().max(64).optional(),
   at: z.number().default(0),
+  /** The key steps its agent finished, for the Task's Activity alone; a `milestone` entry holds nothing else. */
+  milestones: z.array(name).max(50).optional(),
+  /** A request made elsewhere that Salix's Router handed the Task (`task.say`). */
+  request: z.literal(true).optional(),
+  /** An agent's post: the message it answers, the last its session was handed before it. */
+  answers: z.number().int().optional(),
 });
 export type StationEntry = z.output<typeof entrySchema>;
 
@@ -175,6 +202,7 @@ export const threadSchema = z.object({
   firstText: nullable(text).optional(),
   last: z.number().int().default(0),
   read: z.number().int().default(0),
+  runsOn: runsOnSchema.optional(),
 });
 export type StationThread = z.output<typeof threadSchema>;
 

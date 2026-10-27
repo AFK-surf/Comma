@@ -287,23 +287,23 @@ defmodule Salix.Bindings.MCPCredentials do
         {:ok, conn}
 
       true ->
-        refresh_connection(tenant_id, provider, conn_id, adapter)
+        refresh_connection(tenant_id, provider, conn_id, conn, adapter)
     end
   end
 
-  defp refresh_connection(tenant_id, provider, conn_id, adapter) do
+  defp refresh_connection(tenant_id, provider, conn_id, conn, adapter) do
     with {:ok, app} <- OAuthApps.get(tenant_id, provider),
          {:ok, _token} <-
            OAuth.valid_token(
              conn_id,
              fn record -> refresh_tokens(adapter, app, record) end,
-             now: SystemsClock.system_time(:millisecond) + @refresh_leeway_ms
+             leeway_ms: @refresh_leeway_ms
            ),
          {:ok, conn} <- OAuth.get(conn_id) do
       {:ok, conn}
     else
       {:error, :reauthorization_required} ->
-        mark_reauthorization_required(conn_id)
+        _ = OAuth.mark_reauthorization_required(conn_id, conn)
         {:error, "OAuth connection requires reauthorization"}
 
       {:error, reason} ->
@@ -331,13 +331,6 @@ defmodule Salix.Bindings.MCPCredentials do
       |> then(fn map ->
         if map["scopes"] in [nil, []], do: Map.delete(map, "scopes"), else: map
       end)
-    end
-  end
-
-  defp mark_reauthorization_required(conn_id) do
-    case OAuth.get(conn_id) do
-      {:ok, conn} -> _ = OAuth.put(conn_id, Map.put(conn, "status", "reauthorization_required"))
-      _ -> :ok
     end
   end
 

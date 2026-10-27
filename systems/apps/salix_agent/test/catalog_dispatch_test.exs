@@ -141,6 +141,11 @@ defmodule SalixAgent.CatalogDispatchTest do
              end)
 
     assert error["body"] =~ "no enabled profile serves gpt-5.5"
+
+    # A retry finds no Profile either: the input stops and names the model.
+    assert error["retryable"] == false
+    assert error["error_class"] == "billing_unavailable"
+    assert error["reason"] == "model_unavailable"
   end
 
   test "a failure before output moves to the next Profile; a started stream does not", %{
@@ -269,12 +274,6 @@ defmodule SalixAgent.CatalogDispatchTest do
 
   test "a model only a Custom endpoint lists can be chosen and served", %{tenant: tenant} do
     # Not in the catalog, and no Custom endpoint lists it yet.
-    assert {:error, {:bad_request, _}} =
-             AccountPool.resolve_config(
-               %{"catalog_model" => "llama3.2:3b", "allow_paid" => true},
-               tenant
-             )
-
     assert {:error, _} = choose(tenant, "llama3.2:3b", nil, true)
 
     {:ok, custom} =
@@ -304,6 +303,16 @@ defmodule SalixAgent.CatalogDispatchTest do
                flunk("a pay-per-use key must not be called")
              end)
 
+    # Only that key serves the model, so choosing it is choosing to pay for it,
+    # and a stored choice that says otherwise reads the same.
+    assert {:ok, %{"allow_paid" => true}} = choose(tenant, "llama3.2:3b", nil, false)
+
+    stored = %{"kind" => "catalog", "model" => "llama3.2:3b", "allow_paid" => false}
+    assert {:ok, %{"allow_paid" => true}} = ModelChoice.public(stored, tenant)
+    {:ok, llm} = ModelChoice.resolve_llm(stored, tenant)
+    assert {:ok, opts} = AccountPool.dispatch(llm, &{:ok, &1})
+    assert opts["base_url"] == "https://ollama.example.test/v1"
+
     # Pinned to the Custom Profile.
     {:ok, pinned} = choose(tenant, "llama3.2:3b", nil, false, custom["id"])
     {:ok, llm} = ModelChoice.resolve_llm(pinned, tenant)
@@ -314,11 +323,19 @@ defmodule SalixAgent.CatalogDispatchTest do
     assert {:error, :invalid_model_configuration} = choose(tenant, "llama3.2:3b", "high", true)
 
     # Another tenant's Custom endpoint does not make the model known here.
-    assert {:error, {:bad_request, _}} =
-             AccountPool.resolve_config(
-               %{"catalog_model" => "llama3.2:3b", "allow_paid" => true},
-               SalixStore.Ids.new_tenant_id()
-             )
+    assert {:error, _} = choose(SalixStore.Ids.new_tenant_id(), "llama3.2:3b", nil, true)
+
+    # Once the endpoint's Profile is removed, a stored choice still reads as
+    # that model, and dispatch stops the input as `model_unavailable`.
+    AccountPool.delete(tenant, custom["id"], custom["version"])
+    assert {:error, :not_found} = Store.get(tenant, custom["id"])
+    {:ok, template} = ModelChoice.record(choice, tenant)
+    assert template["model_display_name"] == "llama3.2:3b"
+    assert {:ok, %{"catalog_model" => "llama3.2:3b"}} = ModelChoice.public(choice, tenant)
+    {:ok, llm} = ModelChoice.resolve_llm(choice, tenant)
+
+    assert {:error, %{"reason" => "model_unavailable", "retryable" => false}} =
+             AccountPool.dispatch(llm, fn _ -> flunk("no Profile serves the model") end)
   end
 
   test "an Agent kept to one Profile uses only that Profile", %{tenant: tenant} do
@@ -505,6 +522,61 @@ defmodule SalixAgent.CatalogDispatchTest do
     assert is_function(opts["transport"], 2)
   end
 
+  test "own subscriptions at their usage limit stop the input as quota_exhausted, naming the one that refills first",
+       %{tenant: tenant} do
+    now = SystemsClock.system_time(:millisecond)
+
+    used_up = fn hours ->
+      %{
+        "quota" => %{
+          "observed_at" => now,
+          "windows" => [
+            %{"used_percent" => 100, "resets_at" => now + hours * 3_600_000, "minutes" => 10_080}
+          ]
+        }
+      }
+    end
+
+    later = subscription(tenant, "codex", Map.put(used_up.(30), "name", "Later"))
+    sooner = subscription(tenant, "codex", Map.put(used_up.(3), "name", "ChatGPT Plus"))
+
+    for route <- [
+          route(tenant, "gpt-5.5", false),
+          Map.put(route(tenant, "gpt-5.5", false), "profile_id", sooner["id"])
+        ] do
+      assert {:error, error} =
+               AccountPool.dispatch(route, fn _ -> flunk("a used-up plan must not be called") end)
+
+      assert error["error_class"] == "billing_unavailable"
+      assert error["reason"] == "quota_exhausted"
+      assert error["retryable"] == false
+
+      assert error["funding"] == %{
+               "source" => "codex",
+               "profile_id" => sooner["id"],
+               "profile_name" => "ChatGPT Plus",
+               "reset_at" => div(now + 3 * 3_600_000, 1000)
+             }
+    end
+
+    # Kept to the other plan, the stop names that one.
+    assert {:error, %{"reason" => "quota_exhausted", "funding" => %{"profile_id" => id}}} =
+             route(tenant, "gpt-5.5", false)
+             |> Map.put("profile_id", later["id"])
+             |> AccountPool.dispatch(fn _ -> flunk("a used-up plan must not be called") end)
+
+    assert id == later["id"]
+
+    # A plan with allowance left serves; pay-per-use serves past used-up plans.
+    {:ok, _} = key(tenant, "openai", "sk-proj-0123456789abcdef")
+    assert {:ok, opts} = AccountPool.dispatch(route(tenant, "gpt-5.5", true), &{:ok, &1})
+    assert opts["base_url"] == "https://api.openai.com/v1"
+
+    subscription(tenant, "codex")
+    assert {:ok, opts} = AccountPool.dispatch(route(tenant, "gpt-5.5", false), &{:ok, &1})
+    assert opts["base_url"] == "subscription://worker/v1"
+  end
+
   test "pinning an API key is choosing to pay for it", %{tenant: tenant} do
     {:ok, openai} = key(tenant, "openai", "sk-proj-0123456789abcdef")
     subscription = subscription(tenant, "codex")
@@ -543,22 +615,28 @@ defmodule SalixAgent.CatalogDispatchTest do
 
   # A ready subscription account: prepared credentials that do not expire soon,
   # so dispatch opens them without asking the worker to refresh.
-  defp subscription(tenant, provider) do
+  defp subscription(tenant, provider, extra \\ %{}) do
     id = Store.id()
     {:ok, cipher} = Store.seal(tenant, id, %{"access_token" => "subscription-token"})
 
     {:ok, record} =
-      Store.create(tenant, %{
-        "id" => id,
-        "credential" => "subscription",
-        "source" => provider,
-        "email" => "member@example.com",
-        "disabled" => false,
-        "status" => "ok",
-        "credentials" => cipher,
-        "prepared" => true,
-        "expires_at" => DateTime.to_iso8601(DateTime.add(SystemsClock.utc_now(), 3600))
-      })
+      Store.create(
+        tenant,
+        Map.merge(
+          %{
+            "id" => id,
+            "credential" => "subscription",
+            "source" => provider,
+            "email" => "member@example.com",
+            "disabled" => false,
+            "status" => "ok",
+            "credentials" => cipher,
+            "prepared" => true,
+            "expires_at" => DateTime.to_iso8601(DateTime.add(SystemsClock.utc_now(), 3600))
+          },
+          extra
+        )
+      )
 
     record
   end

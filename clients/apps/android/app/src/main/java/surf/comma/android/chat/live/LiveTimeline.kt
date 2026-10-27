@@ -13,6 +13,8 @@ import surf.comma.android.chat.render.MarkdownText
 import surf.comma.android.chat.render.MarkdownTree
 import surf.comma.android.chat.render.MessageContent
 import surf.comma.android.chat.render.MessageCopy
+import surf.comma.android.conversation.AgentRequest
+import surf.comma.android.conversation.AgentRequestStatus
 import surf.comma.android.conversation.Connection
 import surf.comma.android.conversation.ChatMessage as LiveMessage
 import surf.comma.android.conversation.ConversationState
@@ -51,6 +53,12 @@ object LiveRowKinds {
      * is a [QuestionCardPayload]: the question and the images its other answer holds.
      */
     const val QUESTION = "question"
+
+    /**
+     * An Agent's request to the person (connect an account): an open card, or the receipt it closes into. It sits
+     * after the Agent's reply to the message its turn served. The payload is the [AgentRequest]'s JSON.
+     */
+    const val AGENT_REQUEST = "agent.request"
 
     private const val SEPARATOR = '\u001F'
 
@@ -128,20 +136,27 @@ fun mapConversation(
     replyActions: Boolean = false,
     /** What this device knows of the question cards' images beyond the core's rows: previews and images being made ready. */
     questionImages: QuestionImagesShown = QuestionImagesShown(),
+    /** The Agent's requests in this conversation (the core's `agentRequests`), for their cards. */
+    requests: List<AgentRequest> = emptyList(),
     resolveMedia: (ChatAttachment) -> ChatAttachment = { it },
 ): LiveTimeline {
     val builder = RowBuilder(state.conversationId.orEmpty(), resolveMedia) { question ->
         QuestionCardPayload.of(question, state.questionAttachments[question.messageId].orEmpty(), questionImages)
     }
+    val placed = placeRequests(state.timeline, requests)
     for (entry in state.timeline) {
         when (entry) {
-            is TimelineEntry.Message -> builder.message(entry.key, entry.message, labels)
+            is TimelineEntry.Message -> {
+                builder.message(entry.key, entry.message, labels)
+                placed.byEntry[entry.key]?.let(builder::requests)
+            }
             is TimelineEntry.Pending -> builder.pending(entry.key, entry.pending, labels)
             is TimelineEntry.Gap -> builder.gap(entry.key, labels.historyGap)
             // Never a row: the text is incomplete until its canonical message replaces it.
             is TimelineEntry.Draft -> Unit
         }
     }
+    builder.requests(placed.waiting)
     val reply = state.reply
     when {
         reply.failed -> builder.replyError(labels.replyErrorTitle,
@@ -153,6 +168,41 @@ fun mapConversation(
     // A failed reply is over, whatever its draft says: no room is kept for its buttons.
     val rows = if (replyActions) builder.rowsWithReplyActions(reply.pending) else builder.rows
     return LiveTimeline(rows, builder.retryTargets, builder.entryRows, builder.rowEntries)
+}
+
+/** Where the request cards go: after the entry of the reply that owns each, or on the newest turn. */
+internal class PlacedRequests(val byEntry: Map<String, List<AgentRequest>>, val waiting: List<AgentRequest>)
+
+/**
+ * Places each request after the reply that owns its card: the Agent's first message after the person's message the
+ * request's turn served. A pending request whose reply has not come (the Agent waits on it) goes on the newest turn.
+ * A finished one with no reply among the messages shown (its turn is not loaded) shows nowhere: its receipt belongs
+ * to that turn. Oldest request first within a reply.
+ */
+internal fun placeRequests(timeline: List<TimelineEntry>, requests: List<AgentRequest>): PlacedRequests {
+    if (requests.isEmpty()) return PlacedRequests(emptyMap(), emptyList())
+    val messages = timeline.filterIsInstance<TimelineEntry.Message>()
+    val index = HashMap<String, Int>()
+    messages.forEachIndexed { at, entry -> index[entry.message.messageId] = at }
+    fun replyAfter(source: String?): String? {
+        val start = source?.let(index::get) ?: return null
+        for (at in start + 1 until messages.size) {
+            val message = messages[at].message
+            if (message.role != surf.comma.android.conversation.ChatRole.USER && message.actorType != SYSTEM_ACTOR)
+                return messages[at].key
+        }
+        return null
+    }
+    val byEntry = LinkedHashMap<String, MutableList<AgentRequest>>()
+    val waiting = ArrayList<AgentRequest>()
+    for (request in requests.sortedBy { it.createdAt ?: 0L }) {
+        val anchor = replyAfter(request.sourceMessageId)
+        when {
+            anchor != null -> byEntry.getOrPut(anchor) { ArrayList() } += request
+            request.status == AgentRequestStatus.PENDING -> waiting += request
+        }
+    }
+    return PlacedRequests(byEntry, waiting)
 }
 
 private class RowBuilder(
@@ -249,6 +299,13 @@ private class RowBuilder(
         flush(split = false)
         mediaAndRefRows(key, message, role, createdAt, labels)
         questionRows(key, message, role, createdAt)
+    }
+
+    /** Request cards, each a row of its own in the current turn. */
+    fun requests(requests: List<AgentRequest>) {
+        for (request in requests)
+            add("request:${request.id}", ChatRole.AGENT, request.reason, request.createdAt ?: 0L, LiveRowKinds.AGENT_REQUEST,
+                request.json().toString())
     }
 
     /** The questions a message asks, each a card of its own after its text, files and task cards. */
@@ -552,7 +609,7 @@ internal fun MessageAttachment.toChatAttachment(conversationId: String, messageI
     val ref = blobRef?.let { runCatching { MediaBlobRef(it.uuid, it.hash, it.size) }.getOrNull() }
     val source = when {
         ref != null && !agentId.isNullOrBlank() -> MediaSource.AgentResource(agentId, ref)
-        ref != null && downloadable -> MediaSource.MessageAttachment(conversationId, messageId, blockIndex, ref)
+        downloadable -> MediaSource.MessageAttachment(conversationId, messageId, blockIndex, ref)
         workspacePath != null && validUploadedImagePath(workspacePath) -> MediaSource.UploadedFile(workspacePath)
         else -> null
     }

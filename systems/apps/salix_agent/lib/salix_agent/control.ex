@@ -30,6 +30,7 @@ defmodule SalixAgent.Control do
 
   defdelegate configure(agent_id, attrs), to: SalixAgent.AgentControl
   defdelegate configure(agent_id, attrs, tenant_id), to: SalixAgent.AgentControl
+  defdelegate configure_if(agent_id, attrs, tenant_id, precondition), to: SalixAgent.AgentControl
 
   defdelegate claim_configuration(agent_id, tenant_id), to: SalixAgent.AgentControl
   defdelegate claim_configuration(agent_id, tenant_id, archived_at), to: SalixAgent.AgentControl

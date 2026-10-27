@@ -88,6 +88,42 @@ defmodule SalixAgent.Tools.DynamicUITest do
     assert reason =~ "node 2"
   end
 
+  test "the help example is a card call whose data passes the card contract" do
+    example = DynamicUI.example_params()
+    assert {:ok, _} = DynamicUI.validate(example)
+
+    empty = put_in(example, ["data", "place", "places"], [])
+    assert {:error, "data", reason, _} = DynamicUI.validate(empty)
+    assert reason =~ "comma.card card (place)"
+  end
+
+  test "a card's data fits the one Worker message that carries it" do
+    item = fn index, title ->
+      %{
+        "source" => "zanwei",
+        "title" => "##{4000 + index} #{title}",
+        "at" => "2026-10-22T09:25:00Z",
+        "status" => %{"label" => "已合并", "tone" => "brand"},
+        "href" => "https://github.com/AFK-surf/Cue/pull/#{4000 + index}",
+        "filterKeys" => ["all", "merged"]
+      }
+    end
+
+    feed = fn title ->
+      card("feed", %{
+        "title" => "今天的 PR",
+        "items" => Enum.map(0..59, &item.(&1, title))
+      })
+    end
+
+    # A day's pull requests with plain titles fit.
+    assert {:ok, _} = DynamicUI.validate(feed.("fix(chat): keep attachments downloading"))
+
+    # 60 items at the 160-character title limit do not: the client would stop the widget.
+    assert {:error, "data", reason, _} = DynamicUI.validate(feed.(String.duplicate("修", 160)))
+    assert reason =~ "comma.data.card is over 31 KiB"
+  end
+
   defp card(kind, data) do
     %{
       input()

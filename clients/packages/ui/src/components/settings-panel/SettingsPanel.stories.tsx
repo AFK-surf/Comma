@@ -220,3 +220,40 @@ export const ServiceCardsNarrow: Story = {
     await expect(action.top).toBeGreaterThanOrEqual(title.bottom);
   },
 };
+
+/** A caution at the foot of a section's card, as Model & API warns of the Router using a profile. */
+export const SectionNote: Story = {
+  render: () => (
+    <SettingsPanel
+      className="h-[480px] w-[1134px]"
+      title="Model & API"
+      sections={[
+        {
+          id: "models.profiles",
+          title: "Profiles",
+          items: [
+            {
+              id: "models.profiles.add",
+              title: "Add a subscription or API key",
+              description: "From any provider. Comma picks a profile for each model.",
+              control: { type: "button", label: "Add profile" },
+            },
+            {
+              id: "models.profile.claude",
+              title: "member@example.com",
+              description: "Anthropic · Claude subscription",
+              icon: <ClaudeAiIcon />,
+              status: { label: "Connected", color: "success" },
+              control: { type: "toggle", checked: true },
+            },
+          ],
+          note: "Once a profile here is connected and turned on, the Router can choose its models for Tasks on its own, and those Tasks use your profile's allowance.",
+        },
+      ]}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const note = canvasElement.querySelector('[data-slot="settings-section-note"]');
+    await expect(note).toHaveClass("text-warning-primary");
+  },
+};

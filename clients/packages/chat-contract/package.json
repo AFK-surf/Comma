@@ -10,12 +10,14 @@
     },
     "./dynamic-ui-runtime": "./src/dynamic-ui/runtime.ts",
     "./dynamic-ui-cards": "./src/dynamic-ui/cardsEntry.ts",
-    "./dynamic-ui-card-fixtures": "./src/dynamic-ui/cardFixtures.ts"
+    "./dynamic-ui-card-fixtures": "./src/dynamic-ui/cardFixtures.ts",
+    "./mini-app-runtime": "./src/mini-app/runtime.ts"
   },
   "scripts": {
     "generate:card-contract": "node --experimental-strip-types ./scripts/generate-card-contract.mjs"
   },
   "dependencies": {
+    "@comma/miniapp-sdk": "workspace:*",
     "zod": "^4.4.3"
   },
   "devDependencies": {

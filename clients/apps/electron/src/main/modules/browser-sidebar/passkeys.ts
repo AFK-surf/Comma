@@ -1,3 +1,4 @@
+import { clockTimeoutSignal, realMainClock, type MainClock } from "../../clock";
 import type { BrowserSidebarPasskeyPrompt } from "@comma/native-bridge";
 import { z } from "zod";
 import {
@@ -59,6 +60,7 @@ export class BrowserTabPasskeys {
   readonly #phone: HybridPasskeys;
   readonly #canPrompt: () => boolean;
   readonly #onPromptChanged: () => void;
+  readonly #clock: MainClock;
   #generation = 0;
   #polling = false;
   #current: { abort: AbortController; document: string; id: number } | undefined;
@@ -70,14 +72,17 @@ export class BrowserTabPasskeys {
     phone,
     canPrompt,
     onPromptChanged,
+    clock = realMainClock,
   }: {
     page: BrowserPasskeyPage;
     phone: HybridPasskeys;
     /** False while the tab is hidden or closing: its page gets no dialog. */
     canPrompt: () => boolean;
     onPromptChanged: () => void;
+    clock?: MainClock;
   }) {
     this.#page = page;
+    this.#clock = clock;
     this.#phone = phone;
     this.#canPrompt = canPrompt;
     this.#onPromptChanged = onPromptChanged;
@@ -211,7 +216,10 @@ export class BrowserTabPasskeys {
       const credential = await this.#phone.run({
         origin,
         request,
-        signal: AbortSignal.any([abort.signal, AbortSignal.timeout(maxPromptMs)]),
+        signal: AbortSignal.any([
+          abort.signal,
+          clockTimeoutSignal(this.#clock, maxPromptMs),
+        ]),
         onState: (state) => {
           if (this.#current === current) this.#setPrompt(prompt(state));
         },

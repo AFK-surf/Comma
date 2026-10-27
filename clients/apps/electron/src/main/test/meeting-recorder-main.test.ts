@@ -20,6 +20,7 @@ import {
 import { sessionProductLease } from "@comma/session-contract";
 import { testEpoch } from "@comma/test-utils/test-clock";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { realMainClock, type MainClock } from "../clock";
 import { AudioCaptureService } from "../modules/audio-capture";
 import { DriveRecordingStore } from "../modules/audio-capture/drive-recordings";
 import { LocalFileRouteRegistrationService } from "../modules/local-files/registration";
@@ -65,8 +66,8 @@ const meeting = {
   status: "active" as const,
 };
 
-/** `now`: the capture's clock, when a test sets the times its recordings start and stop. */
-async function setup({ now }: { now?: () => number } = {}) {
+/** `clock`: the capture's clock, when a test sets the times its recordings start and stop. */
+async function setup({ clock }: { clock?: MainClock } = {}) {
   const directory = await realpath(
     await mkdtemp(join(tmpdir(), "comma-meeting-main-"))
   );
@@ -134,7 +135,7 @@ async function setup({ now }: { now?: () => number } = {}) {
     async () => ""
   );
   const capture = new AudioCaptureService({
-    ...(now ? { now } : {}),
+    ...(clock ? { clock } : {}),
     recordingsDir,
     encoder: {
       encode: async (path) => {
@@ -278,15 +279,15 @@ describe("Main's meeting recorder commands", () => {
   });
 
   it("names a meeting's recording in Drive by its platform and times, numbering one whose name is taken", async () => {
-    let clock = 0;
-    const h = await setup({ now: () => clock });
+    let nowMs = 0;
+    const h = await setup({ clock: { ...realMainClock, now: () => nowMs } });
     try {
       const record = async (
         startedAt: Date,
         minutes: number,
         recorded: MeetingPresenceMeeting = meeting
       ) => {
-        clock = startedAt.getTime();
+        nowMs = startedAt.getTime();
         ok(
           await h.main.command({
             op: "start",
@@ -294,7 +295,7 @@ describe("Main's meeting recorder commands", () => {
           })
         );
         h.frames();
-        clock = startedAt.getTime() + minutes * 60_000;
+        nowMs = startedAt.getTime() + minutes * 60_000;
         const stopped = ok<{ recording: { driveFile: { path: string } } }>(
           await h.main.command({ op: "stop", input: { lease: h.lease } })
         );

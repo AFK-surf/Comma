@@ -1,5 +1,6 @@
 import AppKit
 import CoreGraphics
+import CUShared
 import Foundation
 @preconcurrency import ScreenCaptureKit
 
@@ -44,8 +45,9 @@ enum BackgroundWindowCapture {
             return nil
         }
 
-        return writePNG(image, prefix: "capture").map {
-            (url: $0, size: CGSize(width: image.width, height: image.height))
+        let fitted = fitToImageLimits(image)
+        return writePNG(fitted, prefix: "capture").map {
+            (url: $0, size: CGSize(width: fitted.width, height: fitted.height))
         }
     }
 
@@ -59,9 +61,15 @@ enum BackgroundWindowCapture {
 
             let filter = SCContentFilter(desktopIndependentWindow: window)
             let scale = scaleFactor(for: window.frame)
+            // Capture straight at the size the model accepts; click
+            // coordinates map through the recorded screenshot size.
+            let fitted = AnthropicImageLimits.fittedSize(
+                width: Int((window.frame.width * scale).rounded()),
+                height: Int((window.frame.height * scale).rounded())
+            )
             let config = SCStreamConfiguration()
-            config.width = max(1, Int((window.frame.width * scale).rounded()))
-            config.height = max(1, Int((window.frame.height * scale).rounded()))
+            config.width = fitted.width
+            config.height = fitted.height
             config.showsCursor = false
 
             return try await SCScreenshotManager.captureImage(
@@ -71,6 +79,24 @@ enum BackgroundWindowCapture {
         } catch {
             return nil
         }
+    }
+
+    private static func fitToImageLimits(_ image: CGImage) -> CGImage {
+        let fitted = AnthropicImageLimits.fittedSize(width: image.width, height: image.height)
+        if fitted.width == image.width, fitted.height == image.height { return image }
+        guard let context = CGContext(
+            data: nil,
+            width: fitted.width,
+            height: fitted.height,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
+                | CGBitmapInfo.byteOrder32Little.rawValue
+        ) else { return image }
+        context.interpolationQuality = .high
+        context.draw(image, in: CGRect(x: 0, y: 0, width: fitted.width, height: fitted.height))
+        return context.makeImage() ?? image
     }
 
     private static func writePNG(_ image: CGImage, prefix: String) -> URL? {

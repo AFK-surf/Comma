@@ -1,5 +1,7 @@
 import { initializeCommaI18n } from "@comma/i18n";
 import { CommaI18nProvider } from "@comma/i18n/react";
+import { installUiClock } from "@comma/ui/clock";
+import { createVirtualUiClock, type VirtualUiClock } from "@comma/ui/clock/virtual";
 import { Button } from "@comma/ui/components/Button";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
@@ -7,6 +9,7 @@ import { expect, userEvent, waitFor, within } from "storybook/test";
 import "../../styles.css";
 import { defaultOpenCommaShortcut } from "@comma/native-bridge";
 import { OnboardingOverlay, type OnboardingPermissionsSlot } from "./OnboardingOverlay";
+import { introLeaveMs, introTiming } from "./onboardingMotion";
 import type {
   OnboardingPresentation,
   OnboardingResults,
@@ -434,24 +437,33 @@ export const Intro: Story = {
 
 /**
  * Left alone for eight seconds, Start begins the onboarding by itself. It
- * waits without a countdown: nothing on it moves.
+ * waits without a countdown: nothing on it moves. The intro's time is a UI
+ * clock the story steps, so its eight seconds never wait on the machine.
  */
+let introClock: VirtualUiClock | undefined;
 export const IntroAutoStart: Story = {
   args: { mac: true, presentation: "window" },
+  beforeEach: () => {
+    introClock = createVirtualUiClock();
+    return installUiClock(introClock);
+  },
   play: async ({ canvasElement }) => {
+    const clock = introClock!;
     const canvas = onboardingOf(canvasElement);
-    const start = await canvas.findByRole(
-      "button",
-      { name: "Start" },
-      { timeout: 6000 }
-    );
-    await waitFor(() => expect(start).toHaveFocus(), { timeout: 3000 });
+    // Once the screen has dimmed, the mark arrives with the welcome and Start.
+    clock.advance(introTiming.dim);
+    const start = await canvas.findByRole("button", { name: "Start" });
+    clock.advance(introTiming.start);
+    clock.advanceFrames(2);
+    await waitFor(() => expect(start).toHaveFocus());
     await expect(start.getAnimations({ subtree: true })).toEqual([]);
     // Eight seconds after it appeared, the onboarding begins: Start leaves
     // and the mark moves up to head the conversation.
-    await waitFor(
-      () => expect(canvas.queryByRole("button", { name: "Start" })).toBeNull(),
-      { timeout: 9000 }
+    clock.advance(introTiming.autoStart - introTiming.start);
+    clock.advance(Math.max(introLeaveMs, 1_000));
+    clock.advanceFrames(2);
+    await waitFor(() =>
+      expect(canvas.queryByRole("button", { name: "Start" })).toBeNull()
     );
     await expect(
       canvas.queryByRole("heading", { name: "Welcome to Comma" })

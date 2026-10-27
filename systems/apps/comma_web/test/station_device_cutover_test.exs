@@ -190,6 +190,53 @@ defmodule CommaWeb.StationDeviceCutoverTest do
     end
   end
 
+  describe "Connector command" do
+    setup do
+      root =
+        Path.join(
+          System.tmp_dir!(),
+          "cutover-artifacts-#{SystemsRuntime.Proc.unique_integer([:positive])}"
+        )
+
+      for platform <- SalixStore.ConnectorInstall.platforms() do
+        File.mkdir_p!(Path.join(root, platform))
+        File.write!(Path.join([root, platform, "salix-connect"]), "fixture")
+      end
+
+      old = SystemsRuntime.get_env(:salix_env, :device_install_local_artifact_root)
+      SystemsRuntime.put_env(:salix_env, :device_install_local_artifact_root, root)
+
+      on_exit(fn ->
+        if old,
+          do: SystemsRuntime.put_env(:salix_env, :device_install_local_artifact_root, old),
+          else: SystemsRuntime.delete_env(:salix_env, :device_install_local_artifact_root)
+
+        File.rm_rf!(root)
+      end)
+    end
+
+    test "the Router's install tool gives the member who asked the device it installs", f do
+      {:ok, tenant} = Salix.Control.Tenants.create(%{"name" => "Connector owner test"})
+      tenant = tenant["tenant_id"]
+      {:ok, %{"group_id" => group}} = Salix.Control.Groups.create(%{"name" => "Owner"}, tenant)
+
+      # The member has no station, so the tool keeps the Connector installer.
+      assert {:ok, %{"device_id" => device_id, "command" => command}} =
+               SalixEnv.DeviceInstall.create_command(tenant, group, "MacBook Air",
+                 requester: tool_requester(%{tenant: tenant, group: group}, f.member)
+               )
+
+      assert command =~ "/v1/device-connection/install.sh"
+
+      # Owned by the member, so Settings > Devices lists it and its access is theirs to set.
+      assert {:ok, _} =
+               SalixEnv.Control.get_owned_environment(device_id, group, tenant, f.member["id"])
+
+      assert {:error, :forbidden} =
+               SalixEnv.Control.get_owned_environment(device_id, group, tenant, f.owner["id"])
+    end
+  end
+
   defp station(id, name, enroller, online \\ true),
     do: %{"id" => id, "name" => name, "enrolled_by" => enroller["id"], "online" => online}
 

@@ -47,7 +47,7 @@ const STORE = (process.env.STILLFAIL_NATIVE_URL ?? "https://cue-release.afk.surf
 const PREFIX = "station-native/";
 const VENDORED = ["vendor/iroh", "vendor/iroh-mdns-address-lookup", "vendor/noq-udp", "vendor/swarm-discovery"];
 
-type Target = "darwin-arm64" | "linux-x64" | "linux-arm64" | "win32-x64";
+type Target = "darwin-arm64" | "linux-x64" | "linux-arm64" | "win32-x64" | "android-arm64" | "ios-arm64" | "ios-sim-arm64" | "wasm32";
 type Part = {
   /// What the artifact holds.
   files: (target: Target) => string[];
@@ -76,6 +76,10 @@ const TRIPLES: Record<string, string> = {
   "linux-x64": "x86_64-unknown-linux-gnu",
   "linux-arm64": "aarch64-unknown-linux-gnu",
   "win32-x64": "x86_64-pc-windows-gnu",
+  "android-arm64": "aarch64-linux-android",
+  "ios-arm64": "aarch64-apple-ios",
+  "ios-sim-arm64": "aarch64-apple-ios-sim",
+  wasm32: "wasm32-unknown-unknown",
 };
 const TRIPLE = (t: Target): string => TRIPLES[t] ?? fail(`no Rust target for ${t}`);
 function fail(message: string): never {
@@ -113,8 +117,75 @@ function noLibnode(target: string): Record<string, string> {
   writeFileSync(join(dir, "libnode.a"), "!<arch>\n");
   return { LIBNODE_PATH: dir };
 }
+/// The phones' parts are built with what the apps are: the NDK and the lowest Android of the Android app
+/// (clients/apps/android, `ndkVersion`, `minSdk`), the lowest iOS of the iOS app (clients/apps/apple/project.yml).
+const NDK = "27.2.12479018";
+const ANDROID_API = 35;
+const IOS = "18.0";
+const PHONES: Target[] = ["android-arm64", "ios-arm64", "ios-sim-arm64"];
+/// The NDK's LLVM: ANDROID_NDK_HOME's, else the SDK's NDK of `NDK`.
+function ndkBin(): string {
+  const sdk = process.env.ANDROID_HOME ?? process.env.ANDROID_SDK_ROOT ?? join(homedir(), osPlatform() === "darwin" ? "Library/Android/sdk" : "Android/Sdk");
+  const ndk = process.env.ANDROID_NDK_HOME ?? join(sdk, "ndk", NDK);
+  const bin = join(ndk, "toolchains/llvm/prebuilt", osPlatform() === "darwin" ? "darwin-x86_64" : "linux-x86_64", "bin");
+  if (!existsSync(bin)) throw new Error(`no Android NDK ${NDK} at ${ndk} (set ANDROID_NDK_HOME)`);
+  return bin;
+}
+/// The NDK's compilers for a crate's C parts (ring) and its linker.
+function androidEnv(): Record<string, string> {
+  const bin = ndkBin();
+  const clang = join(bin, `aarch64-linux-android${ANDROID_API}-clang`);
+  return { CC_aarch64_linux_android: clang, AR_aarch64_linux_android: join(bin, "llvm-ar"), CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER: clang };
+}
+/// The browser's: the NDK's clang targets WebAssembly too (ring's C parts), where Apple's does not; getrandom asks the
+/// browser.
+function wasmEnv(): Record<string, string> {
+  const bin = ndkBin();
+  return { CC_wasm32_unknown_unknown: join(bin, "clang"), AR_wasm32_unknown_unknown: join(bin, "llvm-ar"), RUSTFLAGS: '--cfg getrandom_backend="wasm_js"' };
+}
+/// The wasm-bindgen CLI the browser's crate is made a module with: the version its crate pins (`wasm-bindgen = "=…"`),
+/// installed once into this machine's cache when the PATH has no such one.
+const WASM_BINDGEN = "0.2.129";
+function wasmBindgen(): string {
+  const env = rustEnv();
+  const onPath = spawnSync("wasm-bindgen", ["--version"], { env, encoding: "utf8" }).stdout?.trim();
+  if (onPath === `wasm-bindgen ${WASM_BINDGEN}`) return "wasm-bindgen";
+  const root = join(CACHE, "wasm-bindgen", WASM_BINDGEN);
+  const bin = join(root, "bin", "wasm-bindgen");
+  if (!existsSync(bin)) run("cargo", ["install", "wasm-bindgen-cli", "--version", WASM_BINDGEN, "--locked", "--root", root], { env });
+  return bin;
+}
+/// A crate of the clients' for the browser, made a module with wasm-bindgen (`--target web`): `name`.js, its .wasm and
+/// its types.
+function webCrate(part: string, dir: string, name: string, extra: string[] = []): Part {
+  return {
+    files: () => [`${name}.js`, `${name}_bg.wasm`, `${name}.d.ts`],
+    targets: ["wasm32"],
+    inputs: [dir, ...extra],
+    recipe: (t) => ({ cargo: cargoCommand(t), wasmBindgen: WASM_BINDGEN, clang: `ndk ${NDK}` }),
+    build(t, out) {
+      const target = targetDir(join(ROOT, dir, "target"), part);
+      cargo(cargoCommand(t), join(ROOT, dir), { CARGO_TARGET_DIR: target, ...wasmEnv() });
+      run(wasmBindgen(), ["--target", "web", "--out-dir", out, join(target, TRIPLE(t), "release", `${name}.wasm`)], { env: rustEnv() });
+    },
+  };
+}
+/// A crate of the clients' (clients/…), a static library each phone's app links into its core's engine.
+function phoneCrate(part: string, dir: string, name: string, extra: string[] = []): Part {
+  return {
+    files: () => [name],
+    targets: PHONES,
+    inputs: [dir, ...extra],
+    recipe: (t) => ({ cargo: cargoCommand(t), artifact: name, ...(t === "android-arm64" ? { ndk: NDK, api: ANDROID_API } : { ios: IOS }) }),
+    build(t, out) {
+      const target = targetDir(join(ROOT, dir, "target"), part);
+      cargo(cargoCommand(t), join(ROOT, dir), { CARGO_TARGET_DIR: target, ...(t === "android-arm64" ? androidEnv() : { IPHONEOS_DEPLOYMENT_TARGET: IOS }) });
+      copyFileSync(join(target, TRIPLE(t), "release", name), join(out, name));
+    },
+  };
+}
 const cargoCommand = (t: Target, more: string[] = []) =>
-  t === "darwin-arm64"
+  t === "darwin-arm64" || t === "wasm32" || PHONES.includes(t)
     ? ["build", "--release", "--locked", ...more, "--target", TRIPLE(t)]
     : ["zigbuild", "--release", "--locked", ...more, "--target", t === "win32-x64" ? TRIPLE(t) : `${TRIPLE(t)}.2.28`];
 
@@ -159,6 +230,11 @@ const PARTS: Record<string, Part> = {
     publish: ["darwin-arm64"],
   },
   "station-load": { ...stationCrate("tools/load", () => "station-load", "station-load", VENDORED), env: "E2E_LOAD", publish: ["darwin-arm64"] },
+  // The phones' iroh (clients/packages/mesh/native), which the Android and iOS apps link into their core's engine. It
+  // takes the station's Salix transport as its own source.
+  "client-mesh": phoneCrate("client-mesh", "../../clients/packages/mesh/native", "libcomma_mesh.a", [...VENDORED, "native/mesh/src/salix.rs"]),
+  // The browser's iroh (clients/packages/mesh/wasm), which the web app's core worker loads.
+  "web-mesh": webCrate("web-mesh", "../../clients/packages/mesh/wasm", "comma_mesh_wasm", [...VENDORED, "native/mesh/src/salix.rs"]),
 };
 const P = (name: string): Part => PARTS[name] ?? fail(`no such part: ${name} (${Object.keys(PARTS).join(", ")})`);
 const defaultTarget = (part: string): Target => P(part).targets.length === 1 ? P(part).targets[0]! : host();
@@ -479,7 +555,9 @@ async function main(argv: string[]) {
       for (const [p, t] of wanted) {
         const k = key(p, t);
         const name = asset(p, t, k);
-        const there = await exists(name);
+        // Whether R2 has it matters only to what is published or kept in the outbox: without either, a part at hand is
+        // taken without asking R2, which a runner cannot always reach.
+        const there = publish || outbox ? await exists(name) : undefined;
         const before = complete(cached(p, t, k), p, t);
         const started = Date.now();
         const dir = await get(p, t);

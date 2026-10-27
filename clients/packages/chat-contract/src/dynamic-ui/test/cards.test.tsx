@@ -8,6 +8,7 @@ import {
   hotelOptionsFixture,
   newsFixture,
   placeFixture,
+  pullRequestsFixture,
   storageFixture,
   trainOptionsFixture,
   versusFixture,
@@ -34,6 +35,14 @@ function show(
   });
   target.replaceChildren(engine.mount(target, { kind, data, variant }, "card"));
   return { target, engine };
+}
+
+/** Nodes a card adds to the widget, counted as the runtime counts them. */
+function nodesOf(target: HTMLElement) {
+  const walker = document.createTreeWalker(target, NodeFilter.SHOW_ALL);
+  let nodes = 1;
+  while (walker.nextNode()) nodes++;
+  return nodes;
 }
 
 function layoutOf(kind: string, data: unknown, seed: string, variant?: string) {
@@ -178,6 +187,57 @@ describe("card content", () => {
     expect(target.querySelector("a")).toBeNull();
   });
 
+  it("lists each place's note, and its category only where the places differ", () => {
+    const rowsOf = (places: typeof placeFixture.places) =>
+      [...show("place", { ...placeFixture, places }).target.querySelectorAll("li")].map(
+        (row) => row.textContent
+      );
+    const shared = rowsOf(placeFixture.places);
+    expect(shared[1]).toContain(placeFixture.places[1]!.note);
+    expect(shared.filter((row) => row?.includes("咖啡馆"))).toEqual([]);
+
+    const mixed = rowsOf([
+      ...placeFixture.places.slice(0, 3),
+      { ...placeFixture.places[3]!, category: "烘焙店" },
+    ]);
+    expect(mixed[0]).toContain("4.6 · 2,310 条评价 · 咖啡馆");
+    expect(mixed[3]).toContain("烘焙店");
+  });
+
+  it("ends text it cuts with an ellipsis but matches saved progress by the id as written", () => {
+    const label = "复核".repeat(50);
+    const { target } = show(
+      "checklist",
+      { title: "Launch", groups: [{ items: [{ label }] }] },
+      "block-1",
+      "progress",
+      { card: [label.slice(0, 80)] }
+    );
+    expect(target.querySelector(".wc-check-label")?.textContent).toBe(
+      `${label.slice(0, 79)}…`
+    );
+    expect(checked(target)).toEqual([true]);
+  });
+
+  it("lists a nearby place's address under its note", () => {
+    const place = { ...placeFixture.places[1]!, address: "静安区南京西路 1601 号" };
+    const [, row] = [
+      ...show("place", {
+        ...placeFixture,
+        places: [placeFixture.places[0]!, place],
+      }).target.querySelectorAll("li"),
+    ];
+    expect(row?.textContent).toContain(place.note);
+    expect(row?.textContent).toContain(place.address);
+  });
+
+  it("cuts text between characters, never inside one", () => {
+    const name = `${"x".repeat(58)}😀😀`;
+    const { target } = show("place", { title: "Places", places: [{ name }] });
+    expect(target.textContent).toContain(`${"x".repeat(58)}…`);
+    expect(target.textContent).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/);
+  });
+
   it("shows each feed item's status and leaves out a time it does not have", () => {
     const items = [
       {
@@ -215,9 +275,16 @@ describe("card content", () => {
       { key: "flagged", label: "Flagged" },
     ];
     const { target } = show("feed", { title: "Inbox", items, filters }, "block-1");
+    // Each choice names how many items it shows, counted from the data.
     expect(
-      [...target.querySelectorAll("[role=group] button")].map((b) => b.textContent)
-    ).toEqual(["All", "Unread"]);
+      [...target.querySelectorAll("[role=group] button")].map((b) => [
+        b.firstChild?.textContent,
+        b.querySelector(".wc-seg-count")?.textContent,
+      ])
+    ).toEqual([
+      ["All", "2"],
+      ["Unread", "1"],
+    ]);
     expect(target.querySelectorAll("li")).toHaveLength(2);
     expect(target.querySelector(".wc-badge")?.textContent).toBe("Review");
 
@@ -231,6 +298,46 @@ describe("card content", () => {
     ).target;
     expect(one.querySelector("[role=group]")).toBeNull();
     expect(one.querySelectorAll("li")).toHaveLength(2);
+  });
+
+  it("keeps the feed layouts within the node counts the Worker manual names", () => {
+    // The runtime's 500-node budget covers the whole widget and also counts the
+    // card's element. The Worker manual (salix_agent tools/dynamic_ui.ex) says
+    // a card uses up to 270 of them and a feed of more than 12 items up to 390.
+
+    // The most filters a feed holds, each with a count.
+    const filters = [
+      ...pullRequestsFixture.filters!,
+      { key: "closed", label: "已关闭" },
+    ];
+    const base = pullRequestsFixture.items!;
+    const items = Array.from({ length: 60 }, (_, index) => ({
+      ...base[index % base.length]!,
+      title: `#${4000 + index} ${base[index % base.length]!.title}`,
+    }));
+    const list = show("feed", { ...pullRequestsFixture, filters, items }, "block-1");
+    expect(
+      list.target.querySelector<HTMLElement>("[data-layout]")?.dataset.layout
+    ).toBe("feed.list");
+    expect(list.target.querySelectorAll("li")).toHaveLength(60);
+    expect(nodesOf(list.target)).toBeLessThanOrEqual(390);
+
+    // News rows with every field filled, at the most items news takes.
+    const full = items.slice(0, 12).map((item) => ({
+      ...item,
+      brand: "github",
+      excerpt: "Adds a list layout to feed cards",
+      tags: ["feed", "cards", "ui"],
+    }));
+    const news = show(
+      "feed",
+      { ...pullRequestsFixture, filters, items: full },
+      "block-1"
+    );
+    expect(
+      news.target.querySelector<HTMLElement>("[data-layout]")?.dataset.layout
+    ).toBe("feed.news");
+    expect(nodesOf(news.target)).toBeLessThanOrEqual(270);
   });
 
   it("shows ISO times on the viewer's clock and keeps a label that is not one", () => {

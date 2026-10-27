@@ -502,7 +502,48 @@ defmodule BillingCommerce.RedeemCodesTest do
     end
   end
 
-  defp seed_package(code, surface, kind) do
+  test "annual subscription redemption issues twelve monthly grants without replaying credits" do
+    seed_package("comma_redeem_annual", "comma", "subscription", "year")
+
+    {:ok, %{code: code}} =
+      RedeemCodes.create_code(%{
+        code: "comma-review-year",
+        package_code: "comma_redeem_annual",
+        package_version: "2026-06",
+        code_type: "internal_subscription",
+        surface: "comma",
+        valid_from: ~U[2026-06-01 00:00:00Z]
+      })
+
+    attrs = apply_attrs(%{code: code, at: ~U[2026-12-31 23:59:00Z]})
+    assert {:ok, %{cycles: cycles}} = RedeemCodes.apply_code(attrs)
+    assert length(cycles) == 12
+
+    assert {:ok, %{idempotent: true}} = RedeemCodes.apply_code(attrs)
+
+    for offset <- 0..11 do
+      starts = DateTime.shift(~U[2026-12-01 00:00:00Z], month: offset)
+      ends = DateTime.shift(starts, month: 1)
+
+      assert {:ok, %{processed: 1, cycles: [%{grant: grant}]}} =
+               Subscriptions.run_due_cycles(%{at: starts, limit: 20})
+
+      assert grant.remaining_credits == 700
+      source = grant_source(grant.id)
+      assert DateTime.compare(source.valid_from, starts) == :eq
+      assert DateTime.compare(source.expires_at, ends) == :eq
+
+      assert {:ok, %{processed: 0}} =
+               Subscriptions.run_due_cycles(%{at: starts, limit: 20})
+    end
+
+    assert grant_count(attrs.billing_account_id) == 12
+
+    assert {:ok, %{processed: 0}} =
+             Subscriptions.run_due_cycles(%{at: ~U[2027-12-01 00:00:00Z], limit: 20})
+  end
+
+  defp seed_package(code, surface, kind, billing_period \\ "month") do
     {:ok, _} = PackageCatalog.create_package(%{code: code, surface: surface, name: code})
 
     {:ok, _} =
@@ -511,7 +552,7 @@ defmodule BillingCommerce.RedeemCodesTest do
         version: "2026-06",
         surface: surface,
         kind: kind,
-        billing_period: "month",
+        billing_period: billing_period,
         grant_credits: 700,
         grant_period: "current_period",
         currency: "usd",

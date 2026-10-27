@@ -1,8 +1,8 @@
 defmodule BridgeForTeamsWeb.RouterTaskPlaceModelTest do
   @moduledoc """
   A BFT Router creates each Task by naming its model and, when needed, where it
-  runs, never a Worker: its round offers no Worker management and its manual
-  needs no agent_id. A Task without agent_id runs on the swarm's Task agent with
+  runs, never a Worker: its round offers no Worker management.
+  A Task without agent_id runs on the swarm's Task agent with
   the model the Router wrote on it, inside Salix or on a station. A catalog
   model the Organization does not allow is refused and makes no Task.
   """
@@ -38,6 +38,12 @@ defmodule BridgeForTeamsWeb.RouterTaskPlaceModelTest do
 
     @impl true
     def appended(_group_id, _conversation_id), do: :ok
+
+    @impl true
+    def sandbox(_reservation), do: {:error, :no_sandboxes}
+
+    @impl true
+    def task_status(_group_id, _conversation_id, _status), do: :ok
   end
 
   setup %{conn: conn} do
@@ -68,7 +74,7 @@ defmodule BridgeForTeamsWeb.RouterTaskPlaceModelTest do
     %{org: org, project: project, router: router}
   end
 
-  test "a BFT Router is offered no Worker management, and nothing asks it to name a Worker",
+  test "a BFT Router is offered model choices without Worker management",
        %{router: router} do
     assert {:ok, config} =
              SalixAgent.RoundConfig.build_round_config(router.salix_agent_id, "router", %{})
@@ -76,16 +82,6 @@ defmodule BridgeForTeamsWeb.RouterTaskPlaceModelTest do
     tools = MapSet.new(config.session_config.tool_disclosure["tools"], & &1["name"])
     assert MapSet.member?(tools, "agent.models")
     for name <- @worker_management, do: refute(MapSet.member?(tools, name))
-
-    prompt = config.session_config.system_prompt
-    assert prompt =~ "Create every Task without agent_id"
-    for name <- @worker_management, do: refute(prompt =~ name)
-
-    assert {:ok, %{"apis" => apis}} =
-             SalixIM.Provider.provider_manual("internal", router.salix_agent_id)
-
-    create = Enum.find(apis, &(&1["name"] == "internal.task.create"))
-    refute "agent_id" in create["required_params"]
   end
 
   test "a Task without agent_id takes the model the Router wrote on it, inside Salix or on a station",
@@ -161,7 +157,7 @@ defmodule BridgeForTeamsWeb.RouterTaskPlaceModelTest do
   defp create_task(router, params) do
     SalixIM.Provider.call_api(router.salix_agent_id, "internal", "internal.task.create", %{
       "connect_id" => "internal",
-      "params" => params
+      "params" => Map.put_new(params, "runs_on", %{"kind" => "default"})
     })
   end
 

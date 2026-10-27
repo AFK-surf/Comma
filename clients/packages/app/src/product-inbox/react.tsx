@@ -24,11 +24,15 @@ export type ProductInboxRefresh = {
 export function useProductInboxProjection(input: {
   enabled: boolean;
   workspaceId?: string | undefined;
+  /** The Tasks the workspace's stations host are among the items too (`host`). */
+  hosted?: boolean | undefined;
 }) {
   const call = useCall();
   const workspace = input.workspaceId ?? "";
   const { error, value } = useTopic(
-    input.enabled ? { topic: "tasks", workspace } : null
+    input.enabled
+      ? { topic: "tasks", workspace, ...(input.hosted ? { hosted: "1" } : {}) }
+      : null
   );
 
   useEffect(() => {

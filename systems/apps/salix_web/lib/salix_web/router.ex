@@ -64,6 +64,7 @@ defmodule SalixWeb.Router do
   alias SalixWeb.E2EReports
 
   @install_operation_paths [
+    "/v1/compute/agent-vmm/install-operations/install.sh",
     "/v1/compute/agent-vmm/install-operations/exchange",
     "/v1/compute/agent-vmm/install-operations/ack"
   ]
@@ -173,6 +174,53 @@ defmodule SalixWeb.Router do
     end
   end
 
+  # Secret-free stage 1 of the copied Linux install command. It posts the
+  # command token in a body to the stage 2 route below.
+  get "/v1/compute/agent-vmm/install.sh" do
+    script =
+      case SalixStore.AgentVMMInstallations.Headless.bootstrap(
+             SystemsRuntime.get_env(:salix_web, :public_base_url) || request_url(conn)
+           ) do
+        {:ok, script} -> script
+        {:error, _} -> SalixStore.AgentVMMInstallations.Headless.error_script()
+      end
+
+    conn
+    |> put_resp_content_type("text/x-shellscript", "utf-8")
+    |> put_resp_header("cache-control", "no-store")
+    |> put_resp_header("x-content-type-options", "nosniff")
+    |> send_resp(200, script)
+  end
+
+  post "/v1/compute/agent-vmm/install-operations/install.sh" do
+    alias SalixStore.AgentVMMInstallations.Headless
+
+    script =
+      with %{"operation_id" => operation_id, "one_time_secret" => secret} <- conn.body_params,
+           true <- exact_keys?(conn.body_params, ["operation_id", "one_time_secret"]),
+           {:ok, handoff} <-
+             SalixStore.AgentVMMInstallations.headless_handoff(operation_id, secret),
+           {:ok, target} <-
+             SalixStore.ServerReleaseDescriptor.target("agent-vmm-host", "linux-arm64"),
+           {:ok, script} <-
+             Headless.script(
+               handoff,
+               secret,
+               target,
+               SystemsRuntime.get_env(:salix_web, :public_base_url) || request_url(conn)
+             ) do
+        script
+      else
+        _ -> Headless.error_script()
+      end
+
+    conn
+    |> put_resp_content_type("text/x-shellscript", "utf-8")
+    |> put_resp_header("cache-control", "no-store")
+    |> put_resp_header("x-content-type-options", "nosniff")
+    |> send_resp(200, script)
+  end
+
   post "/v1/compute/agent-vmm/install-operations/exchange" do
     exchange_install_operation(conn, conn.body_params)
   end
@@ -277,7 +325,7 @@ defmodule SalixWeb.Router do
       send_resp(conn, 200, "")
     else
       {:error, :stale_connection} -> send_json(conn, 409, %{error: "stale_connection"})
-      _ -> send_json(conn, 422, %{error: "invalid_observation"})
+      other -> send_connection_observation_error(conn, other)
     end
   end
 
@@ -298,10 +346,25 @@ defmodule SalixWeb.Router do
       {:error, reason} when reason in [:stale_connection, :stale_observation] ->
         send_json(conn, 409, %{error: "stale_observation"})
 
-      _ ->
-        send_json(conn, 422, %{error: "invalid_observation"})
+      other ->
+        send_connection_observation_error(conn, other)
     end
   end
+
+  # Hello and observation errors keep their category. Only an unparseable
+  # payload is `invalid_observation`; inactive authority and an unavailable
+  # store are distinct so the Host side can map them.
+  defp send_connection_observation_error(conn, {:error, :authorization_expired}),
+    do: send_json(conn, 403, %{error: "authorization_expired"})
+
+  defp send_connection_observation_error(conn, {:error, :registration_inactive}),
+    do: send_json(conn, 403, %{error: "registration_inactive"})
+
+  defp send_connection_observation_error(conn, {:error, :unavailable}),
+    do: send_json(conn, 503, %{error: "control_unavailable"})
+
+  defp send_connection_observation_error(conn, _other),
+    do: send_json(conn, 422, %{error: "invalid_observation"})
 
   post "/v1/compute/commands/claim" do
     registration_id = conn.body_params["registration_id"]

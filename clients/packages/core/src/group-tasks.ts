@@ -11,7 +11,9 @@ import { route } from "./api.ts";
 import {
   commaConversationPreviewSchema,
   commaConversationSchema,
+  taskLoop,
   type CommaConversation,
+  type CommaConversationPreview,
 } from "./comma/api-schemas.ts";
 import { taskPageSchema } from "./comma/schemas.ts";
 import type { GroupTask, GroupTaskValue, GroupTasksValue } from "./contract.ts";
@@ -22,6 +24,12 @@ const TIMEOUT_MS = 10_000;
 
 type Listed = Extract<GroupTasksValue, { status: "ready" }> & { cursor?: string };
 
+/** A read preview, with its Loop when the Task is a Loop Task. */
+function readyPreview(preview: CommaConversationPreview): NonNullable<GroupTaskValue> {
+  const loop = taskLoop(preview.loop);
+  return { status: "ready", preview, ...(loop ? { loop } : {}) };
+}
+
 function groupTask(conversation: CommaConversation): GroupTask {
   return {
     id: conversation.id,
@@ -29,7 +37,6 @@ function groupTask(conversation: CommaConversation): GroupTask {
     status: conversation.status,
     updatedAt: conversation.updated_at ?? 0,
     activityStatus: conversation.activity_status ?? "idle",
-    freshness: conversation.freshness?.state ?? "unknown",
   };
 }
 
@@ -226,9 +233,7 @@ export class GroupTasks {
         .pipe(Effect.result);
       this.#previews.set(
         key,
-        Result.isSuccess(answer)
-          ? { status: "ready", preview: answer.success }
-          : { status: "failed" }
+        Result.isSuccess(answer) ? readyPreview(answer.success) : { status: "failed" }
       );
       ctx.kernel.store.invalidate(topic);
     });

@@ -1,11 +1,12 @@
 defmodule SalixWeb.CloudVM.Start do
   @moduledoc """
-  An agent starting its Group's Cloud VM itself (`cloud_vm.start`), as one
-  turns on a remote computer before sending it anything: a new Task for a
-  station not connected is refused (`SalixWeb.StationTasks`); only a Message
-  of a Task its station already takes part in wakes it by itself. An agent
-  may start it for itself or for a live Worker of its Group it names, when the
-  Group's Cloud VM switch is on (`SalixAgent.CloudVM.allowed?/1`).
+  Starts the Group's existing Cloud VM, or creates its Cloudflare VM.
+  `cloud_vm.start` and automatic runtime Task placement share this bounded
+  startup path. The Group's Cloud VM switch authorizes it. A named Worker
+  must belong to the same Group (`SalixAgent.CloudVM.allowed?/1`).
+  Accepted Tasks retain their existing device when it wakes.
+  A Task for the VM's station wakes it by itself (`SalixWeb.StationTasks`),
+  made or given a Message while it sleeps.
   It asks for what the VM needs next (created when there is none
   or it failed, woken when archived or its Connector is gone) and follows it
   until its station is connected, the VM failed, or `budget_ms` ran out.

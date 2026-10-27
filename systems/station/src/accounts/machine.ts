@@ -2,10 +2,13 @@
 // (the Rust station's machine_logins.rs `MachineLogins`): for the pages that ask for a first profile, and for making a
 // `machine` profile. How such a profile uses the login is agents/machine-logins.ts's (and oauth.ts renews Claude's).
 //
-// Read at start, when a profile on it is made, after a runtime is installed, and when the overview is read with a
-// reading older than two minutes (in the background: the overview answers with the last one). Nothing on the machine
-// says when someone signs in or out in a terminal, so that age is what tells it to read again; who follows hears a
-// reading that differs from the last (`changes`).
+// A runtime's login is read only while it is allowed (`allow`: the accounts give "some Workspace chose the local sign-in
+// for it", accounts/sources.ts); until then nothing in ~/.claude or ~/.codex is read for it, and once it is no longer
+// allowed its last reading is not shown and it is not read again. While allowed: read when it becomes allowed, when a
+// profile on it is made, after a runtime is installed, and when the overview is read with a reading older than two
+// minutes (in the background: the overview answers with the last one). Nothing on the machine says when someone signs
+// in or out in a terminal, so that age is what tells it to read again; who follows hears a reading that differs from
+// the last (`changes`).
 import type { Clock } from "effect";
 import { execFile } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
@@ -34,6 +37,8 @@ export type MachineLogin = {
   text: string;
 };
 
+const RUNTIMES = ["claude", "codex"] as const;
+
 /// How long a reading serves before the next overview reads again.
 const FRESH_MS = 2 * 60_000;
 
@@ -57,6 +62,8 @@ export class MachineLogins {
   private lang: () => Lang;
 
   private clock: Clock.Clock;
+  /// Which runtimes' logins may be read (all, for a reader on its own).
+  private allowed: (runtime: "claude" | "codex") => boolean = () => true;
 
   constructor(env: Env, usage?: Usage, lang: () => Lang = stationLang, clock: Clock.Clock = liveClock) {
     this.clock = clock;
@@ -65,10 +72,21 @@ export class MachineLogins {
     this.lang = lang;
   }
 
-  /// The last reading, at once; read again in the background when it is old.
+  /// Limits what is read to the runtimes `allowed` says.
+  allow(allowed: (runtime: "claude" | "codex") => boolean) {
+    this.allowed = allowed;
+  }
+
+  /// The last reading of the allowed runtimes, at once; read again in the background when it is old.
   get(): MachineLogin[] {
-    if (this.clock.currentTimeMillisUnsafe() - this.readAt > FRESH_MS) void this.refresh();
-    return this.logins.map((l) => ({ ...l }));
+    const logins = this.logins.filter((l) => this.allowed(l.runtime));
+    if (RUNTIMES.some((r) => this.allowed(r)) && this.clock.currentTimeMillisUnsafe() - this.readAt > FRESH_MS) void this.refresh();
+    return logins.map((l) => ({ ...l }));
+  }
+
+  /// Whether a runtime's login was read (while allowed).
+  has(runtime: "claude" | "codex"): boolean {
+    return this.allowed(runtime) && this.logins.some((l) => l.runtime === runtime);
   }
 
   /// Hears each reading that differs from the last.
@@ -83,9 +101,17 @@ export class MachineLogins {
     return this.reading;
   }
 
+  /// A reading begun now: one under way began before what is to be seen (a sign-in that just ended), so it is waited
+  /// out first.
+  async refreshNew(): Promise<void> {
+    await this.reading?.catch(() => undefined);
+    await this.refresh();
+  }
+
   private async read() {
     const lang = this.lang();
-    const logins = await Promise.all([claudeLogin(this.env, lang), codexLogin(this.env, lang)]);
+    const reads = { claude: claudeLogin, codex: codexLogin };
+    const logins = await Promise.all(RUNTIMES.filter((r) => this.allowed(r)).map((r) => reads[r](this.env, lang)));
     // Each one a profile could use, with its allowance: an account refused (suspended, say) shows before it is used.
     if (this.usage) {
       for (const l of logins.filter((l) => l.loggedIn && l.usable)) {

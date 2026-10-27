@@ -45,6 +45,14 @@ defmodule SalixStore.BlobStreamTest do
     :ok
   end
 
+  test "a part of a body is read by ref from where it is asked, and nothing past its end" do
+    {:ok, ref} = Blob.put_stream("agt_test", ["0123456789"])
+
+    assert Blob.read_range("agt_test", ref, 0, 4) == {:ok, "0123"}
+    assert Blob.read_range("agt_test", ref, 8, 4) == {:ok, "89"}
+    assert Blob.read_range("agt_test", ref, 10, 4) == {:ok, ""}
+  end
+
   test "an enumerable exception aborts the latest multipart upload state" do
     first_part = String.duplicate("x", 5 * 1024 * 1024)
 

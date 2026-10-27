@@ -20,6 +20,7 @@ import { controlIntersections } from "@comma/test-utils/intersection";
 import { installNativeBridgeMock } from "@comma/test-utils/native-bridge";
 import { act, render, screen, within } from "@comma/test-utils/render";
 import { taskStatusBucket } from "@comma/ui/components/task-workspace";
+import { Toaster, toast } from "@comma/ui/components/toast";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CommaAuthContext } from "../components/auth-context";
 import { ChatProvider } from "../components/chat/ChatProvider";
@@ -132,7 +133,6 @@ describe("TasksRoute", () => {
         },
         {
           conversationId: "task-1",
-          freshness: "fresh",
           id: "w1:task-1",
           kind: "agent_task",
           source: "salix.conversation",
@@ -159,35 +159,38 @@ describe("TasksRoute", () => {
     expect(router.state.location.pathname).toBe("/tasks/w1/grp_test/task-1");
   });
 
-  it("lists the Tasks the workspace's stations host, where each runs, and opens one on its station's page", async () => {
+  it("lists the Tasks the workspace's stations host, where each runs, and opens one as any Task", async () => {
     const station = "a".repeat(64);
     const projection = createProductInboxProjectionHarness({
       initial: {
         activeWorkspaceId: "w1",
         lastSyncedAt: 1_000,
         source: "live-sync",
-        items: [taskInboxItem("salix", "Kept by Salix")],
-        workspaces: [{ id: "w1", name: "My Workspace", group_id: "grp_test" }],
-      },
-      stationTasks: {
-        state: "ready",
-        tasks: [
+        // The core's list asked with the Tasks the stations host (`hosted`): one is among the items.
+        items: [
+          taskInboxItem("salix", "Kept by Salix"),
           {
             id: `station:${station}:7`,
-            station,
-            device: "dev_mac",
-            thread: "7",
+            source: "station.chat",
+            groupId: "grp_test",
+            workspaceId: "w1",
+            workspaceName: "My Workspace",
+            conversationId: `station:${station}:7`,
+            kind: "agent_task",
+            labels: [],
             title: "Fix the build on Studio",
             status: "in_progress",
-            createdBy: "ann@x",
-            createdAt: 1_000,
-            lastActivityAt: 3_000,
-            runtime: "codex",
-            model: "gpt-5.5",
-            labels: [],
-            machine: { name: "Studio", online: false },
+            updatedAt: 3_000,
+            host: {
+              station,
+              thread: "7",
+              machine: { name: "Studio", online: false },
+              model: "gpt-5.5",
+              runtime: "codex",
+            },
           },
         ],
+        workspaces: [{ id: "w1", name: "My Workspace", group_id: "grp_test" }],
       },
     });
     installNativeBridgeMock({ platform: "electron" });
@@ -200,10 +203,12 @@ describe("TasksRoute", () => {
     );
     await user().click(card);
     await flush();
-    expect(router.state.location.pathname).toBe(`/tasks/w1/station/${station}/7`);
+    expect(decodeURIComponent(router.state.location.pathname)).toBe(
+      `/tasks/w1/grp_test/station:${station}:7`
+    );
   });
 
-  it("only exposes implemented production empty-state actions", async () => {
+  it("offers New task and Chat with Comma when the workspace's Tasks are empty, with no machine reached", async () => {
     const projection = createProductInboxProjectionHarness({
       initial: {
         activeWorkspaceId: "w1",
@@ -217,7 +222,43 @@ describe("TasksRoute", () => {
 
     await flush();
     expect(screen.getByText("No tasks")).toBeVisible();
-    expect(screen.queryByRole("button", { name: "Create new task" })).toBeNull();
+    // Comma's cloud and a cloud sandbox need no machine.
+    expect(screen.getByRole("button", { name: "New task" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Chat with Comma" })).toBeVisible();
+
+    unmount();
+  });
+
+  it("offers New task beside Chat with Comma when the workspace's Tasks are empty and it has a station", async () => {
+    const projection = createProductInboxProjectionHarness({
+      initial: {
+        activeWorkspaceId: "w1",
+        items: [],
+        source: "live-sync",
+      },
+      stations: {
+        workspace: "w1",
+        loading: false,
+        stations: [
+          {
+            id: "st_mac",
+            name: "MacBook",
+            version: "1",
+            present: true,
+            enrolledAt: null,
+            enrolledBy: null,
+            link: { state: "online" },
+          },
+        ],
+      },
+    });
+    installNativeBridgeMock({ platform: "electron" });
+
+    const { unmount } = renderTasksRoute(projection.controller);
+
+    await flush();
+    expect(screen.getByText("No tasks")).toBeVisible();
+    expect(screen.getByRole("button", { name: "New task" })).toBeVisible();
     expect(screen.getByRole("button", { name: "Chat with Comma" })).toBeVisible();
 
     unmount();
@@ -255,14 +296,14 @@ describe("TasksRoute", () => {
     expect(projection.refresh).not.toHaveBeenCalled();
   });
 
-  it("qualifies stale task status and treats cache-source tasks as stale", async () => {
+  it("says once for the list that its last read failed", async () => {
     const result: ProductInboxListResult = {
       activeWorkspaceId: "w1",
+      errorCode: "network_unavailable",
       source: "cache",
       items: [
         {
           conversationId: "task-stale",
-          freshness: "fresh",
           id: "w1:task-stale",
           kind: "agent_task",
           source: "salix.conversation",
@@ -278,14 +319,17 @@ describe("TasksRoute", () => {
     const projection = createProductInboxProjectionHarness({ initial: result });
     installNativeBridgeMock({ platform: "electron" });
 
+    render(<Toaster />);
     renderTasksRoute(projection.controller);
 
     await flush();
-    const taskButton = screen.getByRole("button", {
-      name: /Cached running task.*Stale/i,
-    });
-    expect(taskButton).toHaveAttribute("data-freshness", "stale");
-    expect(taskButton).toHaveTextContent("Stale");
+    expect(
+      screen.getByRole("button", { name: "Cached running task" })
+    ).toBeInTheDocument();
+    expect(await screen.findByTestId("tasks-sync-error")).toHaveTextContent(
+      "Comma could not reach the ProductInbox authority."
+    );
+    act(() => toast.dismissAll());
   });
 
   it("loads the next task page when a scrolling column reaches its end, not before", async () => {
@@ -403,7 +447,7 @@ describe("TasksRoute", () => {
     });
   });
 
-  it("shows a loaded task page the core kept stale when it read the first page again", async () => {
+  it("keeps showing a loaded task page when the core reads the first page again", async () => {
     const firstPage: ProductInboxListResult = {
       activeWorkspaceId: "w1",
       hasMore: true,
@@ -435,14 +479,14 @@ describe("TasksRoute", () => {
     await flush();
     expect(screen.getByText("Loaded second task")).toBeInTheDocument();
 
-    // The core reads the first page again and keeps the loaded tail, stale.
+    // The core reads the first page again and keeps the loaded tail.
     act(() =>
       projection.emit({
         activeWorkspaceId: "w1",
         hasMore: false,
         items: [
           taskInboxItem("task-1", "Refreshed first task"),
-          { ...taskInboxItem("task-2", "Loaded second task"), freshness: "stale" },
+          taskInboxItem("task-2", "Loaded second task"),
         ],
         source: "live-sync",
       })
@@ -451,9 +495,6 @@ describe("TasksRoute", () => {
 
     expect(screen.getByText("Refreshed first task")).toBeInTheDocument();
     expect(screen.getByText("Loaded second task")).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: /Loaded second task.*Stale/i })
-    ).toHaveAttribute("data-freshness", "stale");
     // The refreshed first page does not bring back a page past the last one.
     expect(
       projection.refresh.mock.calls.filter(([input]) => input.cursor)
@@ -1092,13 +1133,8 @@ function renderTasksRoute(
     path: "/tasks/$workspaceId/$groupId/$conversationId",
     component: () => null,
   });
-  const stationTaskRoute = createRoute({
-    getParentRoute: () => rootRoute,
-    path: "/tasks/$workspaceId/station/$station/$thread",
-    component: () => null,
-  });
   const router = createRouter({
-    routeTree: rootRoute.addChildren([tasksRoute, taskDetailRoute, stationTaskRoute]),
+    routeTree: rootRoute.addChildren([tasksRoute, taskDetailRoute]),
     history: createMemoryHistory({ initialEntries: [initialEntry] }),
   });
 
@@ -1112,7 +1148,6 @@ function taskFixture(): TaskViewModel {
     conversationId: "cnv_task_1",
     groupId: "grp_test",
     updatedAt: 1_700_000_000,
-    freshness: "fresh",
     id: "task_1",
     lastMessage: {
       content: "I am checking it now.",
@@ -1138,7 +1173,6 @@ function taskInboxItem(conversationId: string, title: string) {
   return {
     conversationId,
     labels: [] as string[],
-    freshness: "fresh" as const,
     id: `w1:${conversationId}`,
     kind: "agent_task" as const,
     source: "salix.conversation" as const,

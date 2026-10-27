@@ -25,3 +25,30 @@ export function clockTimeoutSignal(clock: MainClock, ms: number): AbortSignal {
   );
   return controller.signal;
 }
+
+/** Resolves once `ms` have passed on `clock`. */
+export function clockSleep(clock: MainClock, ms: number): Promise<void> {
+  return new Promise((resolve) => clock.setTimer(ms, resolve));
+}
+
+/** Runs `run` every `ms` on `clock`, the first time `ms` from now; the returned function stops it. */
+export function clockInterval(
+  clock: MainClock,
+  ms: number,
+  run: () => void
+): () => void {
+  let cancel: (() => void) | undefined;
+  let stopped = false;
+  const arm = () => {
+    cancel = clock.setTimer(ms, () => {
+      if (stopped) return;
+      arm();
+      run();
+    });
+  };
+  arm();
+  return () => {
+    stopped = true;
+    cancel?.();
+  };
+}

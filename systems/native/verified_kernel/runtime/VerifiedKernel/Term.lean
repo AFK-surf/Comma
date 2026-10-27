@@ -1,3 +1,5 @@
+import VerifiedKernel.Zip
+
 namespace VerifiedKernel
 
 inductive Term where

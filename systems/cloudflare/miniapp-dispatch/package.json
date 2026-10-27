@@ -1,0 +1,17 @@
+{
+  "name": "miniapp-dispatch",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:storage": "esbuild src/app-storage.ts --bundle --format=esm --target=es2022 --platform=neutral --legal-comments=none --outfile=../../apps/comma_core/priv/mini_apps/app-storage.js",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "4.20260630.1",
+    "esbuild": "0.28.1",
+    "typescript": "^5.9.3",
+    "vitest": "4.1.9",
+    "wrangler": "4.105.0"
+  }
+}

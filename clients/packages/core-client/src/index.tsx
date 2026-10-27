@@ -14,6 +14,7 @@ import {
   CoreError,
   topicKey,
   type Channel,
+  type CoreFailure,
   type Opener,
   type Topic,
 } from "@comma/core-kernel/client";
@@ -28,7 +29,7 @@ import {
   type ReactNode,
 } from "react";
 
-export { CoreClient, CoreError, type Channel, type Opener };
+export { CoreClient, CoreError, type Channel, type CoreFailure, type Opener };
 export type * from "@comma/core/contract";
 
 const CoreContext = createContext<CoreClient | null>(null);
@@ -281,7 +282,7 @@ function portChannel(
 export function electronCoreOpener(open: () => Promise<{ channelId: string }>): Opener {
   const arrived = new Map<string, MessagePort>();
   const waiting = new Map<string, (port: MessagePort) => void>();
-  const failures = new Map<string, (reason: string) => void>();
+  const failures = new Map<string, (reason: string, failure?: CoreFailure) => void>();
   window.addEventListener("message", (event: MessageEvent) => {
     if (event.source !== window) return;
     const data = event.data as {
@@ -295,7 +296,7 @@ export function electronCoreOpener(open: () => Promise<{ channelId: string }>): 
         wake(event.ports[0]);
       } else arrived.set(data.commaCorePort, event.ports[0]);
     } else if (typeof data?.commaCoreClosed === "string") {
-      failures.get(data.commaCoreClosed)?.("The core's process went.");
+      failures.get(data.commaCoreClosed)?.("The core's process went.", "process_exit");
     }
   });
   return (onMessage, onFail) => {
@@ -320,7 +321,8 @@ export function electronCoreOpener(open: () => Promise<{ channelId: string }>): 
         delivered.start();
         channel = portChannel(delivered, early);
       },
-      (error: unknown) => onFail(error instanceof Error ? error.message : String(error))
+      (error: unknown) =>
+        onFail(error instanceof Error ? error.message : String(error), "channel_open")
     );
     return {
       post(message) {
@@ -336,20 +338,48 @@ export function electronCoreOpener(open: () => Promise<{ channelId: string }>): 
   };
 }
 
-/** The web: this tab's dedicated worker, which runs the core or relays to the tab's worker that does. */
-export function workerCoreOpener(start: () => Worker): Opener {
+/**
+ * The web: this tab's dedicated worker, which runs the core or relays to the tab's worker that does. `build` is the
+ * page's script that names the worker's: a page of a build replaced since (a tab the browser restored from its cache,
+ * or one open across a release) asks for a worker script the release no longer serves, and is retired (it loads
+ * again).
+ */
+export function workerCoreOpener(start: () => Worker, build?: string): Opener {
   // The core is the only copy of what was done offline: the browser is asked to keep its storage.
   void navigator.storage?.persist?.().catch(() => false);
   return (onMessage, onFail) => {
     const worker = start();
     worker.addEventListener("message", (event) => onMessage(event.data));
-    worker.addEventListener("error", (event) =>
-      onFail(event.message || "The core's worker failed.")
-    );
+    // A worker whose script did not load or parse gets a plain `error` Event; one that threw and did not catch gets
+    // an ErrorEvent.
+    worker.addEventListener("error", (event: Event) => {
+      if (event instanceof ErrorEvent) {
+        onFail(event.message || "The core's worker failed.", "worker_exception");
+        return;
+      }
+      const failed = () => onFail("The core's worker did not load.", "worker_load");
+      if (build === undefined) return failed();
+      // As a newer build's core tells a page of an older one. Unknown (offline): tried again, as any failure.
+      served(build).then(
+        (yes) => (yes ? failed() : onMessage({ retired: true })),
+        failed
+      );
+    });
     return {
       // oxlint-disable-next-line unicorn/require-post-message-target-origin -- a worker has no target origin
       post: (message) => worker.postMessage(message),
       close: () => worker.terminate(),
     };
   };
+}
+
+/**
+ * Whether `script` is still served as one: a release serves its own files, and its page (or a 404) for any other path.
+ * Any other answer (the server failing, a limit) says nothing of the build: it counts as served, and is tried again.
+ */
+async function served(script: string): Promise<boolean> {
+  const response = await fetch(script, { method: "HEAD", cache: "no-store" });
+  if (response.status === 404) return false;
+  if (!response.ok) return true;
+  return /javascript/i.test(response.headers.get("content-type") ?? "");
 }

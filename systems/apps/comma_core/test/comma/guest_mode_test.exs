@@ -5,16 +5,6 @@ defmodule Comma.GuestModeTest do
   alias Comma.Data.{ExternalOperation, Workspace}
   alias Comma.GuestMode
 
-  setup_all do
-    unless SystemsRuntime.Proc.whereis(BillingCore.Repo) do
-      start_supervised!(BillingCore.Repo)
-      Ecto.Migrator.run(BillingCore.Repo, :up, all: true)
-    end
-
-    Ecto.Adapters.SQL.Sandbox.mode(BillingCore.Repo, :manual)
-    :ok
-  end
-
   setup do
     :ok = Ecto.Adapters.SQL.Sandbox.checkout(BillingCore.Repo)
     Ecto.Adapters.SQL.Sandbox.mode(BillingCore.Repo, {:shared, SystemsRuntime.Proc.self()})

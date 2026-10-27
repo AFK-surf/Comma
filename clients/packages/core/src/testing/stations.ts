@@ -32,18 +32,30 @@ export type Entry = {
   authorKind: string;
   author: string;
   authorName: string;
-  text: string;
+  text: string | null;
   attachments: unknown[];
-  quotes: { ts?: string }[];
+  /** What it quotes: a message of the chat by its `ts`, with its words. */
+  quotes: { ts?: string; author?: string; text?: string; role?: string }[];
   at: number;
   card?: unknown;
   ending?: string;
+  /** An agent's milestones; a `milestone` entry holds nothing else (its text is null). */
+  milestones?: string[];
+  /** What Salix's Router wrote (`task.say`): a request made elsewhere. */
+  request?: true;
+  /** An agent's post: the message it answers, as its station says. */
+  answers?: number;
 };
 
 type Handler = (
   request: ServedRequest<Claims>,
-  body: unknown
+  body: unknown,
+  /** The body as it came. */
+  bytes: Uint8Array
 ) => MeshReply | Promise<MeshReply>;
+
+/** The most of a file one part takes, as the station's `/parts` gives it. */
+const PART = 8 * 1024 * 1024;
 
 const reply = (status: number, value: unknown): MeshReply => ({
   status,
@@ -108,6 +120,8 @@ export class FakeStation {
   readonly sessions: unknown[] = [];
   /** Files put on it, by name, and sessions whose chat it made. */
   readonly uploads: string[] = [];
+  /** How much of each file in parts has come, by its upload id. */
+  readonly parts = new Map<string, number>();
   readonly made: string[] = [];
   /** Event streams opened, in order: the last is the open one. */
   readonly feeds: EventFeed[] = [];
@@ -146,6 +160,21 @@ export class FakeStation {
       this.uploads.push(name);
       return reply(200, { name, path: `/uploads/${name}`, size: 3 });
     });
+    // A file in parts, as the station's `savePart` takes it: a part adds what follows what came; whole, it is a file.
+    this.on("POST", "/uploads/parts", (request, _body, bytes) => {
+      const q = new URLSearchParams(request.path.split("?")[1] ?? "");
+      const upload = q.get("id") ?? "";
+      const name = q.get("name") ?? "file";
+      const size = Number(q.get("size"));
+      const offset = Number(q.get("offset"));
+      const have = this.parts.get(upload) ?? 0;
+      const next =
+        offset <= have && offset + bytes.length > have ? offset + bytes.length : have;
+      this.parts.set(upload, next);
+      if (next < size) return reply(200, { have: next });
+      this.uploads.push(name);
+      return reply(200, { have: size, file: { name, path: `/uploads/${name}`, size } });
+    });
     this.on("POST", "/threads", (_request, body) => {
       const made = this.#nextThread++;
       this.threads.set(made, { title: null, entries: [], read: 0 });
@@ -170,10 +199,42 @@ export class FakeStation {
     });
   }
 
+  /**
+   * A session's files, as the station serves them: whole (`GET /sessions/:key/files?name=`), or a part
+   * (`GET /sessions/:key/parts?name=&offset=&length=`, with the whole size in `stillfail-total`).
+   */
+  #fileRoute(method: string, path: string, query: string): Handler | undefined {
+    const at = /^\/sessions\/([^/]+)\/(files|parts)$/.exec(path);
+    if (method !== "GET" || !at) return undefined;
+    return () => {
+      const q = new URLSearchParams(query);
+      const file = this.files.get(
+        `${decodeURIComponent(at[1]!)}/${q.get("name") ?? ""}`
+      );
+      if (!file) return reply(404, { error: "no such file" });
+      if (at[2] === "files")
+        return {
+          status: 200,
+          headers: [["content-type", file.type]],
+          body: file.bytes,
+        };
+      const offset = Number(q.get("offset") ?? 0);
+      const length = Math.min(Number(q.get("length") ?? PART), this.partBytes);
+      return {
+        status: 200,
+        headers: [
+          ["content-type", file.type],
+          ["stillfail-total", String(file.bytes.length)],
+        ],
+        body: file.bytes.subarray(offset, offset + length),
+      };
+    };
+  }
+
   /** A write to a chat: noted, with the write's key. */
   #threadRoute(method: string, path: string, query: string): Handler | undefined {
     const at =
-      /^\/threads\/(\d+)(?:\/(messages|dismissed|closed-card|read|entries|status|labels))?$/.exec(
+      /^\/threads\/(\d+)(?:\/(messages|dismissed|closed-card|read|entries|status|labels|archive))?$/.exec(
         path
       );
     if (!at) return undefined;
@@ -219,17 +280,26 @@ export class FakeStation {
       if (action === "messages") {
         const n = this.#nextN++;
         const chat = this.threads.get(thread);
-        const posted = body as { text: string; attachments?: unknown[] };
+        const posted = body as {
+          text: string;
+          attachments?: unknown[];
+          quotes?: Entry["quotes"];
+        };
         if (chat) {
           const entry = this.entry(n, "person", posted.text, {
             author: this.viewer,
             attachments: posted.attachments ?? [],
+            quotes: posted.quotes ?? [],
           });
           chat.entries.push(entry);
-          if (this.sayEntries) this.feed?.say("thread", { thread, entries: [entry] });
+          // As the station says it (`api/events.ts`).
+          if (this.sayEntries)
+            this.feed?.say("thread", { id: thread, entries: [entry] });
         }
         answer = reply(200, { n });
       }
+      // Archived (POST) or taken out of the archive (DELETE): answered with its chat.
+      if (action === "archive") answer = reply(200, this.#view(thread));
       if (action === "labels") {
         const asked = (body as { labels: string[] }).labels;
         answer = reply(200, { thread, labels: [...new Set(asked)].toSorted() });
@@ -245,6 +315,12 @@ export class FakeStation {
       return answer;
     };
   }
+
+  /** The most of a file one part gives (the station's is PART): a test makes it small to read a file in many parts. */
+  partBytes = PART;
+
+  /** The files sessions keep in their uploads, by `session/name`, as `GET /sessions/:key/files` serves them. */
+  readonly files = new Map<string, { type: string; bytes: Uint8Array }>();
 
   /** The station's chats by thread: their entries, and where the viewer read to. */
   readonly threads = new Map<
@@ -311,17 +387,22 @@ export class FakeStation {
     }
     const chunks: Uint8Array[] = [];
     for await (const chunk of request.body) chunks.push(chunk);
-    const text = new TextDecoder().decode(
-      chunks.length === 1 ? chunks[0] : Buffer.concat(chunks)
-    );
+    const bytes: Uint8Array = chunks.length === 1 ? chunks[0]! : Buffer.concat(chunks);
+    const text = new TextDecoder().decode(bytes);
     const [bare, query = ""] = request.path.split("?");
     const handler =
-      this.#routes.get(key) ?? this.#threadRoute(request.method, bare!, query);
+      this.#routes.get(key) ??
+      this.#fileRoute(request.method, bare!, query) ??
+      this.#threadRoute(request.method, bare!, query);
     if (!handler) return reply(404, { error: `no route ${key}` });
     const json = request.headers.some(
       ([name, value]) => name === "content-type" && value === "application/json"
     );
-    return handler(request, text === "" ? undefined : json ? JSON.parse(text) : text);
+    return handler(
+      request,
+      text === "" ? undefined : json ? JSON.parse(text) : text,
+      bytes
+    );
   }
 }
 

@@ -158,6 +158,9 @@ async function launch(main?: ElectronMainSetup) {
       cause: error,
     });
   });
+  // The window is first reported on its initial blank document; the fixture's
+  // page is a navigation away, and evaluating before it lands loses the context.
+  await page.waitForURL((url) => url.protocol === "data:");
 }
 
 test.afterEach(async () => {

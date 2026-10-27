@@ -3,7 +3,7 @@
 // aborts the signal the request was given (the ones that took one: a poll, an upload, a stream), as the host's
 // request stops.
 import { Effect } from "effect";
-import type { ManualTaskStatus } from "@comma/chat-contract";
+import type { ChatTaskRunChoice, ManualTaskStatus } from "@comma/chat-contract";
 import type { ChatApi, CommaLocalFileRef } from "../chat/api.ts";
 import type {
   CommaConversation,
@@ -38,6 +38,11 @@ export interface PromiseChatApi {
     status: ManualTaskStatus,
     expectedUpdatedAt: number
   ): Promise<CommaConversation>;
+  setTaskRun(
+    groupId: string,
+    conversationId: string,
+    run: ChatTaskRunChoice
+  ): Promise<CommaConversation>;
   pollConversation(
     groupId: string,
     conversationId: string,
@@ -47,6 +52,14 @@ export interface PromiseChatApi {
   uploadGroupFile(
     groupId: string,
     attrs: { data: Blob; name: string; signal?: AbortSignal }
+  ): Promise<CommaGroupFile>;
+  uploadLocalFile?(
+    groupId: string,
+    attrs: { localFileRef: string; name: string; size: number; signal?: AbortSignal }
+  ): Promise<CommaGroupFile>;
+  storeConversationFile(
+    groupId: string,
+    file: { conversationId: string; messageId: string; index: number }
   ): Promise<CommaGroupFile>;
   fetchGroupFile(
     groupId: string,
@@ -98,6 +111,7 @@ const signalAt: Partial<Record<keyof ChatApi, number>> = {
   streamConversationEvents: 2,
   streamConversationListEvents: 1,
   uploadGroupFile: 1,
+  uploadLocalFile: 1,
 };
 
 /** The members that are Effects rather than functions: the fake's method runs each time one runs. */

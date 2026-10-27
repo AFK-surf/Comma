@@ -169,6 +169,8 @@ export {
   AiInputMenuPanel,
   AI_INPUT_SMALL_TEXTAREA_MIN_HEIGHT_PX,
   aiInputQuoteAttachment,
+  aiInputMessageQuote,
+  aiInputQuoteExcerpt,
   aiInputQuoteHoverCard,
   aiInputQuotePreview,
   aiInputQuotePreviewText,
@@ -233,6 +235,8 @@ export type {
   RightSidebarTab,
   RightSidebarToolbarButtonProps,
 } from "./right-sidebar";
+export { TitleSwap } from "./title-swap";
+export type { TitleSwapProps } from "./title-swap";
 export { TaskListItem, TaskListGroup } from "./TaskListItem";
 export type {
   TaskListGroupProps,
@@ -275,7 +279,6 @@ export {
   TaskWorkspace,
   isPollingTerminalTaskStatus,
   normalizeTaskStatus,
-  taskFreshnessLabel,
   taskNeutralIcon,
   taskProgressLabel,
   taskStatusBucket,
@@ -455,6 +458,7 @@ export type {
 export {
   createMarkdownStreamDocumentNodes,
   MarkdownStream,
+  MarkdownStreamDarkContext,
   MarkdownStreamLinkDecoratorContext,
 } from "./markdown-stream";
 export type {
@@ -479,7 +483,11 @@ export type {
   ScrollEdgeBlur,
   ScrollEdgeMask,
 } from "./scroll-area";
-export { CommandPalette, CommandPaletteHighlight } from "./command-palette";
+export {
+  CommandPalette,
+  CommandPaletteHighlight,
+  CommandPaletteKeycaps,
+} from "./command-palette";
 export type {
   CommandPaletteActiveChangeSource,
   CommandPaletteFooterHint,
@@ -496,6 +504,7 @@ export type {
   SelectionActionBarAnchor,
   SelectionActionBarDirection,
   SelectionActionBarProps,
+  SelectionActionBarReply,
 } from "./selection-action-bar";
 export {
   SideChatCardsPanel,

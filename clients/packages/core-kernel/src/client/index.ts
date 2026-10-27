@@ -5,6 +5,7 @@ export {
   topicKey,
   type Channel,
   type ClientOptions,
+  type CoreFailure,
   type CoreFault,
   type ErrorBody,
   type Opener,

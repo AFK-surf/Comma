@@ -13,6 +13,11 @@ defmodule Salix.Control.VoiceNumbers do
   by `SalixIM.VoiceConnects`; this module adds only the verification step and
   a projection. PIN hashes never leave `salix_im`.
 
+  The Group's call preferences (the voice, a custom voice made from a
+  description, and Router calls) are stored on the same connect by
+  `SalixIM.VoiceConnects`; this module checks preset names and creates the
+  custom voice (`SalixWeb.OpenAIVoices`).
+
   `line` is the platform Twilio number the caller dials. It may be omitted
   when the platform has exactly one line.
   """
@@ -21,7 +26,7 @@ defmodule Salix.Control.VoiceNumbers do
   alias Salix.Control.Groups
   alias SalixIM.ProviderConnects
   alias SalixVoice.Settings
-  alias SalixWeb.TwilioClient
+  alias SalixWeb.{OpenAIVoices, TwilioClient}
 
   @carrier "twilio"
   # SMS codes cost money and reach a third party's phone: bounded per Group
@@ -29,6 +34,11 @@ defmodule Salix.Control.VoiceNumbers do
   # `:salix_web, :voice_verify_rate_limits`.
   @verify_limits [group_per_hour: 10, number_per_hour: 5]
   @hour_ms 3_600_000
+  # Custom voices count against the platform OpenAI organization's limit.
+  @custom_voices_per_day 5
+  @day_ms 86_400_000
+  @max_voice_description 1_000
+  @default_preferences %{"voice" => nil, "custom_voice" => nil, "router_calls" => false}
 
   @type error ::
           :not_found
@@ -42,8 +52,9 @@ defmodule Salix.Control.VoiceNumbers do
   @doc """
   The Group's voice status: `"lines"` (platform lines), `"numbers"` (the
   connect's public number projections), `"connect"` (the public connect or
-  nil), `"readiness"` (`%{"ready", "reason"}`) and `"urls"` (see
-  `voice_urls/1`).
+  nil), `"readiness"` (`%{"ready", "reason"}`), `"urls"` (see
+  `voice_urls/1`), `"preferences"` (the call preferences) and `"voices"` (the
+  preset voice names).
   """
   @spec status(String.t(), String.t()) :: {:ok, map()} | {:error, error()}
   def status(group_id, tenant_id) do
@@ -62,7 +73,9 @@ defmodule Salix.Control.VoiceNumbers do
          "numbers" => if(connect, do: connect["numbers"] || [], else: []),
          "connect" => connect,
          "readiness" => readiness(settings),
-         "urls" => voice_urls(group_id)
+         "urls" => voice_urls(group_id),
+         "preferences" => (connect && connect["preferences"]) || @default_preferences,
+         "voices" => SalixVoice.Voices.presets()
        }}
     end
   end
@@ -145,6 +158,58 @@ defmodule Salix.Control.VoiceNumbers do
   def set_pin(_group_id, _tenant_id, _attrs), do: {:error, {:bad_request, "invalid request body"}}
 
   @doc """
+  Changes the call preferences: `attrs` may hold `"voice"` (nil, `%{"kind" =>
+  "preset", "name" => name}` or `%{"kind" => "custom"}`) and `"router_calls"`
+  (boolean); absent fields keep their value. Returns `status/2`.
+  """
+  @spec set_preferences(String.t(), String.t(), map()) :: {:ok, map()} | {:error, error()}
+  def set_preferences(group_id, tenant_id, attrs) when is_map(attrs) do
+    with {:ok, _group} <- group(group_id, tenant_id),
+         :ok <- preset(attrs["voice"]),
+         {:ok, _connect} <-
+           ProviderConnects.update_voice_preferences(
+             tenant_id,
+             group_id,
+             Map.take(attrs, ["voice", "router_calls"])
+           ) do
+      status(group_id, tenant_id)
+    end
+  end
+
+  def set_preferences(_group_id, _tenant_id, _attrs),
+    do: {:error, {:bad_request, "invalid request body"}}
+
+  @doc """
+  Creates a custom voice from `attrs["description"]` (and optional
+  `"name"`, empty when absent), keeps it as the Group's custom voice and
+  selects it. A Group creates at most #{@custom_voices_per_day} per day.
+  Returns `status/2`.
+  """
+  @spec create_custom_voice(String.t(), String.t(), map()) :: {:ok, map()} | {:error, error()}
+  def create_custom_voice(group_id, tenant_id, attrs) when is_map(attrs) do
+    with {:ok, _group} <- group(group_id, tenant_id),
+         {:ok, settings} <- settings(),
+         {:ok, description} <- voice_description(attrs["description"]),
+         name = voice_name(attrs["name"]),
+         :ok <- custom_voice_limit(group_id),
+         previous = custom_voice_id(group_id, tenant_id),
+         {:ok, id} <- OpenAIVoices.create(settings, provider_voice_name(name), description),
+         {:ok, _connect} <-
+           ProviderConnects.update_voice_preferences(tenant_id, group_id, %{
+             "voice" => %{"kind" => "custom"},
+             "custom_voice" => %{"id" => id, "name" => name, "description" => description}
+           }) do
+      # The replaced voice counts against the organization's limit. Its
+      # deletion is best effort: the new voice is already in use.
+      if previous && previous != id, do: OpenAIVoices.delete(settings, previous)
+      status(group_id, tenant_id)
+    end
+  end
+
+  def create_custom_voice(_group_id, _tenant_id, _attrs),
+    do: {:error, {:bad_request, "invalid request body"}}
+
+  @doc """
   Public voice API URLs of a Group: `"readiness_url"` (HTTPS) and
   `"sessions_url"` (the `comma.voice.v1` WebSocket).
   """
@@ -187,6 +252,55 @@ defmodule Salix.Control.VoiceNumbers do
   end
 
   # ---- internal ----
+
+  defp preset(%{"kind" => "preset", "name" => name}) do
+    if SalixVoice.Voices.preset?(name),
+      do: :ok,
+      else: {:error, {:bad_request, "voice must be one of the preset voices"}}
+  end
+
+  defp preset(_voice), do: :ok
+
+  defp voice_description(value) when is_binary(value) do
+    case String.trim(value) do
+      "" ->
+        {:error, {:bad_request, "description is required"}}
+
+      text when byte_size(text) > @max_voice_description ->
+        {:error, {:bad_request, "description is at most #{@max_voice_description} bytes"}}
+
+      text ->
+        {:ok, text}
+    end
+  end
+
+  defp voice_description(_value), do: {:error, {:bad_request, "description is required"}}
+
+  # A voice nobody named keeps an empty name: the clients show their own
+  # label for it, and no Group id reaches OpenAI or the settings page.
+  defp voice_name(value) when is_binary(value), do: value |> String.trim() |> String.slice(0, 64)
+  defp voice_name(_value), do: ""
+
+  defp provider_voice_name(""), do: "Comma custom voice"
+  defp provider_voice_name(name), do: name
+
+  defp custom_voice_id(group_id, tenant_id) do
+    case ProviderConnects.get_voice_im_connect(tenant_id, group_id) do
+      {:ok, %{"preferences" => %{"custom_voice" => %{"id" => id}}}} -> id
+      _ -> nil
+    end
+  end
+
+  defp custom_voice_limit(group_id) do
+    case RateLimit.admit("voice-custom:" <> group_id, @day_ms, @custom_voices_per_day) do
+      {:allow, _} -> :ok
+      {:deny, _ms} -> {:error, :rate_limited}
+    end
+  rescue
+    _ -> {:error, {:unavailable, "rate limiter unavailable"}}
+  catch
+    :exit, _ -> {:error, {:unavailable, "rate limiter unavailable"}}
+  end
 
   defp group(group_id, tenant_id) do
     case Groups.get(group_id, tenant_id) do

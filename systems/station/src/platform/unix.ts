@@ -304,5 +304,6 @@ export const unix: Platform = {
   hasQuickLook: MACOS,
   hasFolderPermissions: MACOS,
   hasComputerUse: MACOS,
+  hasWindowsComputerUse: false,
   hasHomebrew: MACOS,
 };

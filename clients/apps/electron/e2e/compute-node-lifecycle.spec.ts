@@ -27,6 +27,11 @@ test(
     const runtimeDirectory = join(directory, "runtime");
     const lifecycle = defaultAgentVMMHostLifecyclePath(directory);
     const workspaceId = "wsp_compute_node_e2e";
+    const workspace = {
+      id: workspaceId,
+      group_id: "grp_compute_node_e2e",
+      name: "Compute",
+    };
     let operationId = "vmm_install_compute_node_e2e";
     let productStatus: "processing" | "ready" | "stopped" | "removed" = "processing";
     const productRequests: string[] = [];
@@ -38,10 +43,26 @@ test(
         productRequests.push(`${request.method ?? "UNKNOWN"} ${path}`);
         // The client core reads Compute for a workspace of the account's list.
         if (request.method === "GET" && path === "/v1/comma/workspaces") {
+          respondJson(response, { data: [workspace] });
+          return true;
+        }
+        // The window's Home opens the account's chat on start: an empty one, so
+        // no "Chat is temporarily unavailable" toast offers a Retry of its own.
+        if (request.method === "POST" && path === "/v1/comma/me/bootstrap") {
+          respondJson(response, { status: "ready", workspace });
+          return true;
+        }
+        if (
+          request.method === "POST" &&
+          path === `/v1/comma/groups/${workspace.group_id}/assistant-chat`
+        ) {
           respondJson(response, {
-            data: [
-              { id: workspaceId, group_id: "grp_compute_node_e2e", name: "Compute" },
-            ],
+            id: "conv_compute_node_e2e",
+            group_id: workspace.group_id,
+            kind: "user_chat",
+            messages: [],
+            status: "open",
+            title: "Chat",
           });
           return true;
         }
@@ -109,11 +130,11 @@ test(
         if (
           request.method === "POST" &&
           path.startsWith(`${operationPath}/${operationId}/`) &&
-          ["enable", "disable", "revoke", "initialize-workload"].includes(action)
+          ["enable", "disable", "revoke"].includes(action)
         ) {
           request.resume();
           productStatus =
-            action === "enable" || action === "initialize-workload"
+            action === "enable"
               ? "ready"
               : action === "disable"
                 ? "stopped"
@@ -177,84 +198,54 @@ test(
 
       let page = await openComputeNode(app);
       await page.getByRole("button", { name: "Enable this Mac", exact: true }).click();
-      await page
-        .getByRole("dialog", { name: "Enable this Mac", exact: true })
-        .getByRole("button", { name: "Enable this Mac", exact: true })
-        .click();
+      // Main continues the setup by itself: the authorization whose answer was
+      // lost is asked again under the same idempotency key, and the install
+      // that failed after registering resumes the same operation.
       await expect
-        .poll(
-          async () =>
-            (await page.evaluate(() => window.commaNative!.computeNode.state.get()))
-              .recoveryActions
-        )
-        .toContain("continue_enable");
-      await expect(
-        page.getByRole("button", { name: "Continue setup", exact: true })
-      ).toBeVisible();
-      await expect(
-        page.getByText(
-          "The workspace service could not be reached. Check its status before continuing the same setup.",
-          { exact: true }
-        )
-      ).toBeVisible();
-      await expect(
-        page.getByText("Native command failed.", { exact: true })
-      ).toHaveCount(0);
-      await closeElectronTestApp(app);
-      app = await launch(false);
-      page = await openComputeNode(app);
-      const commandsBeforeRetry = await readFile(
-        join(runtimeDirectory, "commands"),
-        "utf8"
-      ).catch(() => "");
-      expect(
-        commandsBeforeRetry
-          .split("\n")
-          .filter((command) => command.startsWith("install "))
-      ).toHaveLength(0);
-      await page.getByRole("button", { name: "Continue setup", exact: true }).click();
-      await page
-        .getByRole("dialog", { name: "Enable this Mac", exact: true })
-        .getByRole("button", { name: "Enable this Mac", exact: true })
-        .click();
-      await expect(
-        page.getByRole("button", { name: "Continue setup", exact: true })
-      ).toBeVisible();
-      await expect.poll(() => authorizationKeys).toHaveLength(2);
+        .poll(() => page.evaluate(() => window.commaNative!.computeNode.state.get()))
+        .toMatchObject({ status: "ready", observationFresh: true });
+      expect(authorizationKeys).toHaveLength(2);
       expect(authorizationKeys[1]).toBe(authorizationKeys[0]);
+      const commands = await readFile(join(runtimeDirectory, "commands"), "utf8");
+      expect(commands).toContain(
+        "install --service-type agent --request-id vmm_install_compute_node_e2e --operation-stdin"
+      );
+      expect(commands).toContain(`--resume-operation ${operationId}`);
+      await expect(sandboxReady(page)).toBeVisible();
       await expect(
-        page.getByText(/The local workspace connection could not finish/)
-      ).toBeVisible();
+        page.getByRole("button", { name: "Retry", exact: true })
+      ).toHaveCount(0);
+
+      // A terminal helper receipt keeps the server's retry counter
+      // authoritative: Main stops continuing and offers no retry.
       await closeElectronTestApp(app);
-      app = await launch(false);
-      page = await openComputeNode(app);
-      // Main reports the retryable connection failure as `connection_failed`; the page words it.
-      await expect(
-        page.getByText(
-          /The components are installed, but the workspace connection did not finish/
-        )
-      ).toBeVisible();
-      await expect(
-        page.getByRole("button", { name: "Continue setup", exact: true })
-      ).toBeVisible();
       const receiptPath = join(runtimeDirectory, "operation.json");
-      const recoverableReceipt = await readFile(receiptPath, "utf8");
-      await closeElectronTestApp(app);
-      const terminalReceipt = JSON.parse(recoverableReceipt);
-      delete terminalReceipt.retryable;
-      terminalReceipt.attempt = 3;
-      terminalReceipt.failureCode = "retry_limit_reached";
-      await writeFile(receiptPath, JSON.stringify(terminalReceipt));
+      await writeFile(
+        receiptPath,
+        JSON.stringify({
+          operationId,
+          kind: "install-managed",
+          outcome: "failed",
+          attempt: 3,
+          failureStage: "register",
+          failureCode: "retry_limit_reached",
+          failureMessage: "private transport details",
+        })
+      );
+      await rm(join(runtimeDirectory, "loaded"));
       app = await launch(false);
       page = await openComputeNode(app);
+      // Only the Sandbox's own actions: a toast elsewhere (the stub serves no
+      // chat) can offer a Retry of its own.
+      const sandbox = page.locator('section[aria-label="Sandbox"]');
       await expect(
-        page.getByText(/The connection reached its retry limit/)
+        sandbox.getByText(/The connection reached its retry limit/)
       ).toBeVisible();
       await expect(
-        page.getByRole("button", { name: "Continue setup", exact: true })
+        sandbox.getByRole("button", { name: "Retry", exact: true })
       ).toHaveCount(0);
       await expect(
-        page.getByRole("button", { name: "Reconnect", exact: true })
+        sandbox.getByRole("button", { name: "Reconnect", exact: true })
       ).toHaveCount(0);
       const nativeMutations = async () =>
         (await readFile(join(runtimeDirectory, "commands"), "utf8"))
@@ -263,42 +254,25 @@ test(
             /^(install|repair|registration-state|registration-revoke) /.test(line)
           );
       const beforeCheck = await nativeMutations();
-      await page
-        .getByRole("button", { name: "Check status", exact: true })
-        .first()
-        .click();
-      await expect(
-        page.getByRole("dialog", { name: "Repair compute node", exact: true })
-      ).toHaveCount(0);
+      const observedAt = async () =>
+        (await page.evaluate(() => window.commaNative!.computeNode.state.get()))
+          .observedAt;
+      const observedBeforeCheck = await observedAt();
+      // The only manual status check is in the collapsed diagnostics of Local settings.
+      await deviceMenu(page, "Local settings");
+      await page.getByText("Diagnostic details", { exact: true }).click();
+      await page.getByRole("button", { name: "Check status", exact: true }).click();
+      // The check reads the node again and changes nothing natively.
+      await expect.poll(observedAt).not.toBe(observedBeforeCheck);
       expect(await nativeMutations()).toEqual(beforeCheck);
       await closeElectronTestApp(app);
-      await writeFile(receiptPath, recoverableReceipt);
+      await rm(receiptPath);
+      await writeFile(join(runtimeDirectory, "loaded"), "");
       app = await launch(false);
       page = await openComputeNode(app);
-
-      await page.screenshot({
-        path: "/tmp/compute-lifecycle-repair-visual/ack-enrollment-failed-electron.png",
-        fullPage: true,
-      });
-      await page.getByRole("button", { name: "Continue setup", exact: true }).click();
-      await page
-        .getByRole("dialog", { name: "Enable this Mac", exact: true })
-        .getByRole("button", { name: "Enable this Mac", exact: true })
-        .click();
       await expect
         .poll(() => page.evaluate(() => window.commaNative!.computeNode.state.get()))
         .toMatchObject({ status: "ready", observationFresh: true });
-      await expect
-        .poll(async () => readFile(join(runtimeDirectory, "commands"), "utf8"))
-        .toContain(
-          "install --service-type agent --request-id vmm_install_compute_node_e2e --operation-stdin"
-        );
-      expect(
-        productRequests.filter((request) => request.endsWith("/initialize-workload"))
-      ).toHaveLength(1);
-      expect(await readFile(join(runtimeDirectory, "commands"), "utf8")).toContain(
-        `--resume-operation ${operationId}`
-      );
       const enables = productRequests.filter((request) =>
         request.endsWith("/enable")
       ).length;
@@ -321,9 +295,6 @@ test(
       expect(
         productRequests.filter((request) => request.endsWith("/enable"))
       ).toHaveLength(enables + 1);
-      expect(
-        productRequests.filter((request) => request.endsWith("/initialize-workload"))
-      ).toHaveLength(2);
       await page.screenshot({
         path: "/tmp/compute-lifecycle-repair-visual/existing-shell-reenabled-electron.png",
         fullPage: true,
@@ -331,21 +302,12 @@ test(
       await closeElectronTestApp(app);
       app = await launch(false);
       page = await openComputeNode(app);
-      await expect(
-        page.getByText(/^(Connected|Available for new work)$/).first()
-      ).toBeVisible();
-      expect(
-        productRequests.filter((request) => request.endsWith("/initialize-workload"))
-      ).toHaveLength(2);
-      await openLocalSettings(page);
-      await page
-        .getByRole("button", { name: "Stop providing compute…", exact: true })
-        .click();
+      await expect(sandboxReady(page)).toBeVisible();
+      // Workspace connection actions are in the computer's menu on its card, not in Local settings.
+      await deviceMenu(page, "Stop providing compute…");
       await expect(page.getByText(/Running work may not stop at once/)).toBeVisible();
       await page.getByRole("button", { name: "Cancel", exact: true }).click();
-      await expect(
-        page.getByText(/^(Connected|Available for new work)$/).first()
-      ).toBeVisible();
+      await expect(sandboxReady(page)).toBeVisible();
       expect(
         productRequests.filter((request) => request.endsWith("/disable"))
       ).toHaveLength(1);
@@ -353,15 +315,12 @@ test(
         ["Disable node", "wsp_other"],
         ["Remove compute node", workspaceId],
       ] as const) {
-        await page
-          .getByRole("button", {
-            name:
-              action === "Disable node"
-                ? "Stop providing compute…"
-                : "Disconnect this workspace…",
-            exact: true,
-          })
-          .click();
+        await deviceMenu(
+          page,
+          action === "Disable node"
+            ? "Stop providing compute…"
+            : "Disconnect this workspace…"
+        );
         // Another window replaces the binding while this confirmation remains open.
         await page.evaluate(async (id) => {
           const state = await window.commaNative!.computeNode.state.get();
@@ -397,11 +356,12 @@ test(
           )
         ).toEqual(mutations);
       }
-      await page
-        .getByRole("button", { name: "Stop providing compute…", exact: true })
-        .click();
+      await deviceMenu(page, "Stop providing compute…");
       await page.getByRole("button", { name: "Disable node", exact: true }).click();
-      await expect(page.getByText("Node disabled", { exact: true })).toBeVisible();
+      // Not enabled: the Sandbox row offers Enable this Mac again.
+      await expect(
+        page.getByRole("button", { name: "Enable this Mac", exact: true })
+      ).toBeVisible();
 
       // A completed local reset fences this install even while cloud handoff remains accepted.
       const maintenanceDirectory = join(
@@ -427,7 +387,7 @@ test(
         page.getByRole("button", { name: "Finish removal", exact: true })
       ).toBeVisible();
       await expect(
-        page.getByRole("button", { name: "Continue setup", exact: true })
+        page.getByRole("button", { name: "Retry", exact: true })
       ).toHaveCount(0);
       const commandsBeforeResetRecovery = await readFile(
         join(runtimeDirectory, "commands"),
@@ -467,10 +427,6 @@ test(
       expect(revocations()).toHaveLength(revocationsBeforeConfirmation + 1);
       operationId = "vmm_install_after_reset_e2e";
       await page.getByRole("button", { name: "Enable this Mac", exact: true }).click();
-      await page
-        .getByRole("dialog", { name: "Enable this Mac", exact: true })
-        .getByRole("button", { name: "Enable this Mac", exact: true })
-        .click();
       await expect
         .poll(() => page.evaluate(() => window.commaNative!.computeNode.state.get()))
         .toMatchObject({ status: "ready", bindingInstallationId: operationId });
@@ -549,6 +505,20 @@ esac
   }
 });
 
+/** One entry of this computer's menu on its card (the Sandbox's stop, disconnect and settings are there). */
+async function deviceMenu(page: import("@playwright/test").Page, entry: string) {
+  await page
+    .locator('article[data-slot="device-card"]')
+    .first()
+    .getByRole("button", { name: /^More actions for/ })
+    .click();
+  await page.getByRole("menuitem", { name: entry, exact: true }).click();
+}
+
+/** The Sandbox row while its compute is available: it says nothing then. */
+const sandboxReady = (page: import("@playwright/test").Page) =>
+  page.locator('section[aria-label="Sandbox"][data-ready="true"]');
+
 async function openComputeNode(app: Awaited<ReturnType<typeof electron.launch>>) {
   const page = await findElectronWindowByNativeRole(app, "main-window");
   await page.waitForLoadState("domcontentloaded");
@@ -623,13 +593,4 @@ function respondJson(response: import("node:http").ServerResponse, body: unknown
     "content-type": "application/json",
   });
   response.end(JSON.stringify(body));
-}
-
-async function openLocalSettings(page: import("@playwright/test").Page) {
-  if (await page.locator('[data-compute-screen="setup"]').isVisible())
-    await page
-      .getByLabel("Settings content")
-      .getByRole("button", { name: "Back", exact: true })
-      .click();
-  await page.getByRole("button", { name: "Local settings", exact: true }).click();
 }

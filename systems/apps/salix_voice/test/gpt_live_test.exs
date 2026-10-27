@@ -326,6 +326,47 @@ defmodule SalixVoice.Model.GptLiveTest do
     settle_receive({:EXIT, ^pid, _reason})
   end
 
+  test "a Group's voice replaces the platform voice and history opens the session" do
+    session =
+      GptLive.session_config(%{
+        audio_format: :pcm16_24k,
+        instructions: "You are Dot.",
+        settings: %{"gpt_live_voice" => "marin"},
+        voice: %{"id" => "voice_dot"},
+        input: [
+          %{"role" => "user", "text" => "Book the dentist."},
+          %{"role" => "assistant", "text" => "Booked."}
+        ]
+      })
+
+    assert session["audio"] == %{"output" => %{"voice" => %{"id" => "voice_dot"}}}
+
+    assert session["input"] == [
+             %{
+               "type" => "message",
+               "role" => "user",
+               "content" => [%{"type" => "input_text", "text" => "Book the dentist."}]
+             },
+             %{
+               "type" => "message",
+               "role" => "assistant",
+               "content" => [%{"type" => "output_text", "text" => "Booked."}]
+             }
+           ]
+
+    preset =
+      GptLive.session_config(%{
+        audio_format: :pcm16_24k,
+        instructions: "Be brief.",
+        settings: %{"gpt_live_voice" => "marin"},
+        voice: "quartz",
+        input: []
+      })
+
+    assert preset["audio"] == %{"output" => %{"voice" => "quartz"}}
+    refute Map.has_key?(preset, "input")
+  end
+
   test "the model key is not in the adapter's state or status", %{url: url} do
     {pid, _ref, _server} = start_model(url, :pcmu_8k)
 

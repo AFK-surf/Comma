@@ -283,6 +283,30 @@ describe("Home's briefing", () => {
   });
 });
 
+describe("dismissing a briefing item", () => {
+  it("posts the item's source and URL once and shows the briefing the server answers", async () => {
+    const t = setup();
+    t.api.on("GET", path, envelope({ state: "fresh", sources: [source] }));
+    const after = { ...envelope({ state: "stale", sources: [source] }) };
+    t.api.on("POST", `${path}/dismissals`, after);
+    const shown = t.watch<RecommendationsValue>(rail);
+    await t.time.pass(100);
+    expect(shown().envelope?.state).toBe("fresh");
+    const item = {
+      sourceId: "github-account",
+      sourceUrl: "https://github.com/o/r/pull/1",
+    };
+    const dismissed = t.client.call("recommendations.dismiss", {
+      workspace: "wsp_1",
+      ...item,
+    });
+    await t.time.pass(100);
+    expect(await dismissed).toBeNull();
+    expect(t.api.seen("POST", `${path}/dismissals`).map((r) => r.body)).toEqual([item]);
+    expect(shown().envelope?.state).toBe("stale");
+  });
+});
+
 describe("automatic messages", () => {
   it("reads the workspace's Group setting and saves a change once", async () => {
     const t = setup();

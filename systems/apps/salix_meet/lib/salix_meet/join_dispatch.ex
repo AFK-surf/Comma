@@ -1,17 +1,14 @@
 defmodule SalixMeet.JoinDispatch do
   @moduledoc """
-  Durable join outbox for the external meeting-runtime join.
+  Durable join outbox for one Meeting.
 
-  The winning caller CASes the meeting document to `dispatching`, executes the
-  runtime driver in that same caller, and checkpoints the same generation as
-  `dispatched` or `failed`. Failed and stale in-doubt claims are reclaimable
-  under the attempt budget, gated by the runtime authority (RFC contract
-  one): definitely-none permits a fresh dispatch, definitely-live converges
-  the record without a second join, an attested idempotent runtime permits
-  the dispatch even without a definite liveness answer, and a plain
-  unavailable fails closed for the round. The single-live-bot invariant is
-  therefore enforced by the runtime (join idempotency + the queryable read),
-  never by classifying dispatch errors at this end.
+  The winning caller claims the Meeting with CAS, invokes its runtime driver,
+  and checkpoints the same generation. Automatic placement records its target
+  before dispatch and releases it only after confirmed nonacceptance.
+
+  A retry requires a runtime liveness answer or attested join idempotency.
+  A live session converges the outbox without another join. An unknown outcome
+  retains the selected target. The runtime owns join idempotency by Meeting ID.
   """
 
   alias SalixMeet.{RuntimeDriver, Store}
@@ -73,12 +70,23 @@ defmodule SalixMeet.JoinDispatch do
   end
 
   defp session_liveness(meeting_id, doc) do
+    if SystemsRuntime.get_env(:salix_meet, :runtime_driver) == SalixMeet.RuntimeDriver.HTTP,
+      do: :unavailable,
+      else: selected_runtime_liveness(meeting_id, doc)
+  end
+
+  defp selected_runtime_liveness(meeting_id, doc) do
     state = doc["state"] || %{}
 
     case SalixMeet.Ports.MeetingDispatch.session_status(%{
            "meeting_id" => meeting_id,
            "group_id" => state["group_id"],
            "connect_id" => state["connect_id"],
+           "tenant_id" => state["tenant_id"],
+           "runtime_target" => state["runtime_target"],
+           "compute_environment_id" => state["compute_environment_id"],
+           "workload_id" => state["workload_id"],
+           "attempt" => state["attempt"],
            "runtime_source" => state["runtime_source"]
          }) do
       {:ok, answer} when answer in [:live, :none, :unavailable, :unavailable_idempotent] ->

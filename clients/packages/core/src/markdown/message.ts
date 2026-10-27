@@ -9,11 +9,14 @@ export function messageMarkdown(parts: readonly ChatMessagePart[]): MarkdownTree
   return toMarkdownTree(
     partsDocumentNodes(
       partsDocument(parts, {
-        // A question card is drawn after the message, not in its text (QuestionCard).
+        // Question, Mac app and Mini App cards are drawn after the message, not in its text (QuestionCard,
+        // MacAppItemCards, MessageMiniAppCards).
         markdownText: (part) =>
           part.kind === "markdown"
             ? part.text
-            : part.kind === "question"
+            : part.kind === "question" ||
+                part.kind === "mac-app-item" ||
+                part.kind === "mini-app"
               ? ""
               : undefined,
         isBlock: (part) => part.kind === "dynamic-ui",

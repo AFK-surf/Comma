@@ -18,8 +18,7 @@ vi.mock("@tanstack/react-router", () => ({
 }));
 
 vi.mock("../../../chat-sidebar/ChatSidebarContext", () => ({
-  useChatSidebar: () => ({
-    canOpenChildChat: () => false,
+  useChatSidebarActions: () => ({
     openBrowser: vi.fn(),
     openChat: vi.fn(),
   }),

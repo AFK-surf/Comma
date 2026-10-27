@@ -8,7 +8,8 @@ extension CommaStore {
     func followTasks(_ workspace: Workspace) {
         taskList?.cancel()
         let current = boundary
-        let updates = core.subscribe(["topic": "tasks", "workspace": workspace.id], read: TaskList.init)
+        // With the Tasks the Workspace's stations host among them.
+        let updates = core.subscribe(["topic": "tasks", "workspace": workspace.id, "hosted": "1"], read: TaskList.init)
         taskList = Task { [weak self] in
             for await value in updates {
                 guard let self, self.boundary == current, case .value(let list) = value else { continue }

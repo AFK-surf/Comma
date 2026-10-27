@@ -10,19 +10,39 @@ import {
   createContext,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type MouseEvent,
 } from "react";
+import type { ChatConversationFile } from "@comma/chat-contract";
 import type { AttachmentUploadInput } from "@comma/core/chat";
-import { canCopyFile, copyFile } from "../../runtime-files/fileClipboard";
+import {
+  canCopyFile,
+  copyFile,
+  copySavedFile,
+} from "../../runtime-files/fileClipboard";
+import type { ConversationFileSource } from "../../runtime-files/fileSources";
 import { captureVideoFrame } from "../../runtime-files/videoFrame";
 import { copyImageBlob } from "../../runtime-files/imageClipboard";
-import { downloadFile, type ResolveFileBytes } from "../../runtime-files/fileDownloads";
+import {
+  downloadFile,
+  type DownloadLink,
+  type ResolveFileBytes,
+  type SaveToDownloads,
+} from "../../runtime-files/fileDownloads";
 
 export type MediaMenuSource = {
   fileName: string;
   resolve: ResolveFileBytes;
+  /** How the desktop saves the file without reading it whole (a chat file of any size). */
+  save?: SaveToDownloads | undefined;
+  /** How a browser downloads the file itself, at any size (a chat file on the web). */
+  link?: DownloadLink | undefined;
+  /** How the file is read a part at a time for a browser to save, when it has no link (a Task's on a machine). */
+  parts?: ResolveFileBytes | undefined;
+  /** The message attachment this is, which Add to Context attaches by reference instead of its bytes. */
+  attachment?: ConversationFileSource | undefined;
   video?: HTMLVideoElement;
 };
 export type OpenMediaMenu = (
@@ -92,7 +112,8 @@ function mediaFileName(fileName: string, blob: Blob) {
 }
 
 export function useMediaContextMenu(
-  onAttachFiles?: ((files: AttachmentUploadInput[]) => unknown) | undefined
+  onAttachFiles?: ((files: AttachmentUploadInput[]) => unknown) | undefined,
+  onAttachConversationFiles?: ((files: ChatConversationFile[]) => unknown) | undefined
 ) {
   const locale = useCommaLocale();
   const messages = useCommaMessages();
@@ -158,6 +179,40 @@ export function useMediaContextMenu(
         );
         return;
       }
+      if (
+        action === "add-to-context" &&
+        source.attachment &&
+        onAttachConversationFiles
+      ) {
+        const { attachment } = source;
+        await onAttachConversationFiles([
+          {
+            conversationId: attachment.conversationId,
+            messageId: attachment.messageId,
+            index: attachment.attachmentIndex,
+            name: attachment.fileName,
+            size: attachment.size ?? 0,
+          },
+        ]);
+        return;
+      }
+      if (action === "copy" && source.save) {
+        await copySavedFile(source.save, locale, signal);
+        return;
+      }
+      if (action === "save" && (source.save || source.link)) {
+        await downloadFile(
+          {
+            fileName: source.fileName,
+            resolve,
+            save: source.save,
+            link: source.link,
+            parts: source.parts,
+          },
+          { locale }
+        );
+        return;
+      }
       const blob = await resolve();
       if (action === "copy") {
         await copyFile(blob, mediaFileName(source.fileName, blob), locale, signal);
@@ -202,46 +257,64 @@ export function useMediaContextMenu(
       );
     }
   };
+  // The menu stays mounted in its conversation, which renders with each
+  // streamed chunk: its props keep their identity so the memoized menu does
+  // not render with it.
+  const actRef = useRef(act);
+  actRef.current = act;
+  const onAction = useCallback(
+    (action: MediaContextMenuAction) => void actRef.current(action),
+    []
+  );
+  const { handleOpenChange } = state;
+  const onOpenChange = useCallback(
+    (isOpen: boolean) => {
+      if (handleOpenChange(isOpen) && !isOpen) sourceRef.current = null;
+    },
+    [handleOpenChange]
+  );
+  const labels = useMemo(
+    () => ({
+      ariaLabel:
+        menuKind === "video"
+          ? messages.video_context_menu()
+          : messages.image_context_menu(),
+      addToContext: messages.image_context_add(),
+      copy:
+        menuKind === "video"
+          ? messages.common_copy()
+          : messages.drive_preview_copy_image(),
+      ...(menuKind === "video"
+        ? {
+            copyFrame: messages.video_context_copy_frame(),
+            // The web points to the desktop app, which copies files on
+            // macOS and Windows; another desktop app (Linux) cannot yet.
+            copyUnavailable:
+              getNativeBridge().platform === "electron"
+                ? messages.video_context_copy_unavailable()
+                : messages.video_context_copy_desktop(),
+          }
+        : {}),
+      save:
+        menuKind === "video"
+          ? messages.video_context_save()
+          : messages.image_context_save(),
+    }),
+    [menuKind, messages]
+  );
   return {
     open,
     menu: (
       <MediaContextMenu
         triggerRef={triggerRef}
         isOpen={state.isOpen}
-        onOpenChange={(isOpen) => {
-          if (state.handleOpenChange(isOpen) && !isOpen) sourceRef.current = null;
-        }}
+        onOpenChange={onOpenChange}
         pointerOffsets={state.pointerOffsets}
-        labels={{
-          ariaLabel:
-            menuKind === "video"
-              ? messages.video_context_menu()
-              : messages.image_context_menu(),
-          addToContext: messages.image_context_add(),
-          copy:
-            menuKind === "video"
-              ? messages.common_copy()
-              : messages.drive_preview_copy_image(),
-          ...(menuKind === "video"
-            ? {
-                copyFrame: messages.video_context_copy_frame(),
-                // The web points to the macOS app, which copies files;
-                // another desktop app (Windows) cannot yet.
-                copyUnavailable:
-                  getNativeBridge().platform === "electron"
-                    ? messages.video_context_copy_unavailable()
-                    : messages.video_context_copy_desktop(),
-              }
-            : {}),
-          save:
-            menuKind === "video"
-              ? messages.video_context_save()
-              : messages.image_context_save(),
-        }}
+        labels={labels}
         canAttach={Boolean(onAttachFiles)}
         canCopy={menuKind === "video" ? canCopyFile() : canCopy}
         canCopyFrame={canCopy}
-        onAction={(action) => void act(action)}
+        onAction={onAction}
       />
     ),
   };

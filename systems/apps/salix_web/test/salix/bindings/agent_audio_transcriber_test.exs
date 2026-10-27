@@ -85,4 +85,48 @@ defmodule Salix.Bindings.AgentAudioTranscriberTest do
     assert is_function(opts[:transcribe_fun], 4)
     assert opts[:batch_timeout_ms] < 10_000
   end
+
+  defmodule DictationTranscriber do
+    # The words it answers come in the test's configuration.
+    def transcribe_audio_stream_with_metadata(cfg, stream, size, filename, _prompt, _opts) do
+      [wav] = Enum.to_list(stream)
+      SystemsRuntime.Proc.send(SystemsRuntime.Proc.self(), {:wav, wav, size, filename})
+      {:ok, %{transcript: cfg["transcript"], duration_seconds: 1, chunks: []}}
+    end
+  end
+
+  defp dictate(pcm, transcript) do
+    AgentAudioTranscriber.transcribe_dictation(pcm,
+      config_fun: fn -> {:ok, %{"transcript" => transcript}} end,
+      transcriber: DictationTranscriber
+    )
+  end
+
+  test "a live dictation segment goes as WAV of whole MP3 frames, and its words come back" do
+    pcm = :binary.copy(<<1_000::signed-little-16>>, 16_000)
+    assert {:ok, "明日の会議を予約して"} = dictate(pcm, "明日の会議を予約して")
+
+    assert_received {:wav,
+                     <<"RIFF", _::binary-size(4), "WAVE", _::binary-size(24), "data",
+                       data_size::little-32, data::binary>> = wav, size, "dictation.wav"}
+
+    assert size == byte_size(wav) and data_size == byte_size(data)
+    assert binary_part(data, 0, byte_size(pcm)) == pcm
+    assert rem(div(data_size, 2), 1_152) == 0
+  end
+
+  test "more words than a second of speech can hold are refused" do
+    # A second of speech, then two of silence, which hold no words.
+    pcm = :binary.copy(<<1_000::signed-little-16>>, 16_000) <> :binary.copy(<<0, 0>>, 32_000)
+
+    made_up =
+      "Help me update my project schedule on Notion and check for new notifications on GitHub."
+
+    assert {:error, :asr_words_exceed_audio} = dictate(pcm, made_up)
+
+    assert {:error, :asr_words_exceed_audio} =
+             dictate(pcm, "帮我把 Comma 那个群里的消息转发到 Slack 的通知频道里面去。")
+
+    assert {:ok, "好的，谢谢"} = dictate(pcm, "好的，谢谢")
+  end
 end

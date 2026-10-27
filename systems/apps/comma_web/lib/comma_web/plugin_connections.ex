@@ -644,6 +644,11 @@ defmodule CommaWeb.PluginConnections do
             install_with_credentials(user, session, workspace_id, plugin_id, installed, opts)
           end
 
+        device_client_plugin?(user, session, workspace_id, plugin_id) ->
+          with {:ok, _} <- PluginInstallAttempts.invalidate_locked(attempt) do
+            install_on_device(user, session, workspace_id, plugin_id, opts["device_id"])
+          end
+
         get_in(status, ["connection", "kind"]) == "mcp_api_key" ->
           install_with_credentials(user, session, workspace_id, plugin_id, installed, opts)
 
@@ -1243,12 +1248,80 @@ defmodule CommaWeb.PluginConnections do
     %{"plugin" => plugin, "authorization" => authorization}
   end
 
+  # A device_client plugin (the Mac apps) runs in the Comma desktop app on the
+  # installing member's own Mac: the app installs it with its device id, and the
+  # binding answers only that member. Installing again moves it to the device the
+  # request names, and rediscovers the tools after the user changed the switches.
+  defp device_client_plugin?(user, session, workspace_id, plugin_id) do
+    with {:ok, workspace} <- Workspaces.authorize(user, session, workspace_id),
+         {:ok, definition} <- plugin_definition(workspace, plugin_id) do
+      definition
+      |> get_in(["setup", "connections"])
+      |> List.wrap()
+      |> Enum.any?(&(&1["kind"] == "device_client"))
+    else
+      _ -> false
+    end
+  end
+
+  defp install_on_device(user, session, workspace_id, plugin_id, device_id) do
+    with {:ok, workspace} <- Workspaces.authorize(user, session, workspace_id),
+         {:ok, definition} <- plugin_definition(workspace, plugin_id),
+         {:ok, runtime_id} <- owned_device_runtime(workspace, device_id, user["id"]),
+         {:ok, %{"bindings" => bindings}} <-
+           PluginSetup.connect_device(
+             workspace["salix_tenant_id"],
+             workspace["default_group_id"],
+             definition,
+             runtime_id,
+             user["id"]
+           ),
+         {:ok, installed} <- Plugins.install(user, session, workspace_id, plugin_id) do
+      # A Mac that is asleep shows as offline in the binding's status; the
+      # install itself stands.
+      Enum.each(bindings, fn binding ->
+        SalixMCP.Gateway.refresh_binding(
+          workspace["salix_tenant_id"],
+          workspace["default_group_id"],
+          binding["binding_id"]
+        )
+      end)
+
+      {:ok, install_result(installed, nil)}
+    end
+  end
+
+  # The device's own Connector is its runtime for MCPs the desktop app serves.
+  defp owned_device_runtime(workspace, device_id, user_id) when is_binary(device_id) do
+    case SalixEnv.Registry.get_device(
+           workspace["salix_tenant_id"],
+           workspace["default_group_id"],
+           String.trim(device_id)
+         ) do
+      {:ok, device} ->
+        owner = device["owner_user_id"] || get_in(device, ["meta", "owner_user_id"])
+
+        if is_binary(owner) and owner == user_id,
+          do:
+            {:ok,
+             SalixStore.RuntimeIds.device_runtime_id(device["device_id"], "connector", "default")},
+          else: {:error, :forbidden}
+
+      _ ->
+        {:error, {:bad_request, "this device is not connected to the workspace"}}
+    end
+  end
+
+  defp owned_device_runtime(_workspace, _device_id, _user_id),
+    do: {:error, {:bad_request, "install this plugin from the Comma desktop app on your Mac"}}
+
   defp disconnect_plugin_connections(workspace, definition) do
     connections = get_in(definition, ["setup", "connections"]) |> List.wrap()
 
     with :ok <- disconnect_composio_connections(workspace, connections),
          :ok <- disconnect_managed_oauth_connections(workspace, connections),
          :ok <- disconnect_api_key_connections(workspace, definition, connections),
+         :ok <- disconnect_device_client_connections(workspace, definition, connections),
          :ok <- disconnect_native_mcp_connections(workspace, definition, connections) do
       # A disconnected grant keeps no pooled member items: Composio accounts by
       # toolkit, managed OAuth grants by provider (the Routine toolkit name).
@@ -1266,6 +1339,39 @@ defmodule CommaWeb.PluginConnections do
         end)
       )
     end
+  end
+
+  # Removing a device_client plugin disconnects the Mac: its binding goes. The
+  # switches stay on the Mac for the next install.
+  defp disconnect_device_client_connections(workspace, definition, connections) do
+    ids = for %{"kind" => "device_client", "id" => id} <- connections, do: id
+
+    definition
+    |> get_in(["setup", "mcps"])
+    |> List.wrap()
+    |> Enum.filter(fn mcp -> Enum.any?(mcp["auth_refs"] || [], &(&1 in ids)) end)
+    |> Enum.reduce_while(:ok, fn mcp, :ok ->
+      mcp_id = mcp["mcp_id"]
+
+      case SalixMCP.Store.find_binding_by_alias(
+             workspace["salix_tenant_id"],
+             workspace["default_group_id"],
+             mcp["alias"]
+           ) do
+        {:ok, %{"mcp_id" => ^mcp_id, "binding_id" => binding_id}} ->
+          case SalixMCP.Gateway.delete_binding(
+                 workspace["salix_tenant_id"],
+                 workspace["default_group_id"],
+                 binding_id
+               ) do
+            :ok -> {:cont, :ok}
+            {:error, _} = error -> {:halt, error}
+          end
+
+        _ ->
+          {:cont, :ok}
+      end
+    end)
   end
 
   defp disconnect_api_key_connections(workspace, definition, connections) do

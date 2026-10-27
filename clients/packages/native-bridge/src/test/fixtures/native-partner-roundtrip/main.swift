@@ -16,7 +16,6 @@ func expectDecodeFailure<Value: Decodable>(
 
 let menu = CommaStatusMenuHostFrame.show(
     requestId: "request-1",
-    clickId: "status-item:click",
     closeId: nil,
     iconPath: "/resources/CommaTemplate.png",
     openId: nil,

@@ -490,7 +490,7 @@ defmodule SalixIM.Triage.Investigation do
       |> put_lifecycle(
         Map.put(lifecycle, "delivery_error", %{
           "message_id" => rec["message_id"],
-          "reason" => "Worker command delivery was not confirmed after bounded retries."
+          "reason" => "Worker command delivery was not confirmed."
         })
       )
       |> Map.put("status", "escalated")

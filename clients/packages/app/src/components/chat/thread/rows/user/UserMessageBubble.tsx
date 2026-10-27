@@ -10,7 +10,12 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { animateOutgoingBubble } from "../../../motion/outgoingBubbleMotion";
+import {
+  animateOutgoingBubble,
+  holdTranscript,
+  settleScrollForComposerResize,
+  type TranscriptHold,
+} from "../../../motion/outgoingBubbleMotion";
 import { getMessagePlatformBubbleStyle } from "../../../MessagePlatformBadge";
 import type { OutgoingPresentation } from "../../outgoing/outgoingPresentation";
 import {
@@ -31,7 +36,7 @@ import {
 export type UserBubbleOutgoingPresentation = Pick<OutgoingPresentation, "turnKey"> & {
   launch: Pick<
     OutgoingPresentation["launch"],
-    "id" | "motionConfig" | "playbackRate" | "sourceFrame"
+    "id" | "motionConfig" | "playbackRate" | "sourceFrame" | "transcriptAnchor"
   >;
 };
 
@@ -97,11 +102,43 @@ export function UserMessageBubble({
   const outgoingMotionConfig = outgoingPresentation?.launch.motionConfig;
   const outgoingPlaybackRate = outgoingPresentation?.launch.playbackRate;
   const outgoingTurnKey = outgoingPresentation?.turnKey;
+  const outgoingTranscriptAnchor = outgoingPresentation?.launch.transcriptAnchor;
+  // Where the slot sat before this send first anchored its turn, read in
+  // the frame the flight launches: the anchor's scroll becomes its glide.
+  const unanchoredSlotTopRef = useRef<number | undefined>(undefined);
+  const transcriptHoldRef = useRef<TranscriptHold | undefined>(undefined);
 
   useLayoutEffect(() => {
     onAnchorOutgoingTurnRef.current = onAnchorOutgoingTurn;
     onOutgoingAnimationCompleteRef.current = onOutgoingAnimationComplete;
   }, [onAnchorOutgoingTurn, onOutgoingAnimationComplete]);
+
+  // A flight ends only with its launch or its row. A later text, overflow or
+  // delivery update of the same message lands with it instead of starting over.
+  useLayoutEffect(() => {
+    if (outgoingLaunchId === undefined) return undefined;
+    // This commit inserts the row. Until the flight launches the transcript
+    // stays where it was painted, the newest turn at the send held in place.
+    const column = slotElementRef.current?.closest(".comma-chat-column");
+    const reference =
+      outgoingTranscriptAnchor && column
+        ? column.querySelector<HTMLElement>(
+            `.comma-chat-turn-shell[data-turn-key="${CSS.escape(outgoingTranscriptAnchor.turnKey)}"]`
+          )
+        : null;
+    transcriptHoldRef.current =
+      reference && outgoingTranscriptAnchor
+        ? holdTranscript(reference, outgoingTranscriptAnchor.top)
+        : undefined;
+    return () => {
+      transcriptHoldRef.current?.cancel();
+      transcriptHoldRef.current = undefined;
+      if (activePresentationRef.current?.id === outgoingLaunchId) {
+        activePresentationRef.current.cleanup();
+        activePresentationRef.current = undefined;
+      }
+    };
+  }, [outgoingLaunchId, outgoingTranscriptAnchor]);
 
   useLayoutEffect(() => {
     const bubble = bubbleElementRef.current;
@@ -150,10 +187,12 @@ export function UserMessageBubble({
     if (shouldOverflow !== overflowing) return;
 
     if (preparedOutgoingLaunchId !== outgoingLaunchId) {
+      // The transcript has not moved for this send yet: the thread holds
+      // its scroll for a flying turn (useStickToBottom heldTurnKeys).
+      unanchoredSlotTopRef.current = slot.getBoundingClientRect().top;
       onAnchorOutgoingTurnRef.current?.(outgoingTurnKey);
-      // Commit flight setup before this measurement frame paints. Painting the
-      // anchored full-height turn first makes history jump back when flight
-      // setup collapses the slot and restores the previous tail reserve.
+      // Commit flight setup before this measurement frame paints, so the
+      // anchored layout is never painted before its glide holds it in place.
       setPreparedOutgoingLaunchId(outgoingLaunchId);
       return;
     }
@@ -162,11 +201,24 @@ export function UserMessageBubble({
     // adds the latest turn's reserve. Anchor again in it, so the flight measures where
     // it lands.
     onAnchorOutgoingTurnRef.current?.(outgoingTurnKey);
+    settleScrollForComposerResize(slot);
     const target = bubble.getBoundingClientRect();
     if (target.width <= 0 || target.height <= 0) {
+      // Nothing flies, so nothing waits for the transcript to be let go.
+      transcriptHoldRef.current?.cancel();
+      transcriptHoldRef.current = undefined;
       onOutgoingAnimationCompleteRef.current?.(outgoingLaunchId);
       return;
     }
+    // The held move since the send, anchor included, or without a hold (no
+    // turn to hold by, or one that ended on its own), the anchor's own move
+    // of the slot.
+    const anchoredSlotTop = slot.getBoundingClientRect().top;
+    const transcriptShift =
+      transcriptHoldRef.current?.release() ??
+      (unanchoredSlotTopRef.current ?? anchoredSlotTop) - anchoredSlotTop;
+    transcriptHoldRef.current = undefined;
+    unanchoredSlotTopRef.current = undefined;
 
     const presentation = animateOutgoingBubble({
       bubble,
@@ -176,19 +228,13 @@ export function UserMessageBubble({
       config: outgoingMotionConfig,
       playbackRate: outgoingPlaybackRate,
       reducedMotion: isReducedMotionEnabled(),
+      transcriptShift,
       onComplete: () => {
         activePresentationRef.current = undefined;
         onOutgoingAnimationCompleteRef.current?.(outgoingLaunchId);
       },
     });
     activePresentationRef.current = { ...presentation, id: outgoingLaunchId };
-
-    return () => {
-      if (activePresentationRef.current?.id === outgoingLaunchId) {
-        activePresentationRef.current.cleanup();
-        activePresentationRef.current = undefined;
-      }
-    };
   }, [
     outgoingLaunchId,
     outgoingSourceFrame,
@@ -207,7 +253,9 @@ export function UserMessageBubble({
         className="comma-chat-user-bubble"
         data-expanded={overflowing ? String(expanded) : undefined}
         data-outgoing-measurement={
-          outgoingLaunchId !== undefined && measuredText !== text
+          outgoingLaunchId !== undefined &&
+          preparedOutgoingLaunchId !== outgoingLaunchId &&
+          measuredText !== text
             ? "pending"
             : undefined
         }

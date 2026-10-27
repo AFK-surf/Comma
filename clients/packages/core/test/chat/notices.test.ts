@@ -193,4 +193,65 @@ describe("the notices for messages a conversation gains", () => {
     expect(t.appended()).toHaveLength(1);
     expect(t.notices().map((notice) => notice.body)).toEqual(["First.", "Second."]);
   });
+
+  it("gives no notice, after the core starts again, for history older than what the device kept", async () => {
+    const host = new FakeHost();
+    host.desktop = new FakeDesktop();
+    // More Router messages than the device keeps (500); a read returns up to 1000.
+    let shown: unknown[] = Array.from({ length: 600 }, (_, i) =>
+      message(`m${i + 1}`, `Reply ${i + 1}.`, { seq: i + 1 })
+    );
+    host.api
+      .onStream(events)
+      .onStream(feed)
+      .on("GET", base, () =>
+        json(200, {
+          group_id: "grp_1",
+          id: "cnv_1",
+          kind: "user_chat",
+          title: "Bridge chat",
+          status: "open",
+          messages: shown,
+        })
+      );
+    const start = async (leaseId: string) => {
+      const core = startTestCore(host);
+      core.observeSession(signedIn());
+      const main = new CoreClient(inProcessOpener(core, host), {
+        schedule: () => undefined,
+      });
+      let appended: ChatAppendedValue[] = [];
+      main.subscribe(
+        { topic: "chatAppended" },
+        (value) => (appended = (value as { appended: ChatAppendedValue[] }).appended),
+        () => undefined
+      );
+      await main.call("chat.retain", {
+        ...target,
+        subscriberId: "main:grp_1/cnv_1",
+        leaseId,
+      });
+      await host.time!.pass(1_500);
+      return {
+        core,
+        main,
+        notices: () =>
+          appended.flatMap((entry) => entry.notices.map((n) => n.messageId)),
+      };
+    };
+    const first = await start("00000000-0000-4000-8000-000000000001");
+    first.main.close();
+    first.core.close();
+
+    const again = await start("00000000-0000-4000-8000-000000000002");
+    host.api.open(events)!.named("snapshot", snapshot(shown));
+    await host.time!.pass(100);
+    expect(again.notices()).toEqual([]);
+
+    // What the conversation gains after that still gets its notice.
+    shown = [...shown, message("m601", "New.", { seq: 601 })];
+    host.api.open(events)!.named("snapshot", snapshot(shown));
+    await host.time!.pass(100);
+    expect(again.notices()).toEqual(["m601"]);
+  });
 });

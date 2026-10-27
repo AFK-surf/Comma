@@ -44,6 +44,11 @@ val appVersionCode = appVersion.getProperty("versionCode")?.toIntOrNull()
     ?.takeIf { it > 0 } ?: throw GradleException("version.properties needs a positive integer versionCode")
 val appVersionName = appVersion.getProperty("versionName")?.trim()
     ?.takeIf { it.isNotEmpty() } ?: throw GradleException("version.properties needs a versionName")
+// Google Play uses Client Checks' counter for both internal and production tracks.
+val playBuildCode = providers.gradleProperty("comma.playVersionCode").map {
+    it.toIntOrNull()?.takeIf { code -> code in 1..2100000000 }
+        ?: throw GradleException("comma.playVersionCode must be in 1..2100000000")
+}
 val stagingBuildCode = providers.gradleProperty("comma.stagingVersionCode").map {
     it.toIntOrNull()?.takeIf { code -> code in 1..2100000000 }
         ?: throw GradleException("comma.stagingVersionCode must be in 1..2100000000")
@@ -220,6 +225,11 @@ androidComponents.beforeVariants(androidComponents.selector().withBuildType("ben
 }
 androidComponents.beforeVariants(androidComponents.selector().withBuildType("internal")) {
     if (it.productFlavors.none { flavor -> flavor.second == "staging" }) it.enable = false
+}
+androidComponents.onVariants(androidComponents.selector().withBuildType("release")) { variant ->
+    if (variant.productFlavors.any { it.second == "prod" } && playBuildCode.isPresent) {
+        variant.outputs.forEach { it.versionCode.set(playBuildCode) }
+    }
 }
 androidComponents.onVariants(androidComponents.selector().withBuildType("internal")) {
     it.outputs.forEach { output ->

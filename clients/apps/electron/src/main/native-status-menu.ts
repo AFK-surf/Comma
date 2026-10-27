@@ -11,14 +11,10 @@ import {
 } from "@comma/chat-contract";
 import { app } from "electron";
 import log from "electron-log/main";
+import { realMainClock } from "./clock";
 
 /** The menu-bar menu the helper draws: rows, icon, tooltip and width in points. */
 export interface StatusMenu {
-  /**
-   * When set, a left click on the item reports this id as a chosen row, and
-   * the menu opens on a right click or a Control-click.
-   */
-  clickId?: string | undefined;
   /** When set, the helper reports this id each time the menu opens. */
   openId?: string | undefined;
   /** When set, the helper reports this id each time the menu closes. */
@@ -155,10 +151,12 @@ export class NativeStatusMenuService {
     this.#host = undefined;
     if (!host) return;
     this.#stopping = host;
-    const timer = setTimeout(() => host.kill("SIGTERM"), STATUS_MENU_STOP_TIMEOUT_MS);
-    timer.unref?.();
+    // A helper that does not end must still be killed while a test clock stands still.
+    const cancelTimer = realMainClock.setTimer(STATUS_MENU_STOP_TIMEOUT_MS, () =>
+      host.kill("SIGTERM")
+    );
     const ended = () => {
-      clearTimeout(timer);
+      cancelTimer();
       if (this.#stopping !== host) return;
       this.#stopping = undefined;
       if (this.#menu) this.#show(this.#start(), this.#menu.menu);

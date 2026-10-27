@@ -4,9 +4,9 @@ defmodule SalixStore.OAuth.Adapters.Lark do
   through Lark's `/authen/v2/oauth/token`. The provider app is a Lark custom
   app; its App ID and App Secret are the client credentials.
 
-  A sign-in lets the bot of a Lark connect read as that person what Lark
-  shows only to people: meetings, meeting notes, Minutes recordings and
-  documents (`SalixIM.Provider.Lark`). `offline_access` makes Lark return a
+  A sign-in lets the bot of a Lark connect find and read as that person what
+  they may see: documents, wiki pages, meetings, meeting notes and Minutes
+  recordings (`SalixIM.Provider.Lark`). `offline_access` makes Lark return a
   refresh token; Lark asks the person to sign in again after 365 days. Lark
   has no revocation endpoint.
   """
@@ -15,7 +15,7 @@ defmodule SalixStore.OAuth.Adapters.Lark do
   alias SalixStore.OAuth.Adapter
 
   # The names follow the official larksuite/cli (`vc +search`, `vc +notes`,
-  # `note`, `minutes`, `doc`); a scope the app does not offer as a user scope
+  # `note`, `minutes`, `doc`, `drive`, `wiki`); a scope the app does not offer as a user scope
   # makes the sign-in page refuse the whole request.
   @default_scopes ~w(
     vc:meeting.search:read
@@ -28,7 +28,20 @@ defmodule SalixStore.OAuth.Adapters.Lark do
     minutes:minutes.search:read
     minutes:minutes.media:export
     docx:document:readonly
+    search:docs:read
+    wiki:wiki
+    wiki:wiki:readonly
     wiki:node:read
+    wiki:node:retrieve
+    wiki:space:read
+    wiki:space:retrieve
+    drive:drive
+    drive:drive:readonly
+    drive:drive:version
+    drive:drive:version:readonly
+    drive:drive.metadata:readonly
+    drive:drive.search:readonly
+    space:document:retrieve
     docs:document.comment:read
     docs:document.media:download
     docs:permission.member:retrieve

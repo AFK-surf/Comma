@@ -27,6 +27,33 @@ defmodule BridgeForTeams.StationMembers do
   @managers ~w(owner admin)
 
   @impl true
+  def requester(tenant, group, %{"provider" => provider, "app_id" => app}, subject)
+      when provider in ~w(feishu lark) and is_binary(app) and app != "" do
+    case Repo.all(
+           from(p in Project,
+             join: o in Organization,
+             on: o.id == p.org_id,
+             join: s in BridgeForTeams.Schema.OrgSsoConnection,
+             on: s.org_id == o.id,
+             join: i in BridgeForTeams.Schema.OrgSsoIdentity,
+             on: i.org_id == o.id and i.provider == s.provider,
+             where:
+               p.salix_group_id == ^group and o.salix_tenant_id == ^tenant and
+                 s.provider == ^provider and s.client_id == ^app and
+                 i.provider_subject == ^subject,
+             distinct: i.user_id,
+             select: i.user_id,
+             limit: 2
+           )
+         ) do
+      [user] -> {:ok, user}
+      _ -> :none
+    end
+  end
+
+  def requester(_, _, _, _), do: :none
+
+  @impl true
   def role(tenant_id, group_id, user_id) do
     with {:ok, user_id} <- Ecto.UUID.cast(user_id),
          %Project{} = project <- project(tenant_id, group_id) do
@@ -41,6 +68,10 @@ defmodule BridgeForTeams.StationMembers do
 
   @impl true
   def manager_role?(role), do: role in @managers
+
+  # A Project has no read-only role.
+  @impl true
+  def read_only_role?(_role), do: false
 
   @impl true
   def workspace_name(tenant_id, group_id) do

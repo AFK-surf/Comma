@@ -41,6 +41,11 @@ defmodule CommaWeb.Auth do
       CommaWeb.StationEndpoints.public_path?(conn.request_path) ->
         conn
 
+      # The Quick Chat helper holds no session: its one-minute ticket
+      # (Comma.Dictation) authorizes the dictation socket.
+      CommaWeb.DictationSocket.public_path?(conn.request_path) ->
+        conn
+
       conn.method == "GET" and conn.request_path == "/v1/comma/billing/plans" ->
         conn
 

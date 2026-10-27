@@ -9,12 +9,12 @@
  * is pinned here in one place and every archive is checked against the
  * SHA-256 the release publishes beside it.
  */
-export const synchReleaseTag = "v0.1.16";
+export const synchReleaseTag = "v0.1.20";
 
 export const synchControlProtocol = {
-  releaseTag: "v0.1.16",
-  sha256: "40fae0e07894cfbf5fbc18207a7ff2fe9990e041cad9ffe16f1637eb72fb6dce",
-  wireVersion: "6",
+  releaseTag: "v0.1.20",
+  sha256: "e8a39686952d183f923ee4e1a8d135eddf5af15e33054f30ca70ca3edc668e2c",
+  wireVersion: "8",
 } as const;
 
 export const synchReleaseBaseUrl = `https://github.com/AFK-surf/synchronicity/releases/download/${synchReleaseTag}`;
@@ -28,19 +28,19 @@ type SynchArchive = {
 export const synchReleaseArchives: Record<string, SynchArchive> = {
   "darwin/arm64": {
     archive: `synchronicity-${synchReleaseTag}-aarch64-apple-darwin.tar.gz`,
-    sha256: "2ce3abf366e4e715e1a8bad04cdc0a4ab6eae61ed9bb58401bc43c2e1abad7d0",
+    sha256: "8b21a64633e9c445e65eb17bfef55b748c271527a400a6fae76dde56345440d7",
   },
   "linux/arm64": {
     archive: `synchronicity-${synchReleaseTag}-aarch64-unknown-linux-gnu.tar.gz`,
-    sha256: "aa100d0283e0aa8744d83de73e8585bc254fe192ef3ddda8e49ce85d12dac060",
+    sha256: "30909310ca5678cba32ead76ba3178684f7d2ae49ad06b7d64305178f06c7400",
   },
   "linux/x64": {
     archive: `synchronicity-${synchReleaseTag}-x86_64-unknown-linux-gnu.tar.gz`,
-    sha256: "e384aa48f143e2a2f8a3d6d149db8dbfa2e6430f5c6723b765a5a3969c771e2a",
+    sha256: "de8e3c12ce36e21431f02f98023049a1ad5e2a84dbdc9d480a6c3014df25fdc7",
   },
   "win32/x64": {
     archive: `synchronicity-${synchReleaseTag}-x86_64-pc-windows-gnullvm.zip`,
-    sha256: "36b0c5716306343401dedc8d522f030e6d27d1c515af97277c02f032b544582d",
+    sha256: "c746ece20f19a40677ac9cf286f97f2e1d55aaa1b870988973c41253786dc200",
   },
 };
 

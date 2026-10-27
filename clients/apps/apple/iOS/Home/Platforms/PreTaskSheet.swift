@@ -2,8 +2,8 @@ import SwiftUI
 import UIKit
 import CommaCore
 
-/// A platform's pre-tasks, as in mock 8: the app's mark and name as the title, then its suggestions on one
-/// rounded surface (`PreTaskGroup`, as in the briefing). A sideways swipe pages to the previous or next platform
+/// A platform's pre-tasks, as in mock 8: the app's mark and name as the title, then its suggestions, each a card
+/// of its own (`PreTaskGroup`, as in the briefing). A sideways swipe pages to the previous or next platform
 /// in the carousel's order, over the system page control, and the title follows the page; it opens on the card that
 /// was tapped. Choosing a row hands it to `choose`, which closes the sheet.
 struct PreTaskSheet: View {
@@ -75,7 +75,9 @@ private struct PreTaskPage: View {
         ScrollView {
             Group {
                 if let feed = store.routines.feed, store.hasPreTasks(platform) {
-                    PreTaskGroup(platform: platform, items: store.preTasks(of: platform), feed: feed, choose: choose)
+                    PreTaskGroup(platform: platform, items: store.preTasks(of: platform), feed: feed,
+                                 dismiss: { item in Task { await store.routines.dismiss(item, store: store) } },
+                                 choose: choose)
                 } else {
                     PreTaskPageEmpty(platform: platform)
                 }

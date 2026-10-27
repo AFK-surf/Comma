@@ -36,6 +36,7 @@ defmodule Comma.Conversations do
     "summary",
     "summary_class",
     "goal",
+    "target",
     "tool_name",
     "display_strength",
     "display_priority",
@@ -432,9 +433,10 @@ defmodule Comma.Conversations do
     end
   end
 
-  # Where the Task runs and its model are fixed when it is made, so the stream
-  # reads them once. Nil when they cannot be read: Task panels then show
-  # neither.
+  # Where the Task runs and its model change only when a member switches them
+  # (`set_task_run/6`), which changes the Task, so each stream reads them once:
+  # clients open the stream again after reading a changed Task. Nil when they
+  # cannot be read: Task panels then show neither.
   defp task_run(_workspace, nil), do: nil
 
   defp task_run(workspace, conversation_id) do
@@ -540,7 +542,13 @@ defmodule Comma.Conversations do
           status ->
             [
               status
-              |> Map.drop(["type", "working_conversation_ids", "waiting"])
+              |> Map.drop([
+                "type",
+                "working_conversation_ids",
+                "waiting",
+                "wait_tool",
+                "wait_started_at"
+              ])
               |> Map.put("name", participant.name)
               |> put_optional("actor_id", participant.actor_id)
               |> put_optional("actor_role", participant.actor_role)
@@ -584,6 +592,16 @@ defmodule Comma.Conversations do
   end
 
   # The Conversation snapshot and the Message page read share this check.
+  @doc """
+  The Workspace of a Conversation the member may read, for a resource that
+  belongs to it and is stored with its Group (an Agent's request card).
+  """
+  def authorize_read(user, session, group_id, conversation_id) do
+    with {:ok, workspace, _binding} <-
+           authorize_conversation_read(user, session, group_id, conversation_id),
+         do: {:ok, workspace}
+  end
+
   defp authorize_conversation_read(user, session, group_id, conversation_id) do
     with {:ok, workspace} <- Workspaces.authorize_group(user, session, group_id),
          :ok <- Workspaces.group_session_scope(session, group_id, conversation_id),
@@ -641,14 +659,18 @@ defmodule Comma.Conversations do
          binding <- canonical_binding(workspace, salix_conversation, user) do
       preview = public_task_preview(workspace, binding, salix_conversation)
 
-      {:ok,
-       if(Keyword.get(opts, :include_worker, false),
-         do:
+      if Keyword.get(opts, :include_worker, false) do
+        # The chat-hosted panel reads only this: a Loop Task's Loop comes with it.
+        with {:ok, [looped]} <- put_task_loops([binding], workspace) do
+          {:ok,
            preview
            |> Map.put("bound_worker", task_preview_worker(workspace, salix_conversation))
-           |> put_optional("run", task_run(workspace, conversation_id)),
-         else: preview
-       )}
+           |> put_optional("run", task_run(workspace, conversation_id))
+           |> put_optional("loop", looped["loop"])}
+        end
+      else
+        {:ok, preview}
+      end
     else
       false -> {:error, :not_found}
       {:ok, _unsupported_conversation} -> {:error, :not_found}
@@ -795,7 +817,7 @@ defmodule Comma.Conversations do
         %{
           "workspace_id" => workspace["id"],
           "conversation_id" => conversation_id,
-          "initiator_kind" => "human"
+          "initiator_kind" => Keyword.get(opts, :initiator_kind, "human")
         }
       )
 
@@ -848,6 +870,43 @@ defmodule Comma.Conversations do
       {:error, _} = error -> error
     end
   end
+
+  @doc """
+  Runs a Task on another model, and so perhaps in another place
+  (`SalixIM.TaskRun`): `attrs` names `runs_on` (`{kind: salix}`,
+  `{kind: cloud_vm}` or `{kind: station, device_id}`) and `model` (a Model
+  Choice, or null for the place's default). Whoever may set the Task's status
+  may. The Task as read after.
+  """
+  def set_task_run(user, session, group_id, conversation_id, attrs, opts \\ []) do
+    attrs = stringify(attrs)
+    client = Comma.Salix.Client.impl()
+
+    with {:ok, workspace} <- Workspaces.authorize_group(user, session, group_id),
+         :ok <- Workspaces.group_session_scope(session, group_id, conversation_id),
+         {:ok, workspace} <- client.resolve_workspace_scope(workspace),
+         {:ok, %{"kind" => "agent_task"} = binding} <-
+           authorized_binding(user, workspace, conversation_id),
+         {:ok, run} <- requested_task_run(attrs),
+         true <- callback_exported?(client, :switch_task_run, 4) || {:error, :not_found},
+         {:ok, _record} <-
+           client.switch_task_run(workspace, salix_conversation_id(binding), run, user["id"]) do
+      read_task_conversation(workspace, binding, opts)
+    else
+      {:ok, %{"kind" => kind}} -> {:error, {:unsupported_for_kind, kind, "run"}}
+      {:error, _} = error -> error
+    end
+  end
+
+  defp requested_task_run(%{"runs_on" => %{} = runs_on} = attrs) do
+    model = attrs["model"]
+
+    if Map.keys(attrs) -- ["runs_on", "model"] == [] and (is_map(model) or is_nil(model)),
+      do: {:ok, %{"runs_on" => runs_on, "model" => model}},
+      else: {:error, {:bad_request, "runs_on is required"}}
+  end
+
+  defp requested_task_run(_attrs), do: {:error, {:bad_request, "runs_on is required"}}
 
   def messages(user, session, group_id, conversation_id) do
     with {:ok, conversation} <- get(user, session, group_id, conversation_id) do
@@ -905,6 +964,32 @@ defmodule Comma.Conversations do
              limit: 17
            ) do
       {:ok, messages}
+    end
+  end
+
+  @doc """
+  One authorized read for auxiliary work that needs the transcript *and* the
+  Workspace facts that go with it (`Comma.ChatSuggestions`).
+
+  `messages/4` alone is not enough: an auxiliary LLM call has to resolve the
+  Group Router's model and attribute its own cost. Those facts do not belong in
+  the canonical Message resource returned to the client.
+  """
+  @spec suggestion_source(map(), map(), String.t(), String.t()) ::
+          {:ok, %{agent_id: String.t() | nil, billing_context: map(), messages: [map()]}}
+          | {:error, term()}
+  def suggestion_source(user, session, group_id, conversation_id) do
+    with {:ok, workspace} <- Workspaces.authorize_group(user, session, group_id),
+         :ok <- Workspaces.group_session_scope(session, group_id, conversation_id),
+         {:ok, workspace} <- Comma.Salix.Client.impl().resolve_workspace_scope(workspace),
+         {:ok, binding} <- authorized_binding(user, workspace, conversation_id),
+         {:ok, conversation} <- read_conversation(workspace, binding, []) do
+      {:ok,
+       %{
+         agent_id: workspace["router_agent_id"],
+         billing_context: billing_context(workspace, binding["id"], user["id"]),
+         messages: conversation["messages"] || []
+       }}
     end
   end
 
@@ -1105,6 +1190,8 @@ defmodule Comma.Conversations do
     |> put_public_working_provider(activity)
     |> put_public_loop_wake(activity)
     |> put_public_waiting(activity)
+    |> put_public_wait_tool(activity)
+    |> put_public_wait_started_at(activity)
     |> put_public_working_conversations(activity, stream_context)
   end
 
@@ -1127,6 +1214,26 @@ defmodule Comma.Conversations do
     do: Map.put(public, "waiting", true)
 
   defp put_public_waiting(public, _activity), do: public
+
+  # The canonical name of the tool whose call the Participant waits on, as
+  # Activity frames already publish it. Clients word it; it is never copy.
+  @max_public_wait_tool_bytes 128
+  defp put_public_wait_tool(%{"state" => "active"} = public, %{"wait_tool" => tool})
+       when is_binary(tool) and byte_size(tool) <= @max_public_wait_tool_bytes,
+       do: Map.put(public, "wait_tool", tool)
+
+  defp put_public_wait_tool(public, _activity), do: public
+
+  defp put_public_wait_started_at(%{"state" => "active"} = public, %{
+         "wait_started_at" => started
+       })
+       when is_integer(started) and started > 0 do
+    if public["waiting"] == true or is_binary(public["wait_tool"]),
+      do: Map.put(public, "wait_started_at", started),
+      else: public
+  end
+
+  defp put_public_wait_started_at(public, _activity), do: public
 
   # Home names the Tasks its Router is following up on. The client shows a
   # title only after the authorized Task summary read resolves the ID.
@@ -1240,7 +1347,7 @@ defmodule Comma.Conversations do
          %{"summary_class" => "generic", "phase" => "thinking", "status" => "failed"} =
            activity
        ) do
-    {:ok, "generic", Map.drop(activity, ["action", "summary", "goal", "tool_name"])}
+    {:ok, "generic", Map.drop(activity, ["action", "summary", "goal", "target", "tool_name"])}
   end
 
   defp public_activity_payload(
@@ -1251,7 +1358,7 @@ defmodule Comma.Conversations do
 
     {:ok, "generic",
      activity
-     |> Map.drop(["goal", "tool_name"])
+     |> Map.drop(["goal", "target", "tool_name"])
      |> Map.merge(%{"action" => copy, "summary" => copy})}
   end
 
@@ -1263,6 +1370,7 @@ defmodule Comma.Conversations do
     if public_activity_prose?(activity["summary"]) and
          optional_public_activity_prose?(activity["action"]) and
          optional_public_activity_prose?(activity["goal"]) and
+         optional_public_activity_prose?(activity["target"]) and
          optional_public_activity_prose?(activity["tool_name"]) do
       {:ok, "public", activity}
     else
@@ -1273,7 +1381,7 @@ defmodule Comma.Conversations do
   defp public_activity_payload(
          %{"summary_class" => "none", "phase" => "idle", "status" => "idle"} = activity
        ) do
-    {:ok, "none", Map.drop(activity, ["action", "summary", "goal", "tool_name"])}
+    {:ok, "none", Map.drop(activity, ["action", "summary", "goal", "target", "tool_name"])}
   end
 
   defp public_activity_payload(_activity), do: :error
@@ -1345,12 +1453,24 @@ defmodule Comma.Conversations do
        |> Map.put("activity_status", salix_conversation["activity_status"] || "idle")
        |> Map.put("message_count", salix_conversation["message_count"] || length(messages))
        |> put_optional("review_version", task_review_version(salix_conversation))
+       |> put_task_run(workspace, binding, salix_conversation)
        |> Map.put("messages", messages)}
     else
       false -> {:error, :not_found}
       {:error, _} = error -> error
     end
   end
+
+  # A coding Task's detail carries its run (the sandbox and its model), so a client opening the Task shows its
+  # sandbox with the transcript, before the status stream's first frame. Other Tasks' runs come with that frame.
+  defp put_task_run(detail, workspace, binding, %{"runs_on" => %{"kind" => "sandbox"}}) do
+    case task_run(workspace, salix_conversation_id(binding)) do
+      nil -> detail
+      run -> Map.put(detail, "run", run)
+    end
+  end
+
+  defp put_task_run(detail, _workspace, _binding, _salix_conversation), do: detail
 
   defp send_salix_message(user, session, workspace, binding, attrs, request_id, opts) do
     content = salix_user_content(attrs["message"] || attrs, workspace, attrs["skills"])
@@ -1866,6 +1986,7 @@ defmodule Comma.Conversations do
       "client_platform",
       "parent_message_id",
       "loop",
+      "pull_request",
       "created_at",
       "updated_at"
     ])
@@ -2279,12 +2400,29 @@ defmodule Comma.Conversations do
     "undeliverable" => "undeliverable"
   }
 
+  # What the list adds to each Task beside its Salix row: its Loop and its pull request.
   defp put_task_loops(bindings, workspace) do
     ids = for %{"kind" => "agent_task", "id" => id} <- bindings, uniq: true, do: id
 
     with {:ok, loops} <- task_loops(workspace, ids) do
-      {:ok, Enum.map(bindings, &put_public_task_loop(&1, loops[&1["id"]]))}
+      pull_requests = task_pull_requests(workspace, ids)
+
+      {:ok,
+       Enum.map(bindings, fn binding ->
+         binding
+         |> put_public_task_loop(loops[binding["id"]])
+         |> put_optional("pull_request", pull_requests[binding["id"]])
+       end)}
     end
+  end
+
+  defp task_pull_requests(workspace, ids) do
+    ids
+    |> Enum.chunk_every(@task_loops_batch)
+    |> Enum.reduce(%{}, fn batch, pull_requests ->
+      {:ok, read} = Comma.Salix.Client.task_pull_requests(workspace, batch)
+      Map.merge(pull_requests, read)
+    end)
   end
 
   defp task_loops(_workspace, []), do: {:ok, %{}}

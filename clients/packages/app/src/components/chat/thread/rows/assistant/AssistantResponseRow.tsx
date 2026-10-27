@@ -2,9 +2,12 @@ import { useCommaMessages } from "@comma/i18n/react";
 import { MarkdownStream } from "@comma/ui/components/markdown-stream";
 import { cx } from "@comma/ui/components/utils";
 import { memo, useContext, useMemo, type Ref } from "react";
-import { fromMarkdownTree, type MarkdownTree } from "@comma/core/markdown";
+import {
+  fromMarkdownTree,
+  isCodeBlockOnly,
+  type MarkdownTree,
+} from "@comma/core/markdown";
 import { nativePlatformClipboard } from "../../../../../nativePlatformActions";
-import { useCommaUiThemeName } from "../../../../commaUiTheme";
 import { useRouterDisplayName } from "../../../../router-identity/RouterIdentityProvider";
 import type {
   ChatAssistantDraft,
@@ -21,7 +24,10 @@ import type {
   RowRelationshipProps,
 } from "../../replies/messageRelationships";
 import { MessageTaskCards } from "../../../tasks/MessageTaskCards";
+import { MessageMacAppItemCards } from "../../../mac-apps/MacAppItemCards";
 import { MessageQuestionCards } from "../../../question/QuestionCard";
+import { MessageMiniAppCards } from "../../../../apps/MiniAppMessageCard";
+import { MessageAgentRequestCards } from "../../../requests/useAgentRequests";
 import { ThreadDefaultActorRoleContext } from "../../threadContexts";
 import { MessageAvatar } from "../MessageAvatar";
 import { MessageBlockExtras } from "../MessageBlockExtras";
@@ -67,7 +73,6 @@ export const AssistantResponseRow = memo(function AssistantResponseRow({
   workspaceId: string;
 }) {
   const messagesApi = useCommaMessages();
-  const isDark = useCommaUiThemeName() === "Dark mode";
   const routerName = useRouterDisplayName();
   const relationshipId = message?.messageId ?? draft?.draftId;
   const streaming = Boolean(draft && !message);
@@ -96,6 +101,11 @@ export const AssistantResponseRow = memo(function AssistantResponseRow({
   // The row marks what it holds (source label, reply preview, widget) so the stylesheet
   // needs no `:has()` anchor, which Chromium re-checked for every streamed node.
   const [holdsWidget, reportWidget] = useWidgetPresence();
+  // A reply that is one code block has the block's own Copy in its header; a second one beside the bubble
+  // offered the same code again, with its fence.
+  const codeOnly = message?.markdown
+    ? isCodeBlockOnly(message.markdown as MarkdownTree)
+    : false;
   const sourceLabel =
     !hideRouterIdentity && actorRole && groupFirst !== false ? (
       <div className="comma-chat-assistant-source-label">{actorSourceLabel}</div>
@@ -117,7 +127,6 @@ export const AssistantResponseRow = memo(function AssistantResponseRow({
       content={compiledMessage?.content ?? renderedContent}
       final={!activelyStreaming}
       parsed={compiledMessage ? undefined : draftNodes}
-      isDark={isDark}
       showCursor={false}
       smoothStreaming={false}
       streamId={streamId}
@@ -141,6 +150,14 @@ export const AssistantResponseRow = memo(function AssistantResponseRow({
       />
       <MessageTaskCards groupId={groupId} message={message} workspaceId={workspaceId} />
       <MessageQuestionCards message={message} />
+      <MessageMacAppItemCards message={message} />
+      <MessageAgentRequestCards messageId={message.messageId} />
+      <MessageMiniAppCards
+        groupId={groupId}
+        live={live}
+        message={message}
+        workspaceId={workspaceId}
+      />
     </>
   ) : null;
   return (
@@ -178,9 +195,11 @@ export const AssistantResponseRow = memo(function AssistantResponseRow({
         data-widget={holdsWidget || undefined}
       >
         {sourceLabel}
-        <WidgetPresence value={reportWidget}>{markdown}</WidgetPresence>
-        {extras}
-        {showActions && message ? (
+        <WidgetPresence value={reportWidget}>
+          {markdown}
+          {extras}
+        </WidgetPresence>
+        {showActions && message && !codeOnly ? (
           <MessageCopyAction
             ariaLabel={messagesApi.chat_copy_reply()}
             copyText={

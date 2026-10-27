@@ -18,6 +18,7 @@ defmodule CommaCore.Application do
         auth_redis_children() ++
         oauth_idp_rate_limit_children() ++
         task_share_rate_limit_children() ++
+        mini_app_rate_limit_children() ++
         google_oidc_children() ++
         apple_auth_children() ++
         profile_avatar_children() ++
@@ -85,6 +86,15 @@ defmodule CommaCore.Application do
   defp task_share_rate_limit_children do
     if Comma.TaskShares.RateLimit.configured?() do
       [Comma.TaskShares.RateLimit]
+    else
+      []
+    end
+  end
+
+  # Mini App runtime buckets and backend error lines share the same Redis.
+  defp mini_app_rate_limit_children do
+    if Comma.MiniApps.RateLimit.configured?() do
+      [Comma.MiniApps.RateLimit]
     else
       []
     end

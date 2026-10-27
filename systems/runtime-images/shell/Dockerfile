@@ -1,4 +1,4 @@
-ARG GO_IMAGE=golang:1.26.9-bookworm
+ARG GO_IMAGE=golang:1.26.10-bookworm
 ARG SHELL_IMAGE=alpine:3.23.5
 FROM ${GO_IMAGE} AS builder
 
@@ -17,6 +17,7 @@ RUN echo "packages as of ${PACKAGE_SNAPSHOT}" \
     && apk add --no-cache \
       'libcrypto3>=3.5.8-r0' \
       'libssl3>=3.5.8-r0' \
+      'musl>=1.2.5-r24' \
     && addgroup -g 10001 runtime \
     && adduser -D -u 10001 -G runtime -h /workspace runtime
 COPY --from=builder /out/comma-shell-runtime /usr/local/bin/comma-shell-runtime

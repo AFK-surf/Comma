@@ -177,8 +177,10 @@ it("opens a row's step log beside the card and keeps it open on the way in", asy
   const sweep = row
     .element()
     .querySelector<HTMLElement>(".comma-chat-activity-step-words > [data-shimmer]")!;
-  expect(sweep.getAnimations().length).toBeGreaterThan(0);
-  expect(getComputedStyle(sweep).display).toBe("inline");
+  expect(sweep.getAnimations({ subtree: true }).length).toBeGreaterThan(0);
+  expect(sweep.getBoundingClientRect().width).toBeLessThan(
+    sweep.closest(".comma-chat-activity-step-text")!.getBoundingClientRect().width
+  );
 
   const log = row
     .element()
@@ -193,7 +195,8 @@ it("opens a row's step log beside the card and keeps it open on the way in", asy
     )
   ).toEqual(["Read evalens.config.ts", "Run the preview benchmark", "Thinking"]);
   expect(
-    log.querySelector("li:last-child [data-shimmer]")!.getAnimations().length
+    log.querySelector("li:last-child [data-shimmer]")!.getAnimations({ subtree: true })
+      .length
   ).toBeGreaterThan(0);
 
   // Beside the card, level with its bottom, growing up as the card does.

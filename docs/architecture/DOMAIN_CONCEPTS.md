@@ -318,8 +318,32 @@ While it is set, rounds, compaction and the status read resolve that choice inst
 The Agent's prompt, tools and runtime still apply, and its round snapshot stays shared by its Sessions.
 A Router sets it through the optional `model` of `im_api.internal.task.create` for a Worker on the internal runtime.
 The Worker Participant's payload carries it to the delivery that creates the Worker Session. The product checks it first: Comma checks it as `agent.create_worker` does, and BFT rejects it.
-A Task of that Worker can instead run on a station: `runs_on` names a connected desktop station that takes Tasks, or the Group's Cloud VM when the Group's Cloud VM switch is on and its station is connected (an agent starts it first with `cloud_vm.start`; nothing wakes it on the way). A model with it is a runtime choice that station's profiles enable (`task_models`, which the station reports; a station that reported none runs no named model). A runtime choice may name only its runtime (`{kind: runtime, provider}`), which no product check is asked about: the station runs its default model of that runtime. Without a model id, the Group's Cloud VM runs the platform's `worker` model with Codex: Salix lends that station a profile of its own endpoint ([SalixWeb.StationLLM](../../systems/apps/salix_web/lib/salix_web/station_llm.ex)) whose key is a token of the station's connection, passes Codex's requests to the tier's endpoint, and meters them to the workspace; a desktop station uses its own default. `runs_on` is resolved to a device id once at creation ([Salix.Bindings.AgentConversations](../../systems/apps/salix_web/lib/salix/bindings/agent_conversations.ex)). This adds no entity.
-A Group's default place to run Tasks is a value on the Group record (`default_task_place`: `{kind: salix}`, `{kind: cloud_vm}` or `{kind: station, device_id}`), not an entity ([SalixAgent.TaskPlace](../../systems/apps/salix_agent/lib/salix_agent/task_place.ex)). Its product sets it: Comma's Settings > Models (a device of the Workspace), and BFT's Agent Swarm settings (a station of the swarm that takes Tasks, or the Cloud VM while the swarm has it on). A Group that has set none runs its Tasks inside Salix. A Task that `im_api.internal.task.create` makes with no `runs_on`, whose Worker has no station binding and whose model is none or of kind runtime, runs there; a model of another kind, or `runs_on {kind: salix}`, keeps it inside Salix ([SalixIM.TaskPlacement](../../systems/apps/salix_im/lib/salix_im/task_placement.ex), which `task.create` and a product's create share). The default is checked as a `runs_on` the Router named is, and refuses the Task the same way (an offline station, the Cloud VM switch off or the VM not running, a person's own computer for a Loop Task). The BFT dashboard's New task makes a Task of the Group's Task agent through the swarm's Router: any swarm member picks Salix, the Cloud VM or a connected station that takes Tasks, and a model, with the swarm's defaults first (`…/tasks/targets`); a Salix node of the release before answers 503. Other product-started Tasks (mail drafts, meetings) do not use the default place yet. BFT migration `20261019140001_derive_default_task_places` gave each live swarm whose live Workers were all bound to its Cloud VM the Cloud VM as its default, once ([BridgeForTeams.Migrations.DefaultTaskPlaces](../../systems/apps/bridge_for_teams_core/lib/bridge_for_teams/migrations/default_task_places.ex)). During a rolling release a BFT write of it that reaches a Salix node of the release before answers 503, and nothing is stored.
+A Task can run on a Station. Explicit `runs_on`, Worker Station Binding, and the Group's configured default location keep their selected target.
+A Router's `im_api.internal.task.create` always names `runs_on.kind` and is refused without it. `{kind: default}` names no place, so the binding, the configured location or automatic placement below decides.
+Product-created Tasks (`SalixIM.TaskPlacement.create_task_conversation/4`) may still omit `runs_on`.
+A runtime model without a chosen location uses automatic placement: the Group's VMM Station, the requester's authorized physical Station, then enabled Cloudflare.
+A catalog-model Task without a machine choice runs inside Salix. Explicit `runs_on: {kind: salix}` stays there.
+The runtime choice uses `provider: codex|claude` and can name a model advertised in the Station's `task_models`.
+Without a model id, the Station uses that runtime's authorized default.
+Managed Stations use cloud-authorized profiles, including the platform worker model supplied through [StationLLM](../../systems/apps/salix_web/lib/salix_web/station_llm.ex).
+A physical Station uses its local machine login only after the owner enables that source.
+Task creation stores the selected Device before execution. Accepted or uncertain invitations retain that target across retries.
+A Task placed on the Group's Cloud VM while it sleeps, wakes or was never made is kept for its station: the VM is woken or made, and the station invited once the VM is ready ([SalixWeb.StationTasks](../../systems/apps/salix_web/lib/salix_web/station_tasks.ex)). `cloud_vm.start` is for running commands there.
+Only confirmed nonacceptance permits another automatic candidate. Missing identity mapping cannot authorize another person's Station.
+[StationTaskWatch](../../systems/apps/salix_im/lib/salix_im/station_task_watch.ex) follows the stored location after disconnection.
+These choices and projections add no entity.
+A Group's `default_task_place` is a value on its record: `{kind: salix}`, `{kind: cloud_vm}`, or `{kind: station, device_id}`.
+A coding Task's explicit `{kind: sandbox}` uses its [coding sandbox](#coding-sandboxes). Sandbox is not a Group default or an automatic Station candidate.
+Comma exposes it in Settings > Models. BFT exposes it in Agent Swarm settings.
+The product checks the configured location through the same placement contract as an explicit `runs_on`.
+Without a configured location, a runtime-model Task uses automatic placement.
+Without either a runtime model or a chosen location, a Task stays inside Salix.
+A Loop Task runs inside Salix. A Station binding or runtime model refuses Loop creation.
+The BFT dashboard delegates New task through the Group's Router and uses the shared placement checks.
+Meeting runtime placement has its own per-Meeting lifecycle.
+See [TaskPlacement](../../systems/apps/salix_im/lib/salix_im/task_placement.ex) and [TaskPlace](../../systems/apps/salix_agent/lib/salix_agent/task_place.ex).
+
+A member of the Workspace may run a Task that exists on another model, and so perhaps in another place (Comma's `PUT …/conversations/:id/run`, [SalixIM.TaskRun](../../systems/apps/salix_im/lib/salix_im/task_run.ex)): the place is always named, and it and the model are checked as a new Task's are (`SalixIM.TaskPlacement.resolve/4`). The station that runs it now is invited first, with `replace` when it ran the Task already (a new Session takes the old one's place in the Task's thread); a station that refuses, or one too old to replace its Session, refuses the switch and nothing changes. A Worker inside Salix in the middle of a turn refuses the switch until the turn ends. Then the stations that ran it leave it (`task.leave`: their Sessions are handed nothing more, what they post is refused, and their turns are interrupted, not waited for, so a step in progress may finish; one not connected, or one that did not answer, is told again when it next says hello), the new one takes part and is given the Task from its start, and the Task's owner records the new `runs_on` (none inside Salix) and the Worker participant's delivery and `session_model` together, and writes the Worker a `task_run_switched` Message. A Worker inside Salix runs in a new Session made with the model (a Session takes its model when it is made) and reads the Task from its source start; a station's new Session is handed what its station had not answered. The Task keeps its id, Messages, status, labels and Router. Clients offer the switch on the Task panel's model and where the Task's model cannot start: a station's Session whose turn does not start posts its notice with `cannot_start`, which Salix keeps as a `task_run_blocked` Message ([SalixWeb.StationTasks](../../systems/apps/salix_web/lib/salix_web/station_tasks.ex)). This adds no entity.
 Salix keeps no Session for such a Worker. Salix is the station the Task is kept on, and a Session of the other station takes part in it, as between any two stations (`systems/station/docs/tasks.md`, [SalixWeb.StationTasks](../../systems/apps/salix_web/lib/salix_web/station_tasks.ex)): Salix invites the station before the Task is made (`task.invite`, answered at once; a refusal refuses the create), gives it every Message after what it had (`task.put`, until it has it), and takes what its Session writes as the Worker's Messages (`task.post`, once per key). The Worker Participant only authors those Messages: it is delivered nothing. Which Session of which station takes part, and how far it was given the Task, is a row of `station_task_sessions`.
 Existing Sessions have no choice and follow their Agent.
 
@@ -338,11 +362,16 @@ Reuse is sufficient because a Worker already has the Session, Participant and me
 A Worker can carry where its Tasks run: `station_binding` on its Agent record ([SalixAgent.StationBinding](../../systems/apps/salix_agent/lib/salix_agent/station_binding.ex)).
 It is a value of the Worker, not an entity: the Worker, the station and the Task keep their identities and owners, and the binding only names a place and a model.
 
-- Value: `runs_on` is `{kind: station, device_id}` (a user device's Comma station; a VMM Workload's station by its station device id, with no special case) or `{kind: cloud_vm}` (the Group's Cloud VM). The Cloud VM belongs to the Group. While the Group's Cloud VM switch is on, a live Agent of the Group may start it with `cloud_vm.start` and place a Task there, run commands in its default environment, and see it in device discovery ([CloudVM.allowed?/1](../../systems/apps/salix_agent/lib/salix_agent/cloud_vm.ex)). A Cloud VM binding grants nothing more: it only supplies the Worker's default Task location. A caller omits `agent_id` when it starts its Group's VM, or names a same-Group Worker. Billing and connected-station checks still apply. The Group's VM goes where `SalixWeb.CloudVM.placement/2` puts it when its record is created; on a Project's Runner whose Agent VMM Host is not connected to Salix now, it is not created (`runner_offline`). `model` is a runtime Model Choice of provider codex or claude; without its `model` id the station runs its default model of that runtime. `binding_revision` counts rebinds.
+- Value: `runs_on` is `{kind: station, device_id}` for an exact physical or VMM Station, or `{kind: cloud_vm}` for the Group's Cloud VM.
+  The Group's Cloud VM switch permits startup and Task placement. `cloud_vm.start` accepts the caller or a same-Group Worker.
+  A Worker binding supplies a default Task location and model; it grants no additional authority.
+  New Group Cloud VMs use Cloudflare. Existing records retain their selected provider.
+  `model` is a runtime Model Choice with provider `codex` or `claude`. Without a model id, the Station uses that runtime's authorized default.
+  `binding_revision` counts rebinds.
 - Owner and checks: Agent Control writes it on create, configure and `rebind_station_worker` (revision CAS). Only a Worker takes one; the model must be a catalog model of that runtime ([AgentControl](../../systems/apps/salix_agent/lib/salix_agent/agent_control.ex)).
-- Tasks: a bound Worker is an internal Worker. `im_api.internal.task.create` gives each of its Tasks the binding's `runs_on` and model when the call names none; a call may name the same place and a model of the same runtime ([SalixIM.Provider.Internal](../../systems/apps/salix_im/lib/salix_im/provider/internal.ex)). The Task then runs on that station as any `runs_on` Task: the station must be connected and take Tasks (`tasks` 2), the Cloud VM must be ready, and a named model must be one the station reports. A device that cannot take Tasks is refused with a reason ([StationReadiness](../../systems/apps/salix_store/lib/salix_store/station_readiness.ex)): `device_needs_station` (no `tasks`: the old connector; install the Comma desktop app or the station) or `station_outdated` (an older `tasks`; update the desktop app, or `stillfail update` on a standalone station). The BFT Devices page shows the same notice per device. Comma's Settings > Devices rows and device reads carry the same reason as `tasks_readiness` (`ready`, `device_needs_station`, `station_outdated`, or `offline` while the device is disconnected) with the station's `task_models`, projected from the device record the page already reads ([Comma.Devices](../../systems/apps/comma_core/lib/comma/devices.ex)).
+- Tasks: a bound Worker is an internal Worker. `im_api.internal.task.create` gives each of its Tasks the binding's `runs_on` and model when the call names none; a call may name the same place and a model of the same runtime ([SalixIM.Provider.Internal](../../systems/apps/salix_im/lib/salix_im/provider/internal.ex)). The Task then runs on that station as any `runs_on` Task: a desktop station must be connected and take Tasks (`tasks` 2), the Cloud VM need not be running, and a named model must be one the station reports. A device that cannot take Tasks is refused with a reason ([StationReadiness](../../systems/apps/salix_store/lib/salix_store/station_readiness.ex)): `device_needs_station` (no `tasks`: the old connector; install the Comma desktop app or the station) or `station_outdated` (an older `tasks`; update the desktop app, or `stillfail update` on a standalone station). The BFT Devices page shows the same notice per device. Comma's Settings > Devices rows and device reads carry the same reason as `tasks_readiness` (`ready`, `device_needs_station`, `station_outdated`, or `offline` while the device is disconnected) with the station's `task_models`, projected from the device record the page already reads ([Comma.Devices](../../systems/apps/comma_core/lib/comma/devices.ex)).
 - Creation: BFT's "Run on a station" ([BridgeForTeams.Agents](../../systems/apps/bridge_for_teams_core/lib/bridge_for_teams/agents.ex)) and the raw Agent API create or move bound Workers. Agent Control refuses External Runtime Workers (`runtime_config` kinds external, connected_runtime, compute_workload); `runtime_config` takes only kind internal.
-- Migration: `20261010090001_station_bound_workers` ([SalixAgent.Migrations.StationBoundWorkers](../../systems/apps/salix_agent/lib/salix_agent/migrations/station_bound_workers.ex)) binds every External Runtime Worker to the station of its device (the Cloud VM device becomes `{kind: cloud_vm}`), with its provider as runtime and its configured model when the catalog knows it. A Compute Workload Worker is bound to the Group's Cloud VM (`{kind: cloud_vm}`), which goes on the Agent VMM Host of the Group's Project where it has one. The pass asks no VM provider and leaves each Worker's `vm` as it was. A Pi or Kimi Worker is archived with `archive_reason`, not deleted. Migration `20261010150001_retire_external_runtime_config` ([SalixAgent.Migrations.RetireExternalRuntimeConfig](../../systems/apps/salix_agent/lib/salix_agent/migrations/retire_external_runtime_config.ex)) then sets each remaining non-internal `runtime_config` to internal and removes External Session reservations (`session_admission`).
+- Stored Pi and Kimi Workers retain their archive reason and data. Current Station bindings support Codex and Claude Code.
 
 ### Retired Sessions
 
@@ -351,6 +380,7 @@ Salix no longer runs External Sessions. Their stored records stay where they wer
 - Reads: [SalixAgent.RetiredSessions](../../systems/apps/salix_agent/lib/salix_agent/retired_sessions.ex) lists and reads them as `runtime_kind: "retired"`, `read_only: true` and status idle. [SalixAgent.Runtime](../../systems/apps/salix_agent/lib/salix_agent/runtime.ex) adds them to the Agent's Session list and reads one when the internal store has no Session of that id. Billing history includes the usage they recorded. They cannot be forked, compacted or consulted.
 - Input: Session birth claims only the internal side ([SalixAgent.SessionBirth](../../systems/apps/salix_agent/lib/salix_agent/session_birth.ex)). A stored `external` birth marker or a stored retired Session keeps its id: a delivery to it answers `session_read_only`, a wait timeout or control entry is ignored, and no internal Session is created with that id ([SessionDelivery](../../systems/apps/salix_agent/lib/salix_agent/agent_actor/session_delivery.ex), [InternalSessionStore](../../systems/apps/salix_agent/lib/salix_agent/internal_session_store.ex)).
 - Work: migration `20261010150002_retire_external_session_work` deletes their Session work candidates, which only pointed at work that will not run, and the candidate tables admit only internal Sessions.
+- Conversation consumption: [ConversationConsumer](../../systems/apps/salix_agent/lib/salix_agent/conversation_consumer.ex) recognizes stored retired history and external birth markers as terminal sources. Log recovery completes without input or rejection writes to those Sessions, after any pending Triage command escalation through the Conversation owner. Storage failures remain retryable. An explicit Router reset can replace a retired Session with a new internal Session identity.
 - Meeting bots keep their LLM capability ([SalixAgent.MeetingLLMCapability](../../systems/apps/salix_agent/lib/salix_agent/meeting_llm_capability.ex)): it is minted per meeting connect, bound to the Connector run, and used only for `/llm/chat` ([SalixWeb.RuntimeProxy](../../systems/apps/salix_web/lib/salix_web/runtime_proxy.ex)).
 
 Every Agent takes the platform's media settings: one image generation, video generation,
@@ -412,9 +442,14 @@ stays provider-neutral: the request is not encoded for a protocol or a request i
 candidate's provider encodes it. Paths that post a resolved route themselves, such as the
 site LLM proxy, send a catalog or subscription route through the same dispatch.
 An Agent kept to an API-key Profile pays for it: its choice is stored with `allow_paid` true.
+When no Profile can serve the choice at all, the request fails without retries as `model_unavailable`,
+and the stop notice tells the member to choose another model or enable an account that serves it.
 An OpenCode Go Profile can also be signed in with the member's OpenCode Console account ([OpenCodeConsole](../../systems/apps/salix_agent/lib/salix_agent/open_code_console.ex), a device code). It stays an `opencode-go` API-key Profile: the Console's access token is its key, the single-use refresh token is sealed beside it, and AccountPool renews the token three days before it runs out, one renewal at a time per Profile. A later sign-in to the same Console account renews that Profile. Requests through an OpenCode Go key carry `x-opencode-session`, one per Session.
 A Custom Profile lists the model ids its endpoint serves. A catalog choice can also name
-one of these ids when it is not in the catalog. The Profile's optional `model_info` says, per
+one of these ids when it is not in the catalog. Only that API key serves such an id, so the choice
+is pay-per-use: it is stored and read with `allow_paid` true ([ModelChoice](../../systems/apps/salix_agent/lib/salix_agent/model_choice.ex)).
+When that Profile is removed, a stored choice still reads as the model id: the settings page shows it, and
+the Agent's input stops as `model_unavailable` until the member chooses another model. The Profile's optional `model_info` says, per
 listed id, its context and output limits, whether it takes images and its reasoning efforts;
 an id it says nothing of has no efforts, a 32,000-token output limit, no context limit and no
 image input.
@@ -548,6 +583,34 @@ Implementation: [contract](../../systems/apps/salix_im/lib/salix_im/conversation
 [client state](../../clients/packages/core/src/chat/model/questionStates.ts),
 [card](../../clients/packages/app/src/components/chat/question/QuestionCard.tsx).
 
+A Mac app card (`mac_app_item`) is an Agent Message content value, not an entity: one item a Mac apps tool made or found (an event, a reminder, a note, a person, a place), copied from the tool result.
+The Mac app keeps the item. The card is a snapshot and is not updated when the item changes.
+Salix keeps only the known fields, at most five cards, and adds a plain-text fallback block for clients that cannot draw them.
+Implementation: [contract](../../systems/apps/salix_im/lib/salix_im/mac_app_item.ex),
+[tool result cards](../../clients/apps/electron/src/main/modules/mac-apps/cards.ts),
+[card](../../clients/packages/app/src/components/chat/mac-apps/MacAppItemCards.tsx).
+
+A Mini App card (`mini_app`) is an Agent Message content value, not an entity: `{app_id, app_version, name, summary}` of one deployed [Mini App](#mini-app) Version.
+The Task's worker Message carries a text block with the same summary, so Router delivery, Task Share and notifications see only the summary.
+Clients draw the card with the Version inline and hide the duplicate text.
+Implementation: [contract](../../systems/apps/salix_im/lib/salix_im/conversation_message.ex),
+[client part](../../clients/packages/core/src/chat/model/conversationChannel.ts),
+[card](../../clients/packages/app/src/components/apps/).
+
+### IM question cards
+
+A Slack, Feishu, or Lark send's `question` parameter is a send parameter, not an entity, like the Comma question card above.
+It puts one to six options (the recommended one last and preselected) or a text field on the message, with a button that sends the answer.
+Anyone in the chat may answer. The first answer enters the Router as that person's message in the card's thread, through the same ingress as what they type there.
+The provider receipt keyed by the card's message takes one answer per card; a later press only tells the presser.
+The card then shows who answered what. That update is presentation: a failed update leaves buttons whose press the receipt refuses.
+Agents cannot send interactive Slack blocks themselves; only the runtime draws the card.
+QQ keeps its own buttons (`qq.send_message`), and Telegram keeps `question.request`.
+Implementation: [contract](../../systems/apps/salix_im/lib/salix_im/question_card.ex),
+[Slack card](../../systems/apps/salix_im/lib/salix_im/provider/slack/question_card.ex),
+[ingress](../../systems/apps/salix_im/lib/salix_im/provider_http.ex),
+[Lark ingress](../../systems/apps/salix_im/lib/salix_im/lark_inbound.ex).
+
 ## 4. Tasks
 
 | Concept | Meaning and boundary |
@@ -556,7 +619,7 @@ Implementation: [contract](../../systems/apps/salix_im/lib/salix_im/conversation
 | Task Lifecycle | The business state owned by Conversation.status. Session termination does not establish Task completion. |
 | Human Review | Version-checked acceptance by a human. Router completion after verified delivery is a separate path, not evidence of human acceptance. |
 | Task Label / Proposal | A Group's classification catalog and label approval decisions. These are not IFC confidentiality labels. |
-| Archive / Restore | Shared Task archive transitions with a saved restore status. Archival is not deletion or an independent running lifecycle. |
+| Archive / Restore | Shared Task archive transitions with a saved restore status. Archival is not deletion or an independent running lifecycle. Any ended Task can be archived. Archive clears a Task Schedule binding in the same write; the Schedule answers `inactive` at its next window and is deleted. Restore does not rebind it. |
 | Task Share | A public, read-only link to one Task up to a saved Message cutoff. It is Comma product authorization, not a Task fact or a login. |
 | Loop Task | A Task for work that repeats or keeps watching something. It is a Task that shows one Background Loop it requested, not another entity: the Loop holds the work's cadence, limits, runs and state. It is not a Task Schedule. |
 | Task Panel Dismissal | A User's acknowledgement that clears one settled Task from the chat Task panel on every device. It is not Task lifecycle, Archive, or review acceptance. See [Task Panel Dismissal](#task-panel-dismissal). |
@@ -587,6 +650,8 @@ Existing values cannot carry it: Task status is one lifecycle value, and Session
 An Agent records one when it finishes a key step. Milestones only append, and the Message's time is the step's time.
 Clients project them only as the Task's Activity, never in a transcript, grouped under the requests and Loop runs before them and linked to the shown Message with the result.
 A milestone-only Message notifies no Participant and does not change Task status.
+A station-hosted Task keeps the same value on its station's entries: a `chat_post` post carries the milestones, and a post of milestones alone is a `milestone` entry.
+That entry kind is a storage layout for the same Message value, not an entity.
 See [Task milestone content](../salix/conversation-owner-actor.md#task-milestone-content).
 
 ### Loop Tasks
@@ -640,12 +705,13 @@ While the requested Loop has not ended and is `active`, `TaskWorkerWatch` does n
 
 A later human request can give an ended Loop Task a new Loop with `task.update`, `loop` and a full `command` for one run.
 The owning Router and active Worker must remain in the Task. Archived Tasks must first be restored.
+A Loop Task whose Worker runs on a station, made before Loop Tasks ran only inside Salix, gets no new Loop: the Router creates a new Loop Task.
 The server deletes the ended Loop and writes the new one `pending`, with a new ID and no runs. It then sets the Task active and appends the command.
 A repeated request finds the new Loop pending and keeps it. The old program's ID is gone, so nothing it sends reaches the Task.
 
-A Loop runs with every client closed. A `task.create` with `loop` refuses a person's desktop station, a station with `meta.owner_user_id`.
-This applies to an explicit `runs_on` and to the Worker's station binding, whether the station is connected or not. That station stops when its app quits, and Salix never wakes it.
-Workers inside Salix, stations that Salix or a provisioner runs, and the Group Cloud VM stay allowed. One-shot Tasks keep the existing placement rules.
+A Loop Task runs inside Salix. Its Worker creates the Loop with `loop.build` and `loop.create`, which need a Worker Session inside Salix. A station's Session, the Group Cloud VM's too, has no Salix tools, so its Loop would stay `pending`.
+A `task.create` with `loop` refuses a station or the Group Cloud VM, as an explicit `runs_on` or as the Worker's station binding, and a model of kind runtime. The Group's default place does not apply to a Loop Task.
+The Worker can still run commands on the Cloud VM with `env.exec`. One-shot Tasks keep the existing placement rules ([SalixIM.TaskPlacement](../../systems/apps/salix_im/lib/salix_im/task_placement.ex)).
 
 Comma projects `loop` only for Tasks with a requested Loop: on list pages, `task_summaries`, pinned Tasks, the pin response and the single-Task read.
 The Task copies that the status, review, edit, archive and activity responses return carry it too. The preview has none, and no public field is named `schedule`.
@@ -670,7 +736,7 @@ The clients do not show the next run, last run, run count, end time or stop cond
 The trigger rule filter excludes ended Loops.
 Reopening the Task alone does not restore the details of an ended Loop. A new Loop supplies its own details.
 
-The Router's `internal.task.list` carries a compact `loop` from the Task's Loop: `cadence`, `runs`, the limits, `last_run_at` and `ended`. The `task.create` and restart results carry the same from the request.
+The Router's `internal.task.list` carries a compact `loop` from the Task's Loop: `cadence`, `status`, `runs`, the limits, `last_run_at` and `ended`. The `task.create` and restart results carry the same from the request, with `status` `pending`. Only an `active` Loop runs: `pending` means the Worker has not created it yet.
 The Router recognizes Loop requests as [Task delegation](PRODUCT_MODEL.md#task-delegation) describes.
 
 Implementation:
@@ -710,6 +776,10 @@ Downloads do not trust the manifest. They reread one canonical Message by sequen
 
 Every public read resolves the token, then checks that the creator still owns the ready Workspace of that Group.
 It also checks that the Conversation still resolves as an `agent_task`. Any failed check returns the same `404`.
+
+A Task a station hosts (`station:<station_id>:<thread>`) has no Salix log. Its chat is its station's, read over the station's Connector as the Router reads it (`task.read`), and the Group's Task index must hold it.
+Its link opens while the station is connected; otherwise a read fails with `503`. The station gives its Messages' words alone, so such a share has no artifacts.
+Its `snapshot` also keeps the Task's title, which the owner's list shows while the station is offline.
 
 The public projection is an allowlist. It keeps `seq`, role, creation time, and content blocks.
 It drops system rows, internal deliveries, app events, and Comma context Messages.
@@ -753,6 +823,8 @@ Task review acceptance changes Task status. A dismissal changes only what one Us
 - Lifecycle: Dismiss creates the row or moves `dismissed_at` to now. The `revision` never moves back. The Task's next run ends its effect, and the row stays until it is among the oldest. Each User keeps the 300 most recently dismissed rows. User deletion removes the rows.
 - Relationships: it references the User. It holds no Task, Workspace, or Message copy.
 
+In Telegram, Clear on a failed, completed, or cancelled Task card makes the same dismissal for the bound owner, at the Task's current run. [TelegramTaskCards](../../systems/apps/comma_web/lib/comma_web/telegram_task_cards.ex) re-resolves the sender for each click, as it does for review acceptance. `/tasks` leaves out the owner's dismissed settled Tasks by the same rule. The Mini App stays read-only and its All tasks list still shows every Task.
+
 `GET` and `POST` on `/v1/comma/me/task-panel-dismissals` need a full session. A write takes 1 to 300 `{task_id, revision}` pairs, with ids of at most 256 bytes. Each answer lists the User's rows, most recently dismissed first.
 
 The [client core](../../clients/packages/core/src/task-panel-dismissals.ts) keeps a copy in the account database with the other marks, so the panel shows at once and works offline.
@@ -789,7 +861,7 @@ It does not create another tenant or credential identity. See [storage and recov
 
 | Concept | Meaning and boundary |
 | --- | --- |
-| Capability Request | An existing durable permission, location, OAuth, runtime-auth, or IFC decision request. Its owner stores expiry and the winning result; the Session separately owns execution and result publication. |
+| Capability Request | An existing durable permission, location, OAuth, runtime-auth, or IFC decision request. Its owner stores expiry and the winning result; the Session separately owns execution and result publication. A request an Agent raises in a Comma Conversation records that Conversation (`surface_kind` `conversation`); Comma clients show it there as a request card, a projection of the request and not an entity ([routes](../../systems/apps/comma_web/lib/comma_web/agent_request_endpoints.ex), [card](../../clients/packages/app/src/components/chat/requests/AgentRequestCard.tsx)). |
 | Tool / Provider Operation | An operation available to an Agent. An invocation is not a durable capability definition. |
 | Skill | Instructions and resources projected into runtime files. Packaged built-ins belong to the running node. Stored user skills overlay them. Regular skills preload catalog entries. Miniskills use per-message selection. |
 | Plugin Definition | A capability package with metadata and references. Referenced domains still own their resources. |
@@ -800,6 +872,9 @@ It does not create another tenant or credential identity. See [storage and recov
 | Principal | The identity that requests a read or effect. Schedule and Group API-key principals, inbound or voice, act with their creator's authority. A key an Agent mints is created as `system`, which holds no membership. An Agent cannot mint a voice key. |
 | IFC Label / Policy | Audience restrictions and information-flow rules. These are not Task labels or product membership roles. |
 | API Key / Provider Credential | Credentials for inbound authority or provider access. An Agent Group API Key has a `kind`: `inbound` (`salix_gk_`) opens the Router post-message API and Loop events, and `voice` (`salix_vk_`) opens only voice readiness and sessions. [GroupApiKeys](../../systems/apps/salix_web/lib/salix/control/group_api_keys.ex) owns both kinds. They are not product users, templates, or billing identities. |
+| Mini App | A Workspace's sandboxed web application that a Coding Task builds and Comma clients run. See [Mini App](#mini-app). |
+| Mini App Version | One immutable deploy of a Mini App: a frontend bundle, a source archive, and an optional backend script. |
+| Mini App Link / Install | A Mini App's sharing token, and another Workspace's relationship to a shared Mini App with its capability grants. |
 
 Owners and entry points:
 [CapabilityRequests](../../systems/apps/salix_agent/lib/salix_agent/capability_requests.ex),
@@ -871,6 +946,28 @@ Owners: [plugin setup](../../systems/apps/salix_web/lib/salix/control/plugin_set
 [X OAuth](../../systems/apps/salix_store/lib/salix_store/oauth/adapters/x.ex),
 [MCP definition](../../systems/apps/salix_mcp/lib/salix_mcp/builtins.ex),
 [MCP dispatch](../../systems/apps/salix_mcp/lib/salix_mcp/gateway.ex).
+
+### Mac apps plugin
+
+The Mac apps (Calendar, Reminders, Contacts, Messages, Mail, Notes, Music, Maps, System Control, Vision) reuse Plugin Definition, Plugin Installation, the Group-owned MCP binding, Device and Connector. They add no entity.
+The per-app switches are a preference of one Mac, held by Comma's Main, not a domain fact. A Plugin per app would need ten installations sharing one binding.
+
+- Plugin: the system plugin `mac-apps`, which only Comma on a Mac lists. Its one connection has kind `device_client`: the installing member's own Mac connects it, not an OAuth grant.
+- Binding: `mac`, `placement: device`, pinned to the device's own Connector runtime (`RuntimeIds.device_runtime_id(device_id, "connector", "default")`), with the value `owner_user_id`.
+  Installing from another Mac or as another member moves the binding to that device and owner. Uninstall deletes it.
+- Transport: the MCP definition's target `client:mac-apps` has transport `comma-client`. SalixMCP.Connection sends each JSON-RPC message with the Connector method `client_mcp`.
+  The station forwards it to Main's client-control endpoint, which answers for the apps turned on. No port, URL or token on the device reaches Salix.
+- Owner: SalixMCP.Provider runs a `client:` binding only for a turn whose requester (CommaWeb.MacAppsRequester: the person's own turn, or a Worker's turn on the first command of an ordinary one-shot Task created from that person's own Router message, SalixIM.TaskExecution.task_requester/1) owns the device the binding reaches, read from the device registry; `owner_user_id` only records who installed it. Turns without a person, later commands into a Task, schedule fires, Loop wakes, scheduled and Loop Tasks fail. An Agent's `mcp_manager` cannot create or change such a binding, and only this system definition may use the `comma-client` transport.
+- Server: MacAppsHost, a Swift MCP server Main starts as its child, so macOS attributes permissions to Comma. A tool call never prompts; only the user's switch requests a permission, including macOS's question about capturing the screen without its window picker (turning Vision on takes one capture). A tool of an app turned off is not listed, and the Agent is told to ask the user to turn it on.
+- Lifecycle of the switches: Main's file `<userData>/mac-apps/switches.json`, read on every MCP message and shared by every workspace connected on that Mac. A change installs the plugin again, which rediscovers the tools. Uninstall deletes the workspace's binding and leaves the switches.
+
+Owners: [plugin setup](../../systems/apps/salix_web/lib/salix/control/plugin_setup.ex),
+[Comma installation](../../systems/apps/comma_web/lib/comma_web/plugin_connections.ex),
+[MCP transport](../../systems/apps/salix_mcp/lib/salix_mcp/connection.ex),
+[owner check](../../systems/apps/salix_mcp/lib/salix_mcp/provider.ex),
+[station forwarding](../../systems/station/src/connector/connector.ts),
+[Main](../../clients/apps/electron/src/main/modules/mac-apps/index.ts),
+[server](../../clients/apps/electron/native/macos/MacAppsHost/Sources/MacApps/MacAppsService.swift).
 
 ### Miniskill activation
 
@@ -1057,8 +1154,8 @@ Lark meetings reuse IM Connect, Tool / Provider Operation, IFC Label, and the te
 They add no meeting entity, credential, or stored projection.
 Each Lark person who signs in is one Binding of provider `lark` with its own alias, so a Group holds several accounts.
 The Provider App is the bot's Lark app. Lark grants a refresh token with `offline_access`; the existing OAuth owner refreshes it and marks a refused grant for reauthorization.
-`lark.search_meetings`, `lark.get_meeting` and `lark.get_note` run as every active account, or as the one named by `account`. Lark document and Minutes reads with `account` run as that person.
-A meeting read is labelled with its participants and the reading account; a search or note read with the reading accounts.
+`lark.search_docs`, `lark.list_drive_files` and `lark.search_meetings` run as the app and then as every active account, and `lark.get_meeting` and `lark.get_note` try them in that order, unless `account` names one (`app` for the app alone). Lark document, wiki and Minutes reads with `account` run as that person.
+A meeting read is labelled with its participants and the reading account; a search with the accounts whose items it returns, and the fail-closed label when the app's items are among them; a note read with the reading account.
 Feishu meetings follow the same rules with provider `feishu` (`SalixIM.Provider.Feishu.Meetings`, `feishu.*` operations). Their Provider App is the organization's Feishu app.
 
 A read label never names more readers than the document has.
@@ -1092,6 +1189,63 @@ See [Lark documents](../../systems/apps/salix_im/lib/salix_im/provider/lark/docs
 [worker operations](../../systems/apps/salix_im/lib/salix_im/provider.ex),
 [tests](../../systems/apps/salix_im/test/feishu_docs_test.exs).
 
+### Mini App
+
+A user asks Comma to build an app. A Coding Task on an L4ES coding sandbox writes it in a GitHub repository and deploys it with the station tool `app_deploy`.
+Comma clients (Mac and web) run the app in a sandboxed frame. The app has no origin, page or URL of its own.
+
+Reuse is insufficient:
+- A Salix Site is a public VFS directory of one Agent. It has no product owner, Workspace authorization, publication state or Version identity.
+- A `dynamic_ui` widget is an immutable value of one Message. It has no backend, shared storage or lifecycle outside its Conversation.
+- A Coding Task is the build work, not the app: one app has many Coding Tasks. Task Share discloses a transcript, not a running app.
+- A GitHub repository holds source. It does not record what is live, sharing, grants or storage.
+- A Plugin packages refs to tools, skills and MCP. It has no hosted artifact or Versions.
+
+**Mini App**
+- Identity: a row ID (UUID) and a random slug `[a-z0-9]{8}`. The slug is an internal name for scripts, not a hostname.
+- Scope: one Comma Workspace and its current Group.
+- Owner: [Comma.MiniApps](../../systems/apps/comma_core/lib/comma/mini_apps.ex), table `comma_mini_apps` in Comma PostgreSQL.
+- Lifecycle: `active`, then `disabled` (by the owner, or by a platform takedown that the owner cannot undo), then `deleted`. Delete revokes the Link and removes Installs at once. The cleanup job then deletes the Cloudflare scripts, all objects under `miniapps/apps/<id>/` and the rows. It never deletes the GitHub repository.
+- Fields: name, description, icon (from the bundle), repository, live Version, visibility (`private`, `workspace` or `link`), creating User (none for an app the Router made), owner Workspace grants and sealed owner secrets.
+- A Workspace row cannot be deleted while it has apps. A Workspace deletion path must call `Comma.MiniApps.delete_workspace_apps/1` first.
+
+**Mini App Version**
+- Identity: `(app_id, number)`, with a monotonic number. A deploy key is unique per app, so a repeated station request makes one Version.
+- Lifecycle: `uploading`, then `ready` or `failed`. A `ready` Version is immutable. A failed Version's objects are deleted after 7 days.
+- Retention: the live Version, the last 20 Versions, and every Version an Install pins.
+- Fields: manifest, commit SHA, bundle and source archive objects, icon and cover objects (from the bundle), backend script name, bundle digest, build Task Conversation and deploy notes.
+- The cover is a screenshot of the app's first screen that the Apps gallery shows. A deploy accepts at most 160 KiB and 1200 × 1200 pixels.
+- The digest is a client cache key and provenance, not a security check.
+
+**Mini App Link** has the Task Share token contract: one active link per app, a 32-byte random token, `active`, then `revoked`. Reset issues a new token.
+The token lets a signed-in or guest Comma user run the app inside Comma. It is not public read authority.
+Reset, revoke, or a change of visibility away from `link` also removes the Installs of other Workspaces.
+
+**Mini App Install** is a relationship of a viewer Workspace and a Mini App. It holds that Workspace's capability grants and follows `live` or pins one Version.
+
+**Pairwise viewer ID**: an app sees an HMAC of (Comma User ID, app ID) under a server key. It is not a Comma User ID, and nothing stores it per viewer.
+
+Builds are ordinary Coding Tasks with the Task value `mini_app {app_id}`. Placement accepts it only on a sandbox with the app's repository.
+The deploy request is valid only from the Task's sandbox on its current Workload generation.
+The Workspace Router manages shared and installed apps through the same product operations as the user API.
+Its current Workspace binding and the owner's active membership supply authority. Member-private apps remain outside the shared Router's scope.
+Publishing derives the build Task from the stored Version, accepts review, merges that commit and sets it live.
+The [Router adapter](../../systems/apps/comma_web/lib/comma_web/mini_app_management.ex) adds no entity or lifecycle owner.
+
+App storage `user` and `app` documents use the Site documents layout: one object per key with CAS, under the app's prefix.
+Device storage is a client-core document per account, Workspace and app, like `dynamicUiState`.
+
+Implementation: [owner](../../systems/apps/comma_core/lib/comma/mini_apps.ex),
+[HTTP endpoints](../../systems/apps/comma_web/lib/comma_web/mini_app_endpoints.ex),
+[Salix ports](../../systems/apps/comma_web/lib/comma_web/mini_app_port.ex),
+[placement](../../systems/apps/salix_im/lib/salix_im/task_placement.ex),
+[station deploy request](../../systems/apps/salix_web/lib/salix_web/station_tasks.ex),
+[station tools](../../systems/station/src/tools/apps.ts),
+[dispatch Worker](../../systems/cloudflare/miniapp-dispatch/src/app.ts),
+[client core](../../clients/packages/core/src/miniapps.ts),
+[runtime](../../clients/packages/chat-contract/src/mini-app/runtime.ts),
+[tests](../../systems/apps/comma_web/test/mini_apps_test.exs).
+
 ## 6. Files and proactive work
 
 | Concept | Meaning and boundary |
@@ -1117,6 +1271,18 @@ Owners and entry points:
 [MeetingState](../../systems/apps/salix_meet/lib/salix_meet/meeting_state.ex),
 [MeetingTasks](../../systems/apps/comma_core/lib/comma/meeting_tasks.ex),
 [Recommendations](../../systems/apps/comma_core/lib/comma/recommendations.ex).
+
+An Attachment downloads at any size, streamed whole or in one byte range.
+Its media URL ([`ConversationAttachments.presign/2`](../../systems/apps/comma_core/lib/comma/conversation_attachments.ex)) is the blob store's signed, expiring URL for the attachment's blob.
+It has no row and no lifecycle of its own, so it is not an entity: the Session that mints it is authorized once, when it mints it.
+Add to Context stores an Attachment as a composer upload (`/uploads/…` in the Router VFS) that points at the same blob.
+That file is an ordinary upload with the upload's authorization, not a second identity for the Attachment.
+
+For a user Message in a Task, the Conversation owner binds composer upload paths to blobs in the Group Router's VFS before acceptance.
+The Message's `owner_uploads` value holds these references and their source Agent. Caller-supplied blob references cannot set this value.
+Each Message binds at most 64 distinct uploads. An unavailable upload rejects the send. Accepted retries keep the original references.
+Stations receive these files through `task.put` and `task.file`, then store them in the Session's uploads before delivery to the runtime.
+This reuses Message and Attachment values and adds no identity or lifecycle.
 
 A Background Loop can own one secret webhook URL. The secret is a recoverable credential on the Loop row, not another identity.
 The owning Agent enables, rotates, lists, or revokes it. Loop deletion removes it. Pause retains it but refuses delivery.
@@ -1268,6 +1434,16 @@ On the five most recently edited pages, open comments by others from seven days 
 Each candidate relationship is necessary, not sufficient, evidence for a useful task. The Router must omit items without concrete member relevance or a reason to act.
 The authenticated Settings form owns mode, never provider identity or consent. Routine does not read Comma long-term memory or work preferences. The retired `work_context` column remains stored but unused. Existing migration sources remain unchanged. Changes reuse source-revision invalidation and preserve the refresh schedule. The member draft compiler drops tasks without same-source evidence references and removes summary paragraphs not grounded in retained tasks. This guards grounding, not semantic relevance. Live-provider relevance, provider shape verification, and performance validation remain incomplete.
 
+A member can dismiss one Routine row's source item: a row's "Don't remind me" in the apps, or the owner's Router through `recommendation.dismiss`.
+The dismissal is a value on the Recommendation Profile, not another entity: a digest of the item's source ID and URL with its time.
+The Profile keeps the 200 most recent. It reuses the source item's existing identity, the key that rows and attention items already carry.
+Every envelope read leaves the item's rows, prompts and attention items out of the snapshot, as for handled mail. A member summary, which the server writes as one linked clause per item, loses only that item's clause. Any other summary keeps only its title and the paragraph break after it, because its prose can name the item without a link. Clients show no prose for that summary.
+Later runs leave its URL out of the evidence the model may cite, and the proactive check settles its pool versions as `dismissed`.
+A dismissal is a member preference. It does not resolve or hide the item at its source.
+The client that dismisses shows the answered envelope at once; other open clients, and any client after a Router dismissal, show it at their next envelope read.
+A briefing in state `stale`, or made more than a day ago, shows when it was made.
+Implementation: [Recommendations](../../systems/apps/comma_core/lib/comma/recommendations.ex).
+
 A Recommendation is a product projection, not a Conversation Message.
 Its prompt action fills a composer draft. The user must send it to enter the Chat path.
 Every Routine row is a prompt action in both relevance modes. A row title is the member's own task.
@@ -1293,12 +1469,12 @@ Owners: [Migration](../../systems/apps/salix_agent/lib/salix_agent/migration.ex)
 | Concept | Meaning and boundary |
 | --- | --- |
 | Device | A stable managed device identity. Device connectivity does not establish runtime authentication or readiness. A user's Device that never connected and has every credential revoked is deleted at that user's next credential mint on the same surface. At that mint, a user's Device of the Group that is offline with no activity for more than 30 days is removed with its credentials revoked ([Registry.sweep_devices](../../systems/apps/salix_env/lib/salix_env/registry.ex), [ConnectorTokens.remove_device](../../systems/apps/salix_env/lib/salix_env/connector_tokens.ex)). A Device without an owner, such as a Group's Cloud VM, does not expire. |
-| Connector | The program that connects device capabilities and runtimes to Salix. A live Connector run is not a new device identity. |
+| Connector | The program that connects device capabilities and runtimes to Salix. A live Connector run is not a new device identity. A run holds one Connector credential of its Device at a time, recorded on the Device; it can switch to the Device's newest credential on its own socket, and it ends when the credential it holds expires or is revoked ([Registry.renew_run_credential](../../systems/apps/salix_env/lib/salix_env/registry.ex), [systems/station/README.md](../../systems/station/README.md)). |
 | Command Environment | An execution environment selected within one Device. |
 | Compute Pool / Node | Resource supply and a node that provides compute. Neither is the business Workload identity. |
 | Compute Environment | A stable Project, Swarm, or Group ownership boundary. It is not an Allocation or a device query alias. |
-| Workload | Stable work within Compute. New Workloads are shell, meeting_runtime or service; `external_worker` Workloads made for the retired External Runtime remain listed until they are deleted. |
-| Allocation / Runtime Instance | Resource allocation and a particular execution instance. Allocation.generation fences allocation authority. RuntimeInstance.connection_epoch fences container execution. ProviderBinding/Host Session.connection_epoch fences the control connection. Host reconnect preserves the allocation generation and execution identity. Explicit release or revoke retires allocation authority. These facts do not replace Environment or Workload identity. |
+| Workload | Stable work within Compute. New Workloads are shell, meeting_runtime or service; `external_worker` Workloads remain readable; default lists show only those that need recovery or cleanup. |
+| Allocation / Runtime Instance | Resource allocation and a particular execution instance. Allocation.generation fences allocation authority. RuntimeInstance.connection_epoch fences container execution. ProviderBinding/Host Session.connection_epoch fences the control connection. Host reconnect preserves the allocation generation and execution identity. Only a meeting_runtime is fenced to one container instance; after a Guest restart, another Workload adopts the new instance of its verified container generation. Explicit release or revoke retires allocation authority. These facts do not replace Environment or Workload identity. |
 | Compute Grant / Service Route | Compute access authority and service access routing. A Compute Grant is not a Billing Credit Grant. |
 | Station | A still.fail station in one Salix Group (a Comma Workspace's or a BridgeForTeams Project's), reached directly by members with an offline-verified credential. It is not a Device or Connector. See [Station](#station). |
 | Device Setup Offer | An offer in Home to set up one unprovisioned Comma device that a member's phone found nearby. It is not a Device: the device has no identity in Salix until it connects. See [Device Setup Offer](#device-setup-offer). |
@@ -1354,12 +1530,12 @@ No physical deletion deadline or exactly-once provider reply is claimed.
 
 ### Station
 
-A Station is a still.fail station (an independently released program on a user's machine or a Group's Cloud VM) in one Salix Group.
+A Station runs on a user's machine, a Group's managed Workload, or a Task's isolated Coding Sandbox in one Salix Group.
 The Group is the station's workspace: the Group id is the `workspace` a station holds and the `ws` of a member credential.
 Salix is the stations' control plane: it replaces still.fail cloud's control plane and also provides Cloud VM stations.
 It is an experimental integration. Membership is the owning product's: Comma's User, Auth Session, Workspace and Membership, or BridgeForTeams' Organization and Project roles.
-Device, Connector and Inbox cannot represent it: a Station owns its own sessions, chats and agent processes,
-its members reach it directly over iroh with an offline-verified credential, and Salix holds no command authority over it.
+A Station owns its sessions, chats, and agent processes. Device, Connector, and Inbox identities do not represent these ownership duties.
+Members reach the Station over iroh with a member credential. Salix delegates Tasks through the authenticated Station protocol.
 On a machine with a Station, no device-side Connector is installed by this integration.
 
 - Identity: the hex Ed25519 public key of the station (its iroh node id). Every signed request proves it.
@@ -1370,6 +1546,9 @@ On a machine with a Station, no device-side Connector is installed by this integ
   Any role but a read-only one (Comma's `viewer`) enrolls a station, which is then theirs (`enrolled_by`); a manager role (owner, admin) renames and removes; any role lists and gets credentials.
   The same port answers whether the Group's workspace is in use: an active Comma Workspace; an active Project that is not archived, in an active Organization.
   While it is not, the Group's stations get 404 as removed ones do, the control plane places no Cloud VM station there, and no notice is pushed. The rows stay. A Group no product owns is refused by no one.
+- Agent account source (a value in the station's config, not an entity): each Workspace and runtime (Codex, Claude Code) has `none`, `local`, `endpoint` (a model server the computer reaches, such as Ollama on localhost; its address stays on the station) or `workspace`, default `none` until the person chooses ([sources.ts](../../systems/station/src/accounts/sources.ts)).
+  `local` uses this computer's own login. The station reads `~/.codex`, `~/.claude` and their session folders only while some Workspace has `local` for that runtime. `workspace` uses only the accounts Salix lends through that Workspace's desktop connection. `none` refuses new sessions with a reason and keeps existing ones. Sources never mix.
+  Machine profiles from before this contract count as `none` until the person chooses `local` again. The desktop app reads and sets sources through the station's local admin interface (a 0600-token Unix socket or named pipe, address in `run/local-admin.address`), not over the mesh.
 - Change notices: whoever changes the roster, keys or revocations tells the presence sockets through [SalixStore.Stations.Events](../../systems/apps/salix_store/lib/salix_store/stations/events.ex), over the PubSub that `salix_store` itself runs.
   Every node that can write the roster runs it, whichever subsystems the node serves, so a revocation written on a node that serves no stations reaches the node that holds the socket.
 - Wire: [Comma.Stations](../../systems/apps/comma_core/lib/comma/stations.ex) serves the `/v1/comma/stations/*` contract (provider `comma`) from Salix's rows. A Comma client names its Comma Workspace; the Workspace gives the Group.
@@ -1397,21 +1576,30 @@ On a machine with a Station, no device-side Connector is installed by this integ
 - Lifecycle: a single-use, one-hour enrollment token ([OneTimeCredentials](../../systems/apps/comma_core/lib/comma/auth/one_time_credentials.ex)) admits it.
   Re-enrollment into the same Group is idempotent; into another Group moves it. Removal sets `removed_at`; the station then gets 404 or close code 4004.
   A new token takes a removed station back.
-- Cloud VM provider: a Group's one Cloud VM is a `station.default` container on the Group's Agent VMM Host (a BFT Project's bound Runner)
-  when the Group has exactly one registration that is not revoked, a Cloudflare Container when it has none, and a conflict error (no VM) when it has more than one ([placement](../../systems/apps/salix_web/lib/salix_web/cloud_vm.ex)).
-  The provider is fixed when the record is created; an existing VM is not moved. Both run the same station release and keep the same
-  Cloud VM device identity; no new entity is added.
-  A Project's Runner binding is its live Agent VMM install operation (surface `bft`, scope the Project) and that operation's registration.
-  A Project has at most one: [AgentVMMInstallations.request/2](../../systems/apps/salix_store/lib/salix_store/agent_vmm_installations.ex) with `one_per_scope`
-  refuses another while one is live or the Group has another registration that is not revoked.
-  The Project's Devices page ([BridgeForTeams.Compute.cloud_vm/2](../../systems/apps/bridge_for_teams_core/lib/bridge_for_teams/compute.ex)) shows the VM's location and status
-  and lets an admin choose or remove the Runner before the VM exists.
-- Cloud VM station: the control plane creates it, so it places it without a token.
-  When the VM's Connector run connects, [StationPlace](../../systems/apps/salix_web/lib/salix_web/station_place.ex) asks the station for its key (`station_identity`),
-  [Stations.CloudStation](../../systems/apps/comma_web/lib/comma_web/stations/cloud_station.ex) admits it into the VM's Group (`Comma.Stations.admit_cloud_station/6`), for a Comma Workspace and a BridgeForTeams Project alike,
-  and the station is told its placement (`station_place`). The Group's Workload record keeps the placed key (`station_id`).
-  A new key replaces the previous Cloud VM station of that Group, which is removed as a member removes one. A key placed in another Group is refused and not moved.
-  `enrolled_by` nil means the control plane placed the station.
+- Managed execution locations: a Group can have a VMM Station and a Cloudflare Station.
+  [ComputeGroupStation](../../systems/apps/salix_store/lib/salix_store/compute_group_station.ex) prepares `station.default` in the authorized Host's existing Compute Environment.
+  The Workload is a `service`, owned by its Group. Its owner relation adds no entity.
+  Registration and Environment generation scope its identity. Repeated Host observations reuse it; replacement registrations cannot inherit its commands.
+  A stopped or deleting Station Workload is not recreated by an observation.
+  New Group Cloud VMs use Cloudflare. Existing Group Workloads keep their provider, archive, device identity, and accepted Tasks.
+  A valid existing Group VMM Station is reused. Multiple eligible Host registrations return a placement conflict.
+  Comma and BFT share placement; each product owns its installation and member authorization.
+- Managed Station admission: the control plane places the Station identified by an authenticated Workload connection.
+  `SalixStore.ComputeStation` derives the connection target from the current Workload and its Group or Task owner.
+  Connection registration, credentials, platform model access, and new commands use that target and current owner authorization.
+  A stable Device does not authorize an older Workload generation. Terminal or replaced connections cannot obtain new credentials.
+  Owner-specific readiness and recovery remain in `ComputeGroupStation` and `CodingSandboxes`. This projection adds no stored entity.
+  For Group-owned Workloads, [StationPlace](../../systems/apps/salix_web/lib/salix_web/station_place.ex) asks for the key and admits it into the Group roster.
+  Coding Task Stations remain addressed by their Task Device under the Sandbox lifecycle.
+  Roster admission and the exact Workload's `station_id` update commit together. The key records admission, not a peer acknowledgment or online status.
+  A lost placement acknowledgment retains this association for retry. A replacement removes only that Workload's previous Station key.
+  Other managed Stations in the same Group remain. A key in another Group is refused.
+  `enrolled_by` nil identifies control-plane placement.
+- Station Device lookup: `station_device_lookup` projects the existing `(tenant_id, group_id, device_id)` relationship to a proved Station key and device owner.
+  Verified relay registration writes it. Indexed Group and owner lookup reads one bounded candidate page.
+  Each candidate is checked against its exact Registry record and product membership before admission.
+  The projection adds no entity or authorization authority. One desktop Station can have Device relationships in several Groups.
+  Device deletion removes its projection; a later verified registration rebuilds a missing row.
 - Online is a projection: an open presence socket on any node, tracked by [StationPresence](../../systems/apps/comma_web/lib/comma_web/station_presence.ex). It is not stored.
   Where an online station's mesh endpoint may be reached (its home relay and direct addresses, which it sends in a `reach` frame when they change) is kept in that presence entry only.
   Its peers get it in `peers` and clients in the stations list and `station` events. These are dialing hints: iroh authenticates the station by its key. They go when the socket goes.
@@ -1497,6 +1685,16 @@ An owner has one Compute Environment, enforced by its tenant/owner unique index.
 Its Session generation fences the entire command, including queued work and A-to-B-to-A login changes. Accepted late results persist only to their original partition.
 Unowned historical records migrate only after the original subject, scope, and existing Host root are proved. They grant no current authority.
 [AgentVMMInstallations](../../systems/apps/salix_store/lib/salix_store/agent_vmm_installations.ex) remains the cloud installation owner.
+Linux headless installation reuses this Operation. Its `headless` delivery target belongs to the authorized User or Session and fixes the existing Workspace or Project Group.
+Cue and BFT expose command-only sibling APIs at `compute-nodes/agent-vmm/install-commands`. These do not relax the native Main-only `install-operations` capability.
+BFT preserves one live Host per Project. Comma permits multiple authorized Hosts.
+[Headless](../../systems/apps/salix_store/lib/salix_store/agent_vmm_installations/headless.ex) projects the copy command, the public secret-free GET `agent-vmm/install.sh` bootstrap, and the public POST `install-operations/install.sh` script.
+The command gives the ticket as one `<operation_id>.<one_time_secret>` argument. The bootstrap sends it in the POST body, never in a URL. Script reads do not mutate the Operation. Existing exchange, apply and ACK retain their owners.
+An unconsumed ticket expires after 15 minutes. A consumed exchange keeps its fixed material deadline and exact Host identity.
+After handoff closes, the script can only resume an existing protected native plan or completion receipt. It cannot mint another exchange.
+The Server release descriptor selects the published `agent-vmm-host` package by platform: Mac zip or Linux arm64 tar.
+Each platform carries its own release ID and transport digest. Missing Linux delivery does not disable existing Mac installation.
+The Linux package uses the same native lifecycle owner for systemd and recovery. No new installer entity or login protocol is added.
 A recovery challenge is a short-lived, single-use authorization value on that installation, not another identity or lifecycle.
 Consumption moves only its delivery target to a current Session of the original subject. Normal mutations recheck active authorization under the same row lock.
 An unexchanged request can be closed by its original subject before explicit new setup. Recovery of a completed exchange requires proof of its original Host root and registration.
@@ -1504,15 +1702,20 @@ An unexchanged request can be closed by its original subject before explicit new
 The material handoff expires 15 minutes after the exchange. The settlement sweeper closes an expired handoff in one transaction.
 An enrolled Registration proves delivery, so the operation becomes `handed_off`.
 Otherwise the Registration is revoked and the operation becomes `action_required` with `material_handoff_expired`, which frees the scope.
-Main then starts one new installation for the same Workspace without a prompt. A second expiry waits for the user's explicit continue.
+Main then starts one new installation for the same Workspace without a prompt. One automatic new installation is allowed per user enable; a second one waits for the user's explicit continue.
 Native owns the acknowledged plan and its failure receipt, including the failed stage and whether the operation can resume.
 Main reads the receipt only for the current account's exact installation. It projects safe reasons and available actions without storing another failure state.
-A retryable enrollment failure offers continuation of that plan until its handoff expires. A terminal failure offers status checks, not automatic repair or another resume.
-The user can explicitly remove the old connection and authorize a new installation. Missing or unreadable receipts do not prove a terminal failure.
+Main resumes a retryable plan by itself, with the same request identity, on one backoff timer per intent (30 s cap). It has a bounded attempt budget and one overall deadline. Server terminal counters still end it.
+A terminal failure shows one localized reason and one action.
+After authorization expiry (`revocation_reason` `authorization_expired`), Main removes the old connection and authorizes a new installation by itself, within the same per-enable budget. Other revocations need an explicit user action. Missing or unreadable receipts do not prove a terminal failure.
+Only an explicit manager revocation (`revocation_reason` `revoked`) with no data reset by Main since then says that a manager removed this Mac; its action is remove. A revocation without a reason, or an unreachable old installation, is `registration_invalid`: one "enable again" retires the old installation and authorizes a new one. After Main's own data reset, a revoked or absent registration is replaced by itself, whatever the reason.
+A completed local removal shows not enabled, also when the cloud result is unresolved; that result stays in the removals archive.
+A lost local registration of an applied installation (Host healthy, registration absent, not revoked by a manager) makes the installation stale. Main revokes the exact old installation (404 or already revoked counts as done) and authorizes one new installation. The first replacement after a Host reset or local data loss does not use the per-enable budget or the ended continuation. A later loss without a reset uses the normal budget.
+An enable refused with `registration_not_found` or `terminal_registration` takes the same replacement path. Other known terminal refusals of these routes stop at needs attention; transient conflicts, rate limits and server errors retry within the continuation.
 The setup UI displays this reason and follows these actions after refresh or restart. Shell state does not gate enabling the connection.
 Electron tests with Native and cloud fixtures prove this projection, not real enrollment. Enrollment acceptance requires the real Native and Gateway boundary.
 Native Host maintenance can permanently fence that installation after local removal or reset.
-Main reads the fence for the current account's exact installation and offers the existing confirmed removal action instead of resuming it.
+Main reads the fence for the current account's exact installation. It replaces an applied installation with a lost registration as above. Otherwise, it offers confirmed removal instead of resuming that installation.
 Removal requests revocation of the exact old installation and verifies the local registration is absent or revoked before clearing this account's binding.
 If the cloud installation is inaccessible and the local registration is absent, explicit detachment retains the unconfirmed remote outcome.
 An explicit new setup creates a new installation. Missing plans alone do not prove local removal, and old Workloads retain their identities.
@@ -1522,6 +1725,8 @@ Local revoked/disposed targets and cloud retired registrations reject recovery. 
 
 `Registration.authorization_expires_at` is the sole durable seven-day authorization deadline, owned by AgentVMM and the server clock.
 Valid authenticated Host hello or observation renews it. User login, settings reads and recoveries do not renew it.
+Observation is degraded field by field: unknown or contradictory entries are dropped, and an unusable observation is not stored, but its authenticated contact still renews.
+Revocation records `revocation_reason`: `authorization_expired` for the deadline and `revoked` for every other cause. A hello then fails with that code, and the Gateway reports it to the Host as `PermissionDenied`.
 Observation is disposable health data and cannot own permanent authorization. Session expiry retires only its own capability.
 The concrete threat is a stale Host credential continuing cloud commands after its bounded authorization ended.
 Authentication, enrollment, configure, recovery, placement, command claim and runtime Session admission enforce the registration deadline.
@@ -1536,7 +1741,7 @@ Each visited Workload cancels at most 32 never-delivered Commands and closes onl
 Retirement uses Workload then Allocation locks and a resumable cursor. Busy owners do not prevent later pages or trigger immediate retries.
 Allocation `released` retires cloud allocation authority. Its operation outcome and physical observation remain independent.
 Shell deletion `cloud_retired` ends cloud execution management, with `local_data_deleted=false`. It never projects as `deleted`.
-Workspace owners can rename cloud metadata during cleanup or retirement. Revision checks and owner admission remain, without changing deletion or Host authority.
+Workspace owners can rename cloud metadata during cleanup or retirement. Owner admission remains. Rename keeps the last name, without changing deletion or Host authority.
 Business Workloads retain identity, owner relations and service references. Their provider becomes unavailable.
 Never-delivered commands can cancel. Sent commands, accepted inputs and unknown outcomes retain settlement facts and cannot replay.
 Cloud closure does not assert that local children stopped. The local OS operator can dispose the precise environment or reset and enroll afresh.
@@ -1547,19 +1752,22 @@ Cloud mapping requires the current Workspace read permission and exact registrat
 The resource page reads at most 32 environments, one disk total, one optional receipt, and one cloud mapping batch every five seconds while visible.
 Cached environment bytes are optional, with a 15-second freshness limit and exact boot, namespace, and generation checks. Missing values cause no Guest probe.
 Manual Workload reads contain at most 32 items and current owner phases. No per-environment polling or automatic pagination is added.
+A meeting_runtime Workload phase is `ready` from its runtime readiness. Another Agent VMM Workload is `ready` from container facts: observed and Allocation ready, container running, verified at the current Host connection epoch.
+`problem` is null or `{code, retryable}`. It shows the last reconciler error of the current generation as a fixed code: `capacity_unavailable`, `image_unavailable`, `runtime_instance_changed`, `host_unreachable` or `other`. It holds no raw message and does not change the phase.
+An Agent VMM Workload `location` has `registration_id` and the `device_id` of that registration's Comma Device, or null if the registration is missing. Each page reads these Devices in one batched query.
 
 Confirmation freezes the existing Workspace and installation identity. Main rejects a changed binding before drain or removal.
 Its `refresh` capability coalesces reads without installing, repairing, or changing desired state. `state.get` returns a snapshot.
 Connection, admission, readiness and work activity remain independent. An unknown result is not success or proof that children stopped.
 Main reads activity through the Comma installation GET after Workspace and exact Session delivery-target authorization. It never sends a Comma Session credential to the tenant API. Failed or absent activity observations are unknown; a genuine product 401 still invalidates the Session.
-The UI presents a status and an applicable action. Diagnostic details retain technical facts. Initial enablement ensures the existing node Workload.
+The UI presents a status and an applicable action. Diagnostic details retain technical facts. Salix creates the initial node Workload, idempotently, after the installation first becomes ready.
 Disabling drains this registration's allocations. Normal removal revokes this Workspace registration and stops its environments into Retained.
 Retained preserves private volumes and writable layers. Confirmed local disposal or an authorized Shell deletion removes its exact data scope. All paths preserve the shared Host and other registrations.
 Local detachment after an inaccessible registration does not confirm remote revocation. Re-enabling does not promise restoration of previous work.
 
 [ComputeWorkloadDeletion](../../systems/apps/salix_store/lib/salix_store/compute_workload_deletion.ex) owns the Shell deletion value on Workload.
 It retains the request, exact Allocation generation, registration and Host revision. It adds no resource or task identity.
-Deletion closes ordinary input admission before cleanup. Accepted work and unknown outcomes remain with their existing owners.
+Deletion closes ordinary input admission before cleanup. Accepted work and unknown outcomes remain with their existing owners. An unknown outcome does not hold deletion; it is kept and never replayed.
 A shared Allocation or business reference rejects Shell deletion. The existing registration Command transports only the accepted Allocation scope.
 Host disposal retains its namespace mapping and replay fence before physical cleanup, including across reconnect and restart.
 A discarded container or missing resource row is insufficient. Physical completion requires the exact Host disposal receipt or proof that creation never dispatched.
@@ -1585,7 +1793,7 @@ Workload pages contain at most 100 items. A visible page observes one Workspace 
 Each round uses at most one page read and one exact request lookup. Hidden pages stop. Reaching the observation budget does not cancel work or declare failure.
 
 `Workload.runtime_update` was the image update operation of External Runtime Workloads. Updates are retired; a stored active phase still pauses that Workload's input ([ComputeWorkloadUpdate](../../systems/apps/salix_store/lib/salix_store/compute_workload_update.ex)).
-The `external` runtime image class and its `external.codex`, `external.claude` and `external.pi` templates are removed. A stored `external_worker` Workload still loads and lists. When the reconciler meets a Workload whose template is no longer in the catalog, the Agent VMM provider makes no allocation, image or container request, and the claim is parked once as action-required `runtime_template_retired` with no timer retry; a running container and its volume are left as they are. Starting a deletion clears the parked claim, so deletion still runs.
+The `external` runtime image class and its `external.codex`, `external.claude` and `external.pi` templates are removed. A stored `external_worker` Workload remains readable and appears in default lists while it needs recovery or cleanup. When the reconciler meets a Workload whose template is no longer in the catalog, the Agent VMM provider makes no allocation, image or container request, and the claim is parked once as action-required `runtime_template_retired` with no timer retry; a running container and its volume are left as they are. Starting a deletion clears the parked claim, so deletion still runs.
 An authorized Workspace member deletes a stored `external_worker` Workload like a Shell: the Host disposes its allocation (container and volume). Its leftover `external_worker_bindings` and `external_worker_operations` rows are not owners and are removed when the deletion starts; a Shell's binding still blocks its deletion.
 `comma-release` no longer publishes an external catalog. The `compute_runtime_release` table keeps its stored row; no code reads or writes it.
 
@@ -1611,7 +1819,8 @@ They do not grant tenant API keys or create another device identity. Non-runtime
 
 ### Group Compute lifecycle
 
-A Group owns one selected Compute Environment and default Workload. This reuses existing identities and tables.
+A Group owns its default Cloud VM Workload and can use a separate Station Workload in an authorized Host Environment.
+Each location retains its own Workload and Allocation. These relations reuse existing identities and tables.
 Workload owns device associations, active operations, archives, runtime installation intents, billing timestamps, and bounded transition state.
 Allocation and ProviderBinding own Cloudflare resource and Worker release observations. Account bindings retain their existing owner and credential references.
 Device inventory remains a capability projection. Deleting or disabling an Agent does not release the Group environment.
@@ -1644,7 +1853,8 @@ After admission, a repeated handoff cannot overwrite the new writer. Local empty
 Completed provider cutovers remain readable as historical Workload facts. New Group VM
 Workloads use Cloudflare. The Workload remains the archive and runtime authority.
 Cloudflare Group disks are temporary, disposable Agent environments under the [Cloud VM data policy](../compute-devices.md#cloud-vm-data-policy).
-Archive and restore are best effort. Failed recovery permits exact owner-led destruction and rebuild without another disk-loss approval.
+Archive and restore are best effort. After the restore budget expires, the reconciler checks for completed restoration, then requests exact owner-led disposal.
+Confirmed disposal advances the generation. Later demand starts an empty VM. A pending destroy retains its operation for bounded reconciliation.
 Central Salix data and unknown execution outcomes retain their existing owners.
 
 Cloudflare archive admission checks accepted Session demand, active operations, installation, and selection holds.
@@ -1692,7 +1902,7 @@ An interrupted wake keeps its Workload operation until the reconciler resumes it
 An explicit [restore retry](../../systems/apps/salix_env/lib/salix_env/compute_reconciler.ex) compares the exact wake, archive, target, control permit, phase deadline, and parked claim under the Workload lock.
 It starts one new bounded episode without changing those identities or clearing Gateway claims. Automatic retries do not renew it.
 A restore runs only in a Container's start, before its station. A Container whose restore did not finish is replaced.
-Creating an Agent or turning on the Group's Cloud VM switch does not create a Group VM. An authorized `cloud_vm.start`, or a command for the exact default Cloud VM environment, creates the Group Workload on first use. Task creation requires the Cloud VM station to be connected and does not start it. Read-only Device discovery projects that default identity before creation, then projects it from the Workload while its Connector is offline. Discovery does not create the VM.
+Creating an Agent or turning on the Group's Cloud VM switch does not create a Group VM. An authorized `cloud_vm.start`, or a command for the exact default Cloud VM environment, creates the Group Workload on first use. A Task for the Cloud VM's station creates or wakes the Group Workload too, through the station's giving ([SalixWeb.StationTasks](../../systems/apps/salix_web/lib/salix_web/station_tasks.ex)). Read-only Device discovery projects that default identity before creation, then projects it from the Workload while its Connector is offline. Discovery does not create the VM.
 The image release fence permits a restricted archive repair connection to the exact archiving Container.
 It also permits exact non-starting confirmation and sealing of a waking target.
 The current recovery path uses admission proof or a quiet full checkpoint before destruction.
@@ -1718,6 +1928,8 @@ Once the station has a delegation, Salix asks it where its Session of the Task s
 The station picks the account that serves the model from its profiles.
 Salix lends a Cloud VM's station the workspace's accounts as profiles over the station's share protocol
 ([StationProfiles](../../systems/apps/salix_web/lib/salix_web/station_profiles.ex)): Claude and Codex subscriptions, and Anthropic API keys.
+Salix also lends them to a member's device station, such as the desktop app's station for one workspace, after its Connector run proves the station with `relay_register`.
+It sends no placement and no platform model there. The owner must have a role that may enroll a station (not read-only); else the list is empty and `share.*` is refused. A workspace with no accounts sends an empty list.
 A subscription's login and renewal stay with the AccountPool; the station borrows a short-lived token for each process it starts.
 An API key's profile carries its key.
 
@@ -1738,6 +1950,50 @@ The station parks for an archive only while no request, process or chat is busy.
 Idle suspension retains the station's chats. Dispatch wakes the same VM.
 See [local setup](../development.md#cloud-vm-stations).
 
+### Coding sandboxes
+
+A coding Task runs on an L4ES sandbox of its own, with a GitHub repository checked out (`runs_on {kind: sandbox}`).
+This adds no entity: the session is a Task, its sandbox is a Compute Workload, and its station is that Workload's Device.
+
+- Reuse: the Task keeps the conversation, Messages, status and owner, and the station protocol delegates it (`task.invite`, `task.put`, `task.post`).
+  Group Stations serve reusable execution locations. A repository Task uses an isolated machine and a GitHub grant under its Task owner.
+  The grant is L4ES configuration on the sandbox, not a Comma or Salix entity. L4ES's proxy holds the Group's token, and the sandbox does not.
+  The Task's active Router participant can replace this ACL through `internal.task.update {conversation_id, github}`, or remove it with `github: false`.
+  L4ES owns the saved ACL. Salix omits the initial grant when starting an existing sandbox, so stop/start preserves ACL changes.
+  A deleted sandbox receives the initial Task grant when rebuilt. Repository `write` includes read access across branches. `push_refs` restricts writes only.
+  Updates replace the complete ACL: `repos`, `push_refs`, `user`, `graphql`, and `anonymous`. Omitted options return to defaults, including unrestricted refs without `push_refs`.
+  L4ES validates and stores the ACL without replacing the token. The operation accepts no command, Schedule, or Loop changes.
+  Success means the ACL is saved and delivery is queued, not that the proxy applied it. Requests in flight can finish under the previous ACL.
+  A sandbox started without a grant needs another start to enable access after an ACL update. An unavailable sandbox returns an error.
+  When `repo.branch` is omitted, Task creation generates the branch before sandbox reservation. The initial ACL includes that branch's full ref.
+  With `repo.pull_request`, placement reads that open pull request: its head branch, which must be in the same repository, becomes `repo.branch`, and its base becomes `repo.base_ref`. The initial ACL then pushes to the pull request's head, so the Worker updates it directly.
+  Both use the existing Workload identity and authenticated Station protocol. Their owners keep separate preparation, recovery, and disk policies.
+- Values on the Task: `runs_on {kind: sandbox, device_id}` and `repo {owner, name, base_ref, branch, pull_request?}`, kept on the conversation record at create ([TaskConversationInput](../../systems/apps/salix_im/lib/salix_im/task_conversation_input.ex)).
+  The device id is `dev-sbx-<conversation>` for every sandbox of the Task. `start.repo` carries the repository to the station.
+  Public device and environment lists show coding sandboxes only while connected. Exact reads and internal Registry lists retain disconnected records.
+  Agent calls express repository isolation with `runs_on.kind=sandbox` and `repo`. Other locations reject repository arguments, including on creation retries.
+  User choices can name a model or machine. Salix resolves provider resources, credentials, and unspecified model defaults.
+- Workload: kind `coding_sandbox`, provider `l4es`. Its Environment has `owner_type` `task` and the conversation id as owner, on the tenant's `pool_coding_<tenant>` Pool.
+  Each sandbox run is one Allocation. A new run advances the Environment and Workload generation and revokes old-generation connection authority.
+  The Workload spec holds the sandbox's state (`starting`, `ready`, `stopped`, `lost`, `failed`, `ended`), the L4ES sandbox name (`disk`), and when its GitHub token expires (`github_expires_at`) ([SalixStore.CodingSandboxes](../../systems/apps/salix_store/lib/salix_store/coding_sandboxes.ex)).
+  It also holds `facts`: the token use, the branch's change totals and its pull request, as the sandbox and GitHub answered them last. They are values, not records: the sandbox and GitHub stay the authorities.
+  The owner reads them when the Session ends a turn, and the coding endpoints keep what a read of the whole branch finds. Each part keeps the read that started last.
+  The Task's run carries them (`facts`), so its panel shows them before its own reads of the sandbox answer.
+  The L4ES sandbox is semi-persistent: runs reuse it and its data disk, which is disposable L4ES state, not a Comma or Salix entity.
+- Limit: a Workspace's most live (`starting`, `ready`) sandboxes is a value, not an entity: the tenant config `coding_sandboxes` (`max_sandboxes`, 1-100), else the deployment default `SALIX_L4ES_MAX_SANDBOXES`.
+  Only a Comma admin sets it, through an audited Admin command. Placement and the L4ES workspace assertion read the same value ([SalixWeb.L4ES](../../systems/apps/salix_web/lib/salix_web/l4es.ex)).
+- Owner and lifecycle: [SalixWeb.CodingSandboxes](../../systems/apps/salix_web/lib/salix_web/coding_sandboxes.ex) creates, invites, saves, stops and replaces sandboxes, as [compute and devices](../compute-devices.md#coding-sandboxes) says.
+  A Task's status change reaches it through `SalixIM.Ports.TaskStations.task_status/3`. A placement reserves it through `sandbox/1`.
+  Replacement waits for confirmation that the previous sandbox stopped. Unknown invite and stop results cannot start a second execution carrier.
+  The selected account restricts profile access. Missing owner facts fail closed rather than expose every tenant account.
+- L4ES identity: L4ES admits Salix with workspace assertions that the Comma OAuth IdP key signs ([CommaWeb.Coding.L4ESAssertions](../../systems/apps/comma_web/lib/comma_web/coding/l4es_assertions.ex)). Members sign in to L4ES with Comma.
+  The L4ES workspace is `comma:<group id>`. It is L4ES's own record, not a Comma or Salix entity.
+  Its members are L4ES's records too. Before each sandbox create, Salix sets them to the Workspace's active non-viewer members ([CommaWeb.Coding.Members](../../systems/apps/comma_web/lib/comma_web/coding/members.ex)), by Comma user id. Comma's `WorkspaceMembership` is the authority for its Comma users there: the sync removes the others. Members that L4ES's own members add by login, such as GitHub users, stay. L4ES never asks Comma.
+  Salix adds the release's sandbox image to it as an L4ES custom image (`comma-<sha prefix>`), also L4ES's record, named by the release's image manifest.
+- Product surface: [CommaWeb.Coding.Endpoints](../../systems/apps/comma_web/lib/comma_web/coding/endpoints.ex) starts sessions and reads their state, changes, pull request and terminal link. Clients call them through `coding.*` ([core](../../clients/packages/core/src/coding.ts)).
+  The session branch's pull request is GitHub's record, not a Comma or Salix entity: Comma reads it, edits it, marks it ready and merges it with the Group's GitHub account ([SalixWeb.GitHub](../../systems/apps/salix_web/lib/salix_web/github.ex)), and opens it there once the sandbox is gone. A Task made with `repo.pull_request` has that pull request's head as its session branch, so it is found as the branch's own. Where no open pull request has the session branch as its head, one of another head whose head is the branch's last commit is the session's, open or merged (a Task that continues a pull request): the station, after pushing, and Salix answer it, and Comma opens no second one.
+- Station: [tasks/coding.ts](../../systems/station/src/tasks/coding.ts) keeps the checkout, pushes after turns, and answers `task.diff`, `task.save` and `task.pull_request`.
+
 ## 8. Billing and entitlements
 
 | Concept | Meaning and boundary |
@@ -1751,6 +2007,8 @@ See [local setup](../development.md#cloud-vm-stations).
 | Fee Control | Cost availability admission. It is separate from usage metering and charging. |
 
 The public purchase catalog follows Stripe purchase metadata. The private billing summary resolves its current plan through the Subscription's exact provider price mapping. Hiding sales preserves the current plan, its cadence, and its management actions.
+
+Internal subscription redemption reuses Subscription and Cycle. The Package Version's billing period selects one or twelve monthly Cycles, starting in the redemption's UTC calendar month. The scheduler issues each Cycle once. Redemption does not authorize renewal beyond that term.
 
 Owners and entry points:
 [Billing accounts](../../systems/apps/billing_core/lib/billing_core/accounts.ex),
@@ -1801,6 +2059,8 @@ See [free Router billing](../billing-models.md#free-comma-router-models).
 | Triage follow-up | A retained context entry owned by `TriageProductRuntime`, with one Schedule for its next check. Explicit duplicate maintenance reuses `superseded_by`. It preserves evidence and leaves one selected entry active. It does not resolve the source goal. |
 | Project Knowledge / Assertion / Alias | Source-backed shared knowledge and identity aliases. These do not replace product users, projects, or memberships. |
 | Sourced Context / Context Bundle | Source-backed material and its shared lifecycle identity. Source adapters do not independently decide retention authority. |
+| Daily brief member | A BFT User in one Organization who receives the personal brief, with the Slack user ID it reads for. It is not a second User or Slack identity authority: the BFT User owns login, and the Slack workspace owns the user ID. |
+| Daily brief run | One written brief: the team's (`team_brief`) or a member's (`personal_brief`), with its window, token use, coverage, and the text the model wrote, kept until retention so the next brief can tell what changed. It is a record of what was sent, not a Message: message text stays in the Salix Slack mirror. A pass reads source data as `SourceItem`s from a source adapter (`DailyBrief.Sources.Slack`). |
 
 Owners and entry points:
 [Organization](../../systems/apps/bridge_for_teams_core/lib/bridge_for_teams/schema/organization.ex),
@@ -1814,13 +2074,16 @@ Owners and entry points:
 [Follow-up owner](../../systems/apps/salix_store/lib/salix_store/triage_product_runtime.ex),
 [ProjectKnowledge](../../systems/apps/bridge_for_teams_core/lib/bridge_for_teams/project_knowledge.ex),
 [SourcedContextObject](../../systems/apps/bridge_for_teams_core/lib/bridge_for_teams/schema/sourced_context_object.ex),
-[ContextLifecycle](../../systems/apps/bridge_for_teams_core/lib/bridge_for_teams/context_lifecycle.ex).
+[ContextLifecycle](../../systems/apps/bridge_for_teams_core/lib/bridge_for_teams/context_lifecycle.ex),
+[DailyBrief](../../systems/apps/bridge_for_teams_core/lib/bridge_for_teams/daily_brief.ex).
 
 User Assistant Chat and WorkspaceItem are retired with the My Space board. BFT has no per-user Chat
 binding or local board item. The `user_assistant_chats` and `workspace_items` tables keep only stored
 rows, which the conversation and session identity migrations still rewrite.
 BFT Agent's salix field is virtual. It is not a persisted copy of Salix Agent configuration.
-ContextLifecycle supports explicit deletion and erasure. It does not yet schedule retention periods or implement legal holds.
+ContextLifecycle supports explicit deletion and erasure. A worker drains due requests on every Pod.
+A member may request deletion of a `personal` bundle whose subjects include that member; other requests need an administrator.
+It does not yet schedule retention periods or implement legal holds.
 
 ## Desktop concepts and naming traps
 
@@ -2236,8 +2499,9 @@ Reuse is insufficient: a Recommendation Run holds source evidence only until it 
 Identity is the Recommendation Profile, the source account and the item URL digest. Scope is one member in one Workspace.
 Collection is the only writer of item content. It stores bounded excerpts, never raw provider payloads: title, a 1,200-character excerpt, a 600-character prompt context, a 1.2 KB context, relationship, recipient, facts and mail IDs.
 A version fingerprint covers all bounded stored evidence, including dates, roles and surrounding context, not only the shortened prompt. A changed version waits for consumers again. Each consumer owns its own outcome on the item.
-Collection also stores the record's source quote for the briefing hover. It is display text outside the version, so each collection rewrites it in place, and a new wording keeps the version, the outcomes and the queue position.
+Collection also stores the record's source quote, which the Routine card shows under its task and a briefing link shows on hover. It is display text outside the version, so each collection rewrites it in place, and a new wording keeps the version, the outcomes and the queue position.
 An item waits for consumers only while its source's latest successful collection returns it and no later attempt failed as a whole. Mail the member answered leaves the result and stops waiting.
+Mail collection also reads the junk or spam folder. It keeps at most 10 recent junk items outside inbox threads, with the relationship `in_your_junk_folder`. A failed junk read leaves only those items out.
 An item expires 5 days after collection last saw it. An hourly sweep deletes it. Each source keeps at most 400 items.
 Each source also has one collection state in the pool: the last attempt, the last successful collection and the items it returned, the member subject, any failure and the trigger ID.
 The state has no lifecycle of its own. Collection writes it, and it leaves with the source's items.

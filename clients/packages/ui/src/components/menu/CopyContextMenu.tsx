@@ -1,4 +1,4 @@
-import type { Key, RefObject } from "react";
+import { memo, type Key, type RefObject } from "react";
 import { definedProps } from "../utils";
 import { Menu, MenuItem, MenuPopover } from "./Menu";
 import type { MenuPointerOffsets } from "./pointerPosition";
@@ -29,7 +29,7 @@ export interface CopyContextMenuProps {
 }
 
 /* oxlint-disable jsx-a11y/no-autofocus -- A newly opened context menu must receive keyboard focus. */
-export const CopyContextMenu = ({
+export const CopyContextMenu = memo(function CopyContextMenu({
   triggerRef,
   isOpen,
   onOpenChange,
@@ -37,7 +37,7 @@ export const CopyContextMenu = ({
   labels,
   disabledActions,
   onAction,
-}: CopyContextMenuProps) => {
+}: CopyContextMenuProps) {
   const handleAction = (key: Key) => {
     onAction(String(key) as CopyContextMenuAction);
   };
@@ -74,5 +74,5 @@ export const CopyContextMenu = ({
       </Menu>
     </MenuPopover>
   );
-};
+});
 /* oxlint-enable jsx-a11y/no-autofocus */

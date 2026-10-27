@@ -1,8 +1,11 @@
 import { useId } from "react";
+import { ChevronRightSmallIcon } from "../icons";
 import { InputField } from "../input";
 import { cx, definedProps } from "../utils";
 import { DialogActions, DialogCloseButton } from "./DialogActions";
 import {
+  dialogComposeHeader,
+  dialogComposeTitle,
   dialogContentGroup,
   dialogDescription,
   dialogHeader,
@@ -22,6 +25,7 @@ export const DialogPanel = ({
   descriptionId,
   showCloseButton = false,
   variant = "default",
+  titleLeading,
   input,
   onClose,
   actions,
@@ -32,6 +36,31 @@ export const DialogPanel = ({
   const resolvedDescriptionId = description
     ? (descriptionId ?? `${instanceId}-description`)
     : undefined;
+  if (variant === "compose")
+    return (
+      <>
+        {showCloseButton ? (
+          <DialogCloseButton compact {...definedProps({ onPress: onClose })} />
+        ) : null}
+        <div className={cx(dialogComposeHeader, showCloseButton && "pr-4xl")}>
+          {titleLeading ? (
+            <>
+              {titleLeading}
+              <ChevronRightSmallIcon
+                aria-hidden="true"
+                className="size-4 shrink-0 text-quaternary"
+              />
+            </>
+          ) : null}
+          <h2 id={resolvedTitleId} className={dialogComposeTitle}>
+            {title}
+          </h2>
+        </div>
+        {children}
+        <DialogActions {...definedProps({ actions })} />
+      </>
+    );
+
   const body =
     variant === "input" && input ? (
       <InputField {...input} suppressFocusRing className="w-full" />

@@ -78,6 +78,12 @@ defmodule SalixCluster.LoopTasksTest do
       do: tell({:station_appended, group_id, conversation_id})
 
     @impl true
+    def sandbox(_reservation), do: {:error, :no_sandboxes}
+
+    @impl true
+    def task_status(_group_id, _conversation_id, _status), do: :ok
+
+    @impl true
     def standing(_group_id, _conversation_id), do: :not_station
   end
 
@@ -192,7 +198,11 @@ defmodule SalixCluster.LoopTasksTest do
       "connect_id" => "internal",
       "params" =>
         Map.merge(
-          %{"agent_id" => ctx.worker, "content" => "Check PR #12 and summarize new comments."},
+          %{
+            "agent_id" => ctx.worker,
+            "content" => "Check PR #12 and summarize new comments.",
+            "runs_on" => %{"kind" => "default"}
+          },
           params
         )
     })
@@ -237,6 +247,17 @@ defmodule SalixCluster.LoopTasksTest do
 
     settle()
     Loops.Reconciler.loop_ref(loop_of(ctx, id))
+  end
+
+  # The Task's `loop` in the Router's task.list.
+  defp listed_loop(ctx, id) do
+    assert {:ok, %{"tasks" => tasks}} =
+             Provider.call_api(ctx.router, "internal", "internal.task.list", %{
+               "connect_id" => "internal",
+               "params" => %{}
+             })
+
+    Enum.find(tasks, &(&1["task_id"] == id))["loop"]
   end
 
   defp notify(ref, key),
@@ -291,8 +312,10 @@ defmodule SalixCluster.LoopTasksTest do
     {:ok, ends_at, _offset} = DateTime.from_iso8601(future)
     ends_at = DateTime.to_unix(ends_at, :millisecond)
 
+    # The Loop does not run until the Worker creates its program.
     assert created["loop"] == %{
              "cadence" => %{"cron" => "0 9 * * *", "timezone" => "Asia/Shanghai"},
+             "status" => "pending",
              "runs" => 0,
              "max_runs" => 10,
              "ends_at" => ends_at |> DateTime.from_unix!(:millisecond) |> DateTime.to_iso8601(),
@@ -315,13 +338,7 @@ defmodule SalixCluster.LoopTasksTest do
     refute Map.has_key?(task(ctx, id), "loop")
 
     # The Router's list shows the same compact summary.
-    assert {:ok, %{"tasks" => tasks}} =
-             Provider.call_api(ctx.router, "internal", "internal.task.list", %{
-               "connect_id" => "internal",
-               "params" => %{}
-             })
-
-    assert Enum.find(tasks, &(&1["task_id"] == id))["loop"] == created["loop"]
+    assert listed_loop(ctx, id) == created["loop"]
 
     # A Loop Task runs on its Loop, so it takes no Schedule.
     assert {:error, refused} =
@@ -349,6 +366,7 @@ defmodule SalixCluster.LoopTasksTest do
     assert loop["loop_id"] == pending["id"]
     assert loop["trigger"] == %{"every_minutes" => 60}
     assert {:error, {:task_loop_exists, _}} = Loops.create(round, %{"path" => @elf_path})
+    assert %{"status" => "active", "runs" => 0} = listed_loop(ctx, id)
 
     # The Task's status does not drive the Loop while the Task runs.
     update = &ConversationServer.update_group_conversation(ctx.group_id, id, &1)
@@ -471,7 +489,11 @@ defmodule SalixCluster.LoopTasksTest do
   test "loop.next_run answers the trigger's next time, once for missed runs, and ends at ends_at",
        ctx do
     now = SystemsClock.system_time(:millisecond)
-    finish = now + :timer.hours(30)
+    # 09:00 in Shanghai is 01:00 UTC. ends_at falls between the first run and
+    # the one after it whatever the time of day the test runs at.
+    day = :timer.hours(24)
+    first_run = div(now - :timer.hours(1), day) * day + :timer.hours(1) + day
+    finish = first_run + :timer.hours(12)
     ends_at = finish |> DateTime.from_unix!(:millisecond) |> DateTime.to_iso8601()
 
     assert {:ok, %{"conversation_id" => id}} =
@@ -487,9 +509,8 @@ defmodule SalixCluster.LoopTasksTest do
     next =
       &Loops.Capabilities.call(ref, "loop.next_run", if(&1, do: %{"after_ms" => &1}, else: %{}))
 
-    # 09:00 in Shanghai is 01:00 UTC.
     assert {:ok, %{"next_run_at" => first}} = next.(nil)
-    assert first > now and first - now <= :timer.hours(24)
+    assert first == first_run
     assert %{hour: 1, minute: 0} = DateTime.from_unix!(first, :millisecond)
     assert %{"next_run_at" => ^first} = loop_of(ctx, id)
 
@@ -651,27 +672,43 @@ defmodule SalixCluster.LoopTasksTest do
     assert task(ctx, id)["status"] == "active"
   end
 
-  test "a Loop Task is refused a person's own computer; a one-shot Task still runs there", ctx do
-    personal = connect_station!(ctx, %{"owner_user_id" => "user-1"})
+  # A station's Session has no Salix tools to create the Loop, so its Loop
+  # would stay pending: a Loop Task runs inside Salix.
+  test "a Loop Task is refused a station or the Cloud VM; a one-shot Task still runs there",
+       ctx do
+    station = connect_station!(ctx, %{})
     loop = %{"cadence" => %{"every_minutes" => 60}}
 
-    assert {:error, explicit} =
+    for runs_on <- [%{"kind" => "station", "device_id" => station}, %{"kind" => "cloud_vm"}] do
+      assert {:error, refused} =
+               task_create(ctx, %{
+                 "loop" => loop,
+                 "runs_on" => runs_on,
+                 "model" => %{"kind" => "runtime", "provider" => "codex"}
+               })
+
+      assert refused =~ "a Loop Task runs inside Salix"
+      assert refused =~ "runs_on {kind: default}"
+    end
+
+    # A model of kind runtime runs only on a station, even with no place named.
+    assert {:error, runtime} =
              task_create(ctx, %{
                "loop" => loop,
-               "runs_on" => %{"kind" => "station", "device_id" => personal}
+               "model" => %{"kind" => "runtime", "provider" => "codex"}
              })
 
-    assert explicit =~ "cannot run a Loop Task. Omit runs_on to run the Loop inside Salix"
+    assert runtime =~ "Omit model or give one not of kind runtime"
 
     bound =
       SalixAgent.TestSupport.create_control_agent_in_group!(
         ctx.tenant_id,
         ctx.group_id,
         %{
-          "name" => "Desktop Worker",
+          "name" => "Station Worker",
           "role" => "worker",
           "station_binding" => %{
-            "runs_on" => %{"kind" => "station", "device_id" => personal},
+            "runs_on" => %{"kind" => "station", "device_id" => station},
             "model" => %{"kind" => "runtime", "provider" => "codex"}
           }
         }
@@ -681,7 +718,17 @@ defmodule SalixCluster.LoopTasksTest do
              task_create(ctx, %{"agent_id" => bound["agent_id"], "loop" => loop})
 
     assert from_binding =~ "Give agent_id of a Worker that runs inside Salix"
+
+    # Asking for Salix does not point the Router back to the bound station.
+    assert {:error, ^from_binding} =
+             task_create(ctx, %{
+               "agent_id" => bound["agent_id"],
+               "loop" => loop,
+               "runs_on" => %{"kind" => "salix"}
+             })
+
     refute_received {:station_invite, _invitation}
+    assert {:ok, []} = Store.list_by_agent(bound["agent_id"])
 
     assert {:ok, %{"conversation_id" => id}} =
              task_create(ctx, %{
@@ -689,29 +736,101 @@ defmodule SalixCluster.LoopTasksTest do
                "content" => "Run the benchmark once."
              })
 
-    assert_received {:station_invite, %{device_id: ^personal, conversation_id: ^id}}
+    assert_received {:station_invite, %{device_id: ^station, conversation_id: ^id}}
   end
 
-  test "a Loop Task is refused the Group's default place when it is a person's own computer",
-       ctx do
-    personal = connect_station!(ctx, %{"owner_user_id" => "user-1"})
+  test "a Loop Task runs inside Salix when the Group's default place is a station", ctx do
+    station = connect_station!(ctx, %{})
     loop = %{"cadence" => %{"every_minutes" => 60}}
 
     assert {:ok, _place} =
              SalixAgent.TaskPlace.put(ctx.tenant_id, ctx.group_id, %{
                "kind" => "station",
-               "device_id" => personal
+               "device_id" => station
              })
 
-    assert {:error, refused} = task_create(ctx, %{"loop" => loop})
-    assert refused =~ "default place to run Tasks is a person's own computer"
-    assert refused =~ "cannot run a Loop Task"
+    assert {:ok, %{"conversation_id" => id}} = task_create(ctx, %{"loop" => loop})
     refute_received {:station_invite, _invitation}
+    # Its Worker inside Salix creates the Loop.
+    _ref = bind!(ctx, id)
+    assert %{"status" => "active", "runs" => 0} = listed_loop(ctx, id)
 
-    # runs_on {kind: salix} runs the Loop inside Salix whatever the default is.
-    assert {:ok, %{"conversation_id" => _id}} =
-             task_create(ctx, %{"loop" => loop, "runs_on" => %{"kind" => "salix"}})
+    # A model of kind runtime runs only on a station.
+    assert {:error, refused} =
+             task_create(ctx, %{
+               "loop" => loop,
+               "model" => %{"kind" => "runtime", "provider" => "codex"}
+             })
 
-    refute_received {:station_invite, _invitation}
+    assert refused =~ "Omit model or give one not of kind runtime"
+
+    # A one-shot Task still runs at the default place.
+    assert {:ok, %{"conversation_id" => one_shot}} =
+             task_create(ctx, %{"content" => "Run the benchmark once."})
+
+    assert_received {:station_invite, %{device_id: ^station, conversation_id: ^one_shot}}
+  end
+
+  # A Loop Task made on a station before Loop Tasks ran only inside Salix.
+  test "an ended Loop Task on a station gets no new Loop", ctx do
+    station = connect_station!(ctx, %{})
+
+    bound =
+      SalixAgent.TestSupport.create_control_agent_in_group!(
+        ctx.tenant_id,
+        ctx.group_id,
+        %{
+          "name" => "Station Worker",
+          "role" => "worker",
+          "station_binding" => %{
+            "runs_on" => %{"kind" => "station", "device_id" => station},
+            "model" => %{"kind" => "runtime", "provider" => "codex"}
+          }
+        }
+      )
+
+    assert {:ok, %{"conversation_id" => id}} =
+             task_create(ctx, %{"agent_id" => bound["agent_id"], "content" => "Check PR #12."})
+
+    assert_received {:station_invite, %{device_id: ^station, conversation_id: ^id}}
+
+    # The Loop such a Task requested, ended with the Task.
+    assert {:ok, _loop} =
+             SalixIM.TaskLoop.request_loop(ctx, bound["agent_id"], id, %{
+               "cadence" => %{"every_minutes" => 60}
+             })
+
+    assert {:ok, _} =
+             ConversationServer.update_group_conversation(ctx.group_id, id, %{
+               "status" => "completed"
+             })
+
+    settle()
+    assert %{"status" => "ended"} = ended = loop_of(ctx, id)
+    SystemsClock.advance(1)
+    source = "new-human-request"
+
+    assert {:error, refused} =
+             Provider.call_api(ctx.router, "internal", "internal.task.update", %{
+               "connect_id" => "internal",
+               "params" => %{
+                 "conversation_id" => id,
+                 "command" => "Check the new PR.",
+                 "loop" => %{"cadence" => %{"every_minutes" => 180}}
+               },
+               "tool_context" => %{
+                 source_message_id: source,
+                 trusted_origin: %{
+                   "source_message_id" => source,
+                   "source_actor_type" => "user",
+                   "agent_group_id" => ctx.group_id,
+                   "source_sent_at_ms" => SystemsClock.system_time(:millisecond)
+                 }
+               }
+             })
+
+    assert refused =~ "this Task runs on a station"
+    assert loop_of(ctx, id) == ended
+    assert task(ctx, id)["status"] == "completed"
   end
 end

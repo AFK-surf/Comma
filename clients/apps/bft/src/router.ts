@@ -6,7 +6,7 @@ import type { BftSession, BftWizardStep } from "./api";
  * first organization), `/orgs/:org`, `/orgs/:org/operations` (plus the old
  * `/orgs/:org/operations/:tab` bookmarks), `/orgs/:org/members`,
  * `/orgs/:org/fin` (Runners), `/orgs/:org/plugins`, the Settings pages,
- * the Meetings pages, the Slack triage pages, `/orgs/:org/information-flow` (Data policy),
+ * the Meetings pages, `/orgs/:org/daily-brief`, the Slack triage pages, `/orgs/:org/information-flow` (Data policy),
  * `/orgs/:org/projects`, every page of an Agent Swarm: Overview, Agents,
  * Devices, Plugins, Skills, Tasks, Connections and Settings
  * (`/orgs/:org/projects/:id[/agents|/devices|/plugins|/skills|/tasks|/connections|/settings]`,
@@ -48,6 +48,7 @@ export type BftRoute =
   | { name: "org-swarms"; org: string }
   | { name: "org-plugins"; org: string }
   | { name: "org-data-policy"; org: string }
+  | { name: "org-daily-brief"; org: string }
   | { name: "org-meetings"; org: string; view: MeetingsView }
   | {
       name: "org-triage";
@@ -112,6 +113,7 @@ const orgPages = {
   projects: "org-swarms",
   plugins: "org-plugins",
   "information-flow": "org-data-policy",
+  "daily-brief": "org-daily-brief",
 } as const;
 
 /** Agent Swarm pages by their last path segment, and whether the address is retired. */
@@ -155,7 +157,9 @@ export function matchRoute(pathname: string): BftRoute {
       };
     }
     const page =
-      /^\/orgs\/([^/]+)\/(members|fin|projects|plugins|information-flow)$/.exec(path);
+      /^\/orgs\/([^/]+)\/(members|fin|projects|plugins|information-flow|daily-brief)$/.exec(
+        path
+      );
     if (page?.[1] && page[2]) {
       return {
         name: orgPages[page[2] as keyof typeof orgPages],

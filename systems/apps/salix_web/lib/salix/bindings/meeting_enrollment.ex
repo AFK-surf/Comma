@@ -103,7 +103,7 @@ defmodule Salix.Bindings.MeetingEnrollment do
          },
          Map.take(
            entry,
-           ~w(preparation_lead_minutes research_enabled series personal_preparation settings_revision)
+           ~w(preparation_lead_minutes research_enabled series personal_preparation channel_notice settings_revision)
          )
        )}
     else

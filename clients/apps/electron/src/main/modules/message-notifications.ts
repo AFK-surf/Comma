@@ -50,6 +50,9 @@ export class MessageNotificationsService {
   readonly #log: { warn: (message: string) => void };
   // Router messages delivered since the user was last in Comma.
   #unseenCount = 0;
+  // The OS keeps the icon's badge across launches, so one a previous run left
+  // is cleared on the first return to Comma even with nothing counted here.
+  #badgeMayBeStale = true;
   // Counts returns to Comma, so a delivery that settles after one is not
   // added to a badge the user has already cleared.
   #focusGeneration = 0;
@@ -86,8 +89,9 @@ export class MessageNotificationsService {
     platform.onAppFocused(() => {
       this.#focusGeneration += 1;
       platform.dismissAll();
-      if (this.#unseenCount === 0) return;
+      if (this.#unseenCount === 0 && !this.#badgeMayBeStale) return;
       this.#unseenCount = 0;
+      this.#badgeMayBeStale = false;
       platform.setBadgeCount(0);
     });
   }

@@ -4,12 +4,16 @@ import { join } from "node:path";
 import { expect, it, vi } from "vitest";
 import { AgentVMMCommandAdapter } from "../modules/compute-node/runtime-adapter";
 import {
+  HostMaintenanceIncompatibleError,
+  MaintenanceCapabilityProbe,
+} from "../modules/compute-node/host-maintenance-protocol";
+import {
   AgentVMMHostPreparation,
   resolveHostConfiguration,
 } from "../modules/compute-node/host-preparation";
 
-it.each(["repair", "enable", "install", "resume", "drain", "remove"] as const)(
-  "checks the installed helper's maintenance contract before every %s mutation",
+it.each(["repair", "enable", "install", "resume"] as const)(
+  "probes the installed helper once per action before a %s mutation and rejects only that operation",
   async (action) => {
     let compatible = true;
     const effects: string[] = [];
@@ -18,16 +22,29 @@ it.each(["repair", "enable", "install", "resume", "drain", "remove"] as const)(
       effects.push(args[0]!);
       return "";
     });
-    const adapter = new AgentVMMCommandAdapter("isolated-helper", run, true);
+    const adapter = new AgentVMMCommandAdapter(
+      "isolated-helper",
+      run,
+      new MaintenanceCapabilityProbe(run)
+    );
     const invoke = () => adapter[action]("exact-operation", "exact-registration");
+    adapter.beginAction();
     await invoke();
-    expect(effects).toHaveLength(1);
+    await invoke();
+    expect(effects).toHaveLength(2);
+    const probes = () =>
+      run.mock.calls.filter(([, args]) => args[0] === "maintenance-status").length;
+    expect(probes()).toBe(1);
     compatible = false;
-    await expect(invoke()).rejects.toThrow("Update Agent VMM Host");
-    expect(effects).toHaveLength(1);
-    expect(
-      run.mock.calls.filter(([, args]) => args[0] === "maintenance-status")
-    ).toHaveLength(2);
+    adapter.beginAction();
+    await expect(invoke()).rejects.toBeInstanceOf(HostMaintenanceIncompatibleError);
+    expect(effects).toHaveLength(2);
+    expect(probes()).toBe(2);
+    // Drain and remove never depend on the maintenance protocol.
+    await adapter.drain("exact-operation", "exact-registration");
+    await adapter.remove("exact-operation", "exact-registration");
+    expect(effects.slice(2)).toEqual(["registration-state", "registration-revoke"]);
+    expect(probes()).toBe(2);
   }
 );
 

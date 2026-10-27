@@ -453,6 +453,116 @@ defmodule CommaWeb.CommaMessageResourceTest do
            ]
   end
 
+  @tag :worker_file_delivery
+  test "an attachment over 10 MB downloads whole and in the byte ranges a video player reads" do
+    %{user: user, workspace: workspace, session: session} =
+      create_workspace_session("video-delivery@example.com", "Video Delivery")
+
+    conversation = create_conversation(session, workspace)
+    agent_id = workspace["router_agent_id"]
+    group_id = workspace["default_group_id"]
+    conversation_id = conversation["id"]
+    path = "/artifacts/clip.mp4"
+    size = 12_000_000
+    video = :binary.copy(<<0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11>>, div(size, 12))
+
+    assert {:ok, event} =
+             SalixAgent.AgentWorkspace.prepare_write_stream(
+               agent_id,
+               path,
+               Stream.map(
+                 0..(div(size, 1_000_000) - 1),
+                 &binary_part(video, &1 * 1_000_000, 1_000_000)
+               )
+             )
+
+    assert {:ok, _} =
+             SalixAgent.AgentWorkspace.seed_operation(agent_id, "video-seed", %{}, [event])
+
+    {:ok, session_id} = SalixIM.ProviderConnects.agent_group_router_session_id(agent_id, group_id)
+
+    assert {:ok, %{"message_id" => message_id}} =
+             Salix.Bindings.AgentIMProvider.call_api(
+               agent_id,
+               "internal",
+               "internal.send_message",
+               %{
+                 "connect_id" => "internal",
+                 "tool_call_id" => "video-1",
+                 "params" => %{
+                   "conversation_id" => conversation_id,
+                   "request_id" => "video-1",
+                   "content" => [
+                     %{
+                       "type" => "file",
+                       "path" => path,
+                       "file_name" => "clip.mp4",
+                       "mime_type" => "video/mp4"
+                     }
+                   ]
+                 },
+                 "tool_context" => %{"runtime_kind" => "internal", "session_id" => session_id}
+               }
+             )
+
+    url =
+      "/v1/comma/groups/#{group_id}/conversations/#{conversation_id}/messages/#{message_id}/attachments/0"
+
+    get = fn headers ->
+      Req.request!(
+        method: :get,
+        url: base() <> url,
+        headers: [{"authorization", "Bearer " <> session["token"]} | headers],
+        decode_body: false
+      )
+    end
+
+    whole = get.([]) |> expect_status(200)
+    assert whole.body == video
+    assert Req.Response.get_header(whole, "content-length") == [Integer.to_string(size)]
+    assert Req.Response.get_header(whole, "accept-ranges") == ["bytes"]
+    assert Req.Response.get_header(whole, "content-type") == ["video/mp4"]
+
+    # A seek past the first 10 MB reads only its own span.
+    span = get.([{"range", "bytes=10000000-10262143"}]) |> expect_status(206)
+    assert span.body == binary_part(video, 10_000_000, 262_144)
+    assert Req.Response.get_header(span, "content-range") == ["bytes 10000000-10262143/#{size}"]
+    assert Req.Response.get_header(span, "content-length") == ["262144"]
+
+    tail = get.([{"range", "bytes=-5"}]) |> expect_status(206)
+    assert tail.body == binary_part(video, size - 5, 5)
+
+    open_ended = get.([{"range", "bytes=11999990-"}]) |> expect_status(206)
+    assert open_ended.body == binary_part(video, 11_999_990, 10)
+
+    past_end = get.([{"range", "bytes=#{size}-"}]) |> expect_status(416)
+    assert Req.Response.get_header(past_end, "content-range") == ["bytes */#{size}"]
+
+    # A media element or a browser download sends no session: it reads from a
+    # URL the blob store signed, which the session mints while it reads the
+    # attachment. The bytes never pass through Comma.
+    %{"ref" => %{"uuid" => uuid}} = event
+
+    now = SystemsClock.system_time(:second)
+    minted = user_req(session["token"], :post, url <> "/media") |> expect_status(200)
+    signed = URI.parse(minted.body["url"])
+
+    assert signed.host == "fake-store.invalid"
+    assert signed.path == "/blobs/" <> uuid
+
+    assert URI.decode_query(signed.query) == %{
+             "expires_in" => "3600",
+             "response-content-type" => "video/mp4",
+             "response-content-disposition" => "attachment; filename*=UTF-8''clip.mp4"
+           }
+
+    assert minted.body["expires_at"] in (now + 3600)..(now + 3601)
+
+    # Only a session that reads the attachment now mints one.
+    :ok = Comma.Accounts.revoke_session(user["id"], session["id"])
+    user_req(session["token"], :post, url <> "/media") |> expect_status(401)
+  end
+
   test "explicit replies preserve their target through provider sends, retries, and Comma HTTP reads" do
     %{workspace: workspace, session: session} =
       create_workspace_session("message-replies@example.com", "Message Replies")

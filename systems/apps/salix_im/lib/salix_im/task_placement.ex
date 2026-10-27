@@ -7,14 +7,25 @@ defmodule SalixIM.TaskPlacement do
   A Task names a place (`runs_on`) and a model (`model`), or leaves them out:
 
     * A Worker bound to a station (`station_binding`) runs each Task there.
-    * With no place, the Group's default place (`SalixAgent.TaskPlace`) applies,
-      checked as a named place is. A Group that has set none, or chose Salix,
-      runs it inside Salix. `runs_on {"kind": "salix"}` asks for Salix whatever
-      the default is. A model only Salix runs (not of kind runtime) runs inside
-      Salix too.
+    * An explicit place, Worker binding or configured Group default takes
+      precedence. Without them, a runtime-model Task chooses an authorized
+      VMM Station, the requesting user's physical Station, then Cloudflare.
+      A Task with an internal model stays inside Salix.
     * A place is checked by the product (`SalixIM.Ports.TaskCreate.runs_on/2`):
-      the Cloud VM switch on and the VM running, a station connected and ready,
-      and no person's own computer for a Loop Task.
+      the Cloud VM switch on (the VM itself need not be running: a Task made
+      while it sleeps is kept for it and the VM woken), a station connected
+      and ready.
+    * A coding Task (`runs_on {"kind": "sandbox"}`) runs on a sandbox made for
+      it, with the GitHub repository `repo` (`{owner, name, base_ref?,
+      branch?}`, or `{owner, name, pull_request}` to continue an open pull
+      request on its own head branch) checked out. The product checks the repository and the
+      Group's sandbox limit. It is never a Group's default place.
+    * A Mini App build (`mini_app {"app_id": ...}`) is a coding Task on the
+      app's own repository: only with `runs_on {"kind": "sandbox"}` and a
+      `repo` that is the app's (`SalixIM.MiniApps.repo/2`).
+    * A Loop Task runs inside Salix: the Group's default place does not apply
+      to it, and a station or the Cloud VM, named or bound, or a model of kind
+      runtime refuses it.
     * With no model, a Task inside Salix runs the Group's default Task model
       (`SalixIM.TaskConversationInput`) and a station its own default model.
 
@@ -22,13 +33,15 @@ defmodule SalixIM.TaskPlacement do
   a Router reads.
   """
 
+  require Logger
+
   alias SalixIM.GroupDirectory
   alias SalixIM.Ports.TaskCreate
 
   @typedoc """
   Why a place or model was refused. `source` says where the place came from:
   `:requested` (named), `:binding` (the Worker's station binding), `:default`
-  (the Group's default place) or `:salix`.
+  (the Group's default place), `:automatic` (runtime machine selection), or `:salix`.
   """
   @type refusal ::
           {:runs_on, term(), atom()}
@@ -41,8 +54,10 @@ defmodule SalixIM.TaskPlacement do
   @type placement :: %{
           params: map(),
           runs_on: map() | nil,
+          repo: map() | nil,
+          mini_app: map() | nil,
           session_model: map() | nil,
-          source: :requested | :binding | :default | :salix
+          source: :requested | :binding | :default | :automatic | :salix
         }
 
   @doc """
@@ -54,13 +69,124 @@ defmodule SalixIM.TaskPlacement do
   """
   @spec resolve(map(), String.t(), map(), boolean()) :: {:ok, placement()} | {:error, refusal()}
   def resolve(scope, target_agent_id, params, loop?) when is_map(params) do
-    with {:ok, placed, bound_model} <- station_binding(target_agent_id, params),
+    with :ok <- repo_place(params),
+         {:ok, mini_app} <- mini_app_place(scope, params) do
+      case pinned_placement(scope, params, loop?) do
+        {:ok, placement} -> {:ok, Map.put(placement, :mini_app, mini_app)}
+        :none -> resolve_new(scope, target_agent_id, params, loop?, mini_app)
+        {:error, _} = error -> error
+      end
+    end
+  end
+
+  defp repo_place(params) do
+    if is_nil(params["repo"]) or match?(%{"kind" => "sandbox"}, params["runs_on"]),
+      do: :ok,
+      else: {:error, {:runs_on, :repo_requires_sandbox, :requested}}
+  end
+
+  # A Mini App build runs on a sandbox with the app's repository checked out
+  # (owner and name compare case-insensitively, as GitHub's do). Checked
+  # before the sandbox place, so a refused build reserves nothing.
+  defp mini_app_place(_scope, params) when not is_map_key(params, "mini_app"), do: {:ok, nil}
+  defp mini_app_place(_scope, %{"mini_app" => nil}), do: {:ok, nil}
+
+  defp mini_app_place(scope, %{"mini_app" => mini_app} = params) do
+    cond do
+      not match?(%{"kind" => "sandbox"}, params["runs_on"]) ->
+        {:error, {:runs_on, :mini_app_requires_sandbox, :requested}}
+
+      not (match?(%{"app_id" => id} when is_binary(id) and id != "", mini_app) and
+               map_size(mini_app) == 1) ->
+        {:error, {:runs_on, :mini_app_not_found, :requested}}
+
+      true ->
+        case SalixIM.MiniApps.repo(scope.group_id, mini_app["app_id"]) do
+          {:ok, %{"owner" => owner, "name" => name}} ->
+            if same_repo?(params["repo"], owner, name),
+              do: {:ok, %{"app_id" => mini_app["app_id"]}},
+              else: {:error, {:runs_on, :mini_app_repo_mismatch, :requested}}
+
+          {:error, :mini_apps_unavailable} ->
+            {:error, {:runs_on, :mini_apps_unavailable, :requested}}
+
+          {:error, _not_found} ->
+            {:error, {:runs_on, :mini_app_not_found, :requested}}
+        end
+    end
+  end
+
+  defp same_repo?(%{"owner" => owner, "name" => name}, app_owner, app_name)
+       when is_binary(owner) and is_binary(name) and is_binary(app_owner) and
+              is_binary(app_name),
+       do:
+         String.downcase(owner) == String.downcase(app_owner) and
+           String.downcase(name) == String.downcase(app_name)
+
+  defp same_repo?(_repo, _owner, _name), do: false
+
+  defp pinned_placement(scope, %{"model" => %{"kind" => "runtime"} = model} = params, false) do
+    if is_nil(params["runs_on"]) do
+      case SalixIM.ConversationServer.task_request_placement(
+             scope.group_id,
+             scope[:task_request_identity]
+           ) do
+        {:ok, %{"runs_on" => place, "session_model" => ^model}} ->
+          {:ok,
+           %{params: params, runs_on: place, repo: nil, session_model: model, source: :automatic}}
+
+        {:ok, nil} ->
+          :none
+
+        {:ok, _other_model} ->
+          {:error, {:model, :task_request_changed}}
+
+        {:error, reason} ->
+          {:error, {:runs_on, reason, :automatic}}
+      end
+    else
+      :none
+    end
+  end
+
+  defp pinned_placement(_, _, _), do: :none
+
+  defp resolve_new(scope, target_agent_id, params, loop?, mini_app) do
+    with {:ok, placed, bound_model} <- station_binding(target_agent_id, params, loop?),
          {:ok, placed, source} <- default_place(scope, params, placed),
-         {:ok, runs_on} <- runs_on(scope, target_agent_id, placed, loop?, source),
+         {:ok, placed, source} <- loop_place(placed, source, loop?),
+         {:ok, runs_on} <- runs_on(scope, target_agent_id, placed, source),
+         {runs_on, repo} = split_repo(runs_on),
          {:ok, session_model} <-
            session_model(scope, target_agent_id, placed, runs_on, bound_model) do
-      {:ok, %{params: placed, runs_on: runs_on, session_model: session_model, source: source}}
+      {:ok,
+       %{
+         params: placed,
+         runs_on: runs_on,
+         repo: repo,
+         mini_app: mini_app,
+         session_model: session_model,
+         source: source
+       }}
     end
+  end
+
+  # The product answers a coding Task's place with its checked repository; the
+  # Task keeps them apart (`runs_on`, `repo`).
+  defp split_repo(%{"kind" => "sandbox"} = runs_on),
+    do: {Map.delete(runs_on, "repo"), runs_on["repo"]}
+
+  defp split_repo(runs_on), do: {runs_on, nil}
+
+  @doc false
+  def placement_attrs(attrs, placement) do
+    attrs
+    |> Map.drop(["runs_on", "model", "session_model", "repo", "mini_app"])
+    |> put_present("runs_on", placement.runs_on)
+    |> put_present("repo", placement.repo)
+    |> put_present("mini_app", placement[:mini_app])
+    |> put_present("session_model", placement.session_model)
+    |> put_present("automatic_task_place", if(placement.source == :automatic, do: true))
   end
 
   @doc """
@@ -73,24 +199,50 @@ defmodule SalixIM.TaskPlacement do
   """
   @spec create_task_conversation(String.t(), String.t(), map()) ::
           {:ok, map()} | {:error, term()}
-  def create_task_conversation(group_id, router_agent_id, attrs) when is_map(attrs) do
+  def create_task_conversation(group_id, router_agent_id, attrs, trusted_context \\ %{})
+      when is_map(attrs) do
     attrs = Map.new(attrs, fn {key, value} -> {to_string(key), value} end)
+    started = SystemsClock.monotonic_time(:millisecond)
 
-    with {:ok, group} <- group(group_id),
+    with false <- Enum.any?(~w(requester_user_id automatic_task_place), &Map.has_key?(attrs, &1)),
+         {:ok, group} <- group(group_id),
          :ok <- router(group, router_agent_id),
-         scope = %{tenant_id: group["tenant_id"], group_id: group_id},
+         scope =
+           Map.merge(Map.take(trusted_context, [:requester_user_id]), %{
+             tenant_id: group["tenant_id"],
+             group_id: group_id,
+             task_request_identity: attrs["client_request_id"]
+           }),
          {:ok, worker} <- task_worker(scope),
          {:ok, placement} <-
-           resolve(scope, worker, Map.take(attrs, ["runs_on", "model"]), false) do
-      TaskCreate.create_task_conversation(
-        group_id,
-        router_agent_id,
-        worker,
-        attrs
-        |> Map.drop(["runs_on", "model", "session_model"])
-        |> put_present("runs_on", placement.runs_on)
-        |> put_present("session_model", placement.session_model)
+           resolve(
+             scope,
+             worker,
+             Map.take(attrs, ["runs_on", "model", "repo", "mini_app"]),
+             false
+           ) do
+      placed = SystemsClock.monotonic_time(:millisecond)
+
+      result =
+        TaskCreate.create_task_conversation(
+          group_id,
+          router_agent_id,
+          worker,
+          placement_attrs(attrs, placement)
+        )
+
+      # Where a product's Task create spends its time: placing it, then making it.
+      Logger.info(
+        "task placement create group=#{group_id} source=#{placement.source} " <>
+          "resolve_ms=#{placed - started} " <>
+          "create_ms=#{SystemsClock.monotonic_time(:millisecond) - placed} " <>
+          "ok=#{match?({:ok, _}, result)}"
       )
+
+      result
+    else
+      true -> {:error, :invalid_requester_parameter}
+      {:error, _} = error -> error
     end
   end
 
@@ -120,7 +272,8 @@ defmodule SalixIM.TaskPlacement do
   def message({:model, reason}), do: model_refusal(reason)
 
   def message({:bound_runs_on, bound}),
-    do: "this Worker runs its Tasks on #{Jason.encode!(bound)}; omit runs_on or give that one"
+    do:
+      "this Worker runs its Tasks on #{Jason.encode!(bound)}; give runs_on {kind: default} or that one"
 
   def message({:bound_model, provider}),
     do:
@@ -134,9 +287,14 @@ defmodule SalixIM.TaskPlacement do
   # binding's. A Task may name them itself only when they agree with the
   # binding: the same place, and a model of the same runtime. A binding
   # without a model id leaves the station's default model of its runtime
-  # (`bound_model`, which no product check is asked about).
-  defp station_binding(target_agent_id, params) do
+  # (`bound_model`, which no product check is asked about). A Loop Task runs
+  # inside Salix (`loop_place/3`), so a bound Worker refuses it first.
+  defp station_binding(target_agent_id, params, loop?) do
     case GroupDirectory.get_agent(target_agent_id) do
+      {:ok, %{"station_binding" => %{"runs_on" => %{}, "model" => model}}}
+      when loop? and is_map(model) and is_map_key(model, "provider") ->
+        {:error, {:runs_on, :station_for_loop, :binding}}
+
       {:ok, %{"station_binding" => %{"runs_on" => %{} = bound, "model" => model}}}
       when is_map(model) and is_map_key(model, "provider") ->
         with {:ok, runs_on} <- bound_runs_on(bound, params["runs_on"]),
@@ -183,9 +341,10 @@ defmodule SalixIM.TaskPlacement do
       true ->
         case GroupDirectory.get_group(scope.group_id) do
           {:ok, group} ->
-            case group_default_place(group) do
-              nil -> {:ok, placed, :salix}
-              place -> {:ok, Map.put(placed, "runs_on", place), :default}
+            case {group["default_task_place"], group_default_place(group)} do
+              {%{"kind" => "salix"}, _} -> {:ok, placed, :salix}
+              {_, nil} -> automatic_machine(scope, placed)
+              {_, place} -> {:ok, Map.put(placed, "runs_on", place), :default}
             end
 
           {:error, reason} ->
@@ -206,27 +365,76 @@ defmodule SalixIM.TaskPlacement do
 
   defp group_default_place(_group), do: nil
 
+  # Selecting an external runtime already requires a machine. Internal model
+  # Tasks retain their existing Salix placement.
+  defp automatic_machine(scope, %{"model" => %{"kind" => "runtime"} = model} = placed) do
+    case SalixIM.ConversationServer.task_request_placement(
+           scope.group_id,
+           scope[:task_request_identity]
+         ) do
+      {:ok, %{"runs_on" => pinned}} ->
+        request =
+          if pinned["kind"] == "cloud_vm", do: Map.delete(pinned, "device_id"), else: pinned
+
+        {:ok, Map.put(placed, "runs_on", request), :automatic}
+
+      {:ok, nil} ->
+        {:ok, Map.put(placed, "runs_on", %{"kind" => "automatic", "model" => model}), :automatic}
+
+      {:error, reason} ->
+        {:error, {:runs_on, reason, :automatic}}
+    end
+  end
+
+  defp automatic_machine(_scope, placed), do: {:ok, placed, :salix}
+
+  # A Loop Task runs inside Salix. Its Worker gives the Task's Loop its
+  # program with loop.build and loop.create, which need a Worker Session
+  # inside Salix: a station's Session has no Salix tools, so the Loop would
+  # stay pending. The Group's default place gives way to Salix; a place the
+  # Router names refuses the Task. A runtime model runs only on a station, so
+  # it refuses the Task too, wherever the Task would run.
+  defp loop_place(placed, source, true) do
+    cond do
+      match?(%{"runs_on" => %{}}, placed) and source not in [:default, :automatic] ->
+        {:error, {:runs_on, :station_for_loop, source}}
+
+      match?(%{"kind" => "runtime"}, placed["model"]) ->
+        {:error, {:runs_on, :station_for_loop, :model}}
+
+      Map.has_key?(placed, "runs_on") ->
+        {:ok, Map.delete(placed, "runs_on"), :salix}
+
+      true ->
+        {:ok, placed, source}
+    end
+  end
+
+  defp loop_place(placed, source, _loop?), do: {:ok, placed, source}
+
   # A Task of an internal Worker can run on a station instead: a desktop
   # station (`{"kind": "station", "device_id": ...}`) or the Group's Cloud VM
   # (`{"kind": "cloud_vm"}`). The product resolves the device; the station runs
-  # the Task's runtime model choice (`SalixIM.Ports.TaskStations`). A Loop runs
-  # while every app is closed, so the product refuses a person's own computer
-  # for a Loop Task (`loop`).
-  defp runs_on(scope, target_agent_id, params, loop?, source) do
+  # the Task's runtime model choice (`SalixIM.Ports.TaskStations`).
+  defp runs_on(scope, target_agent_id, params, source) do
     case params["runs_on"] do
       nil ->
         {:ok, nil}
+
+      %{"kind" => "sandbox"} = request ->
+        case params["repo"] do
+          repo when is_map(repo) ->
+            sandbox(scope, target_agent_id, Map.put(request, "repo", repo), source)
+
+          _missing ->
+            {:error, {:runs_on, :repo_required, source}}
+        end
 
       request when is_map(request) ->
         with {:ok, _agent} <- GroupDirectory.get_agent(target_agent_id),
              {:ok, runs_on} <-
                TaskCreate.runs_on(
-                 %{
-                   tenant_id: scope.tenant_id,
-                   group_id: scope.group_id,
-                   agent_id: target_agent_id,
-                   loop: loop?
-                 },
+                 Map.put(scope, :agent_id, target_agent_id),
                  request
                ) do
           {:ok, runs_on}
@@ -236,6 +444,20 @@ defmodule SalixIM.TaskPlacement do
 
       _other ->
         {:error, {:runs_on, :not_an_object, source}}
+    end
+  end
+
+  defp sandbox(scope, target_agent_id, request, source) do
+    with {:ok, _agent} <- GroupDirectory.get_agent(target_agent_id),
+         {:ok, %{"kind" => "sandbox"} = runs_on} <-
+           TaskCreate.runs_on(
+             %{tenant_id: scope.tenant_id, group_id: scope.group_id, agent_id: target_agent_id},
+             request
+           ) do
+      {:ok, runs_on}
+    else
+      {:ok, _other} -> {:error, {:runs_on, :runs_on_unsupported, source}}
+      {:error, reason} -> {:error, {:runs_on, reason, source}}
     end
   end
 
@@ -290,28 +512,39 @@ defmodule SalixIM.TaskPlacement do
 
   defp runs_on_refusal(:not_an_object, _source), do: "runs_on must be an object"
 
+  defp runs_on_refusal(:station_candidate_page_exhausted, _source),
+    do:
+      "the first eight personal Station candidates are unavailable; choose a device explicitly to check another Station"
+
   defp runs_on_refusal(:runs_on_unsupported, _source),
     do: "this product does not accept runs_on; omit it"
 
-  defp runs_on_refusal(:personal_station_for_loop, :binding),
+  defp runs_on_refusal(:station_for_loop, :binding),
     do:
-      "this Worker runs its Tasks on a person's own computer (its station binding), " <>
-        "which stops taking Tasks when the app quits, so it cannot run a Loop Task. " <>
-        "Give agent_id of a Worker that runs inside Salix or on the Group's Cloud VM, " <>
-        "or ask the user to bind this Worker to the Cloud VM. The Task was not made."
+      "this Worker runs its Tasks on a station (its station binding), and a Loop Task " <>
+        "runs inside Salix, where its Worker creates the Loop. Give agent_id of a Worker " <>
+        "that runs inside Salix. The Task was not made."
 
-  defp runs_on_refusal(:personal_station_for_loop, :default),
+  defp runs_on_refusal(:station_for_loop, :model),
     do:
-      "the Group's default place to run Tasks is a person's own computer, which stops " <>
-        "taking Tasks when the app quits, so it cannot run a Loop Task. Give runs_on " <>
-        "{kind: salix} to run the Loop inside Salix, or {kind: cloud_vm}. The Task " <>
-        "was not made."
+      "a Loop Task runs inside Salix, where its Worker creates the Loop, and a model of " <>
+        "kind runtime runs only on a station. Omit model or give one not of kind runtime. " <>
+        "The Task was not made."
 
-  defp runs_on_refusal(:personal_station_for_loop, _source),
+  # A Loop Task made on a station before Loop Tasks ran only inside Salix:
+  # its station Worker cannot create a new Loop.
+  defp runs_on_refusal(:station_for_loop, :task),
     do:
-      "that station is a person's own computer, which stops taking Tasks when the app " <>
-        "quits, so it cannot run a Loop Task. Omit runs_on to run the Loop inside " <>
-        "Salix, or give runs_on {kind: cloud_vm}. The Task was not made."
+      "this Task runs on a station, and a Loop runs only inside Salix, where its Worker " <>
+        "creates it, so this Task cannot get a new Loop. Create a new Loop Task with " <>
+        "task.create with runs_on {kind: salix}."
+
+  defp runs_on_refusal(:station_for_loop, _source),
+    do:
+      "a Loop Task runs inside Salix, where its Worker creates the Loop; a station or " <>
+        "the Cloud VM cannot. Give runs_on {kind: default} or {kind: salix}, and omit a model of " <>
+        "kind runtime. Its Worker can still run commands on the Cloud VM with env.exec. " <>
+        "The Task was not made."
 
   # The Group's default place refused the Task: the refusal a place the Router
   # named gets, and that the place is the Group's default, which people change
@@ -322,8 +555,12 @@ defmodule SalixIM.TaskPlacement do
         " (It is the Group's default place to run Tasks, set in the product's settings. " <>
         "Tell the user, or give runs_on {kind: salix} to run the Task inside Salix.)"
 
+  # Automatic placement started the Group's Cloud VM and it did not come up
+  # within its budget (`SalixWeb.TaskStations`); a Task that names the Cloud
+  # VM waits for it instead (`SalixWeb.StationTasks`).
   defp runs_on_refusal(:cloud_vm_not_running, _source),
-    do: "the Group's Cloud VM is not running: start it with cloud_vm.start, then create the Task"
+    do:
+      "the Group's Cloud VM did not come up in time: give runs_on {kind: cloud_vm} to have the Task wait for it"
 
   defp runs_on_refusal(:device_offline, _source),
     do: "that station is not connected now; the Task was not made"
@@ -331,6 +568,86 @@ defmodule SalixIM.TaskPlacement do
   defp runs_on_refusal({reason, info}, _source)
        when reason in [:device_needs_station, :station_outdated],
        do: station_refusal(reason, info)
+
+  defp runs_on_refusal(:repo_required, _source),
+    do:
+      "runs_on {kind: sandbox} needs repo {owner, name, base_ref?}: the GitHub repository " <>
+        "to check out. The Task was not made."
+
+  defp runs_on_refusal(:repo_requires_sandbox, _source),
+    do:
+      "repo requires runs_on {kind: sandbox}. Describe existing files in content when using another machine."
+
+  defp runs_on_refusal(:mini_app_requires_sandbox, _source),
+    do:
+      "mini_app requires runs_on {kind: sandbox} and repo {owner, name}: an app is built " <>
+        "in a coding sandbox. The Task was not made."
+
+  defp runs_on_refusal(:mini_app_repo_mismatch, _source),
+    do:
+      "repo must be the app's repository, the repo internal.apps.create returned. " <>
+        "The Task was not made."
+
+  defp runs_on_refusal(:mini_app_not_found, _source),
+    do:
+      "mini_app must be {app_id} of an app of this Workspace, the app_id " <>
+        "internal.apps.create returned. The Task was not made."
+
+  defp runs_on_refusal(:mini_apps_unavailable, _source),
+    do: "apps are not set up here; omit mini_app. The Task was not made."
+
+  defp runs_on_refusal(:sandbox_unavailable, _source),
+    do: "coding sandboxes are not set up here; give another place. The Task was not made."
+
+  defp runs_on_refusal(:github_not_connected, _source),
+    do:
+      "the Workspace has no GitHub account connected, so a sandbox cannot check out the " <>
+        "repository. Ask the user to connect GitHub in Settings > Plugins. The Task was not made."
+
+  defp runs_on_refusal(:github_reauthorization_required, _source),
+    do:
+      "the Workspace's GitHub connection needs the user to sign in again (Settings > Plugins). " <>
+        "The Task was not made."
+
+  defp runs_on_refusal({:repo_not_found, repo}, _source),
+    do:
+      "the connected GitHub account cannot read #{repo}; check the owner and name. " <>
+        "The Task was not made."
+
+  defp runs_on_refusal(:invalid_repo, _source),
+    do:
+      "repo must be {owner, name, base_ref?, branch?} or {owner, name, pull_request} with GitHub " <>
+        "names; the Task was not made"
+
+  defp runs_on_refusal({:pull_request_not_found, ref}, _source),
+    do:
+      "the connected GitHub account cannot read pull request #{ref}; check the number. " <>
+        "The Task was not made."
+
+  defp runs_on_refusal({:pull_request_unreadable, ref}, _source),
+    do:
+      "GitHub did not answer about pull request #{ref} just now; try again. " <>
+        "The Task was not made."
+
+  defp runs_on_refusal({:pull_request_branch_unusable, number}, _source),
+    do:
+      "pull request ##{number}'s head branch is gone or has a name a sandbox cannot check out. " <>
+        "Omit pull_request to work on a new Task branch. The Task was not made."
+
+  defp runs_on_refusal({:pull_request_not_open, number, state}, _source),
+    do:
+      "pull request ##{number} is #{state}, so a Task cannot continue it. Omit pull_request to " <>
+        "work on a new Task branch. The Task was not made."
+
+  defp runs_on_refusal({:pull_request_from_fork, number}, _source),
+    do:
+      "pull request ##{number} comes from a branch of another repository, which the sandbox " <>
+        "cannot push to. Omit pull_request to work on a new Task branch. The Task was not made."
+
+  defp runs_on_refusal({:sandbox_limit, max}, _source),
+    do:
+      "the Workspace already runs #{max} coding sandboxes, the most it may; end one " <>
+        "(set its Task completed) or wait. The Task was not made."
 
   defp runs_on_refusal(:device_not_found, _source),
     do: "that station is not known in this Group; check device.list"

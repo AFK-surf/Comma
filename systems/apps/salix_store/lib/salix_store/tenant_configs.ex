@@ -10,9 +10,9 @@ defmodule SalixStore.TenantConfigs do
   its merge/strip logic and never sees Ecto. `updated_at` is epoch seconds
   exactly as `Salix.Control.Store.now/0` produced.
 
-  The only two names the runtime writes today are `trajectory_eval` and
-  `conversation_links`; the store is name-agnostic so historical/orphan names
-  round-trip unchanged. Because the payload is JSON, the cutover equality gate
+  The runtime writes `trajectory_eval`, `conversation_links`,
+  `signal_account` and `coding_sandboxes`; the store is name-agnostic so
+  historical/orphan names round-trip unchanged. Because the payload is JSON, the cutover equality gate
   compares the DECODED map (see `canonical/1`), never raw bytes/columns.
   """
 

@@ -55,6 +55,13 @@ describe("client CI CLI", () => {
     );
   });
 
+  it("runs the Mac apps server's Swift tests and still builds Electron for it", () => {
+    const source =
+      "clients/apps/electron/native/macos/MacAppsHost/Sources/MacApps/Tool.swift";
+    expect(computerUseCiChanged([source])).toBe(true);
+    expect(electronCiChanged([source])).toBe(true);
+  });
+
   it("runs the macOS E2E job only for code Electron bundles", () => {
     for (const input of [
       "clients/apps/web/src/main.tsx",

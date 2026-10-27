@@ -62,6 +62,26 @@ defmodule SalixCluster.TaskSchedulesTest do
     @impl true
     def appended(group_id, conversation_id),
       do: tell({:station_appended, group_id, conversation_id}) && :ok
+
+    @impl true
+    def sandbox(reservation), do: tell({:sandbox_reserved, reservation}) && :ok
+
+    @impl true
+    def task_status(group_id, conversation_id, status),
+      do: tell({:sandbox_task_status, group_id, conversation_id, status}) && :ok
+  end
+
+  defmodule SandboxPorts do
+    @moduledoc "The product's check of a coding Task's place: any repository is readable, from main."
+    def runs_on(_scope, %{"kind" => "sandbox", "repo" => repo}),
+      do: {:ok, %{"kind" => "sandbox", "repo" => Map.put_new(repo, "base_ref", "main")}}
+
+    def session_model(_scope, choice), do: {:ok, choice}
+    def task_worker(scope), do: SalixAgent.TaskAgent.ensure(scope)
+    def default_task_model(_scope), do: {:ok, nil}
+
+    defdelegate create_task_conversation(group_id, delegator, worker, attrs),
+      to: Salix.Bindings.AgentConversations
   end
 
   defmodule TaskCreateReceipt do
@@ -142,6 +162,7 @@ defmodule SalixCluster.TaskSchedulesTest do
            args: %{
              "tool" => "im_api.internal.task.create",
              "params" => %{
+               "runs_on" => %{"kind" => "default"},
                "connect_id" => "internal",
                "agent_id" => worker_id,
                "content" => command,
@@ -524,6 +545,59 @@ defmodule SalixCluster.TaskSchedulesTest do
     refute_received {:agent_delivery, ^worker_id, _payload, _opts}
   end
 
+  test "a coding Task reserves its sandbox instead of inviting a station, and keeps its repository and session branch",
+       %{group_id: group_id, router: router} do
+    previous = SystemsRuntime.get_env(:salix_im, :task_create_mod)
+    SystemsRuntime.put_env(:salix_im, :task_create_mod, SandboxPorts)
+    on_exit(fn -> restore(:salix_im, :task_create_mod, previous) end)
+
+    created =
+      create_task(router["agent_id"], %{
+        "content" => "Fix the flaky retry test.",
+        "model" => %{"kind" => "runtime", "provider" => "claude"},
+        "runs_on" => %{"kind" => "sandbox"},
+        "repo" => %{"owner" => "acme", "name" => "api"}
+      })
+
+    conversation_id = created["conversation_id"]
+    device_id = "dev-sbx-" <> conversation_id
+    refute_received {:station_invite, _}
+
+    assert_received {:sandbox_reserved,
+                     %{
+                       conversation_id: ^conversation_id,
+                       device_id: ^device_id,
+                       start: start,
+                       repo: %{
+                         "owner" => "acme",
+                         "name" => "api",
+                         "base_ref" => "main",
+                         "branch" => branch
+                       }
+                     }}
+
+    assert "comma/" <> _ = branch
+    assert start["runtime"] == "claude"
+    assert start["repo"]["branch"] == branch
+
+    {:ok, task} = Conversations.get_group_conversation(group_id, conversation_id)
+    assert task["runs_on"] == %{"kind" => "sandbox", "device_id" => device_id}
+    assert task["repo"]["branch"] == branch
+
+    # Without a repository there is no coding Task.
+    assert {:error, message} =
+             call_task_create(
+               router["agent_id"],
+               %{
+                 "content" => "Fix it.",
+                 "runs_on" => %{"kind" => "sandbox"}
+               },
+               %{}
+             )
+
+    assert message =~ "needs repo"
+  end
+
   test "a Task that names no place runs at the Group's default place, checked as a named one",
        %{tenant_id: tenant_id, group_id: group_id, router: router, worker: worker} do
     previous = SystemsRuntime.get_env(:salix_agent, :agent_management_ports)
@@ -671,7 +745,12 @@ defmodule SalixCluster.TaskSchedulesTest do
     assert {:error, "model of kind runtime requires runs_on"} =
              call_task_create(
                router["agent_id"],
-               %{"agent_id" => worker["agent_id"], "content" => "Elsewhere.", "model" => runtime},
+               %{
+                 "agent_id" => worker["agent_id"],
+                 "content" => "Inside Salix.",
+                 "model" => runtime,
+                 "runs_on" => %{"kind" => "salix"}
+               },
                %{}
              )
   end
@@ -1404,6 +1483,128 @@ defmodule SalixCluster.TaskSchedulesTest do
     assert length(messages) == 1
   end
 
+  test "a Task that is not active keeps its Schedule and fires again once active", %{
+    group_id: group_id,
+    router: router,
+    worker: worker
+  } do
+    {conversation_id, schedule} = create_scheduled_task(group_id, router, worker)
+    schedule_id = schedule["id"]
+    due = Schedules.next_fire_ms(schedule)
+
+    assert {:ok, _escalated} =
+             TaskSchedules.update_conversation(group_id, conversation_id, %{
+               "status" => "escalated"
+             })
+
+    log =
+      ExUnit.CaptureLog.capture_log(fn ->
+        assert {:ok, %{paused: [^schedule_id], fired: [], inactive: [], failed: []}} =
+                 Schedules.run_once(now: due)
+      end)
+
+    assert log =~ "Task Schedule window skipped: Task is escalated"
+    refute log =~ "Task Schedule deleted"
+
+    assert {:ok, paused} = Schedules.get(schedule_id)
+    assert paused["last_run"] == due
+
+    assert {:ok, task} = Conversations.get_group_conversation(group_id, conversation_id)
+    assert task["schedule"]["schedule_id"] == schedule_id
+
+    assert {:ok, messages} =
+             Conversations.list_group_conversation_messages(group_id, conversation_id, limit: 10)
+
+    assert length(messages) == 1
+
+    # A failed run is not an end either: the Router sets `failed` and later
+    # `active` again.
+    assert {:ok, _failed} =
+             TaskSchedules.update_conversation(group_id, conversation_id, %{
+               "status" => "failed"
+             })
+
+    failed_due = Schedules.next_fire_ms(paused)
+    assert failed_due > due
+    assert {:ok, %{paused: [^schedule_id], failed: []}} = Schedules.run_once(now: failed_due)
+    assert {:ok, paused} = Schedules.get(schedule_id)
+
+    assert {:ok, _active} =
+             TaskSchedules.update_conversation(group_id, conversation_id, %{
+               "status" => "active"
+             })
+
+    next_due = Schedules.next_fire_ms(paused)
+    assert next_due > failed_due
+    assert {:ok, %{fired: [^schedule_id], failed: []}} = Schedules.run_once(now: next_due)
+
+    assert {:ok, [_dry_run, scheduled]} =
+             Conversations.list_group_conversation_messages(group_id, conversation_id, limit: 10)
+
+    assert message_text(scheduled) == "Run this complete command on every window."
+  end
+
+  test "an ended Task is unbound, its Schedule is deleted, and the deletion is logged", %{
+    group_id: group_id,
+    router: router,
+    worker: worker
+  } do
+    {conversation_id, schedule} = create_scheduled_task(group_id, router, worker)
+    schedule_id = schedule["id"]
+    due = Schedules.next_fire_ms(schedule)
+
+    assert {:ok, _cancelled} =
+             TaskSchedules.update_conversation(group_id, conversation_id, %{
+               "status" => "cancelled"
+             })
+
+    log =
+      ExUnit.CaptureLog.capture_log(fn ->
+        assert {:ok, %{inactive: [^schedule_id], failed: []}} = Schedules.run_once(now: due)
+      end)
+
+    assert log =~ "Task Schedule deleted: inactive"
+    assert log =~ "schedule=#{schedule_id} unbound=true"
+    assert {:error, :not_found} = Schedules.get(schedule_id)
+
+    # The record does not keep a schedule_id without a definition.
+    assert {:ok, task} = Conversations.get_group_conversation(group_id, conversation_id)
+    assert task["schedule"]["schedule_id"] == nil
+    assert task["status"] == "cancelled"
+  end
+
+  test "a Task whose Schedule definition is gone gets it rebuilt under the same id", %{
+    group_id: group_id,
+    router: router,
+    worker: worker
+  } do
+    {conversation_id, schedule} = create_scheduled_task(group_id, router, worker)
+    schedule_id = schedule["id"]
+
+    # The definition is lost while the Task still points at it.
+    assert :ok = Schedules.delete(schedule_id)
+    assert {:error, :not_found} = Schedules.get(schedule_id)
+    assert {:ok, task} = Conversations.get_group_conversation(group_id, conversation_id)
+    assert task["schedule"]["schedule_id"] == schedule_id
+
+    assert {:ok, %{"schedule" => %{"schedule_id" => ^schedule_id}}} =
+             TaskSchedules.update_task_schedule(group_id, conversation_id, %{
+               "interval_minutes" => 5
+             })
+
+    assert {:ok, rebuilt} = Schedules.get(schedule_id)
+    assert rebuilt["interval_minutes"] == 5
+    assert rebuilt["payload"]["conversation_id"] == conversation_id
+
+    due = Schedules.next_fire_ms(rebuilt)
+    assert {:ok, %{fired: [^schedule_id], failed: []}} = Schedules.run_once(now: due)
+
+    assert {:ok, messages} =
+             Conversations.list_group_conversation_messages(group_id, conversation_id, limit: 10)
+
+    assert length(messages) == 2
+  end
+
   test "Task receiver rejects a Schedule rebound to another Task", %{
     group_id: group_id,
     router: router,
@@ -1462,7 +1663,7 @@ defmodule SalixCluster.TaskSchedulesTest do
   defp call_task_create(router_id, params, tool_context) do
     args = %{
       "connect_id" => "internal",
-      "params" => params,
+      "params" => Map.put_new(params, "runs_on", %{"kind" => "default"}),
       "tool_context" => tool_context
     }
 

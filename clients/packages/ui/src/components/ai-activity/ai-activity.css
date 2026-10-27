@@ -197,20 +197,43 @@
   color: var(--color-text-quaternary);
 }
 
-@supports ((background-clip: text) or (-webkit-background-clip: text)) and
+@supports ((mask-clip: text) or (-webkit-mask-clip: text)) and
   (color: color-mix(in oklab, black 50%, white)) {
   /* `comma-gradient-shimmer` takes the same sweep on other text that runs
      `useGradientShimmer`. The band takes the fixed brand scale, not the
      themed utility scale, so it sweeps bright in both themes: the dark
-     utility scale runs the other way and would sweep dark. */
+     utility scale runs the other way and would sweep dark.
+
+     The box paints its text colour as a background and masks itself to its
+     glyphs. The band is a layer above it, sized and moved by
+     `useGradientShimmer` with a transform, so the compositor runs the sweep;
+     a `background-position` sweep had the main thread restyle, paint and
+     commit the document at every frame. The band's ends are transparent, so
+     the base colour shows through outside the band.
+
+     The glyphs themselves paint transparent. Glyphs painted in colour and
+     then masked to the same glyphs take their anti-aliasing twice, and every
+     stroke draws visibly thinner than the same text at rest. */
   .comma-ai-activity-text-summary[data-shimmer="true"][data-shimmer-ready="true"],
   .comma-gradient-shimmer[data-shimmer-ready="true"] {
     display: inline-block;
     contain: paint;
     background-color: currentcolor;
+    -webkit-text-fill-color: transparent;
+    -webkit-mask-image: linear-gradient(#000 0 0);
+    -webkit-mask-clip: text;
+    mask-image: linear-gradient(#000 0 0);
+    mask-clip: text;
+  }
+
+  .comma-ai-activity-text-summary[data-shimmer="true"][data-shimmer-ready="true"]::after,
+  .comma-gradient-shimmer[data-shimmer-ready="true"]::after {
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: var(--ai-activity-shimmer-layer-width);
     background-image: linear-gradient(
       var(--ai-activity-shimmer-angle),
-      currentcolor calc(50% - var(--ai-activity-shimmer-spread)),
+      transparent calc(50% - var(--ai-activity-shimmer-spread)),
       color-mix(in oklab, currentcolor 42%, var(--color-brand-300))
         calc(50% - var(--ai-activity-shimmer-spread-mid)),
       var(--color-brand-300) calc(50% - var(--ai-activity-shimmer-spread-core)),
@@ -219,12 +242,11 @@
       var(--color-brand-50) calc(50% + var(--ai-activity-shimmer-spread-core)),
       color-mix(in oklab, currentcolor 42%, var(--color-brand-50))
         calc(50% + var(--ai-activity-shimmer-spread-mid)),
-      currentcolor calc(50% + var(--ai-activity-shimmer-spread))
+      transparent calc(50% + var(--ai-activity-shimmer-spread))
     );
-    background-repeat: no-repeat;
-    background-clip: text;
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
+    content: "";
+    pointer-events: none;
+    transform: translateX(var(--ai-activity-shimmer-start));
   }
 }
 
@@ -426,9 +448,6 @@
 }
 
 .comma-ai-worker-activity {
-  --ai-activity-shimmer-duration: var(--motion-duration-loading-shine);
-  --ai-activity-shimmer-size: 400%;
-
   width: fit-content;
   max-width: 100%;
   color: var(--color-text-tertiary);
@@ -482,24 +501,11 @@
   gap: var(--spacing-xs);
 }
 
+/* While the Worker runs, its line takes the shared loading shine
+   (`.comma-shine`, styles.css) on its own two colours. */
 .comma-ai-worker-activity[data-status="running"] .comma-ai-worker-activity-copy {
-  contain: paint;
-  background-image: linear-gradient(
-    90deg,
-    var(--color-text-tertiary) 0%,
-    var(--color-text-tertiary) 40%,
-    var(--color-text-secondary) 50%,
-    var(--color-text-tertiary) 60%,
-    var(--color-text-tertiary) 100%
-  );
-  background-repeat: no-repeat;
-  background-size: var(--ai-activity-shimmer-size) 100%;
-  background-clip: text;
-  color: transparent;
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  animation: comma-ai-activity-shimmer var(--ai-activity-shimmer-duration) linear
-    infinite;
+  --comma-shiny-text-base: var(--color-text-tertiary);
+  --comma-shiny-text-highlight: var(--color-text-secondary);
 }
 
 .comma-ai-worker-activity[data-status="running"] .comma-ai-worker-activity-copy > * {
@@ -562,34 +568,26 @@
   color: inherit;
 }
 
-@keyframes comma-ai-activity-shimmer {
-  from {
-    background-position: 100% 0;
-  }
-
-  to {
-    background-position: 0% 0;
-  }
-}
-
 @media (forced-colors: active) {
   .comma-gradient-shimmer[data-shimmer-ready="true"],
-  .comma-ai-activity-text-summary[data-shimmer="true"][data-shimmer-ready="true"],
-  .comma-ai-activity-text-summary[data-shimmer="true"]:not([data-shimmer-ready="true"]),
-  .comma-ai-worker-activity[data-status="running"] .comma-ai-worker-activity-copy {
-    background-image: none;
+  .comma-ai-activity-text-summary[data-shimmer="true"],
+  .comma-ai-activity-text-summary[data-shimmer="true"][data-shimmer-ready="true"] {
+    background-color: transparent;
     color: CanvasText;
-    animation: none;
+    -webkit-mask-image: none;
+    mask-image: none;
     -webkit-text-fill-color: currentcolor;
+  }
+
+  .comma-gradient-shimmer[data-shimmer-ready="true"]::after,
+  .comma-ai-activity-text-summary[data-shimmer="true"]::after {
+    display: none;
   }
 }
 
 :root[data-comma-reduced-motion="true"]
-  .comma-ai-activity-text-summary[data-shimmer="true"] {
-  background-image: none;
-  color: var(--color-text-quaternary);
-  animation: none !important;
-  -webkit-text-fill-color: currentcolor;
+  .comma-ai-activity-text-summary[data-shimmer="true"]::after {
+  display: none;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -620,20 +618,7 @@
     transition: none;
   }
 
-  .comma-ai-activity-text-summary[data-shimmer="true"][data-shimmer-ready="true"],
-  .comma-ai-activity-text-summary[data-shimmer="true"]:not(
-      [data-shimmer-ready="true"]
-    ) {
-    background-image: none;
-    color: var(--color-text-quaternary);
-    animation: none !important;
-    -webkit-text-fill-color: currentcolor;
-  }
-
-  .comma-ai-worker-activity[data-status="running"] .comma-ai-worker-activity-copy {
-    background-image: none;
-    color: var(--color-text-tertiary);
-    animation: none !important;
-    -webkit-text-fill-color: currentcolor;
+  .comma-ai-activity-text-summary[data-shimmer="true"]::after {
+    display: none;
   }
 }

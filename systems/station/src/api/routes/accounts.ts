@@ -80,6 +80,8 @@ export const routes = ({ accounts, sharing, overview }: AccountsRouteDeps): Rout
         return ok({ id, overview: await view(r) });
       }),
     ),
+    // The machine's own login signed in on this computer, then used.
+    route("POST", /^\/machine-logins$/, (r) => answer(async (a) => ok({ job: await a.newMachineLogin(input(r), r.viewer, r.lang) }))),
     // A sign-in that makes a profile once it succeeds.
     route("POST", /^\/logins$/, (r) => answer(async (a) => ok(await a.newLogin(input(r), r.viewer, r.lang)))),
     route("PUT", /^\/*automatic-decisions\/*$/, (r) =>

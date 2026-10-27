@@ -103,7 +103,8 @@ defmodule SalixStore.ComputeRuntimeCarrierTest do
         "runtime.input.v1",
         "runtime.event.v1",
         "runtime.auth.v1",
-        "runtime.execution.v1"
+        "runtime.execution.v1",
+        "runtime.future.v9"
       ],
       "input_cursor" => "",
       "event_cursor" => ""

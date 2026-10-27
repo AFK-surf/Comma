@@ -19,9 +19,12 @@ import type {
   ShellProvider,
   SurfaceListProvider,
   TransportStatusProvider,
+  VoiceCallProvider,
   WindowAppearanceProvider,
   WindowsProvider,
 } from "../modules/native/index";
+import type { LocalStationProvider } from "../modules/local-station/index";
+import type { MacAppsProvider } from "../modules/mac-apps/index";
 import type { OnboardingWindowProvider } from "../onboarding-window";
 import type { FilesProvider } from "../modules/files/downloads";
 import type { RecommendationMediaProvider } from "../modules/recommendation-media/index";
@@ -55,6 +58,8 @@ export type NativeCapabilityProviderMap = {
   nativeInfo: NativeInfoProvider;
   appPreferences: AppPreferencesProvider;
   connectorRuntime: ConnectorRuntimeProvider;
+  localStation: LocalStationProvider;
+  macApps: MacAppsProvider;
   windowAppearance: WindowAppearanceProvider;
   notch: NotchProvider;
   surfaces: SurfaceListProvider;
@@ -74,6 +79,7 @@ export type NativeCapabilityProviderMap = {
   computeNode: ComputeNodeProvider;
   chat: NativeChatProvider;
   audioCapture: AudioCaptureProvider;
+  voiceCall: VoiceCallProvider;
   meetingPresence: MeetingPresenceProvider;
   meetingRecorder: MeetingRecorderWindowProvider;
   airDrop: AirDropReceptionProvider;
@@ -95,6 +101,16 @@ export type NativeCapabilityHandlerTypeMap = {
   "connectorRuntime.scope": ConnectorRuntimeProvider["scope"];
   "connectorRuntime.setScope": ConnectorRuntimeProvider["setScope"];
   "connectorRuntime.copyConnectCommand": ConnectorRuntimeProvider["copyConnectCommand"];
+  "localStation.accounts": LocalStationProvider["accounts"];
+  "localStation.setAccountSource": LocalStationProvider["setAccountSource"];
+  "localStation.signIn": LocalStationProvider["signIn"];
+  "localStation.stopSignIn": LocalStationProvider["stopSignIn"];
+  "macApps.state": MacAppsProvider["state"];
+  "macApps.setEnabled": MacAppsProvider["setEnabled"];
+  "macApps.openPrivacySettings": MacAppsProvider["openPrivacySettings"];
+  "macApps.openItem": MacAppsProvider["openItem"];
+  "macApps.icons": MacAppsProvider["icons"];
+  "macApps.calendarEvents": MacAppsProvider["calendarEvents"];
   "appearance.setResolvedTheme": WindowAppearanceProvider["setResolvedTheme"];
   "appearance.fontFamilies": NativeInfoProvider["fontFamilies"];
   "notch.status": NotchProvider["status"];
@@ -164,8 +180,11 @@ export type NativeCapabilityHandlerTypeMap = {
   "computeNode.drain": ComputeNodeProvider["drain"];
   "computeNode.remove": ComputeNodeProvider["remove"];
   "computeNode.abandon": ComputeNodeProvider["abandon"];
+  "computeNode.resetLocalRecord": ComputeNodeProvider["resetLocalRecord"];
   "chat.pickAttachments": NativeChatProvider["pickAttachments"];
   "audioCapture.state": AudioCaptureProvider["state"];
+  "voiceCall.microphone": VoiceCallProvider["microphone"];
+  "voiceCall.played": VoiceCallProvider["played"];
   "audioCapture.sources": AudioCaptureProvider["sources"];
   "audioCapture.microphones": AudioCaptureProvider["microphones"];
   "audioCapture.selectMicrophone": AudioCaptureProvider["selectMicrophone"];
@@ -246,6 +265,19 @@ export function registerGeneratedNativeMainBindings({
       providers.connectorRuntime.setScope(input),
     "connectorRuntime.copyConnectCommand": async (input) =>
       providers.connectorRuntime.copyConnectCommand(input),
+    "localStation.accounts": async (input) => providers.localStation.accounts(input),
+    "localStation.setAccountSource": async (input) =>
+      providers.localStation.setAccountSource(input),
+    "localStation.signIn": async (input) => providers.localStation.signIn(input),
+    "localStation.stopSignIn": async (input) =>
+      providers.localStation.stopSignIn(input),
+    "macApps.state": async (input) => providers.macApps.state(input),
+    "macApps.setEnabled": async (input) => providers.macApps.setEnabled(input),
+    "macApps.openPrivacySettings": async (input) =>
+      providers.macApps.openPrivacySettings(input),
+    "macApps.openItem": async (input) => providers.macApps.openItem(input),
+    "macApps.icons": async (input) => providers.macApps.icons(input),
+    "macApps.calendarEvents": async (input) => providers.macApps.calendarEvents(input),
     "appearance.setResolvedTheme": async (input) =>
       providers.windowAppearance.setResolvedTheme(input),
     "appearance.fontFamilies": async (input) =>
@@ -338,8 +370,12 @@ export function registerGeneratedNativeMainBindings({
     "computeNode.drain": async (input) => providers.computeNode.drain(input),
     "computeNode.remove": async (input) => providers.computeNode.remove(input),
     "computeNode.abandon": async (input) => providers.computeNode.abandon(input),
+    "computeNode.resetLocalRecord": async (input) =>
+      providers.computeNode.resetLocalRecord(input),
     "chat.pickAttachments": async (input) => providers.chat.pickAttachments(input),
     "audioCapture.state": async (input) => providers.audioCapture.state(input),
+    "voiceCall.microphone": async (input) => providers.voiceCall.microphone(input),
+    "voiceCall.played": async (input) => providers.voiceCall.played(input),
     "audioCapture.sources": async (input) => providers.audioCapture.sources(input),
     "audioCapture.microphones": async (input) =>
       providers.audioCapture.microphones(input),

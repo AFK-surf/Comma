@@ -417,6 +417,60 @@ defmodule SalixAgent.IFCCheckTest do
       assert descriptor["scope_id"] == "C_LEGAL"
     end
 
+    test "a batch Task rename reaches every Conversation it names" do
+      args = %{
+        "titles" => [
+          %{"conversation_id" => "cnv_a", "title" => "One"},
+          %{"conversation_id" => "cnv_b", "title" => "Two"},
+          %{"conversation_id" => "cnv_a", "title" => "Again"}
+        ]
+      }
+
+      assert {:egress, %{"kind" => "conversation", "conversation_id" => "cnv_a"}} =
+               Destination.describe("im_api.internal.update_conversation_titles", args, %{})
+
+      assert [{:egress, %{"kind" => "conversation", "conversation_id" => "cnv_b"}}] =
+               Destination.additional_destinations(
+                 "im_api.internal.update_conversation_titles",
+                 args,
+                 %{}
+               )
+    end
+
+    test "a batch Task rename is refused whole when one Conversation may not see it" do
+      Facts.start(fn request ->
+        case request["destination"]["conversation_id"] do
+          "cnv_a" -> {:ok, facts(destination([@dm_a]))}
+          "cnv_b" -> {:ok, facts(destination([@space]))}
+        end
+      end)
+
+      titles = [
+        %{"conversation_id" => "cnv_a", "title" => "One"},
+        %{"conversation_id" => "cnv_b", "title" => "Two"}
+      ]
+
+      check = fn titles ->
+        [decision] =
+          Check.authorize(
+            [
+              {:execute,
+               call("im_api.internal.update_conversation_titles", %{"titles" => titles}, %{
+                 "request" => "src:q-1",
+                 "sources" => ["src:q-1"]
+               })}
+            ],
+            ctx()
+          )
+
+        decision
+      end
+
+      assert {:execute, _} = check.(Enum.take(titles, 1))
+      assert {:blocked, _} = check.(titles)
+      assert {:blocked, _} = check.(Enum.reverse(titles))
+    end
+
     test "an unclassified tool is treated as public egress" do
       assert {:egress, %{"kind" => "public"}} = Destination.describe("env.exec", %{}, %{})
       assert {:egress, %{"kind" => "public"}} = Destination.describe("something.new", %{}, %{})

@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
-import type { ManualTaskStatus } from "@comma/chat-contract";
+import type {
+  ChatConversationFile,
+  ChatTaskRunChoice,
+  ManualTaskStatus,
+} from "@comma/chat-contract";
 import type {
   ChatChannel,
   ChatSendOptions,
@@ -105,10 +109,19 @@ export function useConversation(
         channel?.acceptTaskReview(reviewVersion),
       setTaskStatus: (status: ManualTaskStatus, expectedUpdatedAt: number) =>
         channel?.setTaskStatus(status, expectedUpdatedAt),
+      setTaskRun: (run: ChatTaskRunChoice) =>
+        channel?.setTaskRun?.(run) ??
+        Promise.reject(new Error("This chat cannot switch its Task's model.")),
       attachFiles: (
         files: Parameters<ChatChannel["attachFiles"]>[0],
         questionMessageId?: string
       ) => channel?.attachFiles(files, questionMessageId),
+      ...(channel?.attachConversationFiles
+        ? {
+            attachConversationFiles: (files: ChatConversationFile[]) =>
+              channel.attachConversationFiles?.(files),
+          }
+        : {}),
       transcodesImages: channel?.transcodesImages === true,
       ...(channel?.pickAttachments
         ? { pickAttachments: () => channel.pickAttachments?.() }

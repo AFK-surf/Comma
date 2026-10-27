@@ -1,16 +1,38 @@
-.comma-logo-animation {
+/* The mark is HTML layers over static SVG: the scene zooms, the next comma
+   grows, and both are transforms the compositor plays. The root clips them to
+   the mark's boundary, a circle whose lower-right quarter is a 335-unit corner
+   of the 730-unit view box. A caller's class sizes and colours the mark over
+   these defaults, whatever the stylesheet order. */
+:where(.comma-logo-animation) {
   --comma-logo-cycle: 3.6s;
 
-  block-size: auto;
-  color: var(--color-text-primary);
+  position: relative;
   display: block;
+  inline-size: var(--comma-logo-size, 32px);
+  block-size: auto;
+  aspect-ratio: 1;
   max-inline-size: min(80vw, 35rem);
   overflow: hidden;
+  border-radius: 50% 50% 45.8904% 50%;
+  color: var(--color-text-primary);
 }
 
+.comma-logo-animation__scene,
 .comma-logo-animation__outer,
-.comma-logo-animation__comma,
-.comma-logo-animation__nested-comma-path {
+.comma-logo-animation__nested-comma,
+.comma-logo-animation svg {
+  position: absolute;
+  inset: 0;
+}
+
+.comma-logo-animation svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.comma-logo-animation path {
   fill: currentColor;
 }
 
@@ -18,49 +40,93 @@
   fill: var(--color-bg-primary);
 }
 
-.comma-logo-animation__scene,
-.comma-logo-animation__nested-comma {
+/* The cutout's aperture grows in the mask, in view-box units. */
+.comma-logo-animation__aperture {
   transform-box: view-box;
-}
-
-.comma-logo-animation__scene {
-  animation: var(--comma-logo-zoom-animation) var(--comma-logo-cycle) linear infinite;
-  transform: matrix(1, 0, 0, 1, 0, 0);
-  transform-origin: 0 0;
-}
-
-.comma-logo-animation__nested-comma {
-  animation: var(--comma-logo-nested-animation) var(--comma-logo-cycle) linear infinite;
-  transform: scale(0);
   transform-origin: 606.44863px 595.56644px;
 }
 
-.comma-logo-animation__scene,
+/* The default cycle (a 2s zoom, then a 1.4s hold) is one pair of keyframes
+   shared by every mark. A mark with its own timing names its own keyframes
+   through the two custom properties; the others must not, because adding or
+   removing @keyframes restyles every animated element in the document.
+   The zoom eases on --motion-loop-logo-zoom, its curve moving at most 60 times
+   a second; the holds around it do not move. The zoom's end is the view box's
+   matrix(2.7756653992, 0, 0, 2.7756653992, -1140.7984790875, -1118.5931558935)
+   as a fraction of the mark. */
+@keyframes comma-logo-zoom {
+  0% {
+    transform: translate(0, 0) scale(1);
+  }
+
+  58.8235% {
+    transform: translate(-156.2737643%, -153.2319392%) scale(2.7756653992);
+  }
+
+  100% {
+    transform: translate(-156.2737643%, -153.2319392%) scale(2.7756653992);
+  }
+}
+
+@keyframes comma-logo-nested {
+  0% {
+    transform: scale(0);
+  }
+
+  0.5882% {
+    transform: scale(0);
+  }
+
+  58.8235% {
+    transform: scale(1);
+  }
+
+  100% {
+    transform: scale(1);
+  }
+}
+
+.comma-logo-animation__scene {
+  animation: var(--comma-logo-zoom-animation, comma-logo-zoom) var(--comma-logo-cycle)
+    var(--motion-loop-logo-zoom) infinite;
+  transform: translate(0, 0) scale(1);
+  transform-origin: 0 0;
+}
+
+/* The next comma grows from (606.44863, 595.56644) of the view box. */
 .comma-logo-animation__nested-comma {
+  transform-origin: 83.0751548% 81.5844438%;
+}
+
+.comma-logo-animation__nested-comma,
+.comma-logo-animation__aperture {
+  transform: scale(0);
+  animation: var(--comma-logo-nested-animation, comma-logo-nested)
+    var(--comma-logo-cycle) var(--motion-loop-logo-zoom) infinite;
+}
+
+.comma-logo-animation__scene,
+.comma-logo-animation__nested-comma,
+.comma-logo-animation__aperture {
   animation-delay: var(--comma-logo-delay, 0s);
 }
 
 .comma-logo-animation[data-paused="true"] .comma-logo-animation__scene,
-.comma-logo-animation[data-paused="true"] .comma-logo-animation__nested-comma {
+.comma-logo-animation[data-paused="true"] .comma-logo-animation__nested-comma,
+.comma-logo-animation[data-paused="true"] .comma-logo-animation__aperture {
   animation-play-state: paused;
 }
 
 @media (prefers-reduced-motion: reduce) {
   .comma-logo-animation__scene,
-  .comma-logo-animation__nested-comma {
+  .comma-logo-animation__nested-comma,
+  .comma-logo-animation__aperture {
     animation: none;
-  }
-
-  .comma-logo-animation__nested-comma {
-    transform: scale(0);
   }
 }
 
 :root[data-comma-reduced-motion="true"] .comma-logo-animation__scene,
-:root[data-comma-reduced-motion="true"] .comma-logo-animation__nested-comma {
+:root[data-comma-reduced-motion="true"] .comma-logo-animation__nested-comma,
+:root[data-comma-reduced-motion="true"] .comma-logo-animation__aperture {
   animation: none;
-}
-
-:root[data-comma-reduced-motion="true"] .comma-logo-animation__nested-comma {
-  transform: scale(0);
 }

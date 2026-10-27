@@ -1,4 +1,4 @@
-FROM golang:1.24.6-bookworm AS build
+FROM golang:1.26.10-bookworm AS build
 ENV CGO_ENABLED=0
 WORKDIR /src
 

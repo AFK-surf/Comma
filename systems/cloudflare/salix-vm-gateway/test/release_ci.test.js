@@ -1,5 +1,5 @@
 import { describe, expect, test, vi } from "vitest";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -294,7 +294,7 @@ describe("release CI helpers", () => {
         "image-release-drain", "--maintenance-id", "sandbox-image-123-staging",
         "--application-id", "app-staging", "--profile-key", "cf-standard-2",
         "--deadline-ms", String(Date.now() + 75 * 60_000)], {
-        encoding: "utf8", timeout: 10_000,
+        encoding: "utf8",
         env: { ...process.env, CLOUDFLARE_ACCOUNT_ID: "test-account", CLOUDFLARE_API_TOKEN: "test-token",
           SALIX_VM_GATEWAY_BASE_URL: "https://gateway.test", SALIX_VM_GATEWAY_SECRET: "test-secret",
           SALIX_CONFIG_JSON: JSON.stringify({ web: { api_base_url: "https://salix.test", api_token: "test-token" } }) },
@@ -308,6 +308,74 @@ describe("release CI helpers", () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  test.each(["recovered", "unsettled", "timeout"])(
+    "the release drain recovers a stopped waking Container: %s", (outcome) => {
+      const root = mkdtempSync(join(tmpdir(), "comma-waking-drain-"));
+      const preload = join(root, "provider.mjs");
+      const provider = (outcome) => {
+        let now = 1_000, recovering = false;
+        Date.now = () => now;
+        globalThis.setTimeout = (callback, delay) => {
+          now += delay;
+          return queueMicrotask(callback);
+        };
+        const owner = { provider: "cloudflare", group_id: "group-waking",
+          resource_name: "salix-waking", profile_key: "cf-standard-1",
+          status: "waking", gateway_attempt_count: 1, archive_recorded: false };
+        globalThis.fetch = async (input, options = {}) => {
+          const url = new URL(input);
+          console.log(JSON.stringify({ path: url.pathname, method: options.method || "GET",
+            ...(options.body ? { body: JSON.parse(options.body) } : {}) }));
+          if (url.pathname.endsWith("/image-release/workloads")) {
+            const done = recovering && outcome !== "timeout";
+            const current = done ? { ...owner, status: "archived", archive_recorded: true,
+              gateway_attempt_count: outcome === "unsettled" ? 1 : 0 } : owner;
+            return Response.json({ data: [current,
+              { ...owner, group_id: "other-profile", profile_key: "cf-standard-2",
+                resource_name: "salix-other" }], next_cursor: null });
+          }
+          if (url.pathname.endsWith("/applications/app-staging/instances")) {
+            return Response.json({ success: true, result_info: { next_page_token: null }, result: {
+              instances: [{ id: "stopped", current_placement: { status: { container_status: "stopped" } } }],
+              durable_objects: [{ name: owner.resource_name, deployment_id: "stopped" }],
+            } });
+          }
+          if (url.pathname.endsWith("/image-release/archive") && options.method === "POST") {
+            recovering = true;
+            return Response.json({ status: "started" });
+          }
+          throw new Error("Unexpected request: " + url.pathname);
+        };
+      };
+      writeFileSync(preload, "(" + provider.toString() + ")(" + JSON.stringify(outcome) + ");");
+      try {
+        const result = spawnSync(process.execPath, ["--import", preload,
+          new URL("../scripts/release-ci.mjs", import.meta.url).pathname,
+          "image-release-drain", "--maintenance-id", "sandbox-image-123-staging",
+          "--application-id", "app-staging", "--profile-key", "cf-standard-1",
+          "--deadline-ms", "61000"], {
+          encoding: "utf8",
+          env: { ...process.env, CLOUDFLARE_ACCOUNT_ID: "test-account", CLOUDFLARE_API_TOKEN: "test-token",
+            SALIX_VM_GATEWAY_BASE_URL: "https://gateway.test",
+            SALIX_CONFIG_JSON: JSON.stringify({ web: { api_base_url: "https://salix.test", api_token: "test-token" } }) },
+        });
+        expect(result.error).toBeUndefined();
+        const requests = result.stdout.split("\n").filter((line) => line.startsWith("{")).map(JSON.parse);
+        const recoveries = requests.filter((request) => request.method === "POST");
+        expect(recoveries).toEqual(Array(outcome === "timeout" ? 2 : 1).fill({
+          path: "/v1/admin/vm/image-release/archive", method: "POST",
+          body: { maintenance_id: "sandbox-image-123-staging", group_id: "group-waking",
+            resource_name: "salix-waking", profile_key: "cf-standard-1" },
+        }));
+        expect(result.status, result.stderr).toBe(outcome === "recovered" ? 0 : 1);
+        if (outcome === "unsettled") expect(result.stderr).toContain("has an unsettled Gateway start");
+        if (outcome === "timeout") expect(result.stderr).toContain("did not settle within 75 minutes");
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
 
   test("a probe that keeps running disables keepAlive and does not wait for cleanup", async () => {
     vi.useFakeTimers();

@@ -5,6 +5,7 @@ export {
   PluginDetailSection,
   PluginInstalledCard,
   PluginListItem,
+  PluginResourceRow,
   PluginShowAll,
 } from "./Plugins";
 export type {

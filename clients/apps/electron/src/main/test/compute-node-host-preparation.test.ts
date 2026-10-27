@@ -573,7 +573,7 @@ describe("Host preparation", () => {
     expect(fetcher).toHaveBeenCalledTimes(1);
   });
 
-  it("stops waiting for another preparer at the download bound", async () => {
+  it("stops waiting for another preparer at the caller's overall deadline", async () => {
     const config = resolveHostConfiguration(
       "prod",
       { COMMA_VMM_DOWNLOAD_URL: "https://example.test/Host.zip" },
@@ -596,10 +596,11 @@ describe("Host preparation", () => {
     const phases: HostPreparationState[] = [];
     const waiting = new AgentVMMHostPreparation(config, async () => "", fetcher, clock);
     try {
-      await expect(waiting.ensure((state) => phases.push(state))).rejects.toThrow(
-        "still preparing"
-      );
-      expect(now).toBeGreaterThanOrEqual(15 * 60_000);
+      await expect(
+        waiting.ensure((state) => phases.push(state), { deadline: 20 * 60_000 })
+      ).rejects.toThrow("still preparing");
+      expect(now).toBeGreaterThanOrEqual(20 * 60_000);
+      expect(now).toBeLessThan(22 * 60_000);
       expect(fetcher).not.toHaveBeenCalled();
       expect(phases.at(-1)).toMatchObject({ phase: "failed" });
     } finally {
@@ -670,9 +671,18 @@ describe("Host preparation", () => {
     let runningBundle = "downloaded-host";
     let failUpdate = true;
     const updates: string[][] = [];
+    const guestBuilds: { command: string; args: string[]; cwd?: string }[] = [];
     const run: HostCommand = async (command, args, _stdin, _timeout, options) => {
       if (args[0] === "publish-host") return publishFixture(config, command, args);
       if (args[0] === "maintenance-status") return "null";
+      if (command === "docker")
+        throw new Error("the Guest build runs build.sh directly");
+      if (command.endsWith(join("build", "guest", "build.sh")))
+        guestBuilds.push({
+          command,
+          args,
+          ...(options?.cwd ? { cwd: options.cwd } : {}),
+        });
       if (command === "make") {
         builds++;
         const output = options!.env!.OUTPUT_DIRECTORY!;
@@ -695,6 +705,13 @@ describe("Host preparation", () => {
     expect(runningBundle).toBe(config.appPath);
     await expect(first.rebuild(() => {})).rejects.toThrow("Host restart interrupted");
     expect(builds).toBe(2);
+    // The source's own build script runs `docker buildx` on this Mac; no Linux container wraps it.
+    expect(guestBuilds).toHaveLength(2);
+    expect(guestBuilds[0]).toEqual({
+      command: join(config.sourcePath!, "build", "guest", "build.sh"),
+      args: [expect.stringMatching(/guest$/), "development", "runtime"],
+      cwd: config.sourcePath,
+    });
     const restarted = new AgentVMMHostPreparation(config, run);
     expect(updates).toHaveLength(1);
     failUpdate = false;
@@ -724,6 +741,109 @@ describe("Host preparation", () => {
     await expect(readFile(config.lifecyclePath)).rejects.toMatchObject({
       code: "ENOENT",
     });
+  });
+
+  it("resumes an interrupted download with a Range request after it stops receiving data", async () => {
+    const config = resolveHostConfiguration(
+      "prod",
+      { COMMA_VMM_DOWNLOAD_URL: "https://example.test/Host.zip" },
+      await temporary()
+    );
+    const bytes = await archiveFixture();
+    const half = Math.floor(bytes.length / 2);
+    const timers: { ms: number; run: () => void; cancelled: boolean }[] = [];
+    const clock = {
+      now: () => 0,
+      setTimer: (ms: number, run: () => void) => {
+        const timer = { ms, run, cancelled: false };
+        timers.push(timer);
+        return () => {
+          timer.cancelled = true;
+        };
+      },
+    };
+    const requests: Record<string, string>[] = [];
+    const fetcher = vi.fn(async (_url: URL | RequestInfo, init?: RequestInit) => {
+      const headers = (init?.headers ?? {}) as Record<string, string>;
+      requests.push(headers);
+      if (requests.length === 1)
+        // Half the archive, then nothing until the request is aborted.
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(new Uint8Array(bytes.subarray(0, half)));
+              init!.signal!.addEventListener("abort", () =>
+                controller.error(init!.signal!.reason)
+              );
+            },
+          }),
+          { headers: { etag: '"v1"' } }
+        );
+      return new Response(new Uint8Array(bytes.subarray(half)), {
+        status: 206,
+        headers: {
+          "content-range": `bytes ${half}-${bytes.length - 1}/${bytes.length}`,
+        },
+      });
+    });
+    const run = (command: string, args: string[]) =>
+      publishFixture(config, command, args);
+    const preparation = new AgentVMMHostPreparation(config, run, fetcher, clock);
+    const first = preparation.ensure(() => {});
+    const stopped = expect(first).rejects.toThrow("stopped receiving data");
+    const partial = join(config.directory, ".prepared", "Host.zip.part");
+    await vi.waitFor(async () => expect((await readFile(partial)).length).toBe(half));
+    // The idle bound that the last received chunk armed ends the attempt; no total timeout applies.
+    const idle = timers
+      .filter((timer) => timer.ms === 60_000 && !timer.cancelled)
+      .at(-1)!;
+    idle.run();
+    await stopped;
+    await preparation.ensure(() => {});
+    expect(requests[0]).toEqual({});
+    expect(requests[1]).toEqual({ range: `bytes=${half}-`, "if-range": '"v1"' });
+    expect(await readFile(config.lifecyclePath, "utf8")).toContain("#!/bin/sh");
+  });
+
+  it("runs the Host disk preflight before installation, and skips it on a Host without the command", async () => {
+    const config = resolveHostConfiguration(
+      "prod",
+      { COMMA_VMM_DOWNLOAD_URL: "https://example.test/Host.zip" },
+      await temporary()
+    );
+    const bytes = await archiveFixture();
+    let disk: string | undefined;
+    const preflight = () => {
+      if (disk === undefined) throw new Error("unknown command preflight");
+      return disk;
+    };
+    const run = vi.fn(async (command: string, args: string[]) =>
+      args[0] === "preflight" ? preflight() : publishFixture(config, command, args)
+    );
+    const preparation = new AgentVMMHostPreparation(
+      config,
+      run,
+      vi.fn(async () => downloadResponse(bytes))
+    );
+    await preparation.ensure(() => {});
+    disk = JSON.stringify({
+      ok: false,
+      issues: [
+        { code: "insufficient_disk", requiredBytes: 80 * 1024 ** 3, availableBytes: 1 },
+      ],
+    });
+    await expect(preparation.ensure(() => {})).rejects.toMatchObject({
+      requiredBytes: 80 * 1024 ** 3,
+      availableBytes: 1,
+      message: "Agent VMM Host needs 80 GB of free disk space.",
+    });
+    expect(preparation.state()).toMatchObject({ phase: "failed" });
+    expect(run).toHaveBeenCalledWith(
+      config.lifecyclePath,
+      ["preflight", "--json"],
+      undefined,
+      expect.any(Number)
+    );
   });
 
   it("distinguishes a missing lifecycle helper from an installed but unreadable runtime", async () => {

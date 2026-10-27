@@ -58,13 +58,14 @@ Deployments use their own secret configuration, not this file.
 Deploy image changes through the mainline release flow. A source change does not update an existing cloud resource.
 For a Cloudflare VM, configure Cloudflare for the tenant and turn on the Group's Cloud VM switch.
 
-A Group whose BFT Project has an Agent VMM Host (its Mac mini Runner) gets its Cloud VM on that Host. Other Groups get it on Cloudflare.
-No tenant setting changes this. Salix creates no Cloud VM for a Group with more than one Host that is not revoked.
-A Project admin chooses the Runner on the Project's Devices page before the VM exists.
-A Project has at most one install request or Host that is not revoked. BFT refuses another with `project_runner_bound`. Remove the current Runner first.
-Salix creates the VM on the Host only while that Host is connected to Salix. The Runner's BFT heartbeat does not show this.
-Otherwise `cloud_vm.start` fails with `runner_offline`. Start the Host, or remove the Runner from the Project. Salix does not fall back to Cloudflare.
-The provider is fixed when the VM record is created. Salix does not move an existing VM.
+An authorized, enabled Group Host prepares a VMM Station in its Compute Environment.
+Comma and BFT use the same preparation path. BFT's Devices page manages its Project's Runner installation.
+The Host must connect to Salix; a Runner heartbeat alone does not establish that connection.
+Multiple eligible Host registrations require an explicit placement decision.
+New Group Cloud VMs use Cloudflare. Existing Cloud VM records retain their provider and archive.
+VMM Station preparation leaves the Group's Cloudflare Station and accepted Tasks in place.
+Automatic runtime Tasks prefer VMM, the requester's authorized computer, then enabled Cloudflare.
+Explicit Task locations keep their target. Unknown invitation outcomes cannot switch machines.
 
 An idle Cloudflare Workload tries an archive before it stops. Its disk follows the [Cloud VM data policy](compute-devices.md#cloud-vm-data-policy).
 Command dispatch wakes the exact Group VM only with the exact wake parameters from `device.get`. Aliases, other devices, and unknown environment IDs cannot wake it.
@@ -93,9 +94,8 @@ Settings show the source, stage, and errors. A failed source build never falls b
 The local backend needs the [local VMM Gateway](#local-vmm-gateway).
 The published VMM requires an HTTPS exchange endpoint. The local VMM source also permits HTTP exchange on localhost, 127.0.0.1, or ::1. Gateway TLS stays required.
 
-Preparation starts only after an explicit action and never retries automatically.
-A Comma restart reads state but does not resume installation.
-Use **Continue setup** to continue enrollment or retry preparation. Use **Rebuild Host** to prepare changed source.
+Preparation starts after an explicit enable. Main then continues it by itself, also after a Comma restart, within a bounded budget and deadline.
+Use **Rebuild Host** to prepare changed source.
 A rebuild uses the VMM update operation to replace and restart the Host. An explicit retry resumes an interrupted update before it builds another version.
 VMM owns runtime replacement and its recovery records.
 A whole-Host restart interrupts running work across all registrations on that Host.

@@ -13,6 +13,32 @@ defmodule SalixIM.RouterConversationLogTest do
     def notify_conversation(_, _), do: :ok
   end
 
+  defmodule DeliveryRecorder do
+    def record(%{boundary: :delivery} = fact) do
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.fetch_env!(:salix_im, :router_delivery_test_pid),
+        {:delivery_attempt, fact}
+      )
+
+      :ok
+    end
+
+    def record(_), do: :ok
+  end
+
+  defmodule RetiredDuringAdmission do
+    defdelegate prefetch(agent_id), to: SalixIM.ConversationSource
+    defdelegate binding(agent_id, source), to: SalixIM.ConversationSource
+    defdelegate batch(binding, progress), to: SalixIM.ConversationSource
+    defdelegate reject(binding, message, reason), to: SalixIM.ConversationSource
+    defdelegate retire(binding), to: SalixIM.ConversationSource
+
+    def entry(binding, message) do
+      SalixAgent.TestSupport.RetiredSessionFixture.put!(binding.agent, binding.session_id)
+      SalixIM.ConversationSource.entry(binding, message)
+    end
+  end
+
   defmodule ObservedLLM do
     def complete(messages, tools) do
       SystemsRuntime.Proc.send(
@@ -38,6 +64,29 @@ defmodule SalixIM.RouterConversationLogTest do
         5_000 -> {:error, :test_timeout}
       end
     end
+  end
+
+  # The test's AgentReplyTask timeout. Production uses 120 s.
+  @reply_task_timeout_ms 4_000
+
+  # A local-file import that spends its whole read lease (half the reply-task
+  # timeout, as 60 s is of 120 s in production) and fails retryably, as a large
+  # upload over a slow Connector does.
+  defmodule SlowLocalFileSource do
+    @import_ms 2_000
+
+    defdelegate prefetch(agent_id), to: SalixIM.ConversationSource
+    defdelegate binding(agent_id, source), to: SalixIM.ConversationSource
+    defdelegate batch(binding, progress), to: SalixIM.ConversationSource
+    defdelegate reject(binding, message, reason), to: SalixIM.ConversationSource
+    defdelegate retire(binding), to: SalixIM.ConversationSource
+
+    def entry(_binding, %{"content" => [%{"text" => "slow attachment"}]}) do
+      SystemsClock.sleep(@import_ms)
+      {:error, :local_file_unavailable, true}
+    end
+
+    def entry(binding, message), do: SalixIM.ConversationSource.entry(binding, message)
   end
 
   defmodule TelegramPhotoAPI do
@@ -150,12 +199,9 @@ defmodule SalixIM.RouterConversationLogTest do
     {:ok, last} =
       RouterConversationInput.append_user_message(ctx.group, %{"content" => "third request"})
 
-    settle()
-
-    {:ok, queued} =
-      InternalSessionStore.read(ctx.agent["agent_id"], ctx.agent["router_session_id"])
-
-    assert source_progress(queued)["seq"] == last["seq"]
+    # Admission runs on retries and ownership timers: settle through them
+    # until the Router holds the suffix.
+    queued = settled_session(ctx, &(source_progress(&1)["seq"] == last["seq"]))
 
     refute Enum.any?(
              InternalSession.export(queued).messages,
@@ -222,17 +268,17 @@ defmodule SalixIM.RouterConversationLogTest do
     {:ok, first} =
       RouterConversationInput.append_user_message(ctx.group, %{"content" => "first request"})
 
-    settle()
-
-    {:ok, waiting} =
-      InternalSessionStore.read(ctx.agent["agent_id"], ctx.agent["router_session_id"])
+    # The session lands through ownership and admission retries, which wait
+    # on the clock: settle through them until the backoff is recorded.
+    waiting =
+      settled_session(ctx, fn session ->
+        Enum.any?(InternalSession.get(session, :events), fn event ->
+          event["kind"] == "llm_call_failed" and
+            String.contains?(inspect(event), "dependency_saturated")
+        end)
+      end)
 
     assert source_progress(waiting)["seq"] == first["seq"]
-
-    assert Enum.any?(InternalSession.get(waiting, :events), fn event ->
-             event["kind"] == "llm_call_failed" and
-               String.contains?(inspect(event), "dependency_saturated")
-           end)
 
     {:ok, _report} =
       RouterConversationInput.append_provider_input(ctx.group, "capacity-report", %{
@@ -251,12 +297,11 @@ defmodule SalixIM.RouterConversationLogTest do
     {:ok, last} =
       RouterConversationInput.append_user_message(ctx.group, %{"content" => "second request"})
 
-    settle()
-
-    {:ok, queued} =
-      InternalSessionStore.read(ctx.agent["agent_id"], ctx.agent["router_session_id"])
-
-    assert source_progress(queued)["seq"] == last["seq"]
+    queued =
+      settled_session(ctx, fn session ->
+        source_progress(session)["seq"] == last["seq"] and
+          InternalSession.input_dedupe_member?(session, "capacity-report")
+      end)
 
     for message <- [first, last],
         do: assert(InternalSession.input_dedupe_member?(queued, source_id(ctx, message)))
@@ -266,8 +311,7 @@ defmodule SalixIM.RouterConversationLogTest do
     refute_received {:model_computing, _, _}
 
     SalixAgent.DependencyJob.cancel(occupied)
-    settle()
-    assert_received {:model_computing, first_model, messages}
+    settle_receive({:model_computing, first_model, messages})
     assert Enum.any?(messages, &String.ends_with?(&1[:content] || "", "first request"))
     refute Enum.any?(messages, &String.ends_with?(&1[:content] || "", "second request"))
 
@@ -333,6 +377,36 @@ defmodule SalixIM.RouterConversationLogTest do
              message["seq"]
   end
 
+  test "a message whose admission keeps failing slowly is rejected instead of blocking the Conversation",
+       ctx do
+    previous_timeout = SystemsRuntime.get_env(:salix_agent, :agent_reply_task_timeout_ms)
+    SystemsRuntime.put_env(:salix_agent, :agent_reply_task_timeout_ms, @reply_task_timeout_ms)
+
+    on_exit(fn ->
+      if is_nil(previous_timeout),
+        do: SystemsRuntime.delete_env(:salix_agent, :agent_reply_task_timeout_ms),
+        else: SystemsRuntime.put_env(:salix_agent, :agent_reply_task_timeout_ms, previous_timeout)
+    end)
+
+    SystemsRuntime.put_env(:salix_agent, :conversation_source_mod, SlowLocalFileSource)
+    SystemsRuntime.put_env(:salix_im, :agent_delivery_mod, SalixIM.TestSupport.AgentDelivery)
+
+    {:ok, slow} =
+      RouterConversationInput.append_user_message(ctx.group, %{
+        "content" => [%{"type" => "text", "text" => "slow attachment"}]
+      })
+
+    {:ok, next} =
+      RouterConversationInput.append_user_message(ctx.group, %{
+        "content" => [%{"type" => "text", "text" => "message after the attachment"}]
+      })
+
+    session = await_source(ctx, next["seq"])
+
+    assert InternalSession.input_dedupe_member?(session, source_id(ctx, next))
+    refute InternalSession.input_dedupe_member?(session, source_id(ctx, slow))
+  end
+
   test "reset carries the admitted frontier and admits only the new suffix", ctx do
     {:ok, first} =
       RouterConversationInput.append_user_message(
@@ -390,6 +464,37 @@ defmodule SalixIM.RouterConversationLogTest do
 
     refute InternalSession.input_dedupe_member?(new_session, old_source)
     assert InternalSession.input_dedupe_member?(new_session, new_source)
+  end
+
+  test "reset replaces a retired Router Session and resumes Conversation delivery", ctx do
+    agent_id = ctx.agent["agent_id"]
+    old_session_id = ctx.agent["router_session_id"]
+    SalixAgent.TestSupport.RetiredSessionFixture.put!(ctx.agent, old_session_id)
+
+    assert {:ok, updated} =
+             AgentActor.switch_router_session(agent_id, ctx.agent["tenant_id"], old_session_id)
+
+    new_session_id = updated["router_session_id"]
+    refute new_session_id == old_session_id
+    assert {:ok, session} = InternalSessionStore.read(agent_id, new_session_id)
+    assert InternalSession.conversation_sources(session) == %{}
+
+    SystemsRuntime.put_env(:salix_agent, :conversation_source_mod, ConversationSource)
+
+    {:ok, message} =
+      RouterConversationInput.append_user_message(ctx.group, %{
+        "content" => [%{"type" => "text", "text" => "after retired Router reset"}]
+      })
+
+    assert :ok = AgentActor.notify_conversation(agent_id, source_ref(ctx))
+    new_ctx = %{ctx | agent: Map.put(ctx.agent, "router_session_id", new_session_id)}
+    session = await_source(new_ctx, message["seq"])
+    assert InternalSession.input_dedupe_member?(session, source_id(new_ctx, message))
+
+    assert {:ok, %{"read_only" => true}} =
+             SalixAgent.RetiredSessions.get_summary(ctx.agent, old_session_id)
+
+    assert {:error, :not_found} = InternalSessionStore.read(agent_id, old_session_id)
   end
 
   test "recovery publishes a prepared append after its tail write fails", ctx do
@@ -455,6 +560,163 @@ defmodule SalixIM.RouterConversationLogTest do
     assert {:ok, :pending} = ConversationSource.recover(new)
     await_source(ctx, 2)
     assert :ok = ConversationSource.recover(new)
+  end
+
+  for evidence <- [:history, :birth_marker] do
+    @retired_evidence evidence
+    test "a Worker with retired #{evidence} stops consumption and completes log recovery", ctx do
+      {worker, source, session_id} = worker_source(ctx)
+
+      case @retired_evidence do
+        :history ->
+          SalixAgent.TestSupport.RetiredSessionFixture.put!(worker, session_id)
+
+        :birth_marker ->
+          assert {:ok, _} =
+                   S3.put(
+                     Keys.agent_session_birth(worker["agent_id"], session_id),
+                     Jason.encode!(%{"runtime" => "external"})
+                   )
+      end
+
+      append_worker_command(source)
+      SystemsRuntime.Test.put_env(:salix_agent, :conversation_source_mod, ConversationSource)
+
+      SystemsRuntime.Test.put_env(
+        :salix_im,
+        :agent_delivery_mod,
+        SalixIM.TestSupport.AgentDelivery
+      )
+
+      assert :ok = AgentActor.notify_conversation(worker["agent_id"], source)
+      settle()
+      assert_retired_source_recovered(worker, source, session_id)
+      settle_refute_receive({:delivery_attempt, _}, 6_000)
+
+      assert {:ok, %{"source_progress" => %{"status" => "retired"}}} =
+               SalixIM.Conversations.group_conversation_delivery_status(
+                 source.group_id,
+                 source.conversation_id,
+                 participant_id: source.participant_id
+               )
+
+      case @retired_evidence do
+        :history ->
+          assert {:ok, %{"session_id" => ^session_id, "read_only" => true}} =
+                   SalixAgent.RetiredSessions.get_summary(worker, session_id)
+
+        :birth_marker ->
+          assert {:ok, :retired} = SalixAgent.SessionBirth.side(worker["agent_id"], session_id)
+      end
+    end
+  end
+
+  test "a failed retirement probe leaves recovery pending until storage answers", ctx do
+    {worker, source, session_id} = worker_source(ctx)
+    SalixAgent.TestSupport.RetiredSessionFixture.put!(worker, session_id)
+    append_worker_command(source)
+    SystemsRuntime.Test.put_env(:salix_im, :agent_delivery_mod, SalixIM.TestSupport.AgentDelivery)
+
+    key = Keys.agent_external_runtime_session(worker["agent_id"], session_id)
+    S3.Fake.blackhole({:fail, 503, :head, key})
+    on_exit(fn -> S3.Fake.clear_blackhole() end)
+
+    assert {:error, _} = SalixAgent.ConversationConsumer.progress(worker["agent_id"], session_id)
+
+    assert {:ok, %{"source_progress" => %{"status" => "unavailable"}}} =
+             SalixIM.Conversations.group_conversation_delivery_status(
+               source.group_id,
+               source.conversation_id,
+               participant_id: source.participant_id
+             )
+
+    assert {:ok, candidates} = SalixStore.ConversationLogRecovery.claim(8)
+    candidate = Enum.find(candidates, &(&1.conversation_id == source.conversation_id))
+    assert {:ok, :pending} = ConversationSource.recover(candidate)
+
+    S3.Fake.clear_blackhole()
+    assert :ok = ConversationSource.recover(candidate)
+  end
+
+  test "retirement during admission stops after one stage without a rejection or retry", ctx do
+    {worker, source, session_id} = worker_source(ctx)
+    append_worker_command(source)
+    SystemsRuntime.Test.put_env(:salix_agent, :conversation_source_mod, RetiredDuringAdmission)
+    SystemsRuntime.Test.put_env(:salix_im, :agent_delivery_mod, SalixIM.TestSupport.AgentDelivery)
+
+    assert :ok = AgentActor.notify_conversation(worker["agent_id"], source)
+    settle_receive({:delivery_attempt, %{session_id: ^session_id}})
+    settle()
+    assert_retired_source_recovered(worker, source, session_id)
+    settle_refute_receive({:delivery_attempt, _}, 6_000)
+  end
+
+  defp worker_source(ctx) do
+    SystemsRuntime.Test.shared()
+    SystemsRuntime.Test.put_env(:salix_agent, :event_archive_mod, DeliveryRecorder)
+
+    worker =
+      SalixAgent.TestSupport.create_control_agent_in_group!(
+        ctx.agent["tenant_id"],
+        ctx.group,
+        %{"role" => "worker", "name" => "Worker", "runtime_config" => %{"kind" => "internal"}}
+      )
+
+    assert {:ok, conversation} =
+             SalixIM.ConversationInput.create_group_conversation(ctx.group, %{
+               "kind" => "user_chat",
+               "title" => "Worker input",
+               "participants" => [
+                 %{"actor_type" => "user", "user_id" => "current"},
+                 %{"actor_type" => "agent", "agent_id" => worker["agent_id"]}
+               ]
+             })
+
+    assert {:ok, %{"participants" => participants}} =
+             SalixIM.Conversations.list_group_conversation_participants(
+               ctx.group,
+               conversation["conversation_id"]
+             )
+
+    participant = Enum.find(participants, &(&1["actor_type"] == "agent"))
+
+    {worker,
+     %{
+       group_id: ctx.group,
+       conversation_id: conversation["conversation_id"],
+       participant_id: participant["participant_id"]
+     }, participant["payload"]["session_id"]}
+  end
+
+  defp append_worker_command(source) do
+    assert {:ok, _} =
+             SalixIM.ConversationServer.append_group_conversation_message(
+               source.group_id,
+               source.conversation_id,
+               %{
+                 "content" => "Worker command",
+                 "delivery_filter" => %{"participant_ids" => [source.participant_id]}
+               }
+             )
+  end
+
+  defp assert_retired_source_recovered(worker, source, session_id) do
+    assert {:error, :conversation_source_retired} =
+             SalixAgent.ConversationConsumer.progress(worker["agent_id"], session_id)
+
+    assert {:ok, candidates} = SalixStore.ConversationLogRecovery.claim(8)
+    candidate = Enum.find(candidates, &(&1.conversation_id == source.conversation_id))
+    assert candidate
+    assert :ok = ConversationSource.recover(candidate)
+
+    assert {:ok, pending} =
+             SalixStore.ConversationLogRecovery.claim(
+               8,
+               SystemsClock.system_time(:millisecond) + 60_000
+             )
+
+    refute Enum.any?(pending, &(&1.conversation_id == source.conversation_id))
+    assert {:error, :not_found} = InternalSessionStore.read(worker["agent_id"], session_id)
   end
 
   test "Worker internal admits its targeted suffix and survives lost hints", ctx do
@@ -982,6 +1244,17 @@ defmodule SalixIM.RouterConversationLogTest do
   defp source_batch(ctx) do
     with {:ok, binding} <- ConversationSource.binding(ctx.agent["agent_id"], source_ref(ctx)),
          do: ConversationSource.batch(binding, nil)
+  end
+
+  # The Router session once `ready?` holds for it, settling through the
+  # clock's timers until then; a session not yet stored does not hold.
+  defp settled_session(ctx, ready?) do
+    settle_until(fn ->
+      case InternalSessionStore.read(ctx.agent["agent_id"], ctx.agent["router_session_id"]) do
+        {:ok, session} -> if ready?.(session), do: session
+        _not_yet -> nil
+      end
+    end)
   end
 
   defp await_source(ctx, seq, attempts \\ 1200)

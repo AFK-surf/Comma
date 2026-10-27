@@ -1,7 +1,9 @@
 defmodule SalixIM.TaskArchive do
   @moduledoc """
-  Pure Conversation-owned archive transitions, modeled in tla/salix/TaskArchive.tla.
+  Pure Conversation-owned archive transitions.
   The saved status is a restore value, never a second running lifecycle.
+  Archive leaves a Task's Schedule binding behind: an ended Task no longer
+  runs on its Schedule, and restoring it does not run the Schedule again.
   """
   @restorable ~w(ready_for_review completed failed cancelled escalated)
   @fields ~w(archived_from_status archived_at)
@@ -17,10 +19,6 @@ defmodule SalixIM.TaskArchive do
 
         conversation["status"] not in @restorable ->
           "not_finished"
-
-        is_binary(get_in(conversation, ["schedule", "schedule_id"])) and
-            get_in(conversation, ["schedule", "schedule_id"]) != "" ->
-          "schedule_bound"
 
         true ->
           nil
@@ -78,11 +76,19 @@ defmodule SalixIM.TaskArchive do
         |> Map.put("archived_at", now)
         |> Map.put("status", "archived")
         |> Map.put("updated_at", now)
+        |> unbind_schedule()
 
       %{"reason" => reason} ->
         conflict("Task cannot be archived: #{reason}")
     end
   end
+
+  # The Schedule row itself answers `inactive` at its next window and is deleted then.
+  defp unbind_schedule(%{"schedule" => %{"schedule_id" => id} = schedule} = conversation)
+       when is_binary(id),
+       do: Map.put(conversation, "schedule", Map.put(schedule, "schedule_id", nil))
+
+  defp unbind_schedule(conversation), do: conversation
 
   def writable(%{"kind" => "agent_task", "status" => "archived"}),
     do: conflict("Task is archived; restore it in Settings before making changes")

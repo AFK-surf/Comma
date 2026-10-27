@@ -2108,7 +2108,7 @@ describe("SalixAdapter", () => {
       created_at: "2026-07-01T00:00:00Z",
       conversation: {
         kind: "user_chat",
-        title: "Bridge chat",
+        title: "Comma",
         participants: [
           {
             actor_type: "user",

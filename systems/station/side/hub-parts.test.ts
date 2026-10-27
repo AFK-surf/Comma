@@ -16,7 +16,7 @@ test("a watcher gets what it lacks, the steps in flight, then new entries as the
   const dir = temp();
   const path = join(dir, "t.jsonl");
   writeFileSync(path, line("one", "m1") + line("two", "m2"));
-  const hub = new LiveHub(() => ({ runtime: "claude", paths: [path] }));
+  const hub = new LiveHub(() => ({ paths: [{ runtime: "claude", path }] }));
   hub.event("s", { kind: "start", id: "x", step: "text" });
   hub.event("s", { kind: "delta", id: "x", field: "text", text: "wri" });
   const got: LiveMessage[] = [];
@@ -47,14 +47,14 @@ test("a session gone on in a new runtime session: its history reads on from the 
   const left = join(dir, "a.jsonl");
   const now = join(dir, "b.jsonl");
   writeFileSync(left, line("one", "m1"));
-  let paths = [left];
-  const hub = new LiveHub(() => ({ runtime: "claude", paths }));
+  let paths = [{ runtime: "claude" as const, path: left }];
+  const hub = new LiveHub(() => ({ paths }));
   const got: LiveMessage[] = [];
   hub.subscribe("s", 0, null, (m) => void got.push(m));
   // The one left gets its last words, then the session moves on.
   appendFileSync(left, line("two", "m2"));
   writeFileSync(now, line("three", "m3"));
-  paths = [left, now];
+  paths = [...paths, { runtime: "claude", path: now }];
   hub.moved("s");
   appendFileSync(now, line("four", "m4"));
   const told = () => got.flatMap((m) => (m.type === "timeline" ? m.entries.map((e, i) => `${m.start + i}:${e.text}`) : []));

@@ -5,10 +5,6 @@ defmodule SalixStore.AgentVMMInstallations do
   One row owns the authorization binding, current ticket generation, and the
   bounded encrypted exchange result. The helper must durably persist the
   result before acknowledging the handoff.
-
-  Handoff is modeled in `tla/salix/VMMInstallHandoff.tla`. Admin revision
-  fencing and the database-owned monotonic writer invariant are modeled in
-  `tla/salix/AgentVMMAdminCommandOrchestration.tla`.
   """
 
   import Ecto.Query
@@ -70,9 +66,8 @@ defmodule SalixStore.AgentVMMInstallations do
   With `one_per_scope: true` the scope (a BFT Project) may have only one live
   Host: the request fails with `:scope_host_bound` while another operation of
   the scope is live (`live_for_scope/3`) or its Group has another Agent VMM
-  registration that is not revoked. A Group's new Cloud VM goes to its one
-  registration (`SalixWeb.CloudVM.placement/2`), so this keeps that choice
-  unambiguous. A lock on the scope serializes the check with other requests.
+  registration that is not revoked. Automatic VMM placement requires one
+  authorized Host, so this keeps the Project's Host choice unambiguous. A lock on the scope serializes the check with other requests.
   """
   @spec request(map(), keyword()) :: {:ok, descriptor()} | {:error, atom() | tuple()}
   def request(attrs, opts \\ []) when is_map(attrs) do
@@ -129,6 +124,49 @@ defmodule SalixStore.AgentVMMInstallations do
     end
   end
 
+  @doc "Read one headless delivery without consuming or rotating its existing ticket."
+  def headless_handoff(operation_id, secret, opts \\ [])
+
+  def headless_handoff(operation_id, secret, opts)
+      when is_binary(operation_id) and is_binary(secret) and byte_size(secret) in 1..128 do
+    now = Keyword.get(opts, :now, SystemsClock.utc_now())
+
+    case Repo.get(Operation, operation_id) do
+      %Operation{delivery_target_type: "headless"} = operation ->
+        cond do
+          not secure_equal?(operation.ticket_secret_hash, digest(secret)) ->
+            {:error, :invalid_ticket}
+
+          operation.ticket_status == "active" and operation.authorization_status == "requested" ->
+            if DateTime.compare(operation.ticket_expires_at, now) == :gt,
+              do: {:ok, %{operation_id: operation.id, expires_at: operation.ticket_expires_at}},
+              else: {:error, :ticket_expired}
+
+          operation.ticket_status == "consumed" and
+              operation.authorization_status in ["exchange_committed", "handed_off"] ->
+            expires_at = operation.material_handoff_expires_at
+
+            expires_at =
+              if (operation.authorization_status == "exchange_committed" and expires_at) &&
+                   DateTime.compare(expires_at, now) == :gt,
+                 do: expires_at,
+                 else: nil
+
+            {:ok, %{operation_id: operation.id, expires_at: expires_at}}
+
+          true ->
+            {:error, :ticket_revoked}
+        end
+
+      _ ->
+        {:error, :invalid_ticket}
+    end
+  rescue
+    _ -> {:error, :unavailable}
+  end
+
+  def headless_handoff(_, _, _), do: {:error, :invalid_ticket}
+
   @doc "Return a secret-free operation projection."
   @spec get(String.t()) :: {:ok, map()} | {:error, atom()}
   def get(operation_id) when is_binary(operation_id) do
@@ -161,9 +199,10 @@ defmodule SalixStore.AgentVMMInstallations do
 
   @doc """
   The live install operations of one scope, newest first, as secret-free
-  projections: not revoked, and not handed off to a registration that was
-  revoked since. A failed operation (`action_required`) stays live until it is
-  revoked, because a retry can still install it. At most `limit` are read.
+  projections: in flight (`requested` or `exchange_committed`), or handed off
+  to a registration that is not revoked. A failed operation
+  (`action_required`) does not occupy the scope: it has no live Host, and a
+  retry that reopens it checks the scope again. At most `limit` are read.
   """
   @spec live_for_scope(String.t(), String.t(), pos_integer()) :: [map()]
   def live_for_scope(surface, scope_key, limit \\ 2)
@@ -182,10 +221,12 @@ defmodule SalixStore.AgentVMMInstallations do
       on: r.id == o.registration_id,
       where:
         o.surface == ^surface and o.scope_key == ^scope_key and
-          o.authorization_status != "revoked" and (is_nil(r.id) or r.status != "revoked")
+          o.authorization_status in ["requested", "exchange_committed", "handed_off"] and
+          (is_nil(r.id) or r.status != "revoked")
     )
   end
 
+  # `attrs` is the request, or the Operation itself when a retry reopens it.
   defp require_unbound_scope!(attrs, existing) do
     Repo.query!("SELECT pg_advisory_xact_lock(hashtext($1))", [
       Enum.join(["agent-vmm-install-scope", attrs.surface, attrs.scope_key], ":")
@@ -691,7 +732,12 @@ defmodule SalixStore.AgentVMMInstallations do
     observe_mutation("system", fn ->
       now = Keyword.get(opts, :now, SystemsClock.utc_now())
 
-      do_acknowledge(operation_id, secret, host_digest, now)
+      operation_id
+      |> do_acknowledge(secret, host_digest, now)
+      |> tap(fn
+        {:ok, operation} -> ensure_initial_workload_for_registration(operation.registration_id)
+        _ -> :ok
+      end)
     end)
   end
 
@@ -793,7 +839,14 @@ defmodule SalixStore.AgentVMMInstallations do
     end)
   end
 
-  @doc "Initialize the existing node Workload under its installation authorization fence."
+  @doc """
+  Initialize the existing node Workload under its installation authorization fence.
+
+  The operation keeps one initial Shell: `initial_workload_id` is its key, so a
+  repeated call, or a call after Salix already created the Shell at readiness
+  (`ensure_initial_workload_for_registration/1`), returns the same Workload,
+  even after it was deleted.
+  """
   def initialize_workload(operation_id, opts \\ []) do
     observe_mutation("comma", fn ->
       Repo.transaction(fn ->
@@ -801,31 +854,7 @@ defmodule SalixStore.AgentVMMInstallations do
         require_expected_authorization!(operation, opts)
         if product_status(operation) != "ready", do: Repo.rollback(:compute_node_not_ready)
 
-        workload =
-          if operation.initial_workload_id do
-            Repo.one(
-              from(w in Compute.Workload,
-                join: a in Compute.Allocation,
-                on: a.id == w.allocation_id,
-                join: b in Compute.ProviderBinding,
-                on: b.id == a.provider_binding_id,
-                where:
-                  w.id == ^operation.initial_workload_id and
-                    w.environment_id == ^operation.environment_id and w.kind == "shell" and
-                    b.provider == "agent_vmm" and b.provider_ref == ^operation.registration_id,
-                select: w
-              )
-            ) || Repo.rollback(:initial_workload_not_found)
-          else
-            case Compute.ensure_node_workload(
-                   operation.tenant_id,
-                   operation.environment_id,
-                   operation.registration_id
-                 ) do
-              {:ok, workload} -> workload
-              {:error, reason} -> Repo.rollback(reason)
-            end
-          end
+        workload = initial_workload!(operation)
 
         retry_required =
           workload.observed_state == "failed" or
@@ -842,7 +871,6 @@ defmodule SalixStore.AgentVMMInstallations do
                  operation.tenant_id,
                  operation.scope_key,
                  workload.id,
-                 workload.revision,
                  workload.generation,
                  Keyword.get(opts, :authorize, fn -> :ok end)
                ) do
@@ -851,16 +879,89 @@ defmodule SalixStore.AgentVMMInstallations do
           end
         end
 
-        if is_nil(operation.initial_workload_id) do
-          Repo.update_all(from(o in Operation, where: o.id == ^operation.id),
-            set: [initial_workload_id: workload.id]
-          )
-        end
-
         project(Repo.get!(Operation, operation.id))
       end)
       |> normalize_transaction()
     end)
+  end
+
+  @doc """
+  Create the initial Shell of the handed-off operation of `registration_id`
+  when it first reaches product status `ready`, with the same key as
+  `initialize_workload/2`.
+
+  Callers run it after the transaction that advanced readiness (Host hello,
+  observation settlement, handoff) commits, never inside it: a nested
+  `Repo.rollback` taints the outer transaction, so a failed placement would
+  otherwise fail the hello, the acknowledgement, or the whole expiry batch.
+  An operation that already has an initial Shell, even a deleted one, is
+  unchanged. One indexed read when there is nothing to do.
+  """
+  def ensure_initial_workload_for_registration(registration_id)
+      when is_binary(registration_id) do
+    pending =
+      Repo.one(
+        from(o in Operation,
+          where:
+            o.registration_id == ^registration_id and o.authorization_status == "handed_off" and
+              is_nil(o.initial_workload_id) and is_nil(o.error_code),
+          select: o.id
+        )
+      )
+
+    if pending do
+      observe_mutation("system", fn ->
+        Repo.transaction(fn ->
+          operation = lock_operation!(pending)
+
+          cond do
+            is_binary(operation.initial_workload_id) -> :ok
+            product_status(operation) != "ready" -> Repo.rollback(:compute_node_not_ready)
+            true -> initial_workload!(operation)
+          end
+
+          project(Repo.get!(Operation, operation.id))
+        end)
+        |> normalize_transaction()
+      end)
+    else
+      {:ok, nil}
+    end
+  rescue
+    _ -> {:error, :unavailable}
+  end
+
+  defp initial_workload!(%Operation{initial_workload_id: id} = operation) when is_binary(id) do
+    Repo.one(
+      from(w in Compute.Workload,
+        join: a in Compute.Allocation,
+        on: a.id == w.allocation_id,
+        join: b in Compute.ProviderBinding,
+        on: b.id == a.provider_binding_id,
+        where:
+          w.id == ^id and w.environment_id == ^operation.environment_id and w.kind == "shell" and
+            b.provider == "agent_vmm" and b.provider_ref == ^operation.registration_id,
+        select: w
+      )
+    ) || Repo.rollback(:initial_workload_not_found)
+  end
+
+  defp initial_workload!(%Operation{} = operation) do
+    case Compute.ensure_node_workload(
+           operation.tenant_id,
+           operation.environment_id,
+           operation.registration_id
+         ) do
+      {:ok, workload} ->
+        Repo.update_all(from(o in Operation, where: o.id == ^operation.id),
+          set: [initial_workload_id: workload.id]
+        )
+
+        workload
+
+      {:error, reason} ->
+        Repo.rollback(reason)
+    end
   end
 
   @doc """
@@ -886,11 +987,21 @@ defmodule SalixStore.AgentVMMInstallations do
             )
           )
 
-        Enum.each(operations, &close_expired_handoff!(&1, now))
+        handed_off =
+          for operation <- operations,
+              close_expired_handoff!(operation, now).authorization_status == "handed_off",
+              do: operation.registration_id
 
-        %{settled: length(operations), more?: length(operations) == limit}
+        {%{settled: length(operations), more?: length(operations) == limit}, handed_off}
       end)
-      |> normalize_transaction()
+      |> case do
+        {:ok, {result, handed_off}} ->
+          Enum.each(handed_off, &ensure_initial_workload_for_registration/1)
+          {:ok, result}
+
+        {:error, reason} ->
+          {:error, reason}
+      end
     end)
   end
 
@@ -977,6 +1088,10 @@ defmodule SalixStore.AgentVMMInstallations do
   end
 
   defp reopen_pre_handoff!(operation, now) do
+    # BFT requests hold one Host per Project (`one_per_scope: true`). A failed
+    # operation released the scope, so reopening it must claim the scope again.
+    if operation.surface == "bft", do: require_unbound_scope!(operation, operation)
+
     secret = new_secret()
     expires_at = DateTime.add(now, @ticket_ttl_seconds, :second)
 
@@ -1030,7 +1145,7 @@ defmodule SalixStore.AgentVMMInstallations do
       ciphertext =
         case Crypto.seal_install_material(encoded) do
           {:ok, value} -> value
-          {:error, reason} -> Repo.rollback(reason)
+          {:error, :credential_sealer_unavailable} -> Repo.rollback(:install_material_unavailable)
         end
 
       handoff_expires_at = DateTime.add(now, @handoff_ttl_seconds, :second)
@@ -1350,6 +1465,9 @@ defmodule SalixStore.AgentVMMInstallations do
   end
 
   defp project(operation) do
+    registration =
+      operation.registration_id && Repo.get(AgentVMM.Registration, operation.registration_id)
+
     operation
     |> Map.take([
       :id,
@@ -1374,17 +1492,27 @@ defmodule SalixStore.AgentVMMInstallations do
       :created_at,
       :updated_at
     ])
-    |> Map.put(:status, product_status(operation))
+    |> Map.put(:status, product_status(operation, registration))
+    |> Map.put(:registration_revocation_reason, revocation_reason(registration))
   end
 
-  defp product_status(%Operation{authorization_status: "revoked"}), do: "removed"
+  # Why the bound registration was revoked: "authorization_expired" only for
+  # the 7-day deadline, so a client may reinstall automatically; any explicit
+  # revocation is "revoked". A row revoked before the reason existed has none.
+  defp revocation_reason(%AgentVMM.Registration{status: "revoked", revocation_reason: reason}),
+    do: reason || "revoked"
 
-  defp product_status(%Operation{authorization_status: "action_required"}),
+  defp revocation_reason(_registration), do: nil
+
+  defp product_status(operation),
+    do: product_status(operation, Repo.get(AgentVMM.Registration, operation.registration_id))
+
+  defp product_status(%Operation{authorization_status: "revoked"}, _registration), do: "removed"
+
+  defp product_status(%Operation{authorization_status: "action_required"}, _registration),
     do: "action_required"
 
-  defp product_status(%Operation{authorization_status: "handed_off"} = operation) do
-    registration = Repo.get(AgentVMM.Registration, operation.registration_id)
-
+  defp product_status(%Operation{authorization_status: "handed_off"} = operation, registration) do
     binding =
       Repo.one(
         from(b in Compute.ProviderBinding,
@@ -1422,7 +1550,7 @@ defmodule SalixStore.AgentVMMInstallations do
     end
   end
 
-  defp product_status(%Operation{}), do: "processing"
+  defp product_status(%Operation{}, _registration), do: "processing"
 
   defp current_binding_observation?(%Compute.ProviderBinding{} = binding) do
     observation = binding.observation

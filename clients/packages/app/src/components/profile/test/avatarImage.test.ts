@@ -11,9 +11,10 @@ const file = (size: number, type = "image/png") =>
   new File([new Uint8Array(size)], "avatar", { type });
 
 describe("avatar image preparation", () => {
-  it("accepts supported images up to 2 MB", () => {
-    expect(isAcceptedAvatarFile(file(2 * 1024 * 1024))).toBe(true);
-    expect(isAcceptedAvatarFile(file(2 * 1024 * 1024 + 1))).toBe(false);
+  it("accepts supported images up to 10 MB", () => {
+    expect(isAcceptedAvatarFile(file(10 * 1024 * 1024))).toBe(true);
+    expect(isAcceptedAvatarFile(file(10 * 1024 * 1024 + 1))).toBe(false);
+    expect(isAcceptedAvatarFile(file(0))).toBe(false);
     expect(isAcceptedAvatarFile(file(1024, "image/gif"))).toBe(false);
   });
 

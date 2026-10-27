@@ -6,6 +6,7 @@ import { HoverPanel } from "@comma/ui/components/hover-card";
 import { uiClock } from "@comma/ui/clock";
 import {
   cloneElement,
+  memo,
   useLayoutEffect,
   useMemo,
   useState,
@@ -24,7 +25,10 @@ import {
   titledTasks,
   type TaskLink,
 } from "./ActivityFocusCard";
+import { stopNotice } from "../../../billing/fundingStops";
+import { StopNoticeContent } from "../../../billing/StopNoticeContent";
 import { participantStatusLabel } from "./participantStatusLabel";
+import { clippedTaskTitle } from "./clippedTaskTitle";
 import { toolActivityLabel } from "./toolActivityLabel";
 import { WorkerModelMark } from "./WorkerModelMark";
 import wechatActivityLogo from "../../assets/wechat-activity.svg";
@@ -42,7 +46,7 @@ type SlotPresentation = {
   workingProvider?: ChatParticipantStatus["workingProvider"];
 };
 
-export function ParticipantStatusSlot({
+export const ParticipantStatusSlot = memo(function ParticipantStatusSlot({
   activity,
   participantStatus,
   participantStatuses,
@@ -54,6 +58,7 @@ export function ParticipantStatusSlot({
   focus,
   taskLink,
   workerVendor,
+  onSwitchRun,
 }: {
   activity?: ChatActivity | undefined;
   participantStatus: ChatParticipantStatus | undefined;
@@ -74,6 +79,8 @@ export function ParticipantStatusSlot({
   taskLink?: TaskLink | undefined;
   /** In a Task: the maker of the model its Worker runs, whose mark stands for the Worker. */
   workerVendor?: string | undefined;
+  /** In a Task the viewer may switch to another model: a way out of its Worker's stops. */
+  onSwitchRun?: (() => void) | undefined;
 }) {
   const messages = useCommaMessages();
   const locale = useCommaLocale();
@@ -113,9 +120,13 @@ export function ParticipantStatusSlot({
     routerActive && (participantStatus.workingConversationIds?.length ?? 0) > 0;
   const routerFocus =
     routerActive && focus && focus.mode !== "working" ? focus : undefined;
+  const routerWaiting = routerActive && participantStatus.waiting === true;
+  const waitedSeconds = useWaitedSeconds(
+    routerActive ? participantStatus.waitStartedAt : undefined
+  );
   const routerFocusLabel = routerFocus
     ? focusLabel(messages, routerFocus)
-    : routerActive && participantStatus.waiting
+    : routerWaiting
       ? messages.chat_tool_wait()
       : undefined;
   const workerFocus =
@@ -131,13 +142,16 @@ export function ParticipantStatusSlot({
     participantStatus?.loopWake !== true;
   // Tool work is worded here, in the reader's language, from the tool's
   // identity; the model's own label for its command comes first. The
-  // producer's English summary only serves clients that cannot localize.
+  // producer's English summary only serves clients that cannot localize. A
+  // tool without wording keeps the line it follows. A call still running
+  // after its frame expired is named by the Participant's wait.
   const liveExecutionSummary =
     liveActivity && activity.phase === "execution" && activity.summaryClass === "public"
       ? activity.goal?.trim() ||
-        toolActivityLabel(messages, activity.toolName, "running") ||
-        messages.chat_activity_working()
-      : undefined;
+        toolActivityLabel(messages, activity.toolName, "running", activity.target)
+      : !answersOtherConversation && routerFocusLabel === undefined && routerActive
+        ? toolActivityLabel(messages, participantStatus.waitTool, "running")
+        : undefined;
   // A source-bound Activity can end with the first send. The Participant
   // remains the authority for work that continues after that reply.
   const ongoingWork =
@@ -222,7 +236,25 @@ export function ParticipantStatusSlot({
   const router = named.find((item) => item.actorRole === "router");
   const workingProvider =
     !taskPresentations && errors.length === 0 ? active[0]?.workingProvider : undefined;
-  const summary = workingProvider
+  // A lone stop the member fixes themselves (a funding stop, a model nothing
+  // serves) names itself in the card, with what to do and the ways out.
+  const stopped =
+    errors.length === 1
+      ? (participantStatuses ?? (participantStatus ? [participantStatus] : [])).find(
+          (status) =>
+            `${status.conversationId}:${status.participantId}` === errors[0]!.key
+        )
+      : undefined;
+  const switchAction = onSwitchRun
+    ? { label: messages.task_run_switch(), run: onSwitchRun }
+    : undefined;
+  const stoppedNotice = stopped && stopNotice(stopped, locale);
+  // A Task's Worker stopped on its model: another model is a way out too.
+  const notice =
+    stoppedNotice && switchAction && stopped.actorRole === "worker"
+      ? { ...stoppedNotice, actions: [...stoppedNotice.actions, switchAction] }
+      : stoppedNotice;
+  const statusSummary = workingProvider
     ? {
         wechat: messages.chat_activity_working_wechat,
         telegram: messages.chat_activity_working_telegram,
@@ -248,6 +280,11 @@ export function ParticipantStatusSlot({
           )
         : errors.map((item) => `${item.name} · ${item.label}`).join("; ")
       : (presentations[0]?.label ?? "");
+  const summary = notice
+    ? taskPresentations && errors[0]!.name
+      ? `${errors[0]!.name} · ${notice.title}`
+      : notice.title
+    : statusSummary;
   const visible = presentations.length > 0;
   const thinkingBubble = errors.length === 0;
   // Avatars and the detail card belong to the Task work that the line names,
@@ -265,6 +302,11 @@ export function ParticipantStatusSlot({
     markedFocus?.tasks.some((task) => task.title)
       ? markedFocus
       : undefined;
+  // A Worker on Comma's own model shows the Comma mark, so the Task's avatars
+  // draw that mark once: the Router's while it works, else the Worker's.
+  const commaAvatar = presentations.find(isRouterAvatar) ?? presentations[0];
+  const avatars =
+    workerVendor === "comma" && commaAvatar ? [commaAvatar] : presentations;
   // A Worker at work may drive a computer; each one's screen shows beside the chat.
   const screenTasks = focus?.tasks.filter((task) => task.worker) ?? [];
   const detail = cardFocus
@@ -294,11 +336,11 @@ export function ParticipantStatusSlot({
         {taskPresentations && active.length > 0 && errors.length === 0 ? (
           <div
             className="comma-chat-activity-avatars"
-            style={{ "--comma-status-count": presentations.length } as CSSProperties}
+            style={{ "--comma-status-count": avatars.length } as CSSProperties}
             aria-hidden
           >
-            {presentations.map((item, index) => {
-              const isRouter = item.actorRole === "router" || !item.name;
+            {avatars.map((item, index) => {
+              const isRouter = isRouterAvatar(item);
               // Chat has one continuous reply mark. Changing from local feedback
               // to Participant/Activity authority must not remount its animation.
               // Tasks still identify each avatar by its actual participant.
@@ -369,26 +411,44 @@ export function ParticipantStatusSlot({
                     <CommaLogoAnimation paused={!visible || active.length === 0} />
                   </span>
                 ) : null}
-                {focusWorkers(markedFocus).map((worker) => (
-                  <WorkerModelMark
-                    key={worker.avatarId}
-                    className="comma-chat-thinking-worker"
-                    data-worker-avatar={worker.avatarId}
-                    vendor={worker.vendor}
-                  />
-                ))}
+                {focusWorkers(markedFocus, markedFocus?.mode !== "working").map(
+                  (worker) => (
+                    <WorkerModelMark
+                      key={worker.avatarId}
+                      className="comma-chat-thinking-worker"
+                      data-worker-avatar={worker.avatarId}
+                      vendor={worker.vendor}
+                    />
+                  )
+                )}
               </>
             )
           ) : null}
           <AiActivity
             // Keep one mounted activity through timestamp, text and participant
-            // changes. Its existing text swap animates only a changed summary.
+            // changes. Its existing text swap animates only a changed summary;
+            // the time a wait has lasted ticks in place.
             activityKey={summary}
             className="comma-chat-activity-line"
             events={[]}
+            notice={notice ? <StopNoticeContent notice={notice} /> : undefined}
             shimmer={active.length > 0 && errors.length === 0}
             status={errors.length ? "failed" : active.length ? "running" : "complete"}
-            summary={summary}
+            summary={
+              routerFocusLabel !== undefined && summary === routerFocusLabel
+                ? withWaited(
+                    messages,
+                    summary,
+                    routerWaiting && routerFocus?.mode !== "following"
+                      ? waitedSeconds
+                      : undefined
+                  )
+                : liveExecutionSummary !== undefined &&
+                    summary === liveExecutionSummary &&
+                    participantStatus?.waitTool
+                  ? withElapsed(messages, summary, waitedSeconds)
+                  : summary
+            }
           />
         </ActivityBubble>
       </div>
@@ -404,7 +464,7 @@ export function ParticipantStatusSlot({
         : null}
     </div>
   );
-}
+});
 
 /**
  * The status bubble. With Task work to show, it is this surface's link to the
@@ -453,13 +513,24 @@ function ActivityBubble({
   );
 }
 
+function isRouterAvatar(item: SlotPresentation) {
+  return item.actorRole === "router" || !item.name;
+}
+
 // At most two Worker avatars sit beside the Router mark, as in the channel capsule.
-function focusWorkers(focus: ActivityFocus | undefined) {
+// A Worker on Comma's own model shows the Comma mark, so the bubble draws that
+// mark once: beside the Router's mark, or a second Comma Worker, it would only
+// repeat it.
+function focusWorkers(focus: ActivityFocus | undefined, routerMark: boolean) {
   const workers = new Map<string, NonNullable<ActivityFocusTask["worker"]>>();
+  let commaMark = routerMark;
   for (const task of focus ? titledTasks(focus) : []) {
-    if (task.worker && !workers.has(task.worker.avatarId)) {
-      workers.set(task.worker.avatarId, task.worker);
+    if (!task.worker || workers.has(task.worker.avatarId)) continue;
+    if (task.worker.vendor === "comma") {
+      if (commaMark) continue;
+      commaMark = true;
     }
+    workers.set(task.worker.avatarId, task.worker);
   }
   return [...workers.values()].slice(0, 2);
 }
@@ -485,11 +556,20 @@ function focusLabel(
       return count > 1
         ? messages.chat_activity_following_tasks({ count })
         : messages.chat_activity_following_task({ title });
-    case "waiting":
+    case "waiting": {
       if (!title) return messages.chat_tool_wait();
+      // A Worker that stopped with an error is not finishing anything: say
+      // so, until it runs again or the Router is told.
+      const failed = titled.filter((task) => task.worker?.failed === true);
+      if (failed.length) {
+        return count > 1
+          ? messages.chat_activity_waiting_tasks_failed()
+          : messages.chat_activity_waiting_task_failed({ title });
+      }
       return count > 1
         ? messages.chat_activity_waiting_tasks({ count })
         : messages.chat_activity_waiting_task({ title });
+    }
     case "working":
       if (!title) return undefined;
       return count > 1
@@ -498,14 +578,50 @@ function focusLabel(
   }
 }
 
-// The Router writes Task titles. A long one must not stretch the status bubble.
-const TASK_TITLE_MAX_CHARACTERS = 40;
+// A wait shorter than this reads as the step itself; a longer one shows how
+// long it has lasted, so a reader can see it is not stuck.
+const WAITED_SHOWN_AFTER_SECONDS = 5;
 
-function clippedTaskTitle(title: string) {
-  const characters = Array.from(title.replace(/\s+/g, " ").trim());
-  return characters.length > TASK_TITLE_MAX_CHARACTERS
-    ? `${characters.slice(0, TASK_TITLE_MAX_CHARACTERS - 1).join("")}…`
-    : characters.join("");
+function withWaited(
+  messages: ReturnType<typeof useCommaMessages>,
+  label: string,
+  seconds: number | undefined
+): string {
+  if (seconds === undefined || seconds < WAITED_SHOWN_AFTER_SECONDS) return label;
+  return seconds < 60
+    ? messages.chat_activity_waited_seconds({ label, seconds })
+    : messages.chat_activity_waited_minutes({
+        label,
+        minutes: Math.floor(seconds / 60),
+      });
+}
+
+// A tool call that runs long shows how long it has run.
+function withElapsed(
+  messages: ReturnType<typeof useCommaMessages>,
+  label: string,
+  seconds: number | undefined
+): string {
+  if (seconds === undefined || seconds < WAITED_SHOWN_AFTER_SECONDS) return label;
+  return seconds < 60
+    ? messages.chat_activity_elapsed_seconds({ label, seconds })
+    : messages.chat_activity_elapsed_minutes({
+        label,
+        minutes: Math.floor(seconds / 60),
+      });
+}
+
+// Whole seconds since the wait began, by the server's start and this clock.
+function useWaitedSeconds(startedAt: number | undefined): number | undefined {
+  const [now, setNow] = useState(() => uiClock.now());
+  useLayoutEffect(() => {
+    if (startedAt === undefined) return;
+    setNow(uiClock.now());
+    return uiClock.every(1_000, () => setNow(uiClock.now()));
+  }, [startedAt]);
+  return startedAt === undefined
+    ? undefined
+    : Math.max(0, Math.floor((now - startedAt) / 1_000));
 }
 
 // One trailing timer per shared status slot, not one per participant. Preserve

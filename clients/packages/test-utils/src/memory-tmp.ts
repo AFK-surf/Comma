@@ -1,4 +1,5 @@
 import { createRequire, syncBuiltinESMExports } from "node:module";
+import { dirname, isAbsolute, resolve } from "node:path";
 import { standIn } from "./io-guard";
 import { namingTemporaryFiles } from "./seeded-random";
 
@@ -150,7 +151,15 @@ export function keepTemporaryFilesInMemory() {
   }
   for (const name of twoPathFunctions) {
     const byPaths = (args: unknown[]) => {
-      const [from, to] = [inTemporary(args[0]), inTemporary(args[1])];
+      // A relative symlink target is read from the link's own directory.
+      const source =
+        name === "symlink" &&
+        typeof args[0] === "string" &&
+        typeof args[1] === "string" &&
+        !isAbsolute(args[0])
+          ? resolve(dirname(args[1]), args[0])
+          : args[0];
+      const [from, to] = [inTemporary(source), inTemporary(args[1])];
       if (from !== to)
         throw new Error(
           `${name} between the temporary directory (in memory) and the disk: ${String(args[0])} -> ${String(args[1])}`

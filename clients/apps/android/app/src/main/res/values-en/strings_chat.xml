@@ -39,4 +39,15 @@
     <string name="chat_question_replied">Answered in the chat</string>
     <string name="chat_question_skipped">Skipped. The agent decides.</string>
     <string name="chat_question_replaced">Replaced by a newer question</string>
+    <string name="chat_request_connect_title">Connect %1$s</string>
+    <string name="chat_request_authorize">Authorize in browser</string>
+    <string name="chat_request_reopen">Open again</string>
+    <string name="chat_request_decline">Decline</string>
+    <string name="chat_request_waiting_browser">Finish authorizing in your browser…</string>
+    <string name="chat_request_connected">Connected %1$s</string>
+    <string name="chat_request_declined">You did not connect %1$s</string>
+    <string name="chat_request_expired">The request expired</string>
+    <string name="chat_request_cancelled">The Agent withdrew this request</string>
+    <string name="chat_request_failed">This request did not finish</string>
+    <string name="chat_request_decline_failed">Could not decline. Try again.</string>
 </resources>

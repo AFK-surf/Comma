@@ -4,6 +4,7 @@ import type {
   TaskSummariesValue,
   TaskSummary,
   StationTasksValue,
+  StationsValue,
 } from "@comma/core-client";
 import type { SessionProductLease } from "@comma/session-contract";
 import { createScriptedCore } from "@comma/test-utils/scripted-core";
@@ -61,10 +62,13 @@ export function createProductInboxProjectionHarness({
   retain,
   summarize,
   stationTasks,
+  stations,
 }: {
   initial: ProductInboxListResult;
   /** The Tasks the workspace's stations host (`stationTasks`), when a test gives them. */
   stationTasks?: StationTasksValue | undefined;
+  /** The workspace's stations (`stations`), on an app that reaches stations (`stationsHome`), when a test gives them. */
+  stations?: StationsValue | undefined;
   summarize?: (groupId: string, conversationId: string) => TaskSummary | undefined;
   refresh?: (
     input: ProductInboxHarnessRead
@@ -137,7 +141,8 @@ export function createProductInboxProjectionHarness({
       name === "marks" ||
       name.startsWith("marks.") ||
       name === "taskWorkers" ||
-      name === "stationTasks",
+      name === "stationTasks" ||
+      (stations !== undefined && (name === "stations" || name === "stationsHome")),
     values: (topic) =>
       topic.topic === "tasks"
         ? (failure ?? shown())
@@ -149,7 +154,11 @@ export function createProductInboxProjectionHarness({
               ? {}
               : topic.topic === "stationTasks"
                 ? (stationTasks ?? { state: "unavailable", tasks: [] })
-                : undefined,
+                : stations && topic.topic === "stations"
+                  ? stations
+                  : stations && topic.topic === "stationsHome"
+                    ? { state: "ready", account: null, workspaces: [] }
+                    : undefined,
     onSubscribe: (topic) => {
       if (topic.topic === "taskWorkers") followed.push(String(topic.ids));
       if (topic.topic !== "tasks") return;

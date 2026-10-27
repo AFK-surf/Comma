@@ -19,7 +19,7 @@ import { TaskListItem } from "@comma/ui/components/TaskListItem";
 import { Tooltip } from "@comma/ui/components/tooltip";
 import { TrashCanIcon } from "@comma/ui/components/icons";
 import "@comma/test-utils/browser-commands";
-import { StrictMode, useEffect, useState } from "react";
+import { StrictMode, useEffect, useRef, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { commands, page, userEvent } from "vitest/browser";
@@ -140,6 +140,48 @@ const fontDropdownItems = Array.from({ length: 300 }, (_, index) => ({
   fontFamily: index % 2 ? "serif" : "monospace",
 }));
 
+const modelOptions = ["Opus 5.5", "Sonnet 5.5", "Haiku 5.5", "Fable 5.1"];
+
+// Taller than the room above or below its button.
+const longMenuRows = Array.from({ length: 40 }, (_, index) => `Row ${index + 1}`);
+
+/** A single-selection menu whose checked row opens over its button. */
+function SelectionMenuFixture() {
+  const triggerRef = useRef<HTMLSpanElement>(null);
+  const [model, setModel] = useState("Sonnet 5.5");
+  return (
+    <span className="inline-flex" ref={triggerRef}>
+      <MenuTrigger>
+        <Button hierarchy="secondary-gray">{model}</Button>
+        <MenuPopover
+          selectionAlign={{
+            items: modelOptions.map(() => ({})),
+            selectedIndex: modelOptions.indexOf(model),
+            triggerRef,
+          }}
+        >
+          <Menu
+            aria-label="Model"
+            disallowEmptySelection
+            onSelectionChange={(keys) => {
+              if (keys !== "all") setModel(String([...keys][0]));
+            }}
+            selectedKeys={[model]}
+            selectionMode="single"
+            variant="embedded"
+          >
+            {modelOptions.map((option) => (
+              <MenuItem id={option} key={option} selectionIndicator="check">
+                {option}
+              </MenuItem>
+            ))}
+          </Menu>
+        </MenuPopover>
+      </MenuTrigger>
+    </span>
+  );
+}
+
 function MenuFixture() {
   const [lastTaskAction, setLastTaskAction] = useState("none");
   const [isCustomActionPressed, setIsCustomActionPressed] = useState(false);
@@ -202,6 +244,7 @@ function MenuFixture() {
             </Menu>
           </MenuPopover>
         </MenuTrigger>
+        <SelectionMenuFixture />
         <TaskListItem
           aria-label="Keyboard task row"
           contextMenu={{
@@ -261,6 +304,20 @@ function MenuFixture() {
           width="content"
         />
       </section>
+      <section aria-label="Long menu fixture" className="fixed top-[60vh] left-[45%]">
+        <MenuTrigger>
+          <Button hierarchy="secondary-gray">Open long list</Button>
+          <MenuPopover>
+            <Menu aria-label="Long list">
+              {longMenuRows.map((row) => (
+                <MenuItem id={row} key={row}>
+                  {row}
+                </MenuItem>
+              ))}
+            </Menu>
+          </MenuPopover>
+        </MenuTrigger>
+      </section>
       <section
         aria-label="Virtualized dropdown fixture"
         className="fixed top-[50vh] left-xl w-64"
@@ -308,6 +365,18 @@ const nextFrames = () =>
     requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
   );
 const rectOf = (element: Element) => element.getBoundingClientRect();
+const center = (element: Element) => {
+  const rect = rectOf(element);
+  return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+};
+/** Where the first text in `element` starts to paint. */
+const textLeft = (element: Element) => {
+  const range = document.createRange();
+  range.selectNodeContents(
+    document.createTreeWalker(element, NodeFilter.SHOW_TEXT).nextNode()!
+  );
+  return range.getBoundingClientRect().left;
+};
 const transitionDurationsAreZero = (element: Element) =>
   getComputedStyle(element)
     .transitionDuration.split(",")
@@ -496,6 +565,68 @@ describe("menu, tooltip and selection components in the browser", () => {
       .toMatchObject({ bottomClearance: 8 });
   });
 
+  it("selection reply field wraps a long question and grows with it", async () => {
+    root?.unmount();
+    document.body.replaceChildren();
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    root.render(
+      <StrictMode>
+        <SelectionActionBar
+          actions={[
+            {
+              id: "add-to-chat",
+              label: "Add to chat",
+              onPress: () => {},
+              shortcut: ["⌘", "L"],
+            },
+          ]}
+          anchor={{ bottom: 420, left: 400, right: 600, top: 400 }}
+          ariaLabel="Selection menu"
+          reply={{
+            excerpt: "圆橡皮，中间留出金属箍空隙。",
+            failedLabel: "Couldn't send.",
+            onDismiss: () => {},
+            onEngage: () => {},
+            onSubmit: () => undefined,
+            placeholder: "Ask about this…",
+          }}
+        />
+      </StrictMode>
+    );
+    const field = page.getByRole("textbox", { name: "Ask about this…" });
+    await expect.element(field).toBeVisible();
+    await document.fonts.ready;
+    const textarea = field.element() as HTMLTextAreaElement;
+    // Layout metrics, not painted rects: the bar's enter transition scales it.
+    const oneLine = textarea.offsetHeight;
+    const bar = query('[data-slot="selection-action-bar"]')!;
+
+    // The fill's input event commits the text and re-places the bar before it
+    // resolves, so the layout below is final.
+    await userEvent.fill(
+      textarea,
+      "这段推测里哪一句站不住？请把它换成我平时会遇到的场景，再说一遍为什么好笑。"
+    );
+    expect(textarea.offsetHeight).toBeGreaterThan(oneLine);
+    // Wrapped, not scrolled sideways.
+    expect(textarea.scrollWidth).toBeLessThanOrEqual(textarea.clientWidth);
+    // The actions sit on the field's last line.
+    const action = page
+      .getByRole("button", { name: "Add to chat" })
+      .element() as HTMLElement;
+    expect(
+      Math.abs(
+        action.offsetTop +
+          action.offsetHeight -
+          (textarea.offsetTop + textarea.offsetHeight)
+      )
+    ).toBeLessThanOrEqual(4);
+    // Grown upward: the bar still rests its gap above the selection.
+    expect(bar.offsetTop + bar.offsetHeight).toBe(392);
+  });
+
   it("selection action bar arrives along the direction the selection was drawn", async () => {
     await mountFixture();
     const travel = () =>
@@ -597,6 +728,75 @@ describe("menu, tooltip and selection components in the browser", () => {
     expect(inViewport(last.element(), viewport)).toBe(true);
     await userEvent.keyboard("{Enter}");
     await expect.poll(() => trigger.textContent).toBe("Family 300");
+  });
+
+  it("a click opens a menu over its button and leaves it open, and a drag chooses", async () => {
+    await mountFixture();
+    // The only menu the fixture opens; React Aria names it after its button.
+    const menu = page.getByRole("menu");
+
+    const sonnet = page.getByRole("button", { name: "Sonnet 5.5" });
+    await userEvent.hover(sonnet);
+    await commands.mouseDown();
+    await expect.element(menu).toBeVisible();
+    // The menu enters scaled and moved; read where its rows land.
+    await finishMotion();
+    // The checked row opens under the pointer that pressed the button.
+    const pressed = center(sonnet.element());
+    expect(
+      document.elementFromPoint(pressed.x, pressed.y)?.closest('[role="menuitemradio"]')
+    ).toBe(page.getByRole("menuitemradio", { name: "Sonnet 5.5" }).element());
+    await commands.mouseUp();
+    await finishMotion();
+    await expect.element(menu).toBeVisible();
+
+    await userEvent.click(page.getByRole("menuitemradio", { name: "Haiku 5.5" }));
+    await expect.element(menu).not.toBeInTheDocument();
+    const haiku = page.getByRole("button", { name: "Haiku 5.5" });
+    await expect.element(haiku).toBeVisible();
+
+    // Pressed on the button and released on another row, the press chooses it.
+    await userEvent.hover(haiku);
+    await commands.mouseDown();
+    await expect.element(menu).toBeVisible();
+    await finishMotion();
+    const opus = center(
+      page.getByRole("menuitemradio", { name: "Opus 5.5" }).element()
+    );
+    await commands.mouseMove(opus.x, opus.y, 4);
+    await commands.mouseUp();
+    await expect.element(menu).not.toBeInTheDocument();
+    await expect.element(page.getByRole("button", { name: "Opus 5.5" })).toBeVisible();
+  });
+
+  it("a selection-aligned menu opens its checked row's text over its button's text", async () => {
+    await mountFixture();
+    const trigger = page.getByRole("button", { name: "Sonnet 5.5" });
+    await userEvent.click(trigger);
+    const checked = page.getByRole("menuitemradio", { name: "Sonnet 5.5" });
+    await expect.element(checked).toBeVisible();
+    await finishMotion();
+    const label = checked.element().querySelector('[data-slot="menu-item-label"]')!;
+    // The check and its gutter hang left of the button: the menu moves, not the text.
+    expect(Math.abs(textLeft(label) - textLeft(trigger.element()))).toBeLessThan(0.5);
+  });
+
+  it("a click opens a menu too tall for the room around its button and leaves it open", async () => {
+    await mountFixture();
+    const trigger = page.getByRole("button", { name: "Open long list" });
+    await userEvent.hover(trigger);
+    await commands.mouseDown();
+    const menu = page.getByRole("menu");
+    await expect.element(menu).toBeVisible();
+    await finishMotion();
+    // The list runs over the button that opened it.
+    const pressed = center(trigger.element());
+    expect(
+      document.elementFromPoint(pressed.x, pressed.y)?.closest('[role="menuitem"]')
+    ).not.toBeNull();
+    await commands.mouseUp();
+    await finishMotion();
+    await expect.element(menu).toBeVisible();
   });
 
   it("connected submenus preserve one active path and close after group exit", async () => {

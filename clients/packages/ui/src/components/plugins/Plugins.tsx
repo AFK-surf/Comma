@@ -1305,7 +1305,7 @@ const matchesPlugin = (plugin: PluginDefinition, query: string) => {
     .includes(query);
 };
 
-const PluginResourceRow = ({ resource }: { resource: PluginResource }) => (
+export const PluginResourceRow = ({ resource }: { resource: PluginResource }) => (
   <li className="flex items-center gap-md rounded-xl px-md py-sm">
     <PluginArtwork icon={resource.icon} size="sm" />
     <span className="min-w-0 flex-1 truncate text-sm text-secondary">

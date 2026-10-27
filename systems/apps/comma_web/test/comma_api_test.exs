@@ -859,8 +859,13 @@ defmodule CommaWeb.CommaApiTest do
     preview = read.("#{base}/#{loop_id}/preview")
     refute Map.has_key?(preview, "loop")
 
+    # The chat-hosted Task panel reads only the preview with its Worker.
+    panel = read.("#{base}/#{loop_id}/preview?include_worker=true")
+    assert panel["loop"] == paused
+    refute Map.has_key?(read.("#{base}/#{plain_id}/preview?include_worker=true"), "loop")
+
     # Nothing of the Loop itself reaches the client.
-    wire = Jason.encode!([summaries, detail, pin, preview])
+    wire = Jason.encode!([summaries, detail, pin, preview, panel])
 
     for private <- [loop_row_id, "acme/private-repo", "/loops/", "loop failure text"],
         do: refute(wire =~ private)
@@ -3364,6 +3369,7 @@ defmodule CommaWeb.CommaApiTest do
            args: %{
              "tool" => "im_api.internal.task.create",
              "params" => %{
+               "runs_on" => %{"kind" => "default"},
                "connect_id" => "internal",
                "agent_id" => workspace["default_worker_agent_id"],
                "content" => "Build the requested small website.",

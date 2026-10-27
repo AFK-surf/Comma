@@ -15,6 +15,7 @@ import { route } from "./api.ts";
 import { taskLabelCatalogSchema } from "./comma/schemas.ts";
 import type { TaskLabelCatalog, TaskLabelsValue } from "./contract.ts";
 import { API_LANE, type Ctx, Live } from "./ctx.ts";
+import type { HostedTasks } from "./hosted-tasks.ts";
 
 const catalogDoc = (group: string) => `taskLabels:${group}`;
 const labelsPath = (group: string) => route`/v1/comma/groups/${group}/task-labels`;
@@ -43,6 +44,8 @@ const params = {
 
 export class Labels {
   readonly #ctx: Ctx;
+  /** Tasks Comma's server does not keep: their labels are set where they are kept. */
+  hosted: HostedTasks | undefined;
   readonly #live: Live;
   /** Groups whose last read failed. */
   readonly #failed = new Set<string>();
@@ -162,6 +165,10 @@ export class Labels {
             !labels.every((l) => typeof l === "string" && l !== "" && l.length <= 256)
           )
             throw CoreError.invalid("labels is a list of label ids");
+          if (this.hosted?.owns(conversation))
+            return this.hosted
+              .setLabels(group, conversation, labels as string[])
+              .pipe(Effect.as(null));
           return this.#ctx.session.account().pipe(
             Effect.flatMap((account) =>
               this.#ctx.api.request(

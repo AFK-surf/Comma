@@ -54,6 +54,7 @@ defmodule CommaWeb.RecommendationGoogleMemberSourceTest do
       |> String.split()
       |> Enum.all?(fn
         "in:inbox" -> "INBOX" in labels
+        "in:spam" -> "SPAM" in labels
         "is:important" -> "IMPORTANT" in labels
         "to:me" -> true
         "-category:" <> category -> "CATEGORY_#{String.upcase(category)}" not in labels
@@ -77,7 +78,7 @@ defmodule CommaWeb.RecommendationGoogleMemberSourceTest do
          assert query["q"] =~ "to:me"
          refute query["q"] =~ "is:unread"
          refute query["q"] =~ "-category:social"
-         assert query["maxResults"] == "15"
+         assert query["maxResults"] == if(query["q"] =~ "in:spam", do: "10", else: "15")
 
          {:ok,
           %{
@@ -222,6 +223,34 @@ defmodule CommaWeb.RecommendationGoogleMemberSourceTest do
     assert {:ok, %{"messages" => [item]}, _} = read.([{"long", long}])
     assert byte_size(item["context"]["text"]) <= 1200
     assert item["context"]["truncated"]
+  end
+
+  test "Gmail spam joins the inbox mail, marked as junk" do
+    now = SystemsClock.utc_now()
+    at = DateTime.to_unix(now, :millisecond) - 60_000
+
+    threads = [
+      {"feedback", [mail("feedback", at, ~w(INBOX), "The capture window flickers.")]},
+      {"report", [mail("report", at, ~w(SPAM), "Error report: capture.diskWriteFailed")]}
+    ]
+
+    routes =
+      [
+        {@gmail <> "/profile", {:ok, %{"emailAddress" => "member@example.com"}}},
+        {@gmail <> "/threads", &search(threads, &1, now)}
+      ] ++
+        Enum.map(threads, fn {id, messages} ->
+          {@gmail <> "/threads/" <> id, thread(id, messages)}
+        end)
+
+    assert {:ok, %{"messages" => [feedback, report]}, _} =
+             Source.read("gmail", request(routes), now)
+
+    assert feedback["messageId"] == "feedback"
+    refute feedback["memberRelation"]
+    assert report["messageId"] == "report"
+    assert report["memberRelation"] == "in_your_junk_folder"
+    assert report["webUrl"] =~ "#spam/report"
   end
 
   test "Calendar keeps the coming week's self attendance and excludes declined, cancelled, and unrelated events" do

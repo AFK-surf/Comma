@@ -101,6 +101,46 @@ struct RoutineProse: View {
     }
 }
 
+/// A member task's quoted source words under a quote rule, as the desktop's card shows them: in the title's size, a
+/// quieter ink, one line per source line, at most four lines. The client core reads the server's quote markup into
+/// lines of runs (`RecommendationQuote`); a mention reads a weight heavier and a link underlined. Nothing in it is a
+/// target of its own: the card around it is.
+struct RoutineQuote: View {
+    let quote: RecommendationQuote
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Capsule().fill(CommaTheme.borderPrimary).frame(width: 2)
+            Text(Self.attributed(quote))
+                .font(.callout)
+                .foregroundStyle(CommaTheme.textTertiary)
+                .lineLimit(4)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    static func attributed(_ quote: RecommendationQuote) -> AttributedString {
+        var out = AttributedString()
+        for (index, line) in quote.lines.enumerated() {
+            if index > 0 { out += AttributedString("\n") }
+            if line.listItem { out += AttributedString("• ") }
+            for run in line.runs {
+                var text = AttributedString(run.text)
+                switch run.kind {
+                case .mention:
+                    text.foregroundColor = CommaTheme.textPrimary
+                    text.font = .callout.weight(.medium)
+                case .link: text.underlineStyle = .single
+                case .text, .channel: break
+                }
+                out += text
+            }
+        }
+        return out
+    }
+}
+
 /// A Task named in the briefing's summary, as a link the sheet opens itself.
 enum RoutineLink {
     static let scheme = "comma-task"

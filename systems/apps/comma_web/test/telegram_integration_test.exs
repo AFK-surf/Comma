@@ -352,14 +352,51 @@ defmodule CommaWeb.TelegramIntegrationTest do
       assert task_status(c, id) == "ready_for_review"
 
       card_click(accept["callback_data"], message_id) |> expect_json(200)
-      settle_receive({:telegram_card_edit, "42001", ^message_id, accepted, []})
+      settle_receive({:telegram_card_edit, "42001", ^message_id, accepted, ended_rows})
       assert accepted =~ "Ship the launch notes"
+      assert [[%{"callback_data" => "tr:" <> _}]] = ended_rows
       assert task_status(c, id) == "completed"
 
       # A repeated click reports the same result without a second write.
       card_click(accept["callback_data"], message_id) |> expect_json(200)
-      settle_receive({:telegram_card_edit, "42001", ^message_id, ^accepted, []})
+      settle_receive({:telegram_card_edit, "42001", ^message_id, ^accepted, ^ended_rows})
       assert task_status(c, id) == "completed"
+    end
+
+    test "Clear dismisses a settled Task from /tasks until it runs again", c do
+      assert complete_login(c.session, c.workspace).status == 200
+      id = create_card_task(c, "Draft the release post")
+      set_task(c, id, %{"status" => "failed"})
+
+      settle_receive({:telegram_card, "42001", message_id, _text, rows})
+      clear = Enum.find(List.flatten(rows), &String.ends_with?(&1["callback_data"] || "", ":d"))
+      assert clear["text"] == "Clear"
+
+      # A different Telegram user cannot clear the owner's Task.
+      card_click(clear["callback_data"], message_id, 999) |> expect_json(200)
+      settle_refute_receive({:telegram_card_edit, _, _, _, _}, 200)
+      assert {:ok, []} = Comma.TaskPanelDismissals.list(c.user["id"])
+
+      card_click(clear["callback_data"], message_id) |> expect_json(200)
+      settle_receive({:telegram_card_edit, "42001", ^message_id, cleared, []})
+      assert cleared =~ "Cleared from your Task list"
+
+      {:ok, task} =
+        SalixIM.Conversations.get_group_conversation(c.workspace["default_group_id"], id)
+
+      assert {:ok, [%{"task_id" => ^id, "revision" => revision}]} =
+               Comma.TaskPanelDismissals.list(c.user["id"])
+
+      assert revision == task["run_started_at"]
+
+      webhook_request(private_update(961, "/tasks"), @webhook_secret) |> expect_json(200)
+      settle_receive({:telegram_message, "42001", "No recent tasks" <> _})
+
+      # The Task runs again: /tasks shows it without anyone lifting the dismissal.
+      set_task(c, id, %{"status" => "active"})
+      webhook_request(private_update(962, "/tasks"), @webhook_secret) |> expect_json(200)
+      settle_receive({:telegram_card, "42001", _list_id, list, _keyboard})
+      assert list =~ "Draft the release post"
     end
 
     test "requested changes reach the Task as the owner and never the Router", c do
@@ -1123,6 +1160,53 @@ defmodule CommaWeb.TelegramIntegrationTest do
     refute all_url =~ "token"
   end
 
+  test "tasks command reads past archived Tasks to the ones still shown", %{
+    session: session,
+    workspace: workspace
+  } do
+    :ok = CommaWeb.TestConvergence.workspace!(workspace["id"])
+    group_id = workspace["default_group_id"]
+
+    create = fn title ->
+      {:ok, task} =
+        SalixCluster.TaskSchedules.create_task_conversation(
+          group_id,
+          workspace["router_agent_id"],
+          workspace["default_worker_agent_id"],
+          %{"title" => title, "content" => title, "client_request_id" => "telegram-#{title}"}
+        )
+
+      task["conversation_id"]
+    end
+
+    create.("Older open Task")
+
+    # The 8 newest Tasks are archived: they fill the first page.
+    for index <- 1..8 do
+      id = create.("Archived #{index}")
+
+      {:ok, failed} =
+        SalixIM.ConversationServer.update_group_conversation(group_id, id, %{
+          "status" => "failed"
+        })
+
+      api_request(
+        session,
+        :post,
+        "/v1/comma/groups/#{group_id}/conversations/#{id}/archive",
+        %{"expected_updated_at" => failed["updated_at"]}
+      )
+      |> expect_json(200)
+    end
+
+    assert complete_login(session, workspace).status == 200
+    webhook_request(private_update(952, "/tasks"), @webhook_secret) |> expect_json(200)
+
+    settle_receive({:telegram_card, "42001", _message_id, text, _keyboard})
+    assert text =~ "1. 🔄 Older open Task"
+    refute text =~ "Archived"
+  end
+
   test "signed Mini App data issues only a short Task-panel cookie and revocation stops reads", %{
     session: session,
     workspace: workspace
@@ -1180,6 +1264,14 @@ defmodule CommaWeb.TelegramIntegrationTest do
              |> expect_json(200)
 
     assert task_id == task["conversation_id"]
+
+    # The panel's video player asks for a media URL of its Task's attachment, as
+    # it reads one: the request passes the panel's checks (this Task has none).
+    attachment_path =
+      "/v1/comma/groups/#{group_id}/conversations/#{task["conversation_id"]}/messages/msg1/attachments/0"
+
+    assert miniapp_cookie_request(:post, attachment_path <> "/media", cookie.value).status ==
+             404
 
     {:ok, router_chat} = SalixIM.RouterConversationInput.ensure(group_id)
     router_chat_id = router_chat["conversation_id"]
@@ -1254,6 +1346,9 @@ defmodule CommaWeb.TelegramIntegrationTest do
     link = Comma.TelegramLinks.get_link(workspace["id"])
     refute link.connect_id == old_connect_id
     assert miniapp_cookie_request(:get, "/v1/comma/auth/session", cookie.value).status == 401
+    # Nor may it mint a media URL any more.
+    assert miniapp_cookie_request(:post, attachment_path <> "/media", cookie.value).status ==
+             401
 
     relogin = miniapp_login(group_id, signed_init_data(42_001), cookie.value)
     assert %{"session_id" => _} = expect_json(relogin, 201)
@@ -1286,6 +1381,73 @@ defmodule CommaWeb.TelegramIntegrationTest do
              "Partitioned"
 
     assert miniapp_login(group_id, signed_init_data(42_001)).status == 401
+  end
+
+  # A Telegram button opens a Comma app in the same panel (`CommaWeb.MiniAppPort.telegram_app_url/3`): its session
+  # reaches the app's routes through its own Workspace, and nothing of another Workspace or a share link.
+  test "a Telegram panel session runs its Workspace's apps and nothing else of them", %{
+    session: session,
+    workspace: workspace
+  } do
+    group_id = workspace["default_group_id"]
+    ws = workspace["id"]
+    assert complete_login(session, workspace).status == 200
+    login = miniapp_login(group_id, signed_init_data(42_001))
+    assert %{"session_id" => _} = expect_json(login, 201)
+    cookie = login.resp_cookies[CommaWeb.SessionCookie.panel_cookie_name()].value
+    app_id = SystemsRuntime.Proc.uuid()
+    version_id = SystemsRuntime.Proc.uuid()
+
+    app =
+      Comma.Repo.insert!(%Comma.MiniApps.App{
+        id: app_id,
+        slug: "habits01",
+        workspace_id: ws,
+        group_id: group_id,
+        name: "Habit tracker",
+        repo_owner: "ann",
+        repo_name: "comma-app-habits01",
+        visibility: "workspace",
+        next_version: 2
+      })
+
+    Comma.Repo.insert!(%Comma.MiniApps.Version{
+      id: version_id,
+      app_id: app_id,
+      number: 1,
+      state: "ready",
+      digest: "d1",
+      deploy_key: "k1",
+      commit: "c1"
+    })
+
+    app |> Ecto.Changeset.change(live_version_id: version_id) |> Comma.Repo.update!()
+
+    own = [{"x-comma-app-via", "workspace/#{ws}"}]
+
+    # The session reaches the app as its Workspace's member. This Workspace has
+    # no billing account, so the app answers that it is paused (not 401 or 403).
+    assert %{"error" => "app_paused"} =
+             miniapp_cookie_request(:post, "/v1/comma/apps/#{app_id}/open", cookie, own)
+             |> expect_json(402)
+
+    assert %{"name" => "Habit tracker"} =
+             miniapp_cookie_request(:get, "/v1/comma/workspaces/#{ws}/apps/#{app_id}", cookie)
+             |> expect_json(200)
+
+    for {method, path, headers} <- [
+          {:post, "/v1/comma/apps/#{app_id}/open", []},
+          {:post, "/v1/comma/apps/#{app_id}/open", [{"x-comma-app-via", "workspace/other"}]},
+          {:post, "/v1/comma/apps/#{app_id}/open", [{"x-comma-app-via", "link/token"}]},
+          {:get, "/v1/comma/apps/links/token", own},
+          {:get, "/v1/comma/workspaces/#{ws}/apps", []},
+          {:patch, "/v1/comma/workspaces/#{ws}/apps/#{app_id}", []},
+          {:post, "/v1/comma/workspaces/#{ws}/apps/#{app_id}/publish", []},
+          {:get, "/v1/comma/workspaces/other/apps/#{app_id}", []}
+        ] do
+      assert miniapp_cookie_request(method, path, cookie, headers).status == 401,
+             "#{method} #{path} #{inspect(headers)}"
+    end
   end
 
   test "Mini App login rejects forged, stale, unbound, and wrong-account launches", %{
@@ -1478,11 +1640,13 @@ defmodule CommaWeb.TelegramIntegrationTest do
     call(conn)
   end
 
-  defp miniapp_cookie_request(method, path, cookie_token) do
+  defp miniapp_cookie_request(method, path, cookie_token, headers \\ []) do
     {:ok, _user, session} = Comma.Accounts.resolve_session(cookie_token)
 
-    method
-    |> conn(path)
+    headers
+    |> Enum.reduce(conn(method, path), fn {name, value}, conn ->
+      put_req_header(conn, name, value)
+    end)
     |> put_req_header("cookie", "#{CommaWeb.SessionCookie.panel_cookie_name()}=#{cookie_token}")
     |> miniapp_web_headers(session["id"])
     |> call()

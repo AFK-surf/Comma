@@ -33,6 +33,9 @@ type EnvironmentSpec struct {
 	// LmhubUserAgent is the user agent the internal LMHub gateway admits this
 	// environment by; empty sends none.
 	LmhubUserAgent string `json:"lmhubUserAgent,omitempty"`
+	// L4ES is where the environment's coding sandboxes run
+	// (docs/compute-devices.md#coding-sandboxes); without a URL they are off.
+	L4ES L4ESEnvironmentSpec `json:"l4es,omitempty"`
 	// The following fields name live provider resources. They are not stored
 	// in the versioned spec. LoadEnvironmentSpec fills them, together with
 	// Project and Cluster, from the release environment configuration.
@@ -54,6 +57,17 @@ type EnvironmentSpec struct {
 	// the reviewed staging route, while production stays disabled unless its
 	// versioned environment spec is changed.
 	AlertRouter AlertRouterEnvironmentSpec `json:"alertRouter"`
+}
+
+// L4ESEnvironmentSpec names the L4ES service, an operator image for coding
+// sandboxes, their size (empty: L4ES's default) and how many a Group may have.
+// A release's own sandbox image (COMMA_SANDBOX_IMAGE_MANIFEST, the image built
+// from the release revision's sources) takes the operator image's place.
+type L4ESEnvironmentSpec struct {
+	URL          string `json:"url"`
+	Image        string `json:"image,omitempty"`
+	Size         string `json:"size,omitempty"`
+	MaxSandboxes int    `json:"maxSandboxes,omitempty"`
 }
 
 type AlertRouterEnvironmentSpec struct {
@@ -2132,6 +2146,22 @@ func (p KubectlPlatform) buildHelmValues(replacements map[string]string) ([]byte
 		"references":     map[string]any{"commaSecrets": replacements["COMMA_SECRETS_NAME"], "salixConfigSecret": replacements["SALIX_CONFIG_SECRET_NAME"], "alertRouterConfigSecret": alertRouterConfigSecret, "agentVmmGatewayRuntimeSecret": "salix-vmm-gateway-runtime", "agentVmmGatewayClientTlsSecret": "salix-vmm-gateway-client-tls", "computeWorkloadCredentialSecret": "salix-compute-runtime", "salixTlsSecret": replacements["SALIX_TLS_SECRET_NAME"], "salixSitesTlsSecret": replacements["SALIX_SITES_TLS_SECRET_NAME"], "teamsTlsSecret": replacements["TEAMS_TLS_SECRET_NAME"]},
 		"ssh":            map[string]any{"enabled": p.Spec.SSHEnabled},
 		"network":        map[string]any{"staticIpName": replacements["COMMA_STATIC_IP"], "salixHost": replacements["SALIX_HOST"], "salixSitesDomain": replacements["SALIX_SITES_DOMAIN"], "bridgeHost": replacements["BRIDGE_HOST"]},
+	}
+	if l4es := p.Spec.L4ES; l4es.URL != "" {
+		runtime := values["runtime"].(map[string]any)
+		runtime["l4esURL"] = l4es.URL
+		if l4es.Image != "" {
+			runtime["l4esImage"] = l4es.Image
+		}
+		if manifest := replacements["COMMA_SANDBOX_IMAGE_MANIFEST"]; manifest != "" {
+			runtime["l4esImageManifest"] = manifest
+		}
+		if l4es.Size != "" {
+			runtime["l4esSize"] = l4es.Size
+		}
+		if l4es.MaxSandboxes > 0 {
+			runtime["l4esMaxSandboxes"] = l4es.MaxSandboxes
+		}
 	}
 	return json.Marshal(values)
 }

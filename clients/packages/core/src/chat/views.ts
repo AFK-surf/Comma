@@ -5,9 +5,17 @@
 // A window's calls apply in the order it made them (`#inTurn`): an edit made before a send is that message's, one made
 // after it is the next draft's. Each call takes its turn on arrival and gives it up once its coordinator step ran;
 // what that step started (a send's transmission, a pick's dialog) goes on outside the turn.
+//
+// A conversation the coordinator does not hold (a Task a station hosts) is shown and acted on by `hosted`, which takes
+// each call as the coordinator does (`ConversationHolder`): the window sees and does to it what it sees and does to any
+// Task.
 import {
+  chatConversationFileSchema,
+  chatLocalFileSchema,
   chatRetainInputSchema,
+  chatTaskRunChoiceSchema,
   type ChatCommandReceipt,
+  type ChatMessage,
   type ChatPickAttachmentsResult,
   type ChatRetainInput,
   type ConversationProjection,
@@ -23,6 +31,7 @@ import { Deferred, Effect, Exit, Fiber } from "effect";
 import { z } from "zod";
 import type { ChatSessionIdentity, ChatViewValue } from "../contract.ts";
 import type { Ctx } from "../ctx.ts";
+import type { HostedFiles } from "../files.ts";
 import { asCoreError, parse } from "./calls.ts";
 import type { ChatCoordinator } from "./coordinator/ChatCoordinator.ts";
 import type { ChatEnv } from "./env.ts";
@@ -31,8 +40,69 @@ import { pickQuota } from "./model/attachmentQuota.ts";
 import { attachTextsToMessage, MAX_ATTACHMENTS_PER_MESSAGE } from "./model/protocol.ts";
 import { projectionToChannelState } from "./view-state.ts";
 
-/** A failed pick's row (coordinator/intake/intakeOutcomes.ts). */
-const INTAKE_FAILURE_PREFIX = "chat-intake-failure:";
+/** A failed pick's row (coordinator/intake/intakeOutcomes.ts); `hosted` names its own so too. */
+export const INTAKE_FAILURE_PREFIX = "chat-intake-failure:";
+
+/** A conversation the coordinator does not hold, by its target. */
+export type HostedTarget = { workspace: string; group: string; conversation: string };
+
+/**
+ * What a window does to a conversation, and the intakes that bring files to its draft (a pick, a drop, AirDrop): the
+ * coordinator does it to the conversations it holds, `hosted` to its own. Each takes and answers a call alike.
+ */
+export type ConversationHolder = Pick<
+  ChatCoordinator,
+  | "setDraft"
+  | "prefillDraft"
+  | "beginSendIntent"
+  | "cancelSendIntent"
+  | "send"
+  | "retry"
+  | "discard"
+  | "refresh"
+  | "older"
+  | "readTaskActivity"
+  | "clearPresentation"
+  | "acceptTaskReview"
+  | "setTaskStatus"
+  | "setTaskRun"
+  | "attach"
+  | "attachQuestion"
+  | "attachLocalFiles"
+  | "attachConversationFiles"
+  | "removeAttachment"
+  | "removeQuestionAttachment"
+  | "retryAttachment"
+  | "retryQuestionAttachment"
+  | "answerQuestion"
+  | "claimAttachmentIntake"
+>;
+
+/** What one pick may add to a draft (`pickQuota`'s shape). */
+export type PickRoom = NonNullable<ReturnType<typeof pickQuota>>;
+
+/**
+ * Conversations the coordinator does not hold (a Task a station hosts, stations/conversation.ts): a view of one is
+ * shown, and its calls taken, there.
+ */
+export interface HostedConversations extends ConversationHolder, HostedFiles {
+  owns(conversation: string): boolean;
+  /** A window shows it, by the view's topic (`chatView`). */
+  show(target: HostedTarget, view: Topic): void;
+  hide(target: HostedTarget, view: Topic): void;
+  /** Counts every change of what its views show. */
+  revision(): number;
+  draftEpoch(target: HostedTarget): number;
+  projection(target: HostedTarget): ConversationProjection;
+  /** What a pick may add to the draft now; null when it is full. */
+  room(target: HostedTarget): PickRoom | null;
+  /** The messages around `messageId` (`chat.messageContext`). */
+  messageContext(
+    group: string,
+    conversation: string,
+    messageId: string
+  ): Effect.Effect<ChatMessage[], CoreError>;
+}
 
 /** What the views need of the core's chat. */
 export interface ChatViewHost {
@@ -44,6 +114,8 @@ export interface ChatViewHost {
   own(client: ClientId, input: { surfaceId: string; subscriberId: string }): void;
   /** What every chat call waits for (the account's data open) and checks (the session it names); its params left. */
   admit(name: string, params: unknown): Effect.Effect<unknown, CoreError>;
+  /** The conversations the coordinator does not hold. */
+  hosted(): HostedConversations | undefined;
   /** A pick through Electron's file dialog, for a leased draft. */
   pick(
     input: ChatRetainInput & {
@@ -145,6 +217,7 @@ export class ChatViews {
       evictAfterMs: 0,
       start: (topic) => {
         const target = targetOf(topic);
+        const hosted = this.#hosted(target.conversation);
         const view: View = {
           lease: chatRetainInputSchema.parse({
             workspaceId: target.workspace,
@@ -157,13 +230,20 @@ export class ChatViews {
           retained: false,
         };
         this.#views.set(view.lease.subscriberId, view);
-        this.#retain(view);
+        if (hosted) hosted.show(target, topic);
+        else this.#retain(view);
       },
       stop: (topic) => {
-        const subscriberId = subscriberOf(targetOf(topic));
+        const target = targetOf(topic);
+        const subscriberId = subscriberOf(target);
         const view = this.#views.get(subscriberId);
         if (!view) return;
         this.#views.delete(subscriberId);
+        const hosted = this.#hosted(target.conversation);
+        if (hosted) {
+          hosted.hide(target, topic);
+          return;
+        }
         try {
           host.coordinator().release(view.lease);
         } catch {
@@ -187,8 +267,49 @@ export class ChatViews {
     for (const view of this.#views.values()) view.retained = false;
   }
 
+  /**
+   * The one conversation `hosted` holds that window `surfaceId` shows, as the coordinator says the one it holds
+   * (`incomingAttachmentTarget`); undefined when the window shows none or several.
+   */
+  hostedShownBy(surfaceId: string) {
+    const shown = [...this.#views.values()].filter(
+      (view) => view.surfaceId === surfaceId && this.#hosted(view.lease.conversationId)
+    );
+    if (shown.length !== 1) return undefined;
+    const { lease } = shown[0]!;
+    const hosted = this.#hosted(lease.conversationId)!;
+    const conversation = hosted.projection({
+      workspace: lease.workspaceId,
+      group: lease.groupId,
+      conversation: lease.conversationId,
+    }).conversation;
+    return {
+      workspaceId: lease.workspaceId,
+      groupId: lease.groupId,
+      conversationId: lease.conversationId,
+      subscriberId: lease.subscriberId,
+      leaseId: lease.leaseId,
+      surfaceId,
+      conversation: conversation && {
+        kind: conversation.kind,
+        title: conversation.title,
+      },
+    };
+  }
+
+  /** `hosted`, when it holds the conversation. */
+  #hosted(conversation: string): HostedConversations | undefined {
+    const hosted = this.#host.hosted();
+    return hosted?.owns(conversation) ? hosted : undefined;
+  }
+
   #retain(view: View): void {
-    if (view.retained || this.#host.ctx.session.current() === null) return;
+    if (
+      view.retained ||
+      this.#host.ctx.session.current() === null ||
+      this.#hosted(view.lease.conversationId)
+    )
+      return;
     try {
       this.#host.coordinator().retain(view.lease);
       view.retained = true;
@@ -199,6 +320,20 @@ export class ChatViews {
 
   #value(target: Target): ChatViewValue {
     const host = this.#host;
+    const hosted = this.#hosted(target.conversation);
+    if (hosted) {
+      const view = this.#views.get(subscriberOf(target));
+      const shown = view && !host.ctx.session.withheld();
+      return {
+        session: host.identity(),
+        revision: hosted.revision(),
+        draftEpoch: shown ? hosted.draftEpoch(target) : null,
+        lease: shown
+          ? { leaseId: view.lease.leaseId, subscriberId: subscriberOf(target) }
+          : null,
+        state: shown ? projectionToChannelState(hosted.projection(target)) : null,
+      };
+    }
     const coordinator = host.coordinator();
     const snapshot = coordinator.state();
     const subscriberId = subscriberOf(target);
@@ -305,7 +440,9 @@ export class ChatViews {
 
   /** `chatView.*`. */
   calls(): Record<string, Call> {
-    const c = () => this.#host.coordinator();
+    /** Who takes a call on `view`'s conversation. */
+    const c = (view: View): ConversationHolder =>
+      this.#hosted(view.lease.conversationId) ?? this.#host.coordinator();
     const on = <S extends z.ZodType, A>(
       name: string,
       schema: S,
@@ -318,10 +455,13 @@ export class ChatViews {
       name,
       {
         run: (params, call) =>
-          this.#inTurn(name, call.client, params, (rest) => () => {
-            const view = this.#view(call.client, rest);
-            return run(view, parse(schema, rest), call);
-          }),
+          this.#inTurn(
+            name,
+            call.client,
+            params,
+            (rest) => () =>
+              run(this.#view(call.client, rest), parse(schema, rest), call)
+          ),
       },
     ];
     const withDraft = targetSchema.extend({ draft: z.string() });
@@ -332,17 +472,17 @@ export class ChatViews {
     });
     return Object.fromEntries([
       on("chatView.setDraft", withDraft, (v, i) =>
-        c().setDraft({ ...leased(v), draft: i.draft })
+        c(v).setDraft({ ...leased(v), draft: i.draft })
       ),
       on("chatView.prefillDraft", withDraft, (v, i) =>
-        c().prefillDraft({ ...leased(v), draft: i.draft })
+        c(v).prefillDraft({ ...leased(v), draft: i.draft })
       ),
       on("chatView.send", sendSchema, (v, i, call) => {
         const sendIntentId = this.#host.env.uuid();
         const intent = { ...leased(v), sendIntentId };
-        c().beginSendIntent(intent);
-        const coordinator = c();
-        return coordinator
+        const holder = c(v);
+        holder.beginSendIntent(intent);
+        return holder
           .send(
             {
               ...intent,
@@ -361,7 +501,7 @@ export class ChatViews {
             Effect.tapError(() =>
               Effect.sync(() => {
                 try {
-                  coordinator.cancelSendIntent(intent);
+                  holder.cancelSendIntent(intent);
                 } catch {
                   // Committed, or the lease is gone: nothing is reserved.
                 }
@@ -370,23 +510,23 @@ export class ChatViews {
           );
       }),
       on("chatView.retry", withRequest, (v, i) =>
-        c().retry({ ...v.lease, clientRequestId: i.clientRequestId })
+        c(v).retry({ ...v.lease, clientRequestId: i.clientRequestId })
       ),
       on("chatView.discard", withRequest, (v, i) =>
-        c().discard({ ...v.lease, clientRequestId: i.clientRequestId })
+        c(v).discard({ ...v.lease, clientRequestId: i.clientRequestId })
       ),
-      on("chatView.refresh", targetSchema, (v) => c().refresh(v.lease)),
-      on("chatView.older", targetSchema, (v) => c().older(v.lease)),
+      on("chatView.refresh", targetSchema, (v) => c(v).refresh(v.lease)),
+      on("chatView.older", targetSchema, (v) => c(v).older(v.lease)),
       on("chatView.readTaskActivity", targetSchema, (v) =>
-        c().readTaskActivity(v.lease)
+        c(v).readTaskActivity(v.lease)
       ),
       on("chatView.clearPresentation", targetSchema, (v) =>
-        c().clearPresentation(v.lease)
+        c(v).clearPresentation(v.lease)
       ),
       on(
         "chatView.acceptTaskReview",
         targetSchema.extend({ reviewVersion: z.number().int().nonnegative() }),
-        (v, i) => c().acceptTaskReview({ ...v.lease, reviewVersion: i.reviewVersion })
+        (v, i) => c(v).acceptTaskReview({ ...v.lease, reviewVersion: i.reviewVersion })
       ),
       on(
         "chatView.setTaskStatus",
@@ -395,11 +535,16 @@ export class ChatViews {
           expectedUpdatedAt: z.number().int().positive(),
         }),
         (v, i) =>
-          c().setTaskStatus({
+          c(v).setTaskStatus({
             ...v.lease,
             status: i.status,
             expectedUpdatedAt: i.expectedUpdatedAt,
           })
+      ),
+      on(
+        "chatView.setTaskRun",
+        targetSchema.extend({ run: chatTaskRunChoiceSchema }),
+        (v, i) => c(v).setTaskRun({ ...v.lease, run: i.run })
       ),
       on(
         "chatView.attach",
@@ -419,34 +564,49 @@ export class ChatViews {
         (v, i) => {
           // A question card's images: its other answer takes them, apart from the draft.
           if (i.questionMessageId)
-            return c().attachQuestion({
+            return c(v).attachQuestion({
               ...v.lease,
               questionMessageId: i.questionMessageId,
               files: i.files,
             });
-          let receipt: ChatCommandReceipt = { revision: c().state().revision };
-          for (const file of i.files) receipt = c().attach({ ...leased(v), ...file });
-          return receipt;
+          let receipt: ChatCommandReceipt | undefined;
+          for (const file of i.files) receipt = c(v).attach({ ...leased(v), ...file });
+          return receipt!;
         }
+      ),
+      on(
+        "chatView.attachLocalFiles",
+        targetSchema.extend({ files: z.array(chatLocalFileSchema).min(1).max(50) }),
+        (v, i) => c(v).attachLocalFiles({ ...leased(v), files: i.files })
+      ),
+      on(
+        "chatView.attachConversationFiles",
+        targetSchema.extend({
+          files: z
+            .array(chatConversationFileSchema)
+            .min(1)
+            .max(MAX_ATTACHMENTS_PER_MESSAGE),
+        }),
+        (v, i) => c(v).attachConversationFiles({ ...leased(v), files: i.files })
       ),
       on("chatView.removeAttachment", withAttachment, (v, i) =>
         i.questionMessageId
-          ? c().removeQuestionAttachment({
+          ? c(v).removeQuestionAttachment({
               ...v.lease,
               questionMessageId: i.questionMessageId,
               attachmentId: i.attachmentId,
             })
-          : c().removeAttachment({ ...leased(v), attachmentId: i.attachmentId })
+          : c(v).removeAttachment({ ...leased(v), attachmentId: i.attachmentId })
       ),
       on("chatView.retryAttachment", withAttachment, (v, i) => {
         if (i.questionMessageId)
-          return c().retryQuestionAttachment({
+          return c(v).retryQuestionAttachment({
             ...v.lease,
             questionMessageId: i.questionMessageId,
             attachmentId: i.attachmentId,
           });
         const retry = () =>
-          c().retryAttachment({ ...leased(v), attachmentId: i.attachmentId });
+          c(v).retryAttachment({ ...leased(v), attachmentId: i.attachmentId });
         // A failed pick's row: another pick takes its place (whatever it picks, the failure is resolved).
         if (!i.attachmentId.startsWith(INTAKE_FAILURE_PREFIX)) return retry();
         const picking = this.#pick(v);
@@ -465,7 +625,7 @@ export class ChatViews {
           skipped: z.boolean().optional(),
         }),
         (v, i) =>
-          c().answerQuestion({
+          c(v).answerQuestion({
             ...v.lease,
             questionMessageId: i.questionMessageId,
             choiceIds: i.choiceIds,
@@ -488,7 +648,10 @@ export class ChatViews {
       conversation: view.lease.conversationId,
       surface: view.surfaceId,
     };
-    const quota = pickQuota(this.#value(target).state?.draftAttachments ?? []);
+    const hosted = this.#hosted(target.conversation);
+    const quota = hosted
+      ? hosted.room(target)
+      : pickQuota(this.#value(target).state?.draftAttachments ?? []);
     if (!quota) return undefined;
     return this.#host.pick({ ...view.lease, surfaceId: view.surfaceId, ...quota });
   }

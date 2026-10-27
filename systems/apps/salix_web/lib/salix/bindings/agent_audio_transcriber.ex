@@ -4,6 +4,7 @@ defmodule Salix.Bindings.AgentAudioTranscriber do
   @behaviour SalixAgent.AudioTranscriber
 
   alias SalixAgent.FileBackend
+  alias SalixMeetNative.ASR.Segmenter
   alias SalixLlm.Transcribe
 
   @max_audio_bytes 30 * 1024 * 1024
@@ -61,6 +62,53 @@ defmodule Salix.Bindings.AgentAudioTranscriber do
         transcribe_opts
       )
     end
+  end
+
+  @doc """
+  The words of one live dictation segment, 16 kHz mono s16le PCM, as
+  dictation: what `CommaWeb.DictationSocket` sends as the segment's final words.
+
+  On short audio the model can answer with a whole made-up request (a second
+  of speech gave four sentences about Notion and Slack): words more than
+  anyone says in the audio's voiced time are refused as `:asr_words_exceed_audio`.
+  """
+  def transcribe_dictation(pcm, opts \\ []) when is_binary(pcm) do
+    wav = wav(pcm)
+
+    case transcribe_upload([wav], byte_size(wav), "dictation.wav", [purpose: :dictation] ++ opts) do
+      {:ok, %{transcript: transcript}} ->
+        if spoken_weight(transcript) <= 10 + 40 * Segmenter.voiced_seconds(pcm),
+          do: {:ok, transcript},
+          else: {:error, :asr_words_exceed_audio}
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  # About 3 for each Han, kana or Hangul character, which says a syllable or
+  # more, and 1 for any other letter, digit or mark. Dictation measured 15 to 19
+  # for each voiced second; 40 leaves room for fast speakers.
+  defp spoken_weight(text) do
+    text
+    |> String.to_charlist()
+    |> Enum.reduce(0, fn
+      c, sum when c in [?\s, ?\n, ?\t] -> sum
+      c, sum when c in 0x3040..0x30FF or c in 0x3400..0x9FFF or c in 0xAC00..0xD7AF -> sum + 3
+      _c, sum -> sum + 1
+    end)
+  end
+
+  # The chunker checks that its MP3 keeps every sample; MP3 frames hold 1152,
+  # so silence pads the audio to whole frames.
+  defp wav(pcm) do
+    rate = 16_000
+    pcm = pcm <> :binary.copy(<<0>>, rem(2_304 - rem(byte_size(pcm), 2_304), 2_304))
+    size = byte_size(pcm)
+
+    <<"RIFF", size + 36::little-32, "WAVE", "fmt ", 16::little-32, 1::little-16, 1::little-16,
+      rate::little-32, rate * 2::little-32, 2::little-16, 16::little-16, "data", size::little-32>> <>
+      pcm
   end
 
   # A person waits for dictation: the model answers without long reasoning, a

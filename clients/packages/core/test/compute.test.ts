@@ -77,6 +77,26 @@ describe("Settings › Compute", () => {
     expect(t2.api.seen("GET", base)).toHaveLength(5);
   });
 
+  it("shows a workload's problem, and a problem code it does not know as `other`", async () => {
+    const t = setup();
+    t.api.on(
+      "GET",
+      base,
+      projection([
+        { ...workload("w1"), problem: { code: "host_unreachable", retryable: true } },
+        { ...workload("w2"), problem: { code: "disk_on_fire", retryable: false } },
+        { ...workload("w3", "ready"), problem: null },
+      ])
+    );
+    const shown = t.watch<ComputeValue>({ topic: "compute" });
+    await t.time.pass(100);
+    expect(shown().projection?.workloads.map((w) => w.problem)).toEqual([
+      { code: "host_unreachable", retryable: true },
+      { code: "other", retryable: false },
+      null,
+    ]);
+  });
+
   it("lets the page drive reads when `shared`", async () => {
     const t = setup();
     t.api.on("GET", base, projection([workload("w1")]));
@@ -122,6 +142,122 @@ describe("Settings › Compute", () => {
     const later = again.watch<ComputeValue>({ topic: "compute" });
     await again.time.pass(100);
     expect(later()).toMatchObject({ creation: null, accepted: { id: "w9" } });
+    again.api.on("GET", base, projection([workload("w9", "ready")]));
+    await again.client.call("compute.refresh", {});
+    await again.time.pass(100);
+    expect(later().projection?.workloads).toMatchObject([{ id: "w9" }]);
+    expect(later().accepted).toBeNull();
+  });
+
+  it("settles a recovered creation whose durable receipt is already retired", async () => {
+    const host = new FakeHost();
+    const first = setup(host);
+    first.api.on("GET", base, projection([]));
+    first.api.on("POST", `${base}/workloads`, offline());
+    first.watch({ topic: "compute" });
+    await first.time.pass(100);
+    const failed = expect(
+      first.client.call("compute.create", { workspace: WS, environment: "env" })
+    ).rejects.toMatchObject({ code: "network" });
+    await first.time.pass(100);
+    await failed;
+    const sent = first.api.seen("POST", `${base}/workloads`)[0]!.body as {
+      request_id: string;
+    };
+    first.core.close();
+
+    const again = setup(host);
+    again.api.on("GET", base, projection([]));
+    again.api.on("GET", `${base}/requests/${sent.request_id}`, {
+      workload: workload("w9", "cloud_retired"),
+    });
+    const shown = again.watch<ComputeValue>({ topic: "compute" });
+    await again.time.pass(100);
+    expect(shown()).toMatchObject({ creation: null, accepted: null, error: false });
+  });
+
+  it("lets a completed deletion retire the accepted creation snapshot", async () => {
+    const t = setup();
+    const ready = workload("w1", "ready");
+    const rows: unknown[] = [];
+    let current = ready;
+    t.api.on("GET", base, () => json(200, projection(rows)));
+    t.api.on("POST", `${base}/workloads`, { workload: ready });
+    t.api.on("GET", `${base}/workloads/w1`, () => json(200, { workload: current }));
+    const shown = t.watch<ComputeValue>({ topic: "compute", after: "w0" });
+    await t.time.pass(100);
+    const created = t.client.call("compute.create", {
+      workspace: WS,
+      environment: "env",
+    });
+    await t.time.pass(100);
+    await created;
+    expect(shown().accepted?.id).toBe("w1");
+
+    // Another client finishes deletion; the next list omits the durable receipt.
+    current = { ...ready, phase: "deleted", revision: 2 };
+    await t.client.call("compute.refresh", {});
+    await t.time.pass(100);
+    expect(shown().accepted).toBeNull();
+    expect(shown().projection?.workloads).toEqual([]);
+  });
+
+  it("keeps an accepted deletion visible while cleanup needs the original device", async () => {
+    const t = setup();
+    const ready = workload("w1", "ready");
+    const deleting = {
+      ...ready,
+      phase: "deleting",
+      revision: 2,
+      deletion: {
+        request_id: "delete-request",
+        phase: "waiting_original_device",
+        error: "original_device_offline",
+      },
+    };
+    t.api.on("GET", base, projection([]));
+    t.api.on("POST", `${base}/workloads`, { workload: ready });
+    let current = deleting;
+    t.api.on("GET", `${base}/workloads/w1`, () => json(200, { workload: current }));
+    t.api.on("POST", `${base}/workloads/w1/deletion`, () =>
+      json(200, { workload: current })
+    );
+    const shown = t.watch<ComputeValue>({ topic: "compute", shared: "1" });
+    await t.time.pass(100);
+    const created = t.client.call("compute.create", {
+      workspace: WS,
+      environment: "env",
+    });
+    await t.time.pass(100);
+    await created;
+    const deleted = t.client.call("compute.delete", {
+      workspace: WS,
+      id: "w1",
+      generation: 1,
+    });
+    await t.time.pass(100);
+    await deleted;
+    expect(shown().accepted).toMatchObject({
+      id: "w1",
+      deletion: { error: "original_device_offline" },
+    });
+
+    current = {
+      ...deleting,
+      phase: "deleted",
+      deletion: { ...deleting.deletion, phase: "complete" },
+    };
+    const completed = t.client.call("compute.delete", {
+      workspace: WS,
+      id: "w1",
+      generation: 1,
+    });
+    await t.time.pass(100);
+    await completed;
+    expect(shown().accepted).toBeNull();
+    await t.client.call("compute.refresh", {});
+    await t.time.pass(100);
+    expect(shown().accepted).toBeNull();
   });
 
   it("reuses a deletion's request id until the server answers", async () => {
@@ -133,7 +269,7 @@ describe("Settings › Compute", () => {
     );
     t.watch({ topic: "compute" });
     await t.time.pass(100);
-    const params = { workspace: WS, id: "w1", revision: 1, generation: 1 };
+    const params = { workspace: WS, id: "w1", generation: 1 };
     const failed = expect(
       t.client.call("compute.delete", params)
     ).rejects.toMatchObject({

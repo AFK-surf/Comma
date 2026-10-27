@@ -81,15 +81,20 @@ export function transcriptPath(runtime: "claude" | "codex", home: string, id: st
   return find(join(home, "sessions"));
 }
 
-/// The transcripts of a session's runtime sessions (`ids`, the first first, ending with its current one), each looked
-/// for in the homes given (its profile's first): a runtime session that ran on another account may have written into
-/// that account's home (one whose transcript directory is not the shared one, agent-home.ts `linkTranscripts`).
-/// `current` is whether the current one's is there: a runtime writes it only once its conversation has begun.
-export function transcriptPaths(runtime: "claude" | "codex", homes: string[], ids: string[]): { paths: string[]; current: boolean } {
-  const found = ids.map((id) => {
+/// A transcript, and the runtime that writes it.
+export type Transcript = { runtime: "claude" | "codex"; path: string };
+
+/// The transcripts of a session's runtime sessions (`ran`, the first first, ending with its current one; each with the
+/// runtime it ran), each looked for in the homes given (its profile's first): a runtime session that ran on another
+/// account may have written into that account's home (one whose transcript directory is not the shared one,
+/// agent-home.ts `linkTranscripts`). `current` is whether the current one's is there: a runtime writes it only once its
+/// conversation has begun.
+export function transcriptPaths(homes: string[], ran: { id: string; runtime: string }[]): { paths: Transcript[]; current: boolean } {
+  const found = ran.map(({ id, runtime }): Transcript | null => {
+    if (runtime !== "claude" && runtime !== "codex") return null;
     for (const home of homes) {
       const path = transcriptPath(runtime, home, id);
-      if (path !== null) return path;
+      if (path !== null) return { runtime, path };
     }
     return null;
   });

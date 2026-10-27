@@ -99,9 +99,12 @@ defmodule Comma.Compute do
       page = Enum.map(items, &elem(&1, 0))
       ids = Enum.map(page, & &1.id)
 
+      bindings = Enum.map(items, &elem(&1, 2))
+
       projection = %{
         allocations: Enum.map(items, &elem(&1, 1)),
-        bindings: Enum.map(items, &elem(&1, 2)),
+        bindings: bindings,
+        registration_devices: registration_devices(bindings),
         runtimes:
           SalixStore.Repo.all(
             from(r in Compute.RuntimeInstance,
@@ -166,7 +169,13 @@ defmodule Comma.Compute do
     end
   end
 
-  def request_agent_vmm_install(user, session, workspace_id, attrs) do
+  def request_agent_vmm_install(user, session, workspace_id, attrs),
+    do: request_agent_vmm_delivery(user, session, workspace_id, attrs, "comma_main_device")
+
+  def request_agent_vmm_headless_install(user, session, workspace_id, attrs),
+    do: request_agent_vmm_delivery(user, session, workspace_id, attrs, "headless")
+
+  defp request_agent_vmm_delivery(user, session, workspace_id, attrs, delivery) do
     with {:ok, workspace} <- Workspaces.authorize(user, session, workspace_id),
          {:ok, request_id} <- id(attrs["request_id"]),
          {:ok, target_id} <- session_delivery_target(session),
@@ -181,7 +190,7 @@ defmodule Comma.Compute do
                scope_key: workspace_id,
                client_request_id: request_id,
                provider: "agent-vmm",
-               delivery_target_type: "comma_main_device",
+               delivery_target_type: delivery,
                delivery_target_id: target_id,
                authorizing_subject_id: user["id"],
                authorizing_audience: recovery_audience()
@@ -456,6 +465,7 @@ defmodule Comma.Compute do
       page = %{
         allocations: [allocation],
         bindings: [binding],
+        registration_devices: registration_devices([binding]),
         runtimes:
           SalixStore.Repo.all(
             from(r in Compute.RuntimeInstance,
@@ -496,14 +506,13 @@ defmodule Comma.Compute do
   end
 
   def rename_workload(user, session, workspace_id, workload_id, attrs) do
+    # A sent `revision` is ignored: the last rename wins.
     with {:ok, workspace} <- Workspaces.authorize(user, session, workspace_id),
-         {:ok, expected} <- revision(attrs["revision"]),
          {:ok, _} <-
            SalixStore.ComputeWorkloadManagement.rename(
              workspace["salix_tenant_id"],
              workspace_id,
              workload_id,
-             expected,
              attrs["name"],
              fn -> reauthorize(user, session, workspace_id) end
            ) do
@@ -512,8 +521,8 @@ defmodule Comma.Compute do
   end
 
   def delete_workload(user, session, workspace_id, workload_id, attrs) do
+    # Deletion is fenced by `generation`; a sent `revision` is ignored.
     with {:ok, workspace} <- Workspaces.authorize(user, session, workspace_id),
-         {:ok, expected} <- revision(attrs["revision"]),
          {:ok, generation} <- revision(attrs["generation"]),
          {:ok, request} <- id(attrs["request_id"]),
          {:ok, _} <-
@@ -521,7 +530,6 @@ defmodule Comma.Compute do
              workspace["salix_tenant_id"],
              workspace_id,
              workload_id,
-             expected,
              generation,
              request,
              fn -> reauthorize(user, session, workspace_id) end
@@ -531,15 +539,14 @@ defmodule Comma.Compute do
   end
 
   def retry_workload(user, session, workspace_id, workload_id, attrs) do
+    # Retry is fenced by `generation`; a sent `revision` is ignored.
     with {:ok, workspace} <- Workspaces.authorize(user, session, workspace_id),
-         {:ok, expected} <- revision(attrs["revision"]),
          {:ok, generation} <- revision(attrs["generation"]),
          {:ok, _} <-
            SalixStore.ComputeWorkloadManagement.retry(
              workspace["salix_tenant_id"],
              workspace_id,
              workload_id,
-             expected,
              generation,
              fn -> reauthorize(user, session, workspace_id) end
            ) do
@@ -656,6 +663,8 @@ defmodule Comma.Compute do
     template_available =
       match?({:ok, _}, SalixStore.RuntimeBundleCatalog.resolve("shell.default"))
 
+    value = Map.put(value, :registration_devices, registration_devices(value.bindings))
+
     %{
       "environments" => Enum.map(value.environments, &public_environment(&1, template_available)),
       "allocations" => Enum.map(value.allocations, &public_allocation/1),
@@ -683,10 +692,31 @@ defmodule Comma.Compute do
         end
       )
 
+  # One bounded query per page: the Comma Device of each Agent VMM
+  # registration that the page's bindings name.
+  @doc false
+  def registration_devices(bindings) do
+    case for(%{provider: "agent_vmm", provider_ref: ref} <- bindings, is_binary(ref), do: ref)
+         |> Enum.uniq() do
+      [] ->
+        %{}
+
+      refs ->
+        SalixStore.Repo.all(
+          from(r in SalixStore.AgentVMM.Registration,
+            where: r.id in ^refs,
+            select: {r.id, r.device_id}
+          )
+        )
+        |> Map.new()
+    end
+  end
+
   defp public_allocation(row),
     do: take(row, ~w(id environment_id status operation_outcome generation revision updated_at)a)
 
-  defp public_workload_phase(workload, page) do
+  @doc false
+  def public_workload_phase(workload, page) do
     allocation = Enum.find(page.allocations, &(&1.id == workload.allocation_id))
     binding = allocation && Enum.find(page.bindings, &(&1.id == allocation.provider_binding_id))
 
@@ -703,6 +733,13 @@ defmodule Comma.Compute do
       )
 
     epoch = binding && (binding.observation || %{})["connection_epoch"]
+
+    # Only a meeting_runtime has a runtime carrier. Another Workload on an
+    # Agent VMM Host is ready from its verified container facts, as a Shell.
+    container_ready_rule? =
+      workload.kind == "shell" or
+        (workload.kind != "meeting_runtime" and not is_nil(binding) and
+           binding.provider == "agent_vmm")
 
     phase =
       cond do
@@ -724,14 +761,14 @@ defmodule Comma.Compute do
             (is_nil(epoch) or binding.status != "available") ->
           "waiting_connection"
 
-        workload.kind == "shell" and workload.observed_state == "ready" and not is_nil(epoch) and
+        container_ready_rule? and workload.observed_state == "ready" and not is_nil(epoch) and
           not is_nil(allocation) and allocation.status == "ready" and
           get_in(allocation.provider_observation || %{}, ["container_status"]) == "running" and
             get_in(allocation.provider_observation || %{}, ["runtime_verified_host_epoch"]) ==
               epoch ->
           "ready"
 
-        workload.kind == "shell" and workload.observed_state == "ready" ->
+        container_ready_rule? and workload.observed_state == "ready" ->
           "starting"
 
         (workload.observed_state == "ready" and runtime) && runtime.readiness == "ready" ->
@@ -742,6 +779,9 @@ defmodule Comma.Compute do
 
         allocation && allocation.status in ["pending", "allocating"] ->
           "allocating"
+
+        workload.observed_state == "pending" ->
+          "starting"
 
         runtime && runtime.readiness in ["catching_up", "pending"] ->
           "starting"
@@ -779,6 +819,7 @@ defmodule Comma.Compute do
           %{
             "provider" => binding.provider,
             "registration_id" => binding.provider_ref,
+            "device_id" => Map.get(page, :registration_devices, %{})[binding.provider_ref],
             "allocation_id" => allocation.id
           }
 
@@ -812,7 +853,47 @@ defmodule Comma.Compute do
     )
     |> Map.put("phase", phase)
     |> Map.put("phase_observed_at", if(claim, do: claim.updated_at, else: workload.updated_at))
+    |> Map.put("problem", workload_problem(claim))
   end
+
+  # The reconciler's last error for the current generation, as a fixed code.
+  # Raw provider messages and reasons stay internal.
+  defp workload_problem(%{last_error: %{"kind" => kind} = error})
+       when kind in ["error", "provider_error", "unknown", "retryable", "action_required"],
+       do: %{
+         "code" => problem_code(error_name(error)),
+         "retryable" => kind != "action_required"
+       }
+
+  defp workload_problem(_claim), do: nil
+
+  defp error_name(%{"code" => code}) when is_binary(code), do: code
+
+  defp error_name(%{"reason" => reason}) when is_binary(reason) do
+    case Regex.run(~r/\A\{?:([a-z_]+)/, reason) do
+      [_, name] -> name
+      _ -> nil
+    end
+  end
+
+  defp error_name(_error), do: nil
+
+  defp problem_code(name)
+       when name in ~w(resource_capacity_exhausted resource_exhausted capacity_wait_expired capacity_unavailable),
+       do: "capacity_unavailable"
+
+  defp problem_code(name)
+       when name in ~w(imported_image_not_observed invalid_image_import invalid_runtime_artifact runtime_artifact_rebuild_required),
+       do: "image_unavailable"
+
+  defp problem_code(name) when name in ~w(runtime_instance_changed stale_container_instance),
+    do: "runtime_instance_changed"
+
+  defp problem_code(name)
+       when name in ~w(gateway_unavailable gateway_status stale_session unavailable unauthenticated unauthorized expired insufficient_session_authority),
+       do: "host_unreachable"
+
+  defp problem_code(_name), do: "other"
 
   defp runtime_policy(workload) do
     spec = workload.spec || %{}

@@ -39,7 +39,7 @@ export type ConnectorConfig = {
   meetUrl: string;
   meetCallbackHost: string;
   meetCallbackPort: number;
-  /** A Compute Workload's credential (bootstrap at first, short-lived after the first handshake); empty on a device. */
+  /** A Compute Workload's connect credential, presented on every connection; empty on a device. */
   workloadCredential: string;
   /** The host suffix of the signed object storage URLs archives move through. */
   archiveHostSuffix: string;

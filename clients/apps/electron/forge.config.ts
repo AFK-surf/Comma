@@ -14,9 +14,11 @@ import {
   notificationSoundPath,
   prepareDevElectronBundle,
 } from "./scripts/dev-electron-bundle";
+import { appLocalizationsHook } from "./scripts/app-localizations";
 import { ensureDevNativeAddons } from "./scripts/dev-native-addons";
 import { electronDownloadCache } from "./scripts/electron-download-cache";
 import { macosDisplayNameHook } from "./scripts/macos-display-name";
+import { chromiumLocalesHook, trimVelopackNatives } from "./scripts/package-trim";
 import { sleepGuardLaunchdHook } from "./scripts/sleep-guard-launchd";
 import { getCommaReleaseConfig } from "./src/release-config";
 
@@ -130,7 +132,17 @@ const config: ForgeConfig = {
         "Comma lists the apps playing audio so a recording can be scoped to one of them.",
       // Signing in with a passkey from a phone checks that the phone is near.
       NSBluetoothAlwaysUsageDescription:
-        "Comma uses Bluetooth to check that your phone is nearby when you sign in to a website with a passkey from your phone.",
+        "Comma uses Bluetooth to set up Comma devices and sign in with a passkey from your phone.",
+      // The Mac apps plugins. MacAppsHost runs as Comma's child, so macOS
+      // attributes these permissions to Comma; it embeds the same strings.
+      NSCalendarsFullAccessUsageDescription:
+        "When you turn on Calendar in Plugins, Comma's Agent can read and create events for you.",
+      NSRemindersFullAccessUsageDescription:
+        "When you turn on Reminders in Plugins, Comma's Agent can read and create reminders for you.",
+      NSContactsUsageDescription:
+        "When you turn on Contacts in Plugins, Comma's Agent can look up people's phone numbers and email addresses for you.",
+      NSAppleEventsUsageDescription:
+        "When you turn on Messages, Mail, Notes, Music or System Control in Plugins, Comma's Agent can use that app for you.",
     },
     // Production includes a layered .icon; Dev and Staging use their detailed ICNS.
     icon: channelIconBasePath,
@@ -152,6 +164,8 @@ const config: ForgeConfig = {
     ],
     afterCopyExtraResources: [
       macosDisplayNameHook(releaseConfig.productName),
+      chromiumLocalesHook(releaseConfig.productName),
+      appLocalizationsHook(releaseConfig.productName),
       sleepGuardLaunchdHook(releaseConfig.productName, releaseConfig.appBundleId),
     ],
     afterCopy: [
@@ -172,6 +186,9 @@ const config: ForgeConfig = {
               force: true,
               recursive: true,
             });
+            if (dependency === "velopack") {
+              trimVelopackNatives(destination, platform, arch);
+            }
           }
 
           callback();

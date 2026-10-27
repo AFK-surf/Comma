@@ -568,7 +568,21 @@ defmodule SalixAgent.AgentControl do
     with {:ok, _} <- get(agent_id, tenant_id), do: configure(agent_id, attrs)
   end
 
-  defp configure_record(agent_id, attrs, authority) when is_map(attrs) do
+  @doc """
+  `configure/3` that writes only while `precondition` accepts the record:
+  it answers `:ok` or `{:error, reason}`, and is checked against the record
+  each write attempt replaces, so a write that lands between a caller's read
+  and this one is never overwritten.
+  """
+  def configure_if(agent_id, attrs, tenant_id, precondition)
+      when is_function(precondition, 1) do
+    with {:ok, _} <- get(agent_id, tenant_id),
+         do: configure_record(agent_id, attrs, :salix, precondition)
+  end
+
+  defp configure_record(agent_id, attrs, authority, precondition \\ fn _record -> :ok end)
+
+  defp configure_record(agent_id, attrs, authority, precondition) when is_map(attrs) do
     attrs = stringify_keys(attrs)
 
     with {:ok, current} <- get(agent_id),
@@ -580,6 +594,7 @@ defmodule SalixAgent.AgentControl do
              merged = Map.merge(record, stored_updates)
 
              with :ok <- writable_authority(record, authority),
+                  :ok <- precondition.(record),
                   :ok <- SalixAgent.InspectorPolicy.validate(merged["inspector_policy"], merged),
                   do: merged
            end) do
@@ -587,7 +602,7 @@ defmodule SalixAgent.AgentControl do
     end
   end
 
-  defp configure_record(_agent_id, _attrs, _authority),
+  defp configure_record(_agent_id, _attrs, _authority, _precondition),
     do: {:error, {:bad_request, "invalid request body"}}
 
   defp writable_authority(%{"configuration_authority" => "salix"}, :legacy),

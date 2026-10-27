@@ -1749,6 +1749,9 @@ defmodule SalixIM.ProviderConnects do
 
   defdelegate find_voice_connect(carrier, line, e164), to: SalixIM.VoiceConnects
 
+  defdelegate update_voice_preferences(tenant_id, group_id, changes), to: SalixIM.VoiceConnects
+  defdelegate voice_preferences(group_id, connect_id), to: SalixIM.VoiceConnects
+
   # ---- signal (SalixIM.SignalConnects owns the Signal connect contract) ----
 
   defdelegate ensure_signal_im_connect(tenant_id, group_id), to: SalixIM.SignalConnects

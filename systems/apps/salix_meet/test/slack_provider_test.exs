@@ -2308,10 +2308,6 @@ defmodule SalixMeet.SlackProviderTest do
 
   test "an explicit current-message @mention joins a Meet URL from the same thread",
        %{tenant_id: tenant_id, group_id: group_id} do
-    previous_source = SystemsRuntime.get_env(:salix_meet, :default_runtime_source)
-    SystemsRuntime.put_env(:salix_meet, :default_runtime_source, "native_runtime")
-    on_exit(fn -> restore_env(:salix_meet, :default_runtime_source, previous_source) end)
-
     connect =
       seed_slack_connect(group_id, %{
         "tenant_id" => tenant_id,
@@ -2356,7 +2352,7 @@ defmodule SalixMeet.SlackProviderTest do
 
     assert [%{"state" => join_state}] = RuntimeDriver.calls()
     assert join_state["meet_url"] == "https://meet.google.com/abc-defg-hij"
-    assert join_state["runtime_source"] == "native_runtime"
+    assert join_state["runtime_source"] == "automatic"
   end
 
   test "meeting runtime updates write Willow-style artifacts into the meeting agent VFS",

@@ -3,7 +3,9 @@ defmodule SalixAgent.Browser do
   alias SalixStore.{BrowserSettings, BrowserBindings, BrowserStorage, Ids}
   alias SalixAgent.Browser.Driver
 
-  @operations ~w(tabs new_tab close_tab navigate snapshot screenshot click fill press scroll wait request_control take_control return_control input release_keys close clear_storage checkpoint)
+  @operations ~w(tabs new_tab close_tab navigate snapshot screenshot click fill press scroll select wait actions dialog request_control take_control return_control input release_keys close clear_storage checkpoint)
+  # Failures before any input reached the page release admission at once.
+  @local_failures ~w(driver_busy invalid_input invalid_url stale_element tab_not_found unsupported_operation target_not_found ambiguous_target wait_timeout dialog_open)
   def owner(ctx) do
     agent = ctx.agent_id
 
@@ -154,11 +156,17 @@ defmodule SalixAgent.Browser do
         {:error, reason} when reason in [:browser_outcome_unknown, :browser_driver_unavailable] ->
           {:error, reason}
 
+        {:error, reason, details} when reason in @local_failures ->
+          BrowserBindings.finish(row, %{})
+          {:error, reason, details}
+
+        {:error, reason, _} ->
+          {:error, reason}
+
         {:error, reason} ->
           # Provider errors can follow a remote effect. Only explicit local
           # validation errors release admission. All others require close.
-          if reason in ([:browser_driver_busy] ++
-                          ~w(driver_busy invalid_input invalid_url stale_element tab_not_found unsupported_operation)) do
+          if reason in [:browser_driver_busy | @local_failures] do
             BrowserBindings.finish(row, %{})
           end
 

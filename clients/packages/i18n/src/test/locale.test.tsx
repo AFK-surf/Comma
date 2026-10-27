@@ -114,12 +114,6 @@ describe("initializeCommaI18n", () => {
     expect(messages.tasks_filter_task_count({ count: 2, formattedCount: "2" })).toBe(
       "2 tasks"
     );
-    expect(messages.chat_new_messages({ count: 1, formattedCount: "1" })).toBe(
-      "1 new message"
-    );
-    expect(messages.chat_new_messages({ count: 2, formattedCount: "2" })).toBe(
-      "2 new messages"
-    );
     expect(
       messages.tasks_filter_task_count({
         count: 10_000,
@@ -133,12 +127,6 @@ describe("initializeCommaI18n", () => {
     );
     expect(messages.tasks_filter_task_count({ count: 2, formattedCount: "2" })).toBe(
       "2 个任务"
-    );
-    expect(messages.chat_new_messages({ count: 1, formattedCount: "1" })).toBe(
-      "1 条新消息"
-    );
-    expect(messages.chat_new_messages({ count: 2, formattedCount: "2" })).toBe(
-      "2 条新消息"
     );
     expect(
       messages.tasks_filter_task_count({

@@ -1,3 +1,4 @@
+import { clockTimeoutSignal, realMainClock, type MainClock } from "../../../clock";
 import { WebSocket, type RawData } from "ws";
 import {
   CableHandshake,
@@ -38,6 +39,7 @@ export interface CableTransaction {
   tunnelOrigin?: string | undefined;
   /** Chromium has no tunnel timer of its own; this bounds connect and handshake. */
   connectTimeoutMs?: number | undefined;
+  clock?: MainClock | undefined;
 }
 
 const fidoCableProtocol = "fido.cable";
@@ -56,6 +58,7 @@ export async function runCableTransaction({
   onConnected,
   tunnelOrigin,
   connectTimeoutMs = 30_000,
+  clock = realMainClock,
 }: CableTransaction): Promise<CableCtapReply> {
   let url = cableConnectUrl(session, advert);
   if (tunnelOrigin) url = url.replace(`wss://${advert.domain}`, tunnelOrigin);
@@ -81,7 +84,7 @@ export async function runCableTransaction({
     }
     const handshake = new CableHandshake(session, advert);
     socket.send(handshake.message);
-    const deadline = AbortSignal.timeout(connectTimeoutMs);
+    const deadline = clockTimeoutSignal(clock, connectTimeoutMs);
     let crypter: CableCrypter;
     try {
       crypter = handshake.finish(await messages.next(deadline));

@@ -929,6 +929,7 @@ defmodule SalixWeb.ConversationMessagingTest do
                args: %{
                  "tool" => "im_api.internal.task.create",
                  "params" => %{
+                   "runs_on" => %{"kind" => "default"},
                    "connect_id" => "internal",
                    "agent_id" => config.target_agent_id,
                    "content" => config.task_a_content,
@@ -942,6 +943,7 @@ defmodule SalixWeb.ConversationMessagingTest do
                args: %{
                  "tool" => "im_api.internal.task.create",
                  "params" => %{
+                   "runs_on" => %{"kind" => "default"},
                    "connect_id" => "internal",
                    "agent_id" => config.target_agent_id,
                    "content" => config.task_b_content,

@@ -1,8 +1,8 @@
-import { useEffect } from "react";
+import { memo, useEffect } from "react";
 import { useCommaLocale } from "@comma/i18n/react";
 import { useCreditWarning } from "./useCreditWarning";
 
-export function CreditWarningToast({
+export const CreditWarningToast = memo(function CreditWarningToast({
   workspaceId,
   active,
 }: {
@@ -13,4 +13,4 @@ export function CreditWarningToast({
   const { warning, showToast } = useCreditWarning(workspaceId, active);
   useEffect(() => showToast(locale), [locale, showToast, warning]);
   return null;
-}
+});

@@ -3,6 +3,7 @@ package surf.comma.android.chat.render
 import android.content.Context
 import android.view.View
 import surf.comma.android.chat.model.ChatMessage
+import surf.comma.android.chat.live.AgentRequestCardRenderer
 import surf.comma.android.chat.live.AttachmentCardRenderer
 import surf.comma.android.chat.live.CallLogCardRenderer
 import surf.comma.android.chat.live.QuestionCardRenderer
@@ -72,6 +73,7 @@ internal object ChatCardRendererRegistry {
     private const val TASK_INFO_VIEW_TYPE = 109
     private const val CALL_LOG_VIEW_TYPE = 110
     private const val QUESTION_VIEW_TYPE = 112
+    private const val AGENT_REQUEST_VIEW_TYPE = 113
     private val renderers: List<ChatCardRenderer> = listOf(
         surf.comma.android.settings.devices.DeviceSetupOfferCardRenderer(111),
         PhotoCardRenderer(TimelineBlockKinds.PHOTO_GRID, PHOTO_VIEW_TYPE),
@@ -83,6 +85,7 @@ internal object ChatCardRendererRegistry {
         TaskInfoCardRenderer(TASK_INFO_VIEW_TYPE),
         CallLogCardRenderer(CALL_LOG_VIEW_TYPE),
         QuestionCardRenderer(QUESTION_VIEW_TYPE),
+        AgentRequestCardRenderer(AGENT_REQUEST_VIEW_TYPE),
     )
 
     fun forKind(kind: String?): ChatCardRenderer? =

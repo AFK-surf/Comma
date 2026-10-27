@@ -37,8 +37,8 @@
     <string name="composer_attach_photos">Photos</string>
     <string name="composer_attach_files">Files</string>
     <plurals name="composer_attach_full">
-        <item quantity="one">%1$d image added. Remove it to add another.</item>
-        <item quantity="other">All %1$d images added. Remove one to add more.</item>
+        <item quantity="one">%1$d file added. Remove it to add another.</item>
+        <item quantity="other">All %1$d files added. Remove one to add more.</item>
     </plurals>
     <string name="composer_send">Send</string>
     <string name="composer_mic">Voice input. Tap to dictate, hold to talk</string>
@@ -53,9 +53,10 @@
     <string name="composer_voice_empty">Didn\'t catch that. Try again</string>
     <string name="composer_attach_limit">Limit reached: %1$d at most</string>
     <string name="composer_attach_dropped">Limit is %1$d. Not added: %2$d</string>
+    <string name="composer_attach_too_large">Choose a file smaller than 512 MB</string>
     <string name="composer_camera_unavailable">No camera app available</string>
-    <string name="composer_uploads_pending">Images are still uploading</string>
-    <string name="composer_attachment_remove">Remove image</string>
+    <string name="composer_uploads_pending">Attachments are still uploading</string>
+    <string name="composer_attachment_remove">Remove attachment</string>
     <string name="composer_attachment_retry">Upload failed. Tap to retry</string>
     <string name="composer_mic_denied">Microphone access is needed for voice input</string>
     <string name="composer_mic_denied_forever">Microphone access was denied. Turn it on in Settings</string>

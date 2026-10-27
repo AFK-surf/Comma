@@ -304,5 +304,17 @@
   "station.usage.priceNote": "美元 / 100 万 token · 各类 token × 单价后相加；Claude fast ×2。GPT 按标准短上下文估算，仅记录输入、缓存读取和输出。GPT 价目核对于 2026-10-02，Claude 沿用 2026-09 价目",
   "station.share.borrowedEdit": "这个 Profile 是别的 station 分享来的，要在它所在的 station 上改",
   "station.share.hostOffline": "登录它的 station {host} 没有响应，现在用不了",
-  "station.share.managersOnly": "只有 workspace 管理员能分享"
+  "station.share.managersOnly": "只有 workspace 管理员能分享",
+  "station.source.none": "这台电脑没有为这个工作区选择运行 {runtime} 的账号：在设备设置里选择本机登录、本地模型或工作区账号",
+  "station.source.localMissing": "这个工作区选择了本机登录，但这台电脑上的 {runtime} 还没有登录",
+  "station.source.workspaceMissing": "这个工作区选择了工作区账号，但还没有能运行 {runtime} 的共享账号",
+  "station.source.machineOff": "这台电脑的本机登录没有启用：先在设备设置里为一个工作区选择本机登录",
+  "station.source.noWorkspace": "这台电脑不在任何工作区里，不能启用本机登录",
+  "station.source.unknownWorkspace": "这台电脑没有连接这个工作区",
+  "station.source.workspaceUnavailable": "这个工作区还没有共享账号",
+  "station.source.endpointMissing": "这个工作区选择了这台电脑上的本地模型，但还没有给 {runtime} 填模型服务的地址",
+  "station.source.endpointNeeded": "先填这台电脑上模型服务的地址",
+  "station.source.endpointName": "本地模型（{address}）",
+  "station.source.notLocal": "先为这个工作区选择本机登录，再登录",
+  "station.source.profileOutside": "{profile} 不是这个工作区为这台电脑选择的账号来源"
 }

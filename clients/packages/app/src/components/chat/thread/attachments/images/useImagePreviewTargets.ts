@@ -5,7 +5,11 @@ import {
   isLocalFilePreviewRef,
   type LocalFilePreviewLoader,
 } from "../useLocalFilePreviews";
-import { agentBlobImagePreviewRef, imagePreviewRefKey } from "./imagePreviewRefs";
+import {
+  agentBlobImagePreviewRef,
+  imagePreviewRefKey,
+  messageImagePreviewRef,
+} from "./imagePreviewRefs";
 
 export type ImagePreviewTargets = ReturnType<typeof useImagePreviewTargets>;
 
@@ -30,7 +34,7 @@ export function useImagePreviewTargets({
       new Set(
         attachments.flatMap((attachment, position) =>
           (attachment.blockType === "image" &&
-            imagePreviewRef(attachment) !== undefined) ||
+            imagePreviewRef(attachment, messageId) !== undefined) ||
           (inlineMediaSection &&
             onPreviewLocalFile !== undefined &&
             agentBlobImagePreviewRef(attachment) !== undefined)
@@ -38,12 +42,12 @@ export function useImagePreviewTargets({
             : []
         )
       ),
-    [attachments, inlineMediaSection, onPreviewLocalFile]
+    [attachments, inlineMediaSection, messageId, onPreviewLocalFile]
   );
   const previewImages = useMemo(
     () =>
       attachments.flatMap((attachment, position) => {
-        const previewRef = imagePreviewRef(attachment);
+        const previewRef = imagePreviewRef(attachment, messageId);
         if (
           !showImages ||
           !imagePositions.has(position) ||
@@ -66,8 +70,14 @@ export function useImagePreviewTargets({
   return { imagePositions, previewImages };
 }
 
-/** Where an image attachment's bytes can be read from, if anywhere. */
-function imagePreviewRef(attachment: ChatAttachment): ChatImagePreviewRef | undefined {
+/**
+ * Where an image attachment's bytes can be read from, if anywhere: what it names, else its place in message
+ * `messageId`.
+ */
+function imagePreviewRef(
+  attachment: ChatAttachment,
+  messageId: string
+): ChatImagePreviewRef | undefined {
   // An image still uploading shows from the bytes the core holds.
   const uploadingRef = attachment.uploadingId
     ? draftUploadPreviewRef(attachment.uploadingId)
@@ -83,7 +93,7 @@ function imagePreviewRef(attachment: ChatAttachment): ChatImagePreviewRef | unde
     !isLocalFilePreviewRef(previewRef) &&
     !isGroupImagePreviewPath(previewRef)
   ) {
-    return undefined;
+    return messageImagePreviewRef(attachment, messageId);
   }
-  return previewRef || undefined;
+  return previewRef || messageImagePreviewRef(attachment, messageId);
 }

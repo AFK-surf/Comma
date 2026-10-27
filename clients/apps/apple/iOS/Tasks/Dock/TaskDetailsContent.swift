@@ -35,6 +35,14 @@ struct TaskDetailsContent: View {
                                 Text(platformLabel(platform))
                             }
                         }
+                        // The machine a Task a station hosts runs on, and whether it is reached.
+                        if let host = task.host {
+                            let machine = host.machine ?? String(localized: "Computer")
+                            pill {
+                                CentralIcon("icon-macbook", size: 18, relativeTo: .subheadline).foregroundStyle(CommaTheme.textQuaternary)
+                                Text(host.online == false ? String(localized: "\(machine) · Offline") : machine)
+                            }
+                        }
                     }
                 }
                 if let worker = pane.boundWorker {

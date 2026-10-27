@@ -15,8 +15,8 @@ defmodule BridgeForTeamsWeb.DashboardMeetings do
   alias BridgeForTeams.MeetingPreparation
 
   @personal_scopes ~w(users:read.email im:write chat:write)
-  @settings_keys ~w(enabled mode connect_id channel channel_id calendar_selections preparation_lead_minutes research_enabled calendar_writeback series personal_preparation)
-  @save_keys ~w(enabled connect_id channel_id calendar_selections preparation_lead_minutes research_enabled calendar_writeback autojoin personal_preparation series)
+  @settings_keys ~w(enabled mode connect_id channel channel_id calendar_selections preparation_lead_minutes research_enabled calendar_writeback series personal_preparation channel_notice)
+  @save_keys ~w(enabled connect_id channel_id calendar_selections preparation_lead_minutes research_enabled calendar_writeback autojoin personal_preparation channel_notice series)
   @invalid ~w(meeting_personal_scopes_missing meeting_personal_scopes_unknown calendar_enrollment_no_active_account meeting_calendar_connect_unavailable invalid_meeting_preparation_settings invalid_meeting_preparation_request meeting_calendar_capacity_exceeded meeting_preparation_not_configured invalid)a
 
   @doc "Saved settings, Slack bots and the next 24 hours of meetings."

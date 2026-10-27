@@ -19,6 +19,11 @@ defmodule SalixVoice.Model do
   `gpt_live_url`, `gpt_live_model`, `gpt_live_voice` and `openai_api_key`. An
   implementation must not keep the key in its process state.
 
+  Optional: `opts.voice`, the Group's voice (`SalixVoice.Voices.session_voice/1`:
+  a preset name or `%{"id" => id}`), which replaces `gpt_live_voice`; and
+  `opts.input`, startup history as `[%{"role" => "user" | "assistant", "text" =>
+  text}]`, oldest first.
+
   The implementation is `Application.get_env(:salix_voice, :model_mod,
   SalixVoice.Model.GptLive)`.
   """
@@ -29,7 +34,9 @@ defmodule SalixVoice.Model do
           required(:ref) => reference(),
           required(:audio_format) => audio_format(),
           required(:instructions) => String.t(),
-          required(:settings) => map()
+          required(:settings) => map(),
+          optional(:voice) => String.t() | map() | nil,
+          optional(:input) => [map()]
         }
 
   @callback start_link(opts()) :: {:ok, pid()} | {:error, term()}

@@ -12,6 +12,7 @@ const allOff: BftCapabilities = {
   triage: false,
   information_flow: false,
   meetings: false,
+  daily_brief: false,
   settings: false,
 };
 const projects = [{ id: "p 1", name: "Support Desk" }];
@@ -37,6 +38,7 @@ describe("BFT navigation spec", () => {
       "overview",
       "swarms",
       "meetings",
+      "daily-brief",
       "triage",
       "data-policy",
       "health",
@@ -63,7 +65,7 @@ describe("BFT navigation spec", () => {
     ]);
     // The palette lists sub-pages but not the "General", "Upcoming" and
     // "Overview" duplicates of their parent.
-    expect(flattenNav(nav)).toHaveLength(10 + 1 + 3 + 2 + 2);
+    expect(flattenNav(nav)).toHaveLength(11 + 1 + 3 + 2 + 2);
   });
 
   it("lists the four Settings pages", () => {

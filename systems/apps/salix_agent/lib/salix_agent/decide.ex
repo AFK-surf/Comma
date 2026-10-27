@@ -1,5 +1,5 @@
 defmodule SalixAgent.Decide do
-  @moduledoc "Bounded typed decisions for integer-C scripts and background Loops."
+  @moduledoc "Bounded typed decisions for scripts, background Loops and Mini Apps."
 
   @max_args 12 * 1024
   @key ~r/\A[A-Za-z0-9_-]{1,64}\z/
@@ -160,10 +160,15 @@ defmodule SalixAgent.Decide do
   and carries their `billing_context`. `opts` requires `:entrypoint`, the
   metering entrypoint, and takes `:admission_deadline` (monotonic ms). The
   result is `{:ok, answer}` or `{:error, code}` with the codes of `call/3`.
+  `:actor_type` defaults to `"system"`. A user request can set it to `"user"`.
   """
   def system_call(args, ctx, opts) do
     entrypoint = Keyword.fetch!(opts, :entrypoint)
-    run(args, ctx, opts[:admission_deadline], entrypoint: entrypoint, actor_type: "system")
+
+    run(args, ctx, opts[:admission_deadline],
+      entrypoint: entrypoint,
+      actor_type: Keyword.get(opts, :actor_type, "system")
+    )
   end
 
   @doc false

@@ -64,7 +64,18 @@ defmodule SalixIM.LarkDocsTest do
         {status, answer} when is_function(answer, 1) ->
           conn
           |> put_resp_content_type("application/json")
-          |> send_resp(status, Jason.encode!(answer.(conn.query_params)))
+          |> send_resp(
+            status,
+            Jason.encode!(
+              answer.(
+                Map.put(
+                  conn.query_params,
+                  "__authorization",
+                  conn |> get_req_header("authorization") |> List.first()
+                )
+              )
+            )
+          )
 
         route ->
           {status, response} = route || {404, %{"code" => 1_770_002, "msg" => "not found"}}
@@ -119,6 +130,29 @@ defmodule SalixIM.LarkDocsTest do
          %{"alias" => "lark-ray", "open_id" => "ou_ray", "name" => "Ray", "status" => "active"},
          %{"alias" => "lark-ann", "open_id" => "ou_ann", "name" => "Ann", "status" => "active"}
        ]}
+    end
+
+    @impl true
+    def access_token(_agent_id, alias_name), do: {:ok, "u-" <> alias_name}
+  end
+
+  defmodule ManyAccounts do
+    @moduledoc "Twelve signed-in people; one of them labelled app."
+    @behaviour SalixIM.Ports.LarkUserAccounts
+
+    @impl true
+    def list(_group_id) do
+      {:ok,
+       [%{"alias" => "app", "open_id" => "ou_appy", "name" => "Appy", "status" => "active"}] ++
+         for(
+           n <- 1..11,
+           do: %{
+             "alias" => "p#{n}",
+             "open_id" => "ou_p#{n}",
+             "name" => "P#{n}",
+             "status" => "active"
+           }
+         )}
     end
 
     @impl true
@@ -811,6 +845,7 @@ defmodule SalixIM.LarkDocsTest do
                             lark.update_doc_link_share lark.delete_doc lark.get_minute
                             lark.list_minutes lark.fetch_minute_media
                             lark.request_minute_access lark.list_accounts
+                            lark.search_docs lark.list_drive_files
                             lark.search_meetings lark.get_meeting lark.get_note))
 
       assert {:ok, connects} = SalixIM.Provider.list_connects(ctx.worker_id)
@@ -952,7 +987,8 @@ defmodule SalixIM.LarkDocsTest do
       })
     end
 
-    test "a search runs as every signed-in account and names who found each meeting", ctx do
+    test "a search runs as the app and every signed-in account and names who found each meeting",
+         ctx do
       FakeLark.route(
         "POST",
         "/open-apis/vc/v1/meetings/search",
@@ -969,7 +1005,7 @@ defmodule SalixIM.LarkDocsTest do
                  "start" => "2026-10-19"
                })
 
-      assert Enum.map(meetings, & &1["account"]) == ["lark-ray", "lark-ann"]
+      assert Enum.map(meetings, & &1["account"]) == ["app", "lark-ray", "lark-ann"]
 
       # A page token is one account's; the next page names that account.
       assert {:error, "a page_token belongs to one account" <> _} =
@@ -979,11 +1015,13 @@ defmodule SalixIM.LarkDocsTest do
                })
 
       assert pages == [
+               %{"account" => "app", "page_token" => "p2"},
                %{"account" => "lark-ray", "page_token" => "p2"},
                %{"account" => "lark-ann", "page_token" => "p2"}
              ]
 
-      [ray, ann] = requests("POST", "/open-apis/vc/v1/meetings/search")
+      [app, ray, ann] = requests("POST", "/open-apis/vc/v1/meetings/search")
+      assert app.authorization == "Bearer t-docs"
       assert ray.authorization == "Bearer u-lark-ray"
       assert ann.authorization == "Bearer u-lark-ann"
 
@@ -1149,24 +1187,254 @@ defmodule SalixIM.LarkDocsTest do
     end
 
     test "a read tries each account until one may see the meeting", ctx do
-      FakeLark.route(
-        "GET",
-        "/open-apis/vc/v1/meetings/7002",
-        ok(%{"meeting" => %{"topic" => "1:1"}})
-      )
+      # The app may not see this meeting; Ray may.
+      FakeLark.route("GET", "/open-apis/vc/v1/meetings/7002", fn
+        %{"__authorization" => "Bearer t-docs"} ->
+          %{"code" => 121_005, "msg" => "no permission"}
+
+        _person ->
+          ok(%{"meeting" => %{"topic" => "1:1"}})
+      end)
 
       assert {:ok, %{"account" => "lark-ray", "recording" => "unavailable: " <> _}} =
                worker_call(ctx, "lark.get_meeting", %{"meeting_id" => "7002"})
+
+      # account=app reads as the app alone.
+      assert {:error, _refused} =
+               worker_call(ctx, "lark.get_meeting", %{"meeting_id" => "7002", "account" => "app"})
 
       assert {:error, "no signed-in Lark account lark-zoe; lark.list_accounts names them"} =
                worker_call(ctx, "lark.get_note", %{"note_id" => "n", "account" => "lark-zoe"})
     end
 
-    test "without a signed-in account the bot says how to add one", ctx do
+    test "without a signed-in account the app searches alone and says how a person signs in",
+         ctx do
       SystemsRuntime.delete_env(:salix_im, :lark_user_accounts_mod)
 
-      assert {:error, "no Lark account is signed in" <> _} =
+      FakeLark.route(
+        "POST",
+        "/open-apis/vc/v1/meetings/search",
+        ok(%{"items" => [%{"id" => "7003"}], "has_more" => false})
+      )
+
+      assert {:ok, %{"meetings" => [%{"account" => "app"}], "guidance" => guidance}} =
                worker_call(ctx, "lark.search_meetings", %{"query" => "Daily"})
+
+      assert guidance =~ "oauth.request_authorization with provider lark"
+
+      assert [%{authorization: "Bearer t-docs"}] =
+               requests("POST", "/open-apis/vc/v1/meetings/search")
+    end
+
+    test "documents and wiki pages are found by keyword and read without a link", ctx do
+      FakeLark.route(
+        "POST",
+        "/open-apis/search/v2/doc_wiki/search",
+        ok(%{
+          "res_units" => [
+            %{
+              "title_highlighted" => "Ditto x RC <h>Daily</h> SyncUp",
+              "entity_type" => "DOC",
+              "result_meta" => %{
+                "url" => "https://x.larksuite.com/docx/DocxDaily0001",
+                "token" => "DocxDaily0001",
+                "doc_types" => "DOCX"
+              }
+            }
+          ],
+          "has_more" => false
+        })
+      )
+
+      FakeLark.route(
+        "POST",
+        "/open-apis/docs_ai/v1/documents/DocxDaily0001/fetch",
+        ok(%{"document" => %{"content" => "Decided: cloud browser."}})
+      )
+
+      assert {:ok, %{"documents" => hits, "failed_accounts" => []}} =
+               worker_call(ctx, "lark.search_docs", %{"query" => "Daily"})
+
+      assert Enum.map(hits, & &1["account"]) == ["app", "lark-ray", "lark-ann"]
+
+      assert %{
+               "title" => "Ditto x RC Daily SyncUp",
+               "url" => "https://x.larksuite.com/docx/DocxDaily0001",
+               "token" => "DocxDaily0001"
+             } = hd(hits)
+
+      [app, ray, _ann] = requests("POST", "/open-apis/search/v2/doc_wiki/search")
+      assert app.authorization == "Bearer t-docs"
+      assert ray.authorization == "Bearer u-lark-ray"
+
+      assert ray.body == %{
+               "query" => "Daily",
+               "page_size" => 15,
+               "doc_filter" => %{},
+               "wiki_filter" => %{}
+             }
+
+      # A hit is read as the account that found it.
+      assert {:ok, %{"content" => "Decided: cloud browser."}} =
+               worker_call(ctx, "lark.fetch_doc", %{
+                 "doc" => "https://x.larksuite.com/docx/DocxDaily0001",
+                 "account" => "lark-ray"
+               })
+
+      assert List.last(requests("POST", "/open-apis/docs_ai/v1/documents/DocxDaily0001/fetch")).authorization ==
+               "Bearer u-lark-ray"
+    end
+
+    test "a search is labelled by the identities whose items it returns", ctx do
+      ifc_mode(ctx.group_id, "enforce")
+
+      hit = %{
+        "title_highlighted" => "Plan",
+        "result_meta" => %{
+          "url" => "https://x.larksuite.com/docx/DocxPlan00001",
+          "token" => "DocxPlan00001"
+        }
+      }
+
+      route = fn app_answer ->
+        FakeLark.route("POST", "/open-apis/search/v2/doc_wiki/search", fn
+          %{"__authorization" => "Bearer t-docs"} -> app_answer
+          %{"__authorization" => "Bearer u-lark-ray"} -> ok(%{"res_units" => [hit]})
+          _ann -> ok(%{"res_units" => []})
+        end)
+      end
+
+      route.(ok(%{"res_units" => []}))
+
+      assert {:ok, %{"__ifc__" => ray_only}} =
+               worker_call(ctx, "lark.search_docs", %{"query" => "Plan", "account" => "lark-ray"})
+
+      refute ray_only == %{"label" => ["agent_private"]}
+
+      # The app finds nothing, or fails: only Ray's items come back, labelled as Ray's.
+
+      assert {:ok, %{"documents" => [%{"account" => "lark-ray"}], "__ifc__" => ^ray_only}} =
+               worker_call(ctx, "lark.search_docs", %{"query" => "Plan"})
+
+      route.(%{"code" => 99_991_672, "msg" => "no permission"})
+
+      assert {:ok,
+              %{
+                "documents" => [_],
+                "failed_accounts" => [%{"account" => "app"}],
+                "__ifc__" => ^ray_only
+              }} =
+               worker_call(ctx, "lark.search_docs", %{"query" => "Plan"})
+
+      # An item the app found has no audience this read can name.
+      route.(ok(%{"res_units" => [hit]}))
+
+      assert {:ok, %{"__ifc__" => %{"label" => ["agent_private"]}}} =
+               worker_call(ctx, "lark.search_docs", %{"query" => "Plan"})
+    end
+
+    test "a search reads as ten identities per call and continues with accounts_from", ctx do
+      SystemsRuntime.put_env(:salix_im, :lark_user_accounts_mod, ManyAccounts)
+
+      FakeLark.route(
+        "POST",
+        "/open-apis/search/v2/doc_wiki/search",
+        ok(%{
+          "res_units" => [
+            %{"title_highlighted" => "Plan", "result_meta" => %{"token" => "DocxPlan00001"}}
+          ]
+        })
+      )
+
+      assert {:ok, %{"documents" => first, "more_accounts" => %{"accounts_from" => 10}}} =
+               worker_call(ctx, "lark.search_docs", %{"query" => "Plan"})
+
+      # The app, then the person labelled app (named by open_id), then p1..p8.
+      assert Enum.map(first, & &1["account"]) ==
+               ["app", "ou_appy"] ++ for(n <- 1..8, do: "p#{n}")
+
+      assert {:ok, %{"documents" => rest} = page} =
+               worker_call(ctx, "lark.search_docs", %{"query" => "Plan", "accounts_from" => 10})
+
+      assert Enum.map(rest, & &1["account"]) == ["p9", "p10", "p11"]
+      refute Map.has_key?(page, "more_accounts")
+      assert length(requests("POST", "/open-apis/search/v2/doc_wiki/search")) == 13
+
+      # The person labelled app reads as themselves through that name; app is
+      # the app.
+      assert {:ok, _} =
+               worker_call(ctx, "lark.search_docs", %{"query" => "Plan", "account" => "ou_appy"})
+
+      assert {:ok, _} =
+               worker_call(ctx, "lark.search_docs", %{"query" => "Plan", "account" => "app"})
+
+      assert requests("POST", "/open-apis/search/v2/doc_wiki/search")
+             |> Enum.take(-2)
+             |> Enum.map(& &1.authorization) == ["Bearer u-app", "Bearer t-docs"]
+    end
+
+    test "a read tries ten identities per call and continues with accounts_from", ctx do
+      SystemsRuntime.put_env(:salix_im, :lark_user_accounts_mod, ManyAccounts)
+
+      # Only p9, the eleventh identity, may see the meeting.
+      FakeLark.route("GET", "/open-apis/vc/v1/meetings/7009", fn
+        %{"__authorization" => "Bearer u-p9"} -> ok(%{"meeting" => %{"topic" => "Late"}})
+        _other -> %{"code" => 121_005, "msg" => "no permission"}
+      end)
+
+      assert {:error, refused} =
+               worker_call(ctx, "lark.get_meeting", %{"meeting_id" => "7009"})
+
+      assert refused =~ "call again with accounts_from 10"
+      assert length(requests("GET", "/open-apis/vc/v1/meetings/7009")) == 10
+
+      assert {:ok, %{"account" => "p9", "meeting" => %{"topic" => "Late"}}} =
+               worker_call(ctx, "lark.get_meeting", %{
+                 "meeting_id" => "7009",
+                 "accounts_from" => 10
+               })
+
+      assert requests("GET", "/open-apis/vc/v1/meetings/7009")
+             |> Enum.drop(10)
+             |> Enum.map(& &1.authorization) == ["Bearer u-p9"]
+    end
+
+    test "a cloud space and the wiki are walked as the app or as a person", ctx do
+      FakeLark.route(
+        "GET",
+        "/open-apis/drive/v1/files",
+        ok(%{
+          "files" => [%{"name" => "Plans", "type" => "folder", "token" => "fld1"}],
+          "has_more" => false
+        })
+      )
+
+      FakeLark.route(
+        "GET",
+        "/open-apis/wiki/v2/spaces",
+        ok(%{"items" => [%{"space_id" => "sp1", "name" => "Team"}], "has_more" => false})
+      )
+
+      assert {:ok, %{"files" => [%{"account" => "lark-ann", "token" => "fld1"}]}} =
+               worker_call(ctx, "lark.list_drive_files", %{
+                 "account" => "lark-ann",
+                 "folder" => "root1"
+               })
+
+      [listed] = requests("GET", "/open-apis/drive/v1/files")
+      assert listed.authorization == "Bearer u-lark-ann"
+      assert listed.query["folder_token"] == "root1"
+
+      assert {:ok, %{"files" => files}} = worker_call(ctx, "lark.list_drive_files", %{})
+      assert Enum.map(files, & &1["account"]) == ["app", "lark-ray", "lark-ann"]
+
+      assert {:ok, _spaces} =
+               worker_call(ctx, "lark.list_wiki_spaces", %{"account" => "lark-ray"})
+
+      assert {:ok, _spaces} = worker_call(ctx, "lark.list_wiki_spaces", %{"account" => "app"})
+
+      assert requests("GET", "/open-apis/wiki/v2/spaces") |> Enum.map(& &1.authorization) ==
+               ["Bearer u-lark-ray", "Bearer t-docs"]
     end
   end
 end

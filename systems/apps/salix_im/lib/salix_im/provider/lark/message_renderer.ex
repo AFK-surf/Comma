@@ -133,7 +133,9 @@ defmodule SalixIM.Provider.Lark.MessageRenderer do
 
   # Call again after the provider adds the target, UUID and thread fields.
   @spec validate_request(map()) :: :ok | {:error, String.t()}
-  def validate_request(%{"msg_type" => type} = body) when type in ["post", "text"] do
+  # A question card (`SalixIM.QuestionCard`) is measured like a post.
+  def validate_request(%{"msg_type" => type} = body)
+      when type in ["post", "text", "interactive"] do
     limit = if type == "text", do: @text_limit, else: @post_limit
     size = byte_size(Jason.encode!(body))
 
@@ -238,6 +240,17 @@ defmodule SalixIM.Provider.Lark.MessageRenderer do
       _ ->
         false
     end
+  end
+
+  @doc """
+  The user IDs a send's `mentions` and `mention_all` name, checked as a post
+  checks them (`all` only through `mention_all`). A question card writes them
+  as its at-tags.
+  """
+  @spec mention_ids(term(), term()) :: {:ok, [String.t()]} | {:error, String.t()}
+  def mention_ids(mentions, mention_all) do
+    with {:ok, mentions} <- mentions(mentions),
+         do: {:ok, mentions |> maybe_mention_all(mention_all) |> Enum.map(& &1["user_id"])}
   end
 
   defp mentions(nil), do: {:ok, []}

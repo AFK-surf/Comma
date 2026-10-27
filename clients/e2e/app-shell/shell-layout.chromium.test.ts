@@ -112,6 +112,10 @@ const stubs: [string | RegExp, WebAppStubOptions["stub"]][] = [
     { assistantReply: quotedPassage },
   ],
   [
+    "replies to selected reply text from the selection's own field",
+    { assistantReply: quotedPassage },
+  ],
+  [
     "keeps the quote bar when the drag overshoots below the message",
     { assistantReply: quotedPassage },
   ],
@@ -1597,6 +1601,15 @@ test("global chat sidebar animates, resizes, and keeps themed shell hover tokens
   await page.keyboard.press("KeyR");
   await expect(sidebar).toHaveAttribute("data-open", "true");
   await expect.poll(async () => (await sidebar.boundingBox())?.width ?? 0).toBe(440);
+  // The aside takes its width in one step, so the content lays out once; the
+  // surface, and the resize handle on its edge, slide over that edge on the
+  // compositor.
+  const surface = sidebar.locator(":scope > .comma-chat-sidebar-surface");
+  const surfaceShift = () =>
+    surface.evaluate(
+      (element) => new DOMMatrix(getComputedStyle(element).transform).m41
+    );
+  await expect.poll(surfaceShift).toBe(0);
 
   const handleBox = await resizeHandle.boundingBox();
   expect(handleBox).not.toBeNull();
@@ -1618,33 +1631,35 @@ test("global chat sidebar animates, resizes, and keeps themed shell hover tokens
     0
   );
 
-  const closeTransition = armAndPauseTransition(sidebar, "width", 75);
+  const closeTransition = armAndPauseTransition(surface, "transform", 75);
   await closeTransition.armed;
   // The page pauses the transition the click starts, on the click's frames.
   await toggle.click();
   await closeTransition.captured;
-  const closingWidth = (await sidebar.boundingBox())?.width ?? 0;
-  expect(closingWidth).toBeGreaterThan(0);
-  expect(closingWidth).toBeLessThan(520);
-  await sidebar.evaluate((element) =>
+  expect((await sidebar.boundingBox())?.width).toBe(0);
+  const closingShift = await surfaceShift();
+  expect(closingShift).toBeGreaterThan(0);
+  expect(closingShift).toBeLessThan(520);
+  await surface.evaluate((element) =>
     element.getAnimations().forEach((animation) => animation.finish())
   );
-  await expect.poll(async () => (await sidebar.boundingBox())?.width ?? -1).toBe(0);
+  await expect.poll(surfaceShift).toBe(520);
   await expect(toggle).toHaveAttribute("aria-expanded", "false");
   expect((await toggle.boundingBox())?.x).toBe(openToggleBox!.x);
 
-  const openTransition = armAndPauseTransition(sidebar, "width", 75);
+  const openTransition = armAndPauseTransition(surface, "transform", 75);
   await openTransition.armed;
   // The page pauses the transition the click starts, on the click's frames.
   await toggle.click();
   await openTransition.captured;
-  const openingWidth = (await sidebar.boundingBox())?.width ?? 0;
-  expect(openingWidth).toBeGreaterThan(0);
-  expect(openingWidth).toBeLessThan(520);
-  await sidebar.evaluate((element) =>
+  expect((await sidebar.boundingBox())?.width).toBe(520);
+  const openingShift = await surfaceShift();
+  expect(openingShift).toBeGreaterThan(0);
+  expect(openingShift).toBeLessThan(520);
+  await surface.evaluate((element) =>
     element.getAnimations().forEach((animation) => animation.finish())
   );
-  await expect.poll(async () => (await sidebar.boundingBox())?.width ?? 0).toBe(520);
+  await expect.poll(surfaceShift).toBe(0);
   await expect(toggle).toHaveAttribute("aria-expanded", "true");
 
   await resizeHandle.dblclick();
@@ -1891,7 +1906,7 @@ test("Task activity reserves running avatars and hides them on errors", async ({
   await expect(routerAvatar).toHaveCSS("padding", "0px");
   await expect(routerAvatar).toHaveCSS("outline-style", "none");
   // Router and Worker marks are both 16px in every state. Measure the
-  // fixed clipping boundary, never a
+  // mark's root, which clips the animated layers to its boundary, never a
   // painted path inside the animated transform (whose bounds vary by phase).
   const animatedMark = routerAvatar.locator('[data-slot="comma-logo-animation"]');
   await expect(routerAvatar).toHaveCSS("width", "16px");
@@ -1899,21 +1914,15 @@ test("Task activity reserves running avatars and hides them on errors", async ({
   await expect(workerAvatar).toHaveCSS("height", "16px");
   const transforms = new Set<string>();
   for (const elapsed of [0, 1000, 1999, 2500]) {
-    await animatedMark.evaluate((svg, time) => {
-      for (const animation of svg.getAnimations({ subtree: true })) {
+    await animatedMark.evaluate((mark, time) => {
+      for (const animation of mark.getAnimations({ subtree: true })) {
         animation.pause();
         animation.currentTime = time;
       }
     }, elapsed);
     await expect(animatedMark).toHaveCSS("width", "16px");
     await expect(animatedMark).toHaveCSS("height", "16px");
-    const boundary = await animatedMark.locator("clipPath path").evaluate((path) => {
-      const bounds = (path as unknown as SVGGraphicsElement).getBBox();
-      const matrix = (path as unknown as SVGGraphicsElement).getScreenCTM()!;
-      return { width: bounds.width * matrix.a, height: bounds.height * matrix.d };
-    });
-    expect(boundary.width).toBeCloseTo(16, 1);
-    expect(boundary.height).toBeCloseTo(16, 1);
+    await expect(animatedMark).toHaveCSS("overflow", "hidden");
     transforms.add(
       await animatedMark
         .locator(".comma-logo-animation__scene")
@@ -2284,9 +2293,9 @@ test("quotes selected reply text into the composer and sends it as its own block
 
   const sent = content.locator('[data-slot="chat-user-output"]').last();
   const quoteBlock = sent.getByTestId("chat-message-quote");
-  // The sent quote is the composer chip's icon-only tile: the passage lives
-  // on the trigger's label and in its hover card, not in the flow.
-  await expect(quoteBlock).not.toContainText(quotedPassage);
+  // The sent quote is the composer chip's tile: the passage's opening lines on
+  // the tile, the whole of it on the trigger's label and in its hover card.
+  await expect(quoteBlock).toContainText(quotedPassage);
   const quoteTile = quoteBlock.getByRole("button", {
     name: `Quoted text: ${quotedPassage}`,
   });
@@ -2310,6 +2319,59 @@ test("quotes selected reply text into the composer and sends it as its own block
   await expect(quoteCard).toContainText(quotedPassage);
   await page.mouse.move(10, 10);
   await expect(quoteCard).toHaveCount(0);
+});
+
+test("replies to selected reply text from the selection's own field", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1_100, height: 800 });
+  await app.open(page, "/");
+
+  const content = page.getByRole("region", { name: "Content" });
+  const composer = content.locator(".comma-chat-composer");
+  const prompt = composer.getByRole("textbox", { name: "AI prompt" });
+  await prompt.fill("先给我一段可以引用的说明。");
+  await composer.getByRole("button", { name: "Send" }).click();
+
+  const reply = content.locator('[data-slot="chat-assistant-output"]').last();
+  await expect(reply).toContainText(quotedPassage);
+  await prompt.fill("主输入框里的草稿");
+
+  const passage = reply.locator("p").last();
+  const passageBox = (await passage.boundingBox())!;
+  await page.mouse.move(passageBox.x + 2, passageBox.y + passageBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(
+    passageBox.x + passageBox.width - 2,
+    passageBox.y + passageBox.height / 2,
+    { steps: 10 }
+  );
+  await page.mouse.up();
+
+  const bar = page.locator('[data-slot="selection-action-bar"]');
+  await expect(bar.locator('[data-slot="selection-action-bar-excerpt"]')).toHaveText(
+    quotedPassage
+  );
+  // Focusing the field moves the page selection into it; the bar keeps the
+  // passage it was opened on.
+  const field = bar.getByRole("textbox", { name: "Ask about this…" });
+  await field.click();
+  await expect(field).toBeFocused();
+  await expect(bar.locator('[data-slot="selection-action-bar-excerpt"]')).toHaveText(
+    quotedPassage
+  );
+  await field.fill("这段是什么意思？");
+  await page.keyboard.press("Enter");
+
+  await expect(bar).toHaveCount(0);
+  const sent = content.locator('[data-slot="chat-user-output"]').last();
+  await expect(sent.getByTestId("chat-message-quote")).toContainText(quotedPassage);
+  await expect(sent.getByTestId("chat-user-bubble-content")).toHaveText(
+    "这段是什么意思？"
+  );
+  // The main draft is not part of that reply.
+  await expect(prompt).toHaveText("主输入框里的草稿");
+  await expect(composer.locator('[data-slot="quote-attachment"]')).toHaveCount(0);
 });
 
 test("keeps the quote bar when the drag overshoots below the message", async ({
@@ -3089,7 +3151,7 @@ test("font size preference scales core conversation typography without changing 
   expect(defaultIcon.globalStroke).toBe(iconStrokeWidth);
   expect(defaultIcon.scale).toBe("1");
   expect(defaultIcon.stroke2.computed).toBeCloseTo(iconStrokeWidth, 4);
-  expect(defaultIcon.stroke075.computed).toBeCloseTo(0.75, 4);
+  expect(defaultIcon.stroke075.computed).toBeCloseTo(iconStrokeWidth * 0.375, 4);
   const defaultActionRect = await readActionRect();
   // Compact category rows are 1.75rem, so their height follows font size.
   // Labels must remain contained while icon geometry stays unchanged.
@@ -3114,7 +3176,7 @@ test("font size preference scales core conversation typography without changing 
   expect(smallIcon.stroke2.nominal).toBe(defaultIcon.stroke2.nominal);
   expect(smallIcon.stroke075.nominal).toBe(defaultIcon.stroke075.nominal);
   expect(smallIcon.stroke2.computed).toBeCloseTo(defaultIcon.stroke2.computed, 4);
-  expect(smallIcon.stroke075.computed).toBeCloseTo(0.75, 4);
+  expect(smallIcon.stroke075.computed).toBeCloseTo(iconStrokeWidth * 0.375, 4);
   const smallActionRect = await readActionRect();
   expect(smallActionRect.width).toBe(defaultActionRect.width);
   expect(smallActionRect.height).toBeCloseTo(1.75 * smallActionRect.rootFontSize, 1);
@@ -3134,7 +3196,7 @@ test("font size preference scales core conversation typography without changing 
   expect(largeIcon.stroke2.nominal).toBe(defaultIcon.stroke2.nominal);
   expect(largeIcon.stroke075.nominal).toBe(defaultIcon.stroke075.nominal);
   expect(largeIcon.stroke2.computed).toBeCloseTo(defaultIcon.stroke2.computed, 4);
-  expect(largeIcon.stroke075.computed).toBeCloseTo(0.75, 4);
+  expect(largeIcon.stroke075.computed).toBeCloseTo(iconStrokeWidth * 0.375, 4);
   const largeActionRect = await readActionRect();
   expect(largeActionRect.width).toBe(defaultActionRect.width);
   expect(largeActionRect.height).toBeCloseTo(1.75 * largeActionRect.rootFontSize, 1);
@@ -4827,20 +4889,6 @@ async function sampleChatColumnAcrossToggle(page: Page, chatSelector: string) {
   );
 }
 
-// Frame-to-frame moves against the direction of travel. The two transitions
-// that make up the reflow (the sidebar's width and the fold) run on their own
-// easing, and Home's rail track is itself responsive to the route width, so a
-// few pixels of wobble are legal; a squeeze-and-rebound is not.
-function largestReverseStep(samples: number[], direction: "shrink" | "grow") {
-  let largest = 0;
-  for (let index = 1; index < samples.length; index += 1) {
-    const step = samples[index]! - samples[index - 1]!;
-    const reverse = direction === "shrink" ? step : -step;
-    if (reverse > largest) largest = reverse;
-  }
-  return largest;
-}
-
 test("the Chat Sidebar folds the Task details column without squeezing the thread", async ({
   page,
 }) => {
@@ -4855,19 +4903,18 @@ test("the Chat Sidebar folds the Task details column without squeezing the threa
 
   // Opening: 1280 less the rail leaves the route under the panel's 1024px
   // breakpoint once the 440px sidebar is in, so the column folds — in the
-  // same commit the sidebar starts moving, never after a squeeze.
+  // same layout as the sidebar's width: the thread takes its new width once,
+  // never squeezed first.
   const opening = await sampleChatColumnAcrossToggle(page, ".comma-chat-main");
   await expect(body).toHaveAttribute("data-panel-open", "false");
   expect(opening.length).toBeGreaterThan(10);
   expect(opening.at(-1)!).toBeLessThan(opening[0]!);
-  expect(Math.min(...opening)).toBe(opening.at(-1));
-  expect(largestReverseStep(opening, "shrink")).toBe(0);
+  expect(new Set(opening)).toEqual(new Set([opening[0], opening.at(-1)]));
 
   const closing = await sampleChatColumnAcrossToggle(page, ".comma-chat-main");
   await expect(body).toHaveAttribute("data-panel-open", "true");
   expect(closing.at(-1)!).toBeGreaterThan(closing[0]!);
-  expect(Math.max(...closing)).toBe(closing.at(-1));
-  expect(largestReverseStep(closing, "grow")).toBe(0);
+  expect(new Set(closing)).toEqual(new Set([closing[0], closing.at(-1)]));
 });
 
 test("the Chat Sidebar folds Home's Tasks rail without squeezing the chat column", async ({
@@ -4930,21 +4977,17 @@ test("the Chat Sidebar folds Home's Tasks rail without squeezing the chat column
     );
   expect(await foldValue()).toBe(0);
 
-  // The Tasks rail folds under the open sidebar; the chat column narrows
-  // from its full width to the folded one in one motion — before the fix it
-  // dropped over 200px under the still-open rail, then sprang back. The
-  // rail's own easing and responsive track leave a wobble of a few pixels.
-  const wobblePx = 8;
+  // The Tasks rail folds under the open sidebar in the same layout as the
+  // sidebar's width: the chat column takes its new width once — never
+  // dropped under the still-open rail and sprung back.
   const opening = await sampleChatColumnAcrossToggle(page, chatColumn);
   await expect.poll(foldValue).toBe(1);
   expect(opening.length).toBeGreaterThan(10);
   expect(opening.at(-1)!).toBeLessThan(opening[0]!);
-  expect(Math.min(...opening)).toBeGreaterThanOrEqual(opening.at(-1)! - wobblePx);
-  expect(largestReverseStep(opening, "shrink")).toBeLessThanOrEqual(wobblePx);
+  expect(new Set(opening)).toEqual(new Set([opening[0], opening.at(-1)]));
 
   const closing = await sampleChatColumnAcrossToggle(page, chatColumn);
   await expect.poll(foldValue).toBe(0);
   expect(closing.at(-1)!).toBeGreaterThan(closing[0]!);
-  expect(Math.max(...closing)).toBeLessThanOrEqual(closing.at(-1)! + wobblePx);
-  expect(largestReverseStep(closing, "grow")).toBeLessThanOrEqual(wobblePx);
+  expect(new Set(closing)).toEqual(new Set([closing[0], closing.at(-1)]));
 });

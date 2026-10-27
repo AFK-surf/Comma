@@ -101,7 +101,7 @@ defmodule SalixIM.AgentDeliveryPayload do
       {:ok,
        %{
          "participant_payload" => %{"session_id" => session_id},
-         "delivery_session_name" => Keyword.get(opts, :session_name, "Bridge chat"),
+         "delivery_session_name" => Keyword.get(opts, :session_name, "Comma"),
          "content" => task_creation_context(group) <> provider_message_content(content, metadata),
          "trusted_origin" => trusted_origin,
          "source_sent_at_ms" => provider_source_time(metadata),
@@ -344,7 +344,7 @@ defmodule SalixIM.AgentDeliveryPayload do
   end
 
   defp conversation_session_name(%{"role" => "router"}, conversation),
-    do: conversation["title"] || "Bridge chat"
+    do: conversation["title"] || "Comma"
 
   defp conversation_session_name(_agent, conversation),
     do: conversation["title"] || "Conversation"

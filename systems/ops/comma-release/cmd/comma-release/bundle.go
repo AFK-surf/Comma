@@ -187,6 +187,10 @@ func buildBundle(ctx context.Context, spec release.EnvironmentSpec, gcloud, kube
 		"COMMA_IMAGE": image, "COMMA_ENVIRONMENT": spec.Environment, "COMMA_CLUSTER": spec.Cluster, "COMMA_REVISION": "sha-" + revision, "COMMA_REVISION_LABEL": "rev-" + shortHash([]byte(image)), "COMMA_TRACE_SAMPLE_RATIO": required("COMMA_TRACE_SAMPLE_RATIO"), "COMMA_STATIC_IP": required("COMMA_STATIC_IP"), "SALIX_HOST": salixHost, "SALIX_SITES_DOMAIN": salixSitesDomain, "BRIDGE_HOST": bridgeHost, "COMMA_WEB_COOKIE_ORIGIN": webCookieOrigin, "COMMA_ADMIN_COOKIE_ORIGIN": adminCookieOrigin, "SALIX_CONFIG_SHA256": hashHex(salixBody), "COMMA_ROLLOUT_PARTITION": "1", "COMMA_LEGACY_MESSAGE_EVENT_CLAIM_WRITER_FENCE_EPOCH": required("COMMA_RELEASE_ID"), "COMMA_ALERT_ROUTER_ENABLED": strconv.FormatBool(alertRouterEnabled), "COMMA_RELEASE_SUBSYSTEMS": releaseSubsystems, "GCP_PROJECT": spec.Project,
 		"COMMA_SECRETS_NAME": byBase["comma-secrets"], "INSTANCE_CONNECTION_NAME": stringField(db, "INSTANCE_CONNECTION_NAME"), "SALIX_CONFIG_SECRET_NAME": byBase["salix-config"], "SALIX_TLS_SECRET_NAME": byBase["comma-salix-cloudflare-origin-tls"], "SALIX_SITES_TLS_SECRET_NAME": byBase["comma-salix-sites-cloudflare-origin-tls"], "TEAMS_TLS_SECRET_NAME": byBase["comma-teams-cloudflare-origin-tls"],
 	}
+	// The coding sandbox image's manifest for this revision (comma-release.yml); Salix reads it.
+	if manifest := os.Getenv("COMMA_SANDBOX_IMAGE_MANIFEST"); manifest != "" {
+		replacements["COMMA_SANDBOX_IMAGE_MANIFEST"] = manifest
+	}
 	if alertRouterEnabled {
 		replacements["ALERT_ROUTER_CONFIG_SECRET_NAME"] = byBase["alert-router-config"]
 		replacements["ALERT_ROUTER_CONFIG_SHA256"] = hashHex(alertRouterBody)

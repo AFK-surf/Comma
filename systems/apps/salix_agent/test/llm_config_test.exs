@@ -91,7 +91,7 @@ defmodule SalixAgent.LlmConfigTest do
     assert {:ok, _} =
              SalixStore.CasRecord.update(
                Keys.ctl_agent(agent),
-               &Map.put(&1, "model", %{"kind" => "catalog", "model" => "no-such-model"})
+               &Map.put(&1, "model", %{"kind" => "catalog", "model" => ""})
              )
 
     assert {:error, _} = SalixAgent.RoundConfig.refresh_round_snapshot(agent, refreshed, %{})

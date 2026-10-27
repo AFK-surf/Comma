@@ -30,6 +30,8 @@ defmodule SalixVoice.CallActorTest do
       metering_mod: TestStubs.Metering,
       profile_decider_mod: TestStubs.ProfileDecider,
       test_profile_decision: {:error, "not_configured"},
+      preferences_mod: TestStubs.Preferences,
+      persona_mod: TestStubs.Persona,
       fake_model_seconds: 42,
       timers: [
         delegation_settle_ms: 20,
@@ -403,11 +405,131 @@ defmodule SalixVoice.CallActorTest do
     assert opts[:session_name] == "Voice call"
     assert content =~ "the caller hung up (reason caller_hangup)"
     assert content =~ "One caller request was still unanswered."
+    # Only a call that speaks as the Router hands over what was said.
+    refute content =~ "What was said"
 
     assert %{"event_type" => "voice.call_ended", "chat_id" => chat_id} = metadata
     assert chat_id == info.call_id
     refute Map.has_key?(metadata, "message_id")
     settle_refute_receive({:ingress, _, _, _, _, _}, 50)
+  end
+
+  describe "a Group with Router calls" do
+    setup do
+      SystemsRuntime.put_env(:salix_voice, :test_preferences, %{
+        "voice" => %{"kind" => "custom"},
+        "custom_voice" => %{"id" => "voice_dot", "name" => "Dot", "description" => "Warm"},
+        "router_calls" => true
+      })
+
+      on_exit(fn ->
+        SystemsRuntime.delete_env(:salix_voice, :test_preferences)
+        SystemsRuntime.delete_env(:salix_voice, :test_persona)
+      end)
+    end
+
+    test "the call speaks as the Router with its voice, persona, notes and history" do
+      SystemsRuntime.put_env(
+        :salix_voice,
+        :test_persona,
+        {:ok,
+         %{
+           name: "Dot",
+           persona: "You are cheerful and call the user boss.",
+           notes: "The user lives in Beijing.",
+           input: [
+             %{"role" => "user", "text" => "Book the dentist for Friday."},
+             %{"role" => "assistant", "text" => "Booked for 3 pm."}
+           ]
+         }}
+      )
+
+      {:ok, %{call_id: id}} = admit(%{carrier: :signal, key_id: nil})
+      [call] = :pg.get_members(@pg, {:call, id})
+      watch(call)
+
+      settle_receive({:persona_resolve, _group_id, audience})
+      settle_receive({:fake_model, model, {:started, model_opts}})
+
+      # The persona is read for the caller's own one-to-one, as voice ingress
+      # records it.
+      assert audience == %{
+               tenant_id: "ten_1",
+               connect_id: "conn_voice",
+               user_id: "key_1",
+               requester: "api_key:key_1:usr_creator"
+             }
+
+      # The Router's identity replaces the caller profile.
+      settle_refute_receive({:profile_decide, _, _, _}, 20)
+
+      assert model_opts.voice == %{"id" => "voice_dot"}
+
+      assert [%{"role" => "user"}, %{"role" => "assistant", "text" => "Booked for 3 pm."}] =
+               model_opts.input
+
+      assert model_opts.instructions =~ "You are Dot"
+      assert model_opts.instructions =~ "call the user boss"
+      assert model_opts.instructions =~ "lives in Beijing"
+      assert model_opts.instructions =~ "delegate it"
+      refute model_opts.instructions =~ "voice of the Comma assistant"
+
+      assert {:ok, ^call, _info} = SalixVoice.attach(id, SystemsRuntime.Proc.self())
+      emit(model, call, {:started, "router-session"})
+      settle_receive({:fake_model, ^model, {:append, :instructions, nil, greeting}})
+      assert greeting =~ "as Dot"
+      settle_receive({:ingress, _, _, %{"event_type" => "voice.call_started"}, _, _})
+
+      emit(model, call, {:input_transcript, "How was", true, 100})
+      emit(model, call, {:input_transcript, "my week?", true, 400})
+      emit(model, call, {:output_transcript, "Busy, boss!", true})
+      SystemsRuntime.Proc.send(call, {:voice_carrier, :hangup, :normal})
+      await_end(call, :caller_hangup)
+
+      # The Router remembers the call like a chat.
+      settle_receive({:ingress, _, content, %{"event_type" => "voice.call_ended"}, _, _})
+      assert content =~ "Caller: How was my week?\nYou: Busy, boss!"
+    end
+
+    test "without the Router's identity the call starts with the base instructions" do
+      {:ok, %{call_id: _id}} = admit(%{carrier: :signal, key_id: nil})
+      settle_receive({:persona_resolve, _group_id, _audience})
+      settle_receive({:fake_model, _model, {:started, model_opts}})
+      assert model_opts.instructions == SalixVoice.CallActor.instructions()
+      assert model_opts.input == []
+      assert model_opts.voice == %{"id" => "voice_dot"}
+    end
+
+    test "a Signal group call keeps its voice but never speaks as the Router" do
+      {:ok, %{call_id: id}} =
+        admit(%{
+          carrier: :signal,
+          key_id: nil,
+          key_name: nil,
+          principal: nil,
+          caller: %{"kind" => "signal_group", "value" => "grp-signal-1"}
+        })
+
+      [call] = :pg.get_members(@pg, {:call, id})
+      watch(call)
+
+      settle_receive({:fake_model, model, {:started, model_opts}})
+      settle_refute_receive({:persona_resolve, _, _}, 20)
+      assert model_opts.voice == %{"id" => "voice_dot"}
+      assert model_opts.instructions == SalixVoice.CallActor.instructions()
+      assert model_opts.input == []
+
+      assert {:ok, ^call, _info} = SalixVoice.attach(id, SystemsRuntime.Proc.self())
+      emit(model, call, {:started, "group-session"})
+      settle_receive({:ingress, _, _, %{"event_type" => "voice.call_started"}, _, _})
+      emit(model, call, {:input_transcript, "Read me the notes.", true, 100})
+      SystemsRuntime.Proc.send(call, {:voice_carrier, :hangup, :normal})
+      await_end(call, :caller_hangup)
+
+      # The group's words are not handed to the Router as its own conversation.
+      settle_receive({:ingress, _, content, %{"event_type" => "voice.call_ended"}, _, _})
+      refute content =~ "What was said"
+    end
   end
 
   test "the call-end input follows a slow call-start input" do

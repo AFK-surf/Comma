@@ -4,6 +4,7 @@ import {
   draftMarkdown,
   fromMarkdownTree,
   IncrementalMarkdown,
+  isCodeBlockOnly,
   messageMarkdown,
   toMarkdownTree,
 } from "../src/markdown/index.ts";
@@ -156,6 +157,16 @@ describe("a chat message's Markdown", () => {
     expect(toMarkdownTree(parser.parse({ content: "$$\nx^2", final: false }))).toEqual([
       ["mathblock", { content: "x^2", markup: "$$", loading: true }],
     ]);
+  });
+});
+
+describe("a message that is only a code block", () => {
+  it("is one code block and nothing else", () => {
+    expect(isCodeBlockOnly(treeOf("```text\nmake\n```\n"))).toBe(true);
+    expect(isCodeBlockOnly(treeOf("```mermaid\ngraph TD\n```"))).toBe(true);
+    expect(isCodeBlockOnly(treeOf("Run this:\n\n```sh\nmake\n```"))).toBe(false);
+    expect(isCodeBlockOnly(treeOf("`make`"))).toBe(false);
+    expect(isCodeBlockOnly(treeOf(""))).toBe(false);
   });
 });
 

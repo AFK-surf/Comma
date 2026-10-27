@@ -3,9 +3,9 @@ defmodule CommaWeb.CORS do
 
   import Plug.Conn
 
-  @allowed_headers "authorization,content-type,if-none-match,x-comma-session-transport,x-comma-session-lifecycle-version,x-comma-expected-auth-session-id"
+  @allowed_headers "authorization,content-type,if-none-match,range,x-comma-session-transport,x-comma-session-lifecycle-version,x-comma-expected-auth-session-id,x-comma-client,x-comma-client-capabilities,x-comma-app-via,x-comma-app-method,x-comma-app-version"
   @allowed_methods "GET,POST,PATCH,PUT,DELETE,OPTIONS"
-  @exposed_headers "etag,retry-after"
+  @exposed_headers "accept-ranges,content-range,etag,retry-after,x-comma-bundle-digest,x-comma-app-version"
 
   def init(opts), do: opts
 

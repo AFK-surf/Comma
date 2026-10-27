@@ -116,7 +116,7 @@ defmodule SalixAgent.ModelChoice do
     effort = value["reasoning_effort"]
 
     with :ok <- validate_tenant(tenant_id),
-         {:ok, model} <- catalog_or_custom(model_id, tenant_id) do
+         {:ok, model} <- stored_model(model_id, tenant_id) do
       {:ok,
        %{
          "name" => Enum.join([model["name"], effort || "default"], " · "),
@@ -126,7 +126,7 @@ defmodule SalixAgent.ModelChoice do
          "provider" => model["vendor"],
          "provider_config" => %{
            "catalog_model" => model_id,
-           "allow_paid" => value["allow_paid"] == true,
+           "allow_paid" => value["allow_paid"] == true or custom?(model_id),
            "profile_id" => value["profile_id"],
            "reasoning_effort" => effort
          },
@@ -295,16 +295,38 @@ defmodule SalixAgent.ModelChoice do
          true <-
            is_nil(profile_id) or
              SalixAgent.AccountPool.profile_serves?(tenant_id, profile_id, model_id) do
-      # Pinning an API key is choosing to pay for it: such a choice is stored
+      # Pinning an API key is choosing to pay for it, and so is a Custom
+      # model, which only its endpoint's key serves: such a choice is stored
       # and reported with allow_paid true, whatever the request said.
       allow_paid =
-        allow_paid or
+        allow_paid or custom?(model_id) or
           (is_binary(profile_id) and SalixAgent.AccountPool.key_profile?(tenant_id, profile_id))
 
       {:ok, model, allow_paid}
     else
       {:error, _} = error -> error
       _ -> {:error, :invalid_model_configuration}
+    end
+  end
+
+  # A model the catalog does not know is a Custom endpoint's: no subscription
+  # serves it. `record/2` applies the same rule to a stored choice.
+  defp custom?(model_id), do: not match?({:ok, _}, SalixAgent.Models.get(model_id))
+
+  # A stored choice keeps naming a Custom model after its endpoint's Profile is
+  # removed. It still reads as that model id, so the Agent, its Tasks and the
+  # settings page keep working; no Profile serves it at dispatch, and the input
+  # stops as `model_unavailable` (`SalixAgent.AccountPool`).
+  defp stored_model(model_id, tenant_id) do
+    case catalog_or_custom(model_id, tenant_id) do
+      {:ok, model} ->
+        {:ok, model}
+
+      {:error, :invalid_model_configuration} when model_id != "" ->
+        {:ok, %{"id" => model_id, "name" => model_id, "vendor" => nil, "efforts" => []}}
+
+      error ->
+        error
     end
   end
 

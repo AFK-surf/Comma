@@ -6,6 +6,9 @@ import type {
   ChatTarget,
 } from "@comma/chat-contract";
 import { Effect } from "effect";
+import { ChatError } from "../../api";
+import type { CommaGroupFile } from "../../../comma/api-schemas";
+import type { AttachmentUploadInput } from "../../model/conversationChannel";
 import type { ChatEntries } from "../entries/ChatEntries";
 import { chatKey } from "../entries/chatEntry";
 import type { ChatPublisher } from "../entries/ChatPublisher";
@@ -81,6 +84,21 @@ export class SendIntents {
     return commitSend(this.#entries, input, onAccepted);
   }
 
+  /** Uploads a file to the Group outside any draft, for a detached send to name (a cloud Task's first message). */
+  uploadDetached(
+    groupId: string,
+    file: AttachmentUploadInput
+  ): Effect.Effect<CommaGroupFile, Error> {
+    return Effect.suspend(() => {
+      const boundary = this.#entries.openBoundary();
+      boundary.assertCurrent();
+      return boundary.api.uploadGroupFile(groupId, {
+        data: file.data,
+        name: file.name,
+      });
+    });
+  }
+
   // Sends outside the renderer's draft lease, for Main-owned surfaces such as
   // a notification reply. The send-intent fence guards renderer draft
   // ownership, which a detached send never touches.
@@ -98,6 +116,35 @@ export class SendIntents {
           ...(clientDeviceId ? { clientDeviceId } : {}),
         })
       );
+    });
+  }
+
+  /**
+   * Sends `text` outside any draft as the request `requestId`: the server keeps one message per request, so sending it
+   * again (an answer lost on the way) is the same message. The message's id, as the server accepted it.
+   */
+  sendDetachedRequest(
+    target: ChatTarget,
+    text: string,
+    requestId: string
+  ): Effect.Effect<string, Error> {
+    return Effect.suspend(() => {
+      const boundary = this.#entries.openBoundary();
+      boundary.assertCurrent();
+      const clientDeviceId = this.#getClientDeviceId?.(target.workspaceId);
+      return boundary.api
+        .sendMessage(target.groupId, target.conversationId, {
+          text,
+          clientRequestId: requestId,
+          ...(clientDeviceId ? { clientDeviceId } : {}),
+        })
+        .pipe(
+          Effect.flatMap((conversation) =>
+            conversation.accepted_message_id
+              ? Effect.succeed(conversation.accepted_message_id)
+              : Effect.fail(new ChatError("The server kept no message."))
+          )
+        );
     });
   }
 }

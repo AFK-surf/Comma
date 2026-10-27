@@ -14,5 +14,9 @@
     "mode": "live",
     "slackChannelId": "C0BJ1699HSN"
   },
-  "publicHosts": ["salix-staging.comma.surf", "teams-staging.bridge.surf"]
+  "publicHosts": ["salix-staging.comma.surf", "teams-staging.bridge.surf"],
+  "l4es": {
+    "url": "https://l4es.afk.surf",
+    "maxSandboxes": 5
+  }
 }

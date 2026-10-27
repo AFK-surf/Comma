@@ -19,6 +19,7 @@ import {
 } from "../menu";
 import { afterAnimations } from "../../tokens/motion";
 import { cx } from "../utils";
+import { TitleSwap } from "../title-swap";
 import {
   taskListItemDisabled,
   taskListItemDot,
@@ -69,6 +70,11 @@ export interface TaskListItemProps extends Omit<
   iconKey?: Key;
   dot?: boolean;
   title: ReactNode;
+  /**
+   * What the row names, such as its Task id: a text title renamed for the same
+   * one blurs across (`TitleSwap`); a row reused for another shows it at once.
+   */
+  titleIdentity?: Key | undefined;
   /** Chips shown after the title, ahead of the tail. */
   badges?: ReactNode;
   /** Sits ahead of the status icon (content layout only): a selection checkbox. */
@@ -178,12 +184,35 @@ const TaskListItemIconSlot = ({
   );
 };
 
+const TaskListItemTitle = ({
+  className,
+  identity,
+  title,
+}: {
+  className: string;
+  identity: Key | undefined;
+  title: ReactNode;
+}) =>
+  typeof title === "string" ? (
+    <TitleSwap
+      className={className}
+      data-slot="task-list-item-title"
+      identity={identity}
+      text={title}
+    />
+  ) : (
+    <span className={className} data-slot="task-list-item-title">
+      {title}
+    </span>
+  );
+
 export const TaskListItem = ({
   as: element = "div",
   icon,
   iconKey,
   dot = false,
   title,
+  titleIdentity,
   badges,
   leading,
   tail,
@@ -314,12 +343,11 @@ export const TaskListItem = ({
                 layout={layout}
                 {...(iconKey !== undefined ? { iconKey } : {})}
               />
-              <span
+              <TaskListItemTitle
                 className={cx(taskListItemTitleByLayout[layout], titleClassName)}
-                data-slot="task-list-item-title"
-              >
-                {title}
-              </span>
+                identity={titleIdentity}
+                title={title}
+              />
             </div>
             {badges ? (
               <span className={taskListItemBadges} data-slot="task-list-item-badges">
@@ -357,12 +385,11 @@ export const TaskListItem = ({
                   <span className={cx(taskListItemDot, dotClassName)} />
                 </span>
               </span>
-              <span
+              <TaskListItemTitle
                 className={cx(taskListItemTitleByLayout[layout], titleClassName)}
-                data-slot="task-list-item-title"
-              >
-                {title}
-              </span>
+                identity={titleIdentity}
+                title={title}
+              />
             </div>
             {badges ? (
               <span className={taskListItemBadges} data-slot="task-list-item-badges">

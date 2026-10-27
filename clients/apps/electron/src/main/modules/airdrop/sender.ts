@@ -5,6 +5,7 @@ import { lstat } from "node:fs/promises";
 import { isAbsolute } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { z } from "zod";
+import { realMainClock, type MainClock } from "../../clock";
 import { spawnAirDropHelper, type SpawnAirDropHelper } from "./helper-process";
 
 const peerSchema = z.object({
@@ -85,6 +86,8 @@ interface ActiveOperation {
 interface AirDropSenderOptions {
   binaryPath?: string | undefined;
   bindSession: () => SessionBoundary;
+  /** Main's clock: operation and stop deadlines, and when a scan's peers expire. */
+  clock?: MainClock;
   platform?: string;
   resolveVfs?: (path: string) => Promise<string>;
   spawn?: SpawnAirDropHelper;
@@ -97,6 +100,7 @@ interface AirDropSenderOptions {
  */
 export class AirDropSender {
   readonly #options: AirDropSenderOptions;
+  readonly #clock: MainClock;
   readonly #history = new Map<string, AirDropOperation>();
   #active: ActiveOperation | undefined;
   #peers: Peer[] = [];
@@ -105,6 +109,7 @@ export class AirDropSender {
 
   constructor(options: AirDropSenderOptions) {
     this.#options = options;
+    this.#clock = options.clock ?? realMainClock;
   }
 
   status() {
@@ -162,7 +167,7 @@ export class AirDropSender {
       return structuredClone(previous);
     }
     if (
-      Date.now() >= this.#peersExpireAt ||
+      this.#clock.now() >= this.#peersExpireAt ||
       !this.#peers.some((peer) => peer.id === input.peerId)
     )
       throw new Error(
@@ -288,16 +293,16 @@ export class AirDropSender {
       finish: () => {
         if (finishing) return;
         finishing = true;
-        clearTimeout(timer);
+        cancelTimer();
         boundary.signal.removeEventListener("abort", abort);
         if (this.#active === active) this.#active = undefined;
         resolve();
       },
     };
     const abort = () => this.#cancel(active, "cancelled");
-    const timer = setTimeout(
-      () => this.#cancel(active, "timed_out"),
-      value.kind === "find" ? 25_000 : 5 * 60_000
+    const cancelTimer = this.#clock.setTimer(
+      value.kind === "find" ? 25_000 : 5 * 60_000,
+      () => this.#cancel(active, "timed_out")
     );
     boundary.signal.addEventListener("abort", abort, { once: true });
     this.#active = active;
@@ -325,12 +330,13 @@ export class AirDropSender {
       [...args, "--json", "--exit-on-stdin-close"]
     );
     active.child = child;
-    let killTimer: ReturnType<typeof setTimeout> | undefined;
+    let cancelKill: (() => void) | undefined;
     active.stop = () => {
-      if (killTimer) return;
+      if (cancelKill) return;
       child.stdin.end();
       child.kill("SIGTERM");
-      killTimer = setTimeout(() => child.kill("SIGKILL"), 2_000);
+      // A helper that ignores SIGTERM must still die while a test clock stands still.
+      cancelKill = realMainClock.setTimer(2_000, () => child.kill("SIGKILL"));
     };
     const decoder = new StringDecoder("utf8");
     let buffer = "",
@@ -405,7 +411,7 @@ export class AirDropSender {
     });
     child.once("error", (error) => fail(error.message));
     child.once("close", (code) => {
-      clearTimeout(killTimer);
+      cancelKill?.();
       if (active.value.status === "running") {
         try {
           active.boundary.assertCurrent();
@@ -417,7 +423,7 @@ export class AirDropSender {
           active.value.status = "succeeded";
           if (active.value.kind === "find") {
             this.#peers = structuredClone(active.value.peers!);
-            this.#peersExpireAt = Date.now() + 2 * 60_000;
+            this.#peersExpireAt = this.#clock.now() + 2 * 60_000;
           }
         } catch (error) {
           active.value.status = "failed";

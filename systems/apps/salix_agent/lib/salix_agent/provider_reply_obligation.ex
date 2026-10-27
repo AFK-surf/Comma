@@ -105,7 +105,10 @@ defmodule SalixAgent.ProviderReplyObligation do
   Whether the activation is Slack-sourced — and whether the bounded map has
   room — is decided at apply time, where the full session state is available.
   A successfully authorized Triage delegation is internal investigation, not a
-  card promise, even if another human source is pending. The kernel derives
+  card promise, even if another human source is pending. A Task for a Slack bot
+  or app source, or for no person (a Worker report or a schedule), is not a
+  card promise either: `TaskCard` publishes no card and reports
+  `task_card.status: "not_applicable"`. The kernel derives
   the event (`LoopHost.cardObligationEvents`).
   """
   def card_obligation_events(session_id, result, fallback \\ nil)

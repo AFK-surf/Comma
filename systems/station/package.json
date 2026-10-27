@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@comma/mesh": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.32.1",
     "effect": "4.0.0",
     "ws": "8.22.0"
   },

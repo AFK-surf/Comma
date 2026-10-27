@@ -4,6 +4,8 @@ import {
   getNativeBridge,
   type ComputeNodeState,
   type HostMaintenanceState,
+  type LocalStationAccounts,
+  type LocalStationRuntimeAccounts,
 } from "@comma/native-bridge";
 import { SettingsPage, createSettingsRegistry } from "@comma/ui/components/settings";
 import { useDeviceSettingsCategory } from "../../src/components/devices/useDeviceSettingsCategory";
@@ -49,7 +51,7 @@ let state: ComputeNodeState = {
     workActivity: "idle",
   },
 };
-if (["new", "no-node", "retained"].includes(scene))
+if (["new", "no-node", "retained", "flow"].includes(scene))
   state = {
     ...state,
     status: "not_set",
@@ -92,7 +94,7 @@ if (scene === "shell-failed")
     ...state,
     status: "action_required",
     issue: "shell_initialization_pending",
-    recoveryActions: ["continue_shell"],
+    recoveryActions: ["check_status"],
     setup: { components: "ready", connection: "ready", shell: "failed" },
   };
 if (scene === "setup")
@@ -142,16 +144,124 @@ if (scene === "maintenance-active")
       outcome: "pending",
     },
   };
+// `flow`: a whole setup, one step each time the page is told (`visual-setup-step`), as Main would publish it.
+const setupFlow = () => {
+  const steps: Partial<ComputeNodeState>[] = [
+    {
+      setup: {
+        components: "ready",
+        connection: "connecting",
+        shell: "not_initialized",
+      },
+    },
+    { setup: { components: "ready", connection: "ready", shell: "preparing" } },
+    {
+      status: "ready",
+      desiredEnabled: true,
+      bindingWorkspaceId: workspace,
+      observationFresh: true,
+      setup: { components: "ready", connection: "ready", shell: "ready" },
+      facets: { ...state.facets, connection: "connected" },
+    },
+  ];
+  const next = () => {
+    const step = steps.shift();
+    if (!step) return window.removeEventListener("visual-setup-step", next);
+    state = { ...state, ...step };
+    publish();
+  };
+  window.addEventListener("visual-setup-step", next);
+};
 const publish = () => {
   state = { ...state, revision: state.revision + 1 };
   listeners.forEach((fn) => fn(state));
   return state;
 };
+// This Mac's agents (the station's local admin interface): Codex on this Mac's login; Claude Code chose it but is
+// not signed in, and signs in once the person comes back from the browser.
+const localLogin = (loggedIn: boolean) => ({
+  installed: true,
+  loggedIn,
+  email: loggedIn ? "dev@example.com" : null,
+  usable: loggedIn,
+  signIn: null,
+});
+const runtimes: Record<"codex" | "claude", LocalStationRuntimeAccounts> = {
+  codex: {
+    source: "local",
+    chosen: true,
+    workspaceAvailable: true,
+    workspaceAccounts: [{ name: "Team Codex" }],
+    local: localLogin(true),
+    endpoint: null,
+  },
+  claude: {
+    source: "local",
+    chosen: true,
+    workspaceAvailable: false,
+    workspaceAccounts: [],
+    local: localLogin(false),
+    endpoint: null,
+  },
+};
+const localAccounts = (): LocalStationAccounts => ({
+  workspaces: [
+    { workspaceId: workspace, name: "Visual", runtimes: structuredClone(runtimes) },
+  ],
+});
 const bridge = getNativeBridge();
 Object.defineProperty(globalThis, "commaNative", {
   value: {
     ...bridge,
     platform: scene === "browser" ? "web" : "electron",
+    localStation: {
+      ...bridge.localStation,
+      accounts: async () => {
+        if (runtimes.claude.local?.signIn?.state === "running")
+          runtimes.claude.local = localLogin(true);
+        return localAccounts();
+      },
+      setAccountSource: async ({
+        runtime,
+        source,
+        endpoint,
+      }: {
+        runtime: "codex" | "claude";
+        source: "none" | "local" | "endpoint" | "workspace";
+        endpoint?: string;
+      }) => {
+        runtimes[runtime] = {
+          ...runtimes[runtime],
+          source,
+          chosen: true,
+          local: source === "local" ? localLogin(runtime === "codex") : null,
+          // A model server on this Mac: the station lists its models.
+          ...(endpoint
+            ? {
+                endpoint: {
+                  address: endpoint,
+                  keyed: false,
+                  state: "ok",
+                  detail: "3 models",
+                  models: ["qwen3:8b", "gemma3:12b", "gpt-oss:20b"],
+                },
+              }
+            : {}),
+        };
+        return localAccounts();
+      },
+      signIn: async ({ runtime }: { runtime: "codex" | "claude" }) => {
+        runtimes[runtime].local = {
+          ...localLogin(false),
+          signIn: { state: "running", url: null, error: null },
+        };
+        return localAccounts();
+      },
+      stopSignIn: async ({ runtime }: { runtime: "codex" | "claude" }) => {
+        runtimes[runtime].local = localLogin(false);
+        return localAccounts();
+      },
+    },
     connectorRuntime: {
       ...bridge.connectorRuntime,
       scope: async () => ({
@@ -210,6 +320,7 @@ Object.defineProperty(globalThis, "commaNative", {
         document.documentElement.dataset.configureCount = String(
           Number(document.documentElement.dataset.configureCount || 0) + 1
         );
+        if (scene === "flow") setupFlow();
         state = {
           ...state,
           status: "processing",
@@ -525,6 +636,7 @@ const core = new CoreClient(
                 {
                   device_id: "device-visual",
                   name: "Studio Mac",
+                  ...(scene === "flow" ? { station_id: "station-visual" } : {}),
                   status: "connected",
                   allows_operations: true,
                   os: "darwin",
@@ -542,6 +654,18 @@ const core = new CoreClient(
                       version: "1.0",
                       auth: { mode: "chatgpt" },
                     },
+                    ...(scene === "flow"
+                      ? [
+                          {
+                            device_runtime_id: "claude-visual",
+                            provider: "claude",
+                            status: "ready",
+                            fresh: true,
+                            version: "2.1",
+                            auth: { status: "authenticated" },
+                          },
+                        ]
+                      : []),
                   ],
                 },
               ],

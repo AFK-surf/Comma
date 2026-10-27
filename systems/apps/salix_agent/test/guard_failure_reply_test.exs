@@ -265,6 +265,61 @@ defmodule SalixAgent.GuardFailureReplyTest do
              InternalSession.lookup_async_call(running, "accepted-work")
   end
 
+  test "a model no Profile serves stops the input with a notice that names the choice" do
+    state = InternalSession.export(exhausted())
+
+    session =
+      InternalSession.open(%{state | repeated_tool_result_streak: nil})
+      |> InternalSession.apply_events([
+        %{
+          "type" => "session_event",
+          "kind" => "llm_call_failed",
+          "event" => %{
+            "retryable" => false,
+            "transcript_hwm" => 2,
+            "status" => 503,
+            "error_class" => "billing_unavailable",
+            "reason" => "model_unavailable"
+          }
+        }
+      ])
+
+    assert InternalSession.query(session, :guard_disposition_pending?)
+    assert InternalSession.activity_issue(session) == "model_unavailable"
+
+    {_events, call, _authorized} = prepare_notice(session)
+
+    assert call["args"]["reply_mode"] == "progress"
+    assert call["args"]["params"]["text"] =~ "Choose another model in Settings > Model & API"
+  end
+
+  test "own subscriptions at their limit stop the input with a notice that says they reset" do
+    state = InternalSession.export(exhausted())
+
+    session =
+      InternalSession.open(%{state | repeated_tool_result_streak: nil})
+      |> InternalSession.apply_events([
+        %{
+          "type" => "session_event",
+          "kind" => "llm_call_failed",
+          "event" => %{
+            "retryable" => false,
+            "transcript_hwm" => 2,
+            "status" => 503,
+            "error_class" => "billing_unavailable",
+            "reason" => "quota_exhausted",
+            "funding" => %{"source" => "codex", "reset_at" => 1_790_000_000}
+          }
+        }
+      ])
+
+    assert InternalSession.activity_issue(session) == "quota_exhausted"
+
+    {_events, call, _authorized} = prepare_notice(session)
+
+    assert call["args"]["params"]["text"] =~ "has reached its usage limit. It resets on its own"
+  end
+
   test "a committed attempt consumes its budget and failure ends only its activation" do
     session = attempted()
     assert InternalSession.query(session, :guard_failure_prepare, reply_binding()) == nil

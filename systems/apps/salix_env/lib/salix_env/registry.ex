@@ -7,8 +7,10 @@ defmodule SalixEnv.Registry do
   run on the same device; disconnect removes the run while preserving the
   device and its last runtime inventory.
 
-  Generation reservation, admission CAS, exact predecessor carry, expiry compensation,
-  and revocation confirmation share this durable device authority.
+  Generation reservation, admission CAS, credential renewal, exact predecessor
+  carry, expiry compensation, and revocation confirmation share this durable
+  device authority. The device record names the credential its current run
+  holds.
   """
 
   require Logger
@@ -125,6 +127,7 @@ defmodule SalixEnv.Registry do
     with {:ok, record} <- get_device(tenant_id, group_id, device_id),
          :ok <- disconnect_before_delete(record),
          :ok <- S3.delete(Keys.ctl_group_device(tenant_id, group_id, device_id)) do
+      SalixStore.StationDeviceLookup.remove(tenant_id, group_id, device_id)
       {:ok, record}
     end
   end
@@ -1222,30 +1225,22 @@ defmodule SalixEnv.Registry do
     end
   end
 
-  @doc "Whether one socket still owns the exact authorized current run."
-  @spec connector_run_credential_active?(
-          String.t(),
-          String.t(),
-          String.t(),
-          String.t(),
-          pos_integer() | nil,
-          String.t(),
-          pos_integer()
-        ) :: {:ok, boolean()} | {:error, term()}
-  def connector_run_credential_active?(
+  @doc """
+  Whether one socket still owns the exact current run, and the credential
+  that run holds is still authorized.
+  """
+  @spec connector_run_active?(String.t(), String.t(), String.t(), String.t(), pos_integer()) ::
+          {:ok, boolean()} | {:error, term()}
+  def connector_run_active?(
         tenant_id,
         group_id,
         device_id,
-        connector_id,
-        credential_generation,
         connector_run_id,
         connection_generation
       ) do
     case get_device(tenant_id, group_id, device_id) do
       {:ok, device} ->
         run = %{
-          "connector_id" => connector_id,
-          "credential_generation" => credential_generation,
           "connector_run_id" => connector_run_id,
           "connection_generation" => connection_generation
         }
@@ -1259,6 +1254,124 @@ defmodule SalixEnv.Registry do
         error
     end
   end
+
+  @doc """
+  Moves one current run to the device's newest credential, which its socket
+  presented while the credential the run holds was still authorized. The run,
+  its socket and its connection generation stay. The run then ends when the
+  new credential expires or is revoked.
+  """
+  @spec renew_run_credential(
+          String.t(),
+          String.t(),
+          String.t(),
+          String.t(),
+          pos_integer(),
+          map()
+        ) :: {:ok, device_record()} | {:error, term()}
+  def renew_run_credential(
+        tenant_id,
+        group_id,
+        device_id,
+        connector_run_id,
+        connection_generation,
+        %{"connector_id" => connector_id, "credential_generation" => generation} = credential
+      )
+      when is_binary(connector_id) and connector_id != "" and is_integer(generation) and
+             generation > 0 do
+    run = %{
+      "connector_run_id" => connector_run_id,
+      "connection_generation" => connection_generation
+    }
+
+    renew_attempt(
+      Keys.ctl_group_device(tenant_id, group_id, device_id),
+      run,
+      credential,
+      @cas_attempts
+    )
+  end
+
+  def renew_run_credential(_tenant_id, _group_id, _device_id, _run_id, _generation, _credential),
+    do: {:error, :credential_not_renewable}
+
+  defp renew_attempt(_key, _run, _credential, 0), do: {:error, :credential_renewal_conflict}
+
+  defp renew_attempt(key, run, credential, attempts) do
+    with {:ok, device, etag} <- read_json_with_etag(key),
+         :ok <- renewable(device, run, credential) do
+      if holds_credential?(device, credential) do
+        {:ok, device}
+      else
+        renewed = device |> hold_credential(credential) |> Map.put("updated_at", now_ms())
+
+        case S3.put(key, Jason.encode!(renewed), if_match: etag) do
+          {:ok, _} -> {:ok, renewed}
+          {:error, :precondition_failed} -> renew_attempt(key, run, credential, attempts - 1)
+          {:error, {:ambiguous, _}} -> settle_renewal(key, run, credential)
+          {:error, _} = error -> error
+        end
+      end
+    end
+  end
+
+  # Both the credential the run holds now and the one it presents must be
+  # authorized; the presented one only as the device's newest.
+  defp renewable(device, run, credential) do
+    cond do
+      not same_current_run?(device, run) ->
+        {:error, :connector_run_not_current}
+
+      not held_credential_authorized?(device) ->
+        {:error, :connector_credential_revoked}
+
+      not credential_generation_authorized?(
+        device,
+        credential["connector_id"],
+        credential["credential_generation"],
+        now_ms()
+      ) ->
+        {:error, :credential_not_renewable}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp settle_renewal(key, run, credential) do
+    case read_json(key) do
+      {:ok, device} ->
+        if same_current_run?(device, run) and holds_credential?(device, credential),
+          do: {:ok, device},
+          else: {:error, {:ambiguous, :credential_renewal}}
+
+      _ ->
+        {:error, {:ambiguous, :credential_renewal}}
+    end
+  end
+
+  defp holds_credential?(device, credential) do
+    device["connector_id"] == credential["connector_id"] and
+      device["credential_generation"] == credential["credential_generation"]
+  end
+
+  defp hold_credential(device, credential) do
+    device
+    |> Map.put("connector_id", credential["connector_id"])
+    |> Map.put("credential_generation", credential["credential_generation"])
+    |> put_credential_expires_at(credential["expires_at"])
+    |> Map.update("meta", %{}, fn meta ->
+      meta
+      |> Map.put("connector_id", credential["connector_id"])
+      |> Map.put("credential_generation", credential["credential_generation"])
+    end)
+  end
+
+  defp put_credential_expires_at(device, expires_at) when is_integer(expires_at),
+    do: Map.put(device, "credential_expires_at", expires_at)
+
+  defp put_credential_expires_at(device, _expires_at),
+    do: Map.delete(device, "credential_expires_at")
 
   @doc "Disconnect one current connector run and preserve its stable device."
   @spec mark_disconnected(String.t(), keyword()) ::
@@ -1292,7 +1405,8 @@ defmodule SalixEnv.Registry do
               "transport_id",
               "node",
               "process_instance_id",
-              "credential_generation"
+              "credential_generation",
+              "credential_expires_at"
             ])
 
           case S3.put(device_key(device), Jason.encode!(disconnected), if_match: etag) do
@@ -1452,6 +1566,7 @@ defmodule SalixEnv.Registry do
     device =
       (previous || %{})
       |> Map.merge(run)
+      |> put_credential_expires_at(opts[:token_expires_at])
       |> Map.put("status", "connected")
       |> Map.put("meta", Map.merge((previous && previous["meta"]) || %{}, meta))
       |> Map.put("connected_at", now)
@@ -1775,7 +1890,7 @@ defmodule SalixEnv.Registry do
   end
 
   defp current_run?(device, run) do
-    same_current_run?(device, run) and run_credential_authorized?(device, run)
+    same_current_run?(device, run) and held_credential_authorized?(device)
   end
 
   defp same_current_run?(device, run) do
@@ -1784,18 +1899,35 @@ defmodule SalixEnv.Registry do
       device["connection_generation"] == run["connection_generation"]
   end
 
-  defp run_credential_authorized?(%{"active_credential_generation" => active} = device, run)
+  # The device record names the credential its current run holds: the one that
+  # admitted the run, or a newer one the run presented since
+  # (`renew_run_credential/6`). The run record keeps the admitting one.
+  defp held_credential_authorized?(%{"active_credential_generation" => active} = device)
        when is_integer(active) and active > 0 do
+    now = now_ms()
+
     credential_generation_authorized?(
       device,
-      run["connector_id"],
-      run["credential_generation"],
-      now_ms()
-    )
+      device["connector_id"],
+      device["credential_generation"],
+      now
+    ) or superseded_credential_live?(device, now)
   end
 
-  defp run_credential_authorized?(legacy_device, run),
-    do: not legacy_connector_revoked?(legacy_device, run["connector_id"])
+  defp held_credential_authorized?(legacy_device),
+    do: not legacy_connector_revoked?(legacy_device, legacy_device["connector_id"])
+
+  # A newer mint does not end the live run of an older credential before that
+  # credential's own expiry, so the run can present the newer one first. The
+  # older credential admits no new run. One without an expiry gets no such time.
+  defp superseded_credential_live?(device, now) do
+    held = device["credential_generation"]
+    expires_at = device["credential_expires_at"]
+
+    is_integer(held) and held > nonnegative_integer(device["revoked_through_generation"]) and
+      held < device["active_credential_generation"] and is_integer(expires_at) and
+      not admission_expired?(expires_at, now)
+  end
 
   defp authorize_credential_admission(
          %{"active_credential_generation" => active} = device,
@@ -1971,7 +2103,8 @@ defmodule SalixEnv.Registry do
         "transport_id",
         "node",
         "process_instance_id",
-        "credential_generation"
+        "credential_generation",
+        "credential_expires_at"
       ])
     else
       device
@@ -1989,7 +2122,8 @@ defmodule SalixEnv.Registry do
         "transport_id",
         "node",
         "process_instance_id",
-        "credential_generation"
+        "credential_generation",
+        "credential_expires_at"
       ])
     else
       device

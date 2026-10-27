@@ -111,6 +111,9 @@ defmodule SalixWeb.Connect do
              device_id: meta["device_id"],
              connector_id: meta["connector_id"],
              managed_compute: Map.has_key?(scope, :workload),
+             workload_id: get_in(scope, [:workload, :id]),
+             workload_generation: get_in(scope, [:workload, :generation]),
+             workload_owner: get_in(scope, [:workload, :owner]),
              credential_generation: meta["credential_generation"],
              scope: meta["scope"],
              token_expires_at: Map.get(scope, :token_expires_at),
@@ -195,16 +198,18 @@ defmodule SalixWeb.Connect do
     end
   end
 
-  # A Compute Workload's station: the Workload's Group Compute record names the
-  # device it is, and the connection takes that device's transport, as a
-  # Cloud VM's always has.
-  defp connector_scope(%{assigns: %{connector_workload: workload}}, tenant_id, _params) do
-    with %SalixStore.Compute.Environment{owner_type: "group", owner_id: group_id} <-
-           SalixStore.Repo.get(SalixStore.Compute.Environment, workload.environment_id),
-         {:ok, %{"tenant_id" => ^tenant_id, "workload_id" => workload_id} = rec}
-         when workload_id == workload.id <- SalixStore.Compute.group_workload(group_id),
-         resource when is_binary(resource) and resource != "" <-
-           rec["provider_resource_name"] || rec["provider_ref"],
+  # Workload owners project their existing Station identity through one path.
+  defp connector_scope(%{assigns: %{connector_workload: workload}}, tenant_id, _params),
+    do: workload_scope(workload, tenant_id)
+
+  defp connector_scope(_conn, _tenant_id, _params),
+    do: {:error, {403, "connector credential is required"}}
+
+  # Each owner projects only its exact Workload into the shared Station transport.
+  defp workload_scope(workload, tenant_id) do
+    with {:ok, %{"tenant_id" => ^tenant_id, "group_id" => group_id} = rec} <-
+           SalixStore.ComputeStation.record(workload),
+         resource = rec["provider_resource_name"] || rec["provider_ref"],
          env_id when is_binary(env_id) and env_id != "" <- rec["env_id"] do
       name = rec["name"] || "Cloud VM"
 
@@ -214,12 +219,11 @@ defmodule SalixWeb.Connect do
          name: name,
          alias: rec["alias"] || "cloud-vm",
          workload: %{
+           id: workload.id,
+           generation: workload.generation,
+           owner: rec["owner"],
            provider: rec["provider"],
-           env_id: env_id,
-           resource: %{
-             "name" => resource,
-             "profile_key" => get_in(rec, ["provider_spec", "profile_key"])
-           }
+           env_id: env_id
          },
          meta: %{
            "device_id" => rec["device_id"],
@@ -228,6 +232,8 @@ defmodule SalixWeb.Connect do
            "provider_resource_name" => resource,
            "profile_key" => get_in(rec, ["provider_spec", "profile_key"]),
            "managed_compute" => true,
+           "workload_id" => workload.id,
+           "workload_generation" => workload.generation,
            # A station that connects while its VM wakes belongs to that wake.
            "wake_operation_id" => if(rec["status"] == "waking", do: rec["wake_operation_id"])
          }
@@ -236,9 +242,6 @@ defmodule SalixWeb.Connect do
       _ -> {:error, {403, "this Workload has no device to connect as"}}
     end
   end
-
-  defp connector_scope(_conn, _tenant_id, _params),
-    do: {:error, {403, "connector credential is required"}}
 
   # A name chosen when the credential was minted wins over the dialed one, so a
   # client that dials with a fixed product name still shows as its own device.
@@ -249,16 +252,9 @@ defmodule SalixWeb.Connect do
   defp connector_name(token, dialed),
     do: default_to(dialed, token["name"] || "Group Connector")
 
-  # A Workload's connection registers while its Group still names the same
-  # provider resource, and as the Workload's own transport.
-  defp register(%{workload: workload, group_id: group_id}, connect) do
-    SalixStore.Compute.with_group_provider(
-      group_id,
-      workload.provider,
-      workload.resource,
-      connect
-    )
-  end
+  # Registration uses the resource owner's lock and exact Workload generation.
+  defp register(%{workload: workload}, connect),
+    do: SalixStore.ComputeStation.with_connection(workload.id, workload.generation, connect)
 
   defp register(_scope, connect), do: connect.()
 

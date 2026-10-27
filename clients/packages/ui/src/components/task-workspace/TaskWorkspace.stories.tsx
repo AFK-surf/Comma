@@ -11,7 +11,6 @@ const storyTasks: TaskWorkspaceTask[] = [
     conversationId: "conversation-feedback",
     groupId: "group-comma",
     updatedAt: 1_777_939_200,
-    freshness: "fresh",
     id: "task-feedback",
     messages: [],
     statusBucket: "needs_review",
@@ -24,7 +23,6 @@ const storyTasks: TaskWorkspaceTask[] = [
     conversationId: "conversation-progress",
     groupId: "group-comma",
     updatedAt: 1_778_025_600,
-    freshness: "fresh",
     id: "task-progress",
     lastMessage: {
       content: "I am checking the source references and running the final tests.",
@@ -57,7 +55,6 @@ const storyTasks: TaskWorkspaceTask[] = [
     conversationId: "conversation-review",
     groupId: "group-comma",
     updatedAt: 1_778_112_000,
-    freshness: "unknown",
     id: "task-review",
     messages: [
       {
@@ -77,7 +74,6 @@ const storyTasks: TaskWorkspaceTask[] = [
     conversationId: "conversation-done",
     groupId: "group-comma",
     updatedAt: 1_777_852_800,
-    freshness: "fresh",
     id: "task-done",
     messages: [],
     statusBucket: "done",
@@ -90,7 +86,6 @@ const storyTasks: TaskWorkspaceTask[] = [
     conversationId: "conversation-cancelled",
     groupId: "group-comma",
     updatedAt: 1_777_766_400,
-    freshness: "stale",
     id: "task-cancelled",
     messages: [],
     statusBucket: "cancelled",
@@ -166,7 +161,7 @@ export const Empty: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(canvas.getByText("No tasks")).toBeVisible();
-    await expect(canvas.getByRole("button", { name: "Create new task" })).toBeVisible();
+    await expect(canvas.getByRole("button", { name: "New task" })).toBeVisible();
     await expect(canvas.queryByText("In progress")).not.toBeInTheDocument();
   },
 };
@@ -292,7 +287,6 @@ export const PersistedOrder: Story = {
         conversationId: "conversation-design-tokens",
         groupId: "group-comma",
         updatedAt: 1_777_852_800,
-        freshness: "fresh",
         id: "task-design-tokens",
         messages: [],
         statusBucket: "needs_review",

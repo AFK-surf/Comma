@@ -1,5 +1,6 @@
 import type { ProfileValue } from "@comma/core/contract";
 import type { CoreClient } from "@comma/core-kernel/client";
+import { realMainClock, type MainClock } from "../../clock";
 
 /**
  * The signed-in account's name as the client core reads it (its `profile` topic): null when it has none, the read
@@ -7,7 +8,8 @@ import type { CoreClient } from "@comma/core-kernel/client";
  */
 export function profileName(
   client: CoreClient,
-  timeoutMs: number
+  timeoutMs: number,
+  clock: MainClock = realMainClock
 ): Promise<string | null> {
   return new Promise((resolve) => {
     let stop: (() => void) | undefined;
@@ -15,11 +17,11 @@ export function profileName(
     const finish = (name: string | null) => {
       if (done) return;
       done = true;
-      clearTimeout(timer);
+      cancelTimer();
       resolve(name);
       queueMicrotask(() => stop?.());
     };
-    const timer = setTimeout(() => finish(null), timeoutMs);
+    const cancelTimer = clock.setTimer(timeoutMs, () => finish(null));
     stop = client.subscribe(
       { topic: "profile" },
       (value) => {

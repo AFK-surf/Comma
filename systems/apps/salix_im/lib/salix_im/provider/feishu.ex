@@ -902,6 +902,24 @@ defmodule SalixIM.Provider.Feishu do
     end
   end
 
+  defp outbound_content(%{"question" => question} = params) when not is_nil(question) do
+    with {:ok, question} <- SalixIM.QuestionCard.normalize(question),
+         {:ok, mentioned} <-
+           MessageRenderer.mention_ids(params["mentions"], params["mention_all"]),
+         :ok <- require_param(params, "text"),
+         {:ok, card} <-
+           SalixIM.QuestionCard.feishu_card(
+             SalixIM.QuestionCard.with_mentions(str(params["text"]), mentioned),
+             question,
+             %{
+               "chat_type" => card_chat_type(params),
+               "thread_id" => str(params["thread_id"])
+             }
+           ) do
+      {:ok, %{"msg_type" => "interactive", "content" => Jason.encode!(card)}}
+    end
+  end
+
   defp outbound_content(params) do
     SalixIM.MessageRenderer.render(MessageRenderer, %Input{markdown: params["text"]},
       format: params["format"],
@@ -909,6 +927,13 @@ defmodule SalixIM.Provider.Feishu do
       mention_all: truthy?(params["mention_all"])
     )
   end
+
+  # A send to a person is a private chat; a reply says its chat type.
+  defp card_chat_type(%{"receive_id" => _} = params) do
+    if receive_id_type(params) == "chat_id", do: "", else: "p2p"
+  end
+
+  defp card_chat_type(params), do: str(params["chat_type"])
 
   defp page_size(params, maximum \\ @max_page_size) do
     (params["page_size"] || maximum)

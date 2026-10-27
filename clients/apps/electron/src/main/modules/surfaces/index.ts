@@ -53,6 +53,7 @@ export interface NativeWindowOpenRequest {
   route: string;
   role: "main-window";
   windowId: string;
+  bounds?: WindowCreateInput["bounds"];
 }
 
 export class NativeSurfaceService {
@@ -281,6 +282,7 @@ export class NativeWindowCommandService {
       role: "main-window",
       route: input.route,
       windowId: this.#nextWindowId(),
+      ...(input.bounds ? { bounds: input.bounds } : {}),
     };
 
     await this.#openWindow(request);

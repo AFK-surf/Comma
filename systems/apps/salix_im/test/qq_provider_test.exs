@@ -338,6 +338,7 @@ defmodule SalixIM.QQProviderTest do
                args: %{
                  "tool" => "im_api.internal.task.create",
                  "params" => %{
+                   "runs_on" => %{"kind" => "default"},
                    "connect_id" => "internal",
                    "agent_id" => config.worker_id,
                    "content" => "Prepare a short repository health report.",

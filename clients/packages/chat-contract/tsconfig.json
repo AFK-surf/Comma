@@ -10,5 +10,6 @@
     "rootDir": "."
   },
   "include": ["src/**/*.ts", "src/**/*.tsx", "src/**/*.json"],
-  "exclude": ["**/*.test.*", "**/*.spec.*", "**/*.stories.*"]
+  "exclude": ["**/*.test.*", "**/*.spec.*", "**/*.stories.*"],
+  "references": [{ "path": "../miniapp-sdk" }]
 }

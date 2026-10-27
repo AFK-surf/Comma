@@ -1,5 +1,6 @@
 defmodule SalixAgent.Tools.History do
   @moduledoc "Agent-only retrieval of original records in the current internal Session."
+  require Logger
   alias SalixAgent.SessionHistory.{Source, Document, Hot, Worker}
   @normal SalixAgent.Tools.AsyncPolicy.normal_tool_auto_wait_seconds()
   @search %{
@@ -53,7 +54,7 @@ defmodule SalixAgent.Tools.History do
   end
 
   def search(args, ctx) do
-    protect(fn ->
+    protect(ctx, fn ->
       with true <- Map.keys(args) -- ~w(query cursor limit) == [],
            query when is_binary(query) <- args["query"],
            query <- query |> String.trim() |> Document.fold(),
@@ -61,7 +62,7 @@ defmodule SalixAgent.Tools.History do
              length(String.codepoints(query)) in 2..128 and not String.contains?(query, <<0>>) do
         lookup(args, ctx, query)
       else
-        _ -> failure()
+        _ -> failure(:invalid_arguments, ctx)
       end
     end)
   end
@@ -69,15 +70,15 @@ defmodule SalixAgent.Tools.History do
   def list(args, ctx) do
     if Map.keys(args) -- ~w(cursor limit) == [],
       do: lookup(args, ctx, nil),
-      else: failure()
+      else: failure(:invalid_arguments, ctx)
   end
 
   defp lookup(args, ctx, query) do
     Worker.hint(ctx.agent_id, ctx.session_id)
 
-    protect(fn ->
+    protect(ctx, fn ->
       with limit <- args["limit"] || 10,
-           true <- is_integer(limit) and limit in 1..20,
+           true <- (is_integer(limit) and limit in 1..20) || {:error, :invalid_arguments},
            {:ok, state} <- Source.read(ctx.agent_id, ctx.session_id),
            {:ok, {ceiling, before_seq, before_part}} <-
              cursor(args["cursor"], query, SalixAgent.InternalSession.get(state, :last_seq)),
@@ -90,9 +91,11 @@ defmodule SalixAgent.Tools.History do
                before_seq,
                before_part,
                limit + 1
-             ),
+             )
+             |> stage(:hot_index_unavailable),
            {:ok, cold} <-
-             cold(ctx, query, min(ceiling, position.cold), before_seq, before_part, limit + 1) do
+             cold(ctx, query, min(ceiling, position.cold), before_seq, before_part, limit + 1)
+             |> stage(:cold_index_unavailable) do
         Worker.hint(ctx.agent_id, ctx.session_id)
         rows = Enum.sort_by(hot ++ cold, &{&1["seq"], &1["part"]}, :desc)
         page = Enum.take(rows, limit)
@@ -110,17 +113,18 @@ defmodule SalixAgent.Tools.History do
 
         labelled(response, page, ctx)
       else
-        _ -> failure()
+        error -> failure(error, ctx)
       end
     end)
   end
 
   def get(args, ctx) do
-    protect(fn ->
-      with true <- Map.keys(args) -- ~w(seq offset) == [],
-           seq when is_integer(seq) and seq > 0 <- args["seq"],
+    protect(ctx, fn ->
+      with true <- Map.keys(args) -- ~w(seq offset) == [] || {:error, :invalid_arguments},
+           seq <- args["seq"],
+           true <- (is_integer(seq) and seq > 0) || {:error, :invalid_arguments},
            offset <- args["offset"] || 0,
-           true <- is_integer(offset) and offset >= 0,
+           true <- (is_integer(offset) and offset >= 0) || {:error, :invalid_arguments},
            {:ok, state} <- Source.read(ctx.agent_id, ctx.session_id),
            {:ok, record} <- Source.record(ctx.agent_id, state, seq) do
         text = Document.text(record)
@@ -144,7 +148,7 @@ defmodule SalixAgent.Tools.History do
           ctx
         )
       else
-        _ -> failure()
+        error -> failure(error, ctx)
       end
     end)
   end
@@ -207,20 +211,41 @@ defmodule SalixAgent.Tools.History do
     end
   end
 
-  defp failure,
-    do:
-      Jason.encode!(%{
-        "error" => "history_unavailable_or_invalid_request",
-        "complete" => false,
-        "message" =>
-          "History search did not complete. Do not interpret this as no matches. Retry later or correct the arguments. External runtime history is unsupported."
-      })
+  # Hot and cold index stores return their own errors; the stage names which one failed.
+  defp stage({:error, reason}, failed), do: {:error, {failed, reason}}
+  defp stage(result, _failed), do: result
 
-  defp protect(fun) do
+  @reasons ~w(invalid_arguments invalid_cursor unsupported_storage_format source_gap not_found
+              hot_index_unavailable cold_index_unavailable)a
+
+  defp reason({:error, {reason, _detail}}) when reason in @reasons, do: reason
+  defp reason({:error, reason}) when reason in @reasons, do: reason
+  defp reason(reason) when reason in @reasons, do: reason
+  defp reason(_other), do: :unavailable
+
+  defp failure(error, ctx) do
+    reason = reason(error)
+
+    Logger.warning(
+      "history tool failed reason=#{reason} detail=#{inspect(error, limit: 8)} " <>
+        "agent=#{ctx[:agent_id]} session=#{ctx[:session_id]}"
+    )
+
+    Jason.encode!(%{
+      "error" => "history_unavailable_or_invalid_request",
+      "reason" => Atom.to_string(reason),
+      "complete" => false,
+      "message" =>
+        "History lookup failed (#{reason}). Do not interpret this as no matches. " <>
+          "Correct the arguments or retry later."
+    })
+  end
+
+  defp protect(ctx, fun) do
     fun.()
   rescue
-    _ -> failure()
+    exception -> failure({:exception, exception.__struct__}, ctx)
   catch
-    _, _ -> failure()
+    kind, _ -> failure({:caught, kind}, ctx)
   end
 end

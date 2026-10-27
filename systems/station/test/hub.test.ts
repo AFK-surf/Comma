@@ -1306,7 +1306,7 @@ test("on another account a conversation goes on in a new runtime session, its hi
   assert.notEqual(second.id(), first.id());
   assert.equal(second.prompts.length, 1);
   assert.ok(matches(second.prompts[0]!, ["This is a new conversation", `session_history with chat ${key}`, `C1/${m.threadTs}`, GO_ON_AFTER_SPENT]), second.prompts[0]);
-  assert.deepEqual(r.store.runtimeSessions(key), [first.id(), second.id()]);
+  assert.deepEqual(r.store.runtimeSessions(key).map((ran) => ran.id), [first.id(), second.id()]);
   assert.equal(r.store.ranOn(key, second.id()), second.options.profile.id);
   // Its history goes on from the first's.
   transcript(second.id(), "second", 1_000);
@@ -1329,7 +1329,62 @@ test("on another account a conversation goes on in a new runtime session, its hi
   const fourth = r.claude.last();
   assert.equal(fourth.options.resume, undefined);
   assert.ok(matches(fourth.prompts[0]!, ["This is a new conversation", GO_ON_AFTER_SPENT]), fourth.prompts[0]);
-  assert.deepEqual(r.store.runtimeSessions(key), [first.id(), second.id(), fourth.id()]);
+  assert.deepEqual(r.store.runtimeSessions(key).map((ran) => ran.id), [first.id(), second.id(), fourth.id()]);
+  await r.close();
+});
+
+test("moved to another runtime, a conversation goes on afresh there, its history read on from what both wrote", async () => {
+  const r = new Rig();
+  const m = message();
+  await r.accept(m);
+  await settle();
+  const first = r.claude.last();
+  const key = first.options.route;
+  const claudeTranscript = join(r.config.profiles[0]!.home, "projects", "-w", `${first.id()}.jsonl`);
+  mkdirSync(dirname(claudeTranscript), { recursive: true });
+  writeFileSync(claudeTranscript, JSON.stringify({ type: "user", message: { role: "user", content: "first" } }) + "\n");
+  await r.call(key, "chat_post", { to: `C1/${m.threadTs}`, text: "done", kind: "final" });
+  first.complete();
+  await settle();
+  // Another runtime: not while a turn runs; the old model is the old runtime's, so the new one's default.
+  await configure(r.hub, key, { runtime: "codex" });
+  const moved = r.session(key);
+  assert.deepEqual([moved.runtime, moved.profile, moved.model, moved.effort], ["codex", "cx", null, null]);
+  await r.accept({ ...message(), threadTs: m.threadTs });
+  await settle();
+  assert.equal(r.claude.count(), 1);
+  const second = r.codex.last();
+  assert.equal(second.options.resume, undefined);
+  assert.ok(matches(second.prompts[0]!, ["This is a new conversation", `session_history with chat ${key}`, `C1/${m.threadTs}`]), second.prompts[0]);
+  assert.deepEqual(r.store.runtimeSessions(key), [
+    { id: first.id(), runtime: "claude" },
+    { id: second.id(), runtime: "codex" },
+  ]);
+  const rollouts = join(r.config.profiles[1]!.home, "sessions", "2026", "09", "02");
+  mkdirSync(rollouts, { recursive: true });
+  writeFileSync(
+    join(rollouts, `rollout-2026-09-02T00-00-00-${second.id()}.jsonl`),
+    [
+      { type: "session_meta", payload: { id: second.id(), cwd: moved.workspace } },
+      { type: "response_item", timestamp: "2026-09-02T00:00:01.000Z", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "second" }] } },
+    ].map((l) => JSON.stringify(l)).join("\n") + "\n",
+  );
+  assert.deepEqual(r.hub.live.before(key, 100, 100)![1].filter((e) => e.kind === "user").map((e) => e.text), ["first", "second"]);
+  // Back, it is not taken up where it left Claude Code either: afresh again.
+  await r.call(key, "chat_post", { to: `C1/${m.threadTs}`, text: "done", kind: "final" });
+  second.complete();
+  await settle();
+  await configure(r.hub, key, { runtime: "claude" });
+  await r.accept({ ...message(), threadTs: m.threadTs });
+  await settle();
+  const third = r.claude.last();
+  assert.equal(r.claude.count(), 2);
+  assert.equal(third.options.resume, undefined);
+  assert.ok(third.prompts[0]!.includes("This is a new conversation"), third.prompts[0]);
+  assert.deepEqual([r.session(key).runtime, r.session(key).profile], ["claude", "cc"]);
+  // What it cannot run is refused, and nothing changes.
+  await assert.rejects(configure(r.hub, key, { runtime: "gemini" }), /unknown runtime/);
+  assert.equal(r.session(key).runtime, "claude");
   await r.close();
 });
 
@@ -1552,5 +1607,26 @@ test("a session whose directory is gone is not continued", async () => {
   const found = find(roots, "codex", "22222222-aaaa-bbbb-cccc-000000000001")!;
   assert.throws(() => continueMachineSession(r.hub, roots, found, "local"), /已经不在了/);
   assert.equal(r.store.listSessions().length, 0);
+  await r.close();
+});
+
+
+test("removing an account blocks later turns in its warm session and keeps pending input", async () => {
+  const r = new Rig({ maxNudges: 0, warmMinutes: 0 });
+  const m = message();
+  await r.accept(m);
+  await settle();
+  const running = r.claude.last();
+  r.config.profiles = r.config.profiles.filter((p) => p.id !== "cc");
+  // The accepted turn can finish. The next message must not use the cached runtime.
+  running.end({ kind: "aborted" });
+  await settle();
+  const key = sessionKey("cl", "C1", m.threadTs);
+  await r.accept(reply(m, "9999.8", "work after disabling"));
+  await settle();
+  assert.equal(running.prompts.length, 1);
+  assert.equal(r.claude.count(), 1);
+  assert.equal(r.store.pendingMessages(key).length, 1);
+  assert.ok(r.store.getSession(key));
   await r.close();
 });

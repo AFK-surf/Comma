@@ -48,6 +48,7 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.widget.doAfterTextChanged
 import androidx.dynamicanimation.animation.DynamicAnimation
 import surf.comma.android.R
+import surf.comma.android.media.PickedFile
 import surf.comma.android.platform.asr.AsrCredentialProvider
 import surf.comma.android.platform.asr.AsrError
 import surf.comma.android.platform.asr.DebugLocalAsrCredentialProvider
@@ -96,13 +97,13 @@ class ComposerView @JvmOverloads constructor(
      */
     var onImeOffset: ((Float) -> Unit)? = null
 
-    /** New images were attached; start uploading them and report back with [setAttachmentState]. */
+    /** New files were attached; start uploading them and report back with [setAttachmentState]. */
     var onAttachmentsAdded: ((List<ComposerAttachment>) -> Unit)? = null
 
-    /** The user removed an image; cancel its upload. */
+    /** The user removed an attachment; cancel its upload. */
     var onAttachmentRemoved: ((id: String) -> Unit)? = null
 
-    /** The user tapped a failed image to retry its upload. */
+    /** The user tapped a failed attachment to retry its upload. */
     var onAttachmentRetry: ((id: String) -> Unit)? = null
 
     /** Images picked for a question card's other answer ([pickQuestionImages]), apart from the draft. */
@@ -110,7 +111,7 @@ class ComposerView @JvmOverloads constructor(
 
     val text: String get() = model.text
     val attachments: List<ComposerAttachment>
-        get() = model.attachments.map { ComposerAttachment(it.id, uris.getValue(it.id)) }
+        get() = model.attachments.map { files.getValue(it.id) }
 
     /** Current lift in px (see [onImeOffset]). */
     val liftPx: Float get() = -translationY
@@ -197,7 +198,7 @@ class ComposerView @JvmOverloads constructor(
     /** Insets beyond the space already reserved by the host, per animation frame. */
     private var imeOffset = 0f
     private var navigationOffset = 0f
-    private val uris = LinkedHashMap<String, Uri>()
+    private val files = LinkedHashMap<String, ComposerAttachment>()
     private val thumbs = LinkedHashMap<String, AttachmentThumbView>()
     private val hold = HoldToTalk(
         touchSlop = ViewConfiguration.get(context).scaledTouchSlop.toFloat(),
@@ -513,7 +514,7 @@ class ComposerView @JvmOverloads constructor(
             if (accepted) {
                 model.consumeSentDraft(draftText, outgoing.map { it.id }.toSet())
                 outgoing.forEach { attachment ->
-                    uris.remove(attachment.id)
+                    files.remove(attachment.id)
                     thumbs.remove(attachment.id)?.let(strip::removeView)
                 }
                 if (editText.text.toString() != model.text) editText.setText(model.text)
@@ -534,17 +535,22 @@ class ComposerView @JvmOverloads constructor(
 
     // ---- Attachments ----
 
-    private fun addUris(picked: List<Uri>) {
-        if (picked.isEmpty()) return
+    private fun addUris(uris: List<Uri>) {
+        if (uris.isEmpty()) return
         if (model.remainingSlots <= 0) {
             toast(R.string.composer_attach_limit, ComposerModel.MAX_ATTACHMENTS)
             return
         }
+        // A file sent as it is must fit the upload limit; an image is made smaller to fit.
+        val described = uris.map { it to PickedFile.describe(context.contentResolver, it) }
+        val picked = described.filterNot { it.second.tooLarge }
+        if (picked.size < described.size) toast(R.string.composer_attach_too_large)
+        if (picked.isEmpty()) return
         val ids = model.addAttachments(picked.size)
-        val added = ids.mapIndexed { index, id -> ComposerAttachment(id, picked[index]) }
+        val added = ids.mapIndexed { index, id -> ComposerAttachment(id, picked[index].first, picked[index].second) }
         added.forEach { attachment ->
-            uris[attachment.id] = attachment.uri
-            val thumb = AttachmentThumbView(context, style, attachment.id, attachment.uri, ::removeAttachment) {
+            files[attachment.id] = attachment
+            val thumb = AttachmentThumbView(context, style, attachment, ::removeAttachment) {
                 onAttachmentRetry?.invoke(it)
             }
             thumbs[attachment.id] = thumb
@@ -560,7 +566,7 @@ class ComposerView @JvmOverloads constructor(
 
     private fun removeAttachment(id: String) {
         if (!model.removeAttachment(id)) return
-        uris.remove(id)
+        files.remove(id)
         thumbs.remove(id)?.let(strip::removeView)
         render(animate = true)
         onAttachmentRemoved?.invoke(id)
@@ -590,7 +596,7 @@ class ComposerView @JvmOverloads constructor(
         when (val pick = PhotoPick.forRemaining(model.remainingSlots, systemPhotoLimit())) {
             PhotoPick.None -> toast(R.string.composer_attach_limit, ComposerModel.MAX_ATTACHMENTS)
             PhotoPick.Single ->
-                photoLauncher?.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                photoLauncher?.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo))
             is PhotoPick.Multiple -> photosLauncher?.launch(pick.limit)
         }
     }
@@ -620,7 +626,8 @@ class ComposerView @JvmOverloads constructor(
     private fun launchFiles() {
         if (model.remainingSlots <= 0) return toast(R.string.composer_attach_limit, ComposerModel.MAX_ATTACHMENTS)
         try {
-            documentLauncher?.launch(arrayOf("image/*"))
+            // Any file: the core says which types it takes, as on every client.
+            documentLauncher?.launch(arrayOf("*/*"))
         } catch (error: ActivityNotFoundException) {
             AppLog.warn(TAG, error, "No document picker")
         }
@@ -1089,14 +1096,18 @@ class ComposerView @JvmOverloads constructor(
             pendingCameraUri = null
             if (saved && uri != null) onPicked(listOf(uri))
         }
-        photosLauncher = registry.register("$KEY_PHOTOS.$slot", CappedPhotoPicker()) { onPicked(it) }
+        photosLauncher = registry.register(
+            "$KEY_PHOTOS.$slot", CappedPhotoPicker(ActivityResultContracts.PickVisualMedia.ImageAndVideo),
+        ) { onPicked(it) }
         photoLauncher = registry.register("$KEY_PHOTO.$slot", ActivityResultContracts.PickVisualMedia()) { uri ->
             if (uri != null) onPicked(listOf(uri))
         }
         documentLauncher = registry.register("$KEY_DOCUMENT.$slot", ActivityResultContracts.OpenMultipleDocuments()) {
             onPicked(it)
         }
-        questionPhotosLauncher = registry.register("$KEY_QUESTION_PHOTOS.$slot", CappedPhotoPicker()) { onQuestionPicked(it) }
+        questionPhotosLauncher = registry.register(
+            "$KEY_QUESTION_PHOTOS.$slot", CappedPhotoPicker(ActivityResultContracts.PickVisualMedia.ImageOnly),
+        ) { onQuestionPicked(it) }
         questionPhotoLauncher = registry.register("$KEY_QUESTION_PHOTO.$slot", ActivityResultContracts.PickVisualMedia()) { uri ->
             onQuestionPicked(listOfNotNull(uri))
         }

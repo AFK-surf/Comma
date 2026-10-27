@@ -35,9 +35,20 @@ describe("website page analytics", () => {
         gclid: "abc",
         $referrer: "https://www.google.com/search?q=comma",
       })
-    ).toEqual({ referrer_host: "www.google.com", utm_source: "hn" });
+    ).toEqual({
+      referrer_host: "www.google.com",
+      $referring_domain: "www.google.com",
+      utm_source: "hn",
+    });
     expect(sanitizeAttribution({ initial_landing_page: "/docs/quickstart" })).toEqual({
       initial_landing_page: "/docs/quickstart",
+    });
+  });
+
+  it("names a direct visit the way PostHog's web analytics reads it", () => {
+    expect(sanitizeVisit({ referrer_host: "direct" })).toEqual({
+      referrer_host: "direct",
+      $referring_domain: "$direct",
     });
   });
 });

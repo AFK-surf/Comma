@@ -95,7 +95,7 @@ It never calls `loop.build` or `loop.create` itself: the Task's Worker runs the 
 - When the request gives no cadence, or a day without a clock time, the Router asks once and proposes a concrete one, such as every day at 09:00. It creates nothing before the answer.
 - `max_runs` comes only from a stated count, `ends_at` only from a stated end date or duration, and `until` only from a stated stop condition. The Router never invents a limit.
 - `content` describes the work of one run with its conditions and people. The cadence and the limits (`max_runs`, `ends_at`, `until`) go only in `loop`.
-- A Loop Task runs with every client closed. The Router omits `runs_on` or uses the Group Cloud VM, never a person's own computer. `task.create` refuses a person's desktop station for a Loop Task.
+- A Loop Task runs inside Salix, where its Worker creates the Loop. The Router omits `runs_on` or gives `{kind: salix}`. `task.create` refuses a station or the Group Cloud VM for a Loop Task. The Worker can still run commands on the Cloud VM with `env.exec`.
 - `proactive.watch` stays for following one existing matter for the owner in Home, with no delegated work. `schedule.create` stays for a reminder or message that the Router sends itself.
 
 These recognition rules are Router policy. The server checks only the `loop` value and the placement.

@@ -197,3 +197,7 @@ export function useAppShortcutBinding(id: AppShortcutId): AppKeybinding | null {
 export function useOptionalAppShortcutBinding(id: AppShortcutId): AppKeybinding | null {
   return useContext(CommaAppShortcutsContext)?.bindings[id] ?? null;
 }
+
+export function useOptionalAppShortcutBindings(): AppShortcutBindings | null {
+  return useContext(CommaAppShortcutsContext)?.bindings ?? null;
+}

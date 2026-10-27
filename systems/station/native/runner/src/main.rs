@@ -182,6 +182,7 @@ fn start(args: &Args) -> Result<(Arc<Shared>, Listener), String> {
     sys::create_dir(&args.dir).map_err(|e| format!("cannot create {}: {e}", args.dir.display()))?;
     let base = |ext: &str| args.dir.join(format!("{}.{ext}", args.id));
     let paths = Paths { sock: sys::socket_path(&args.dir, &args.id), json: base("json"), out: base("out"), err: base("err") };
+    sys::create_socket_dir(&paths.sock, &args.dir)?;
     if sys::answers(&paths.sock) {
         return Err(format!("{} is already kept by a runner: {} answers", args.id, paths.sock.display()));
     }

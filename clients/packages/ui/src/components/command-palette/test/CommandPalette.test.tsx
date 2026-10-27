@@ -232,7 +232,11 @@ describe("CommandPalette", () => {
       "open-settings"
     );
 
-    fireEvent.pointerMove(archiveOption, { pointerType: "mouse" });
+    fireEvent.pointerMove(archiveOption, {
+      clientX: 80,
+      clientY: 40,
+      pointerType: "mouse",
+    });
 
     expect(onActiveValueChange).toHaveBeenCalledOnce();
     expect(onActiveValueChange).toHaveBeenLastCalledWith("archive-task", "pointer");
@@ -243,8 +247,14 @@ describe("CommandPalette", () => {
       "open-settings"
     );
 
-    fireEvent.pointerLeave(archiveOption, { pointerType: "mouse" });
+    fireEvent.pointerLeave(archiveOption, {
+      clientX: 400,
+      clientY: 40,
+      pointerType: "mouse",
+    });
     fireEvent.pointerMove(screen.getByRole("region", { name: "Task preview" }), {
+      clientX: 400,
+      clientY: 40,
       pointerType: "mouse",
     });
     act(() => vi.advanceTimersByTime(motionDuration.pointerIntent));
@@ -277,6 +287,61 @@ describe("CommandPalette", () => {
     act(() => vi.advanceTimersByTime(1));
     expect(onPointerIntent).toHaveBeenCalledOnce();
     expect(onPointerIntent).toHaveBeenLastCalledWith("archive-task");
+    expect(onPointerIntentCancel).not.toHaveBeenCalled();
+    expect(archiveOption).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("region", { name: "Task preview" })).toHaveTextContent(
+      "archive-task"
+    );
+  });
+
+  it("keeps a row's pending preview when the list moves under a resting pointer", () => {
+    const onPointerIntentCancel = vi.fn();
+    const Harness = () => {
+      const [activeValue, setActiveValue] = useState<TestValue>("open-settings");
+      const [previewValue, setPreviewValue] = useState<TestValue>("open-settings");
+
+      return (
+        <CommandPalette<TestValue>
+          activeValue={activeValue}
+          groups={groups}
+          label="Search Comma"
+          onActiveValueChange={(value, source) => {
+            setActiveValue(value);
+            if (source !== "pointer") setPreviewValue(value);
+          }}
+          onOpenChange={vi.fn()}
+          onPointerIntent={setPreviewValue}
+          onPointerIntentCancel={(value) => {
+            onPointerIntentCancel(value);
+            setActiveValue((currentValue) =>
+              currentValue === value ? previewValue : currentValue
+            );
+          }}
+          onQueryChange={vi.fn()}
+          onSelect={vi.fn()}
+          open
+          preview={<span>{previewValue}</span>}
+          previewLabel="Task preview"
+          query=""
+        />
+      );
+    };
+    render(<Harness />);
+
+    const archiveOption = screen.getByRole("option", { name: /Archive finished task/ });
+    fireEvent.pointerMove(archiveOption, {
+      clientX: 80,
+      clientY: 40,
+      pointerType: "mouse",
+    });
+    // A scroll or a reordered list ends the row's hover where the pointer rests.
+    fireEvent.pointerLeave(archiveOption, {
+      clientX: 80,
+      clientY: 40,
+      pointerType: "mouse",
+    });
+    act(() => vi.advanceTimersByTime(motionDuration.pointerIntent));
+
     expect(onPointerIntentCancel).not.toHaveBeenCalled();
     expect(archiveOption).toHaveAttribute("aria-selected", "true");
     expect(screen.getByRole("region", { name: "Task preview" })).toHaveTextContent(

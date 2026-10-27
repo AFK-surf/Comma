@@ -17,8 +17,12 @@ test("the connector is configured from the flags after -- and the environment, a
   assert.equal(await run(connectorConfig(["run", "--app", "/app"], {})), null);
   const cfg = await run(connectorConfig(["run", "--app", "/app", "--", "--server", "https://salix.test", "--name", "laptop"], { SALIX_CONNECTOR_TOKEN: "tok", SALIX_CONNECTOR_ROOT: tempDir() }));
   assert.deepEqual([cfg?.server, cfg?.token, cfg?.name], ["https://salix.test", "tok", "laptop"]);
-  const workload = await run(connectorConfig(["run", "--", "--server", "https://salix.test"], { SALIX_WORKLOAD_CREDENTIAL: "bootstrap", SALIX_CONNECTOR_ROOT: tempDir() }));
-  assert.equal(workload?.workloadCredential, "bootstrap");
+  const workload = await run(connectorConfig(["run", "--", "--server", "https://salix.test"], { SALIX_WORKLOAD_CREDENTIAL: "connect-credential", SALIX_CONNECTOR_ROOT: tempDir() }));
+  assert.equal(workload?.workloadCredential, "connect-credential");
+  // The station takes a Workload's credential out of its environment (main.ts): the connector has it, the
+  // environment its `exec` commands inherit does not.
+  const taken = await run(connectorConfig(["run", "--", "--server", "https://salix.test"], { SALIX_CONNECTOR_ROOT: tempDir() }, "connect-credential"));
+  assert.deepEqual([taken?.workloadCredential, taken?.env.SALIX_WORKLOAD_CREDENTIAL], ["connect-credential", undefined]);
 });
 
 test("the station's databases travel as snapshots, whole, made while the live ones stay open", async () => {
@@ -43,7 +47,7 @@ test("the station's databases travel as snapshots, whole, made while the live on
   snapshots.done();
 });
 
-test("the desktop app's connections run as instances: started, changed in place, started again and stopped with their files", async () => {
+test("the desktop app's connections run as instances: started, changed or renewed in place, started again and stopped with their files", async () => {
   const { writeFileSync, rmSync } = await import("node:fs");
   const { join } = await import("node:path");
   const { Scope, Exit } = await import("effect");
@@ -52,8 +56,8 @@ test("the desktop app's connections run as instances: started, changed in place,
   const root = tempDir();
   const index = tempDir();
   const events: string[] = [];
-  const instanceFile = (scope: string, token = "tok") =>
-    JSON.stringify({ connector: { server: "https://salix.test", connector_token: token, name: "laptop", root, scope }, electron: { local_file_index_root: index } });
+  const instanceFile = (scope: string, token = "tok", name = "laptop") =>
+    JSON.stringify({ connector: { server: "https://salix.test", connector_token: token, name, root, scope }, electron: { local_file_index_root: index } });
   const scope = await Effect.runPromise(Scope.make());
   let started = 0;
   try {
@@ -68,6 +72,7 @@ test("the desktop app's connections run as instances: started, changed in place,
             return {
               currentScope: () => current,
               setCurrentScope: (next: string) => Effect.sync(() => void ((current = next), events.push(`scope ${n} ${next || "full"}`))),
+              renewCredential: (token: string) => Effect.sync(() => void events.push(`renew ${n} ${token}`)),
               publishCachedMetadata: () => Effect.void,
               writeStatusMetadataSent: () => {},
             } as never;
@@ -84,11 +89,14 @@ test("the desktop app's connections run as instances: started, changed in place,
     await settled(1);
     writeFileSync(join(dir, "wsp_1.json"), instanceFile("local_file_read"));
     await settled(2);
-    writeFileSync(join(dir, "wsp_1.json"), instanceFile("local_file_read", "rotated"));
-    await settled(4);
-    rmSync(join(dir, "wsp_1.json"));
+    // The app's renewed credential: the running connection presents it and keeps its requests and processes.
+    writeFileSync(join(dir, "wsp_1.json"), instanceFile("local_file_read", "renewed"));
+    await settled(3);
+    writeFileSync(join(dir, "wsp_1.json"), instanceFile("local_file_read", "renewed", "desk"));
     await settled(5);
-    assert.deepEqual(events, ["start 1 tok full", "scope 1 local_file_read", "stop 1", "start 2 rotated local_file_read", "stop 2"]);
+    rmSync(join(dir, "wsp_1.json"));
+    await settled(6);
+    assert.deepEqual(events, ["start 1 tok full", "scope 1 local_file_read", "renew 1 renewed", "stop 1", "start 2 renewed local_file_read", "stop 2"]);
   } finally {
     await Effect.runPromise(Scope.close(scope, Exit.void));
   }

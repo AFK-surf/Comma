@@ -116,6 +116,25 @@ const registry = createSettingsRegistry({
 - Keep persistence, native capabilities, and server calls outside `@comma/ui`.
   Pass their current values and callbacks into the registry.
 
+## Device card
+
+`DeviceSettings` shows one card per computer. A card has this order: the
+header, the agents section (Codex, Claude Code), Access, a divider, and then
+the sandbox (`content`). Agents and Access belong to the station. The sandbox
+belongs to the VMM.
+
+- On this computer, an agent row has one status line and a `source` dropdown
+  at its trailing edge. The dropdown is the same `SettingsControlView` control
+  as Access. Give the status line a `link` for the action that fixes it, for
+  example "Add workspace account".
+- Do not choose a source for the person. When two sources are available and
+  none is chosen, send no `value`. The dropdown then shows its placeholder.
+- Show a sign-in as `signIn`, before the dropdown. Show the busy state while
+  the page waits in the browser.
+- Show a failed read or save of the agents' settings as `agentsProblem`: a
+  note in the agents section with a retry link, the same as a failed runtime
+  check. Do not show it as an alert at the top of the card.
+
 ## Rendering
 
 A row renders again only when its item changes. The client can rebuild the

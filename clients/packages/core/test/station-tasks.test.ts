@@ -15,6 +15,9 @@ const workspace = { group_id: "g", id: "wsp", name: "Work", status: "ready" };
 const stationTasks = "/v1/comma/groups/g/station-tasks";
 const events = "/v1/comma/groups/g/conversations/events";
 
+/** `s` seconds into a day, in Unix milliseconds. */
+const at = (s: number) => 1_800_000_000_000 + s * 1_000;
+
 const row = (thread: string, extra: Record<string, unknown> = {}) => ({
   station_id: "a".repeat(64),
   device_id: "dev_mac",
@@ -105,6 +108,102 @@ describe("the Tasks a workspace's stations host", () => {
       ["8", "in_progress"],
       ["7", "done"],
     ]);
+  });
+
+  it("are among a task list's items when it asks for them, each by its last change, read as it is shown", async () => {
+    const t = setup();
+    t.host.api.on(
+      "GET",
+      "/v1/comma/groups/g/conversations",
+      json(200, {
+        data: [
+          {
+            id: "c2",
+            group_id: "g",
+            kind: "agent_task",
+            status: "active",
+            title: "Newer",
+            updated_at: at(30),
+          },
+          {
+            id: "c1",
+            group_id: "g",
+            kind: "agent_task",
+            status: "active",
+            title: "Older",
+            updated_at: at(5),
+          },
+        ],
+      })
+    );
+    t.answer(() => json(200, { tasks: [row("7", { last_activity_at: at(20) })] }));
+    const list = t.watch({ topic: "tasks", workspace: "wsp", hosted: "1" });
+    const plain = t.watch({ topic: "tasks", workspace: "wsp" });
+    await t.time.pass(100);
+    type Items = { items: { id: string; source: string; host?: unknown }[] };
+    const items = () => (list.value() as unknown as Items).items;
+    expect(items().map((item) => item.id)).toEqual([
+      "g:c2",
+      `station:${"a".repeat(64)}:7`,
+      "g:c1",
+    ]);
+    expect(items()[1]).toMatchObject({
+      source: "station.chat",
+      conversationId: `station:${"a".repeat(64)}:7`,
+      groupId: "g",
+      title: "Task 7",
+      // In a Task's words: at work.
+      status: "active",
+      unsupported: ["comma"],
+      host: {
+        station: "a".repeat(64),
+        thread: "7",
+        machine: null,
+        model: "gpt-5.5",
+        runtime: "codex",
+      },
+    });
+    // A list that does not ask has none, and the station-hosted Tasks were read once for the one that did.
+    expect((plain.value() as unknown as Items).items.map((item) => item.id)).toEqual([
+      "g:c2",
+      "g:c1",
+    ]);
+    expect(t.reads()).toBe(1);
+
+    // The stations changed their Tasks: read again, the list shows it.
+    t.answer(() =>
+      json(200, { tasks: [row("7", { last_activity_at: at(40), status: "done" })] })
+    );
+    t.host.api
+      .open(events)!
+      .event({ type: "station_tasks_invalidated", group_id: "g" });
+    await t.time.pass(100);
+    expect(items()[0]).toMatchObject({
+      id: `station:${"a".repeat(64)}:7`,
+      status: "completed",
+      statusBucket: "done",
+    });
+  });
+
+  it("stops reading them for a task list once it is no longer shown", async () => {
+    const t = setup();
+    let reached = false;
+    t.host.api.on("GET", "/v1/comma/workspaces", () =>
+      reached ? json(200, { data: [workspace] }) : json(503, { error: "unavailable" })
+    );
+    t.answer(() => json(503, { error: "unavailable" }));
+    // Shown before its workspace is known: read once it is, and again after each failed read while shown.
+    const list = t.watch({ topic: "tasks", workspace: "wsp", hosted: "1" });
+    await t.time.pass(100);
+    reached = true;
+    await t.time.pass(30_000);
+    expect(t.reads()).toBeGreaterThan(1);
+    // Let go once its grace ends (a topic stays live a minute after its last subscriber).
+    list.stop();
+    await t.time.pass(61_000);
+    const stopped = t.reads();
+    await t.time.pass(60_000);
+    expect(t.reads()).toBe(stopped);
   });
 
   it("names the machine that hosts each, where this device keeps the workspace's stations", async () => {

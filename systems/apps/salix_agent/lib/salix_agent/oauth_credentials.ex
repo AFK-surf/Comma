@@ -12,7 +12,7 @@ defmodule SalixAgent.OAuthCredentials do
   connection goes through `SalixStore.OAuth.valid_token/3`, whose `If-Match`
   write serializes concurrent refreshers across nodes (willow's
   `UpdateOAuthConnectionTokensCAS` + reload-on-CAS-miss). Willow's 60s
-  `refreshLeeway` is preserved by shifting the clock `valid_token` sees.
+  `refreshLeeway` is preserved through `valid_token`'s `leeway_ms`.
 
   Error strings follow willow's `ResolveError` verbatim:
   `oauth credential {provider}/{alias} for {env_var}: {reason}`.
@@ -38,8 +38,9 @@ defmodule SalixAgent.OAuthCredentials do
       Salix adapters signal `{:error, :reauthorization_required}` directly
       (contract C1). The string match is retained as a fallback for binary
       error reasons. On that failure the connection record's `"status"` is
-      flipped to `"reauthorization_required"` with a plain overwrite put
-      (willow's `MarkOAuthConnectionStatus` is likewise a direct UPDATE).
+      flipped to `"reauthorization_required"` through
+      `SalixStore.OAuth.mark_reauthorization_required/2`, which skips the
+      mark when a concurrent refresher already rotated the refresh token.
     * Willow's lazy tenant-config load is replaced by a lazy
       `OAuthStore.provider_app/2` call — only made when an entry actually
       triggers refresh.
@@ -256,11 +257,11 @@ defmodule SalixAgent.OAuthCredentials do
         {:ok, conn}
 
       true ->
-        do_refresh(adapter, tenant, provider, conn_id, now)
+        do_refresh(adapter, tenant, provider, conn_id, conn, now)
     end
   end
 
-  defp do_refresh(adapter, tenant, provider, conn_id, now) do
+  defp do_refresh(adapter, tenant, provider, conn_id, conn, now) do
     with {:ok, app} <- refresh_app(tenant, provider) do
       refresher = fn record ->
         case refresher_fn().(adapter, app, record) do
@@ -270,19 +271,22 @@ defmodule SalixAgent.OAuthCredentials do
         end
       end
 
-      # Shift the clock by the leeway so valid_token refreshes tokens that
-      # expire within the next 60s, matching willow's eager refresh window.
-      case SalixStore.OAuth.valid_token(conn_id, refresher, now: now + @refresh_leeway_ms) do
+      # Refresh tokens that expire within the next 60s, matching willow's
+      # eager refresh window.
+      case SalixStore.OAuth.valid_token(conn_id, refresher,
+             now: now,
+             leeway_ms: @refresh_leeway_ms
+           ) do
         {:ok, _token} ->
           reload_connection(conn_id)
 
         {:error, :reauthorization_required} ->
-          mark_reauthorization_required(conn_id)
+          _ = SalixStore.OAuth.mark_reauthorization_required(conn_id, conn)
           {:error, "refresh failed (reauthorization required)"}
 
         {:error, reason} ->
           if invalid_grant?(reason) do
-            mark_reauthorization_required(conn_id)
+            _ = SalixStore.OAuth.mark_reauthorization_required(conn_id, conn)
             {:error, "refresh failed (reauthorization required): #{format_reason(reason)}"}
           else
             {:error, "refresh failed: #{format_reason(reason)}"}
@@ -322,17 +326,6 @@ defmodule SalixAgent.OAuthCredentials do
       |> Enum.reject(fn {_k, v} -> is_nil(v) or v == "" end)
       |> Map.new()
       |> then(fn m -> if m["scopes"] in [nil, []], do: Map.delete(m, "scopes"), else: m end)
-    end
-  end
-
-  defp mark_reauthorization_required(conn_id) do
-    case SalixStore.OAuth.get(conn_id) do
-      {:ok, record} ->
-        _ = SalixStore.OAuth.put(conn_id, Map.put(record, "status", "reauthorization_required"))
-        :ok
-
-      _ ->
-        :ok
     end
   end
 

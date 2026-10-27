@@ -90,7 +90,6 @@ export const KeyboardNavigation: Story = {
 const boundTasks: TaskSummaryViewModel[] = [
   {
     activityStatus: "running",
-    freshness: "fresh",
     id: "bound-progress",
     statusBucket: "in_progress",
     title: "Summarizing recent OpenAI's update and create a HTML",
@@ -99,7 +98,6 @@ const boundTasks: TaskSummaryViewModel[] = [
   },
   {
     activityStatus: "ready_for_review",
-    freshness: "fresh",
     id: "bound-review",
     statusBucket: "needs_review",
     title: "Review the launch checklist for the mobile beta",
@@ -107,7 +105,6 @@ const boundTasks: TaskSummaryViewModel[] = [
   },
   {
     activityStatus: "done",
-    freshness: "fresh",
     id: "bound-done",
     statusBucket: "done",
     title: "Collect design tokens for the marketing site refresh",
@@ -115,7 +112,6 @@ const boundTasks: TaskSummaryViewModel[] = [
   },
   {
     activityStatus: "cancelled",
-    freshness: "fresh",
     id: "bound-cancelled",
     statusBucket: "cancelled",
     title: "Spike the abandoned migration path",

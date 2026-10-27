@@ -1,10 +1,13 @@
-import { useCommaMessages } from "@comma/i18n/react";
 import {
   ChatBubbleIcon,
   DiscordBrandIcon,
   GlobeIcon,
-  MicrophoneIcon,
+  MacbookAirIcon,
+  PhoneDynamicIslandIcon,
+  Smartwatch2Icon,
 } from "@comma/ui/components/icons";
+import type { ChatMessage } from "@comma/core/chat";
+import { getNativeBridge } from "@comma/native-bridge";
 import {
   resolveProviderBrandLogo,
   type ProviderBrandLogoProps,
@@ -51,6 +54,41 @@ const platforms: Record<
   discord: { name: "Discord", color: "#5865f2" },
 };
 
+// Comma's own apps. They name where the user typed, not an external chat
+// platform, so they mark the message but keep the default bubble.
+const clientSources: Record<
+  NonNullable<ChatMessage["clientSource"]>,
+  { name: string; Logo: typeof GlobeIcon }
+> = {
+  iphone: { name: "iPhone", Logo: PhoneDynamicIslandIcon },
+  watch: { name: "Apple Watch", Logo: Smartwatch2Icon },
+  android: { name: "Android", Logo: PhoneDynamicIslandIcon },
+  mac: { name: "Mac", Logo: MacbookAirIcon },
+  windows: { name: "Windows", Logo: MacbookAirIcon },
+  linux: { name: "Linux", Logo: MacbookAirIcon },
+  web: { name: "Web", Logo: GlobeIcon },
+};
+
+/** The Comma app this window is, named as a message's `clientSource` names it. */
+function thisClientSource(): ChatMessage["clientSource"] {
+  const bridge = getNativeBridge();
+  if (bridge.platform !== "electron") return "web";
+  return bridge.os === "macos"
+    ? "mac"
+    : bridge.os === "windows"
+      ? "windows"
+      : bridge.os === "linux"
+        ? "linux"
+        : undefined;
+}
+
+/** The app a person's message was sent from, when it is not this one. */
+export function otherClientSource(
+  source: ChatMessage["clientSource"]
+): ChatMessage["clientSource"] {
+  return source && source !== thisClientSource() ? source : undefined;
+}
+
 export function getMessagePlatformBubbleStyle(
   platform: string | undefined
 ): CSSProperties | undefined {
@@ -67,8 +105,11 @@ export function getMessagePlatformBubbleStyle(
 export function MessagePlatformBadge({ platform }: { platform: string | undefined }) {
   if (!platform) return null;
   const presentation = platforms[platform];
+  const client = clientSources[platform as keyof typeof clientSources];
+  const name = presentation?.name ?? client?.name ?? platform;
   const Logo =
     presentation?.Logo ??
+    client?.Logo ??
     resolveProviderBrandLogo(platform) ??
     (platform === "discord"
       ? DiscordBrandIcon
@@ -79,7 +120,8 @@ export function MessagePlatformBadge({ platform }: { platform: string | undefine
     <span
       className="comma-chat-platform-badge"
       data-platform={platform}
-      title={presentation?.name ?? platform}
+      data-client-source={client ? "" : undefined}
+      title={name}
       style={
         {
           "--comma-chat-platform-color":
@@ -87,27 +129,8 @@ export function MessagePlatformBadge({ platform }: { platform: string | undefine
         } as CSSProperties
       }
     >
-      <span className="app-sr-only">{presentation?.name ?? platform}</span>
-      <Logo aria-hidden className="comma-chat-platform-badge-icon" />
-    </span>
-  );
-}
-
-/** Marks a person's message that Quick Chat sent, where a platform's mark would sit. */
-export function QuickChatBadge() {
-  const messages = useCommaMessages();
-  const name = messages.chat_message_quick_chat();
-  return (
-    <span
-      className="comma-chat-platform-badge"
-      data-source="quick-chat"
-      title={name}
-      style={
-        { "--comma-chat-platform-color": "var(--color-text-tertiary)" } as CSSProperties
-      }
-    >
       <span className="app-sr-only">{name}</span>
-      <MicrophoneIcon aria-hidden className="comma-chat-platform-badge-icon" />
+      <Logo aria-hidden className="comma-chat-platform-badge-icon" />
     </span>
   );
 }

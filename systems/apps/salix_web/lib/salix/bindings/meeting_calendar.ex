@@ -214,6 +214,7 @@ defmodule Salix.Bindings.MeetingCalendar do
              preparation_lead_minutes: group["preparation_lead_minutes"] || 10,
              research_enabled: group["research_enabled"] != false,
              personal_preparation: group["personal_preparation"] != false,
+             channel_notice: group["channel_notice"] != false,
              publication_target: publication_target,
              occurrence_qualification: qualification
            ) do

@@ -4,12 +4,14 @@ import {
   useContext,
   useEffect,
   useEffectEvent,
+  useLayoutEffect,
   useRef,
   useState,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
   type RefObject,
 } from "react";
+import { flushSync } from "react-dom";
 import type { PopoverProps as AriaPopoverProps } from "react-aria-components";
 import {
   ListLayout,
@@ -151,6 +153,45 @@ export function readTriggerLabelInkInsetPx(trigger: Element | null) {
   const inkRect = range.getBoundingClientRect();
   if (inkRect.width <= 0) return null;
   return inkRect.left - label.getBoundingClientRect().left;
+}
+
+/** Where the first painted text in `element` starts; null with none, or without layout (jsdom). */
+function firstTextInkLeft(element: Element) {
+  const range = element.ownerDocument.createRange();
+  if (typeof range.getBoundingClientRect !== "function") return null;
+  const walker = element.ownerDocument.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+  for (let text = walker.nextNode(); text; text = walker.nextNode()) {
+    if (!text.textContent?.trim()) continue;
+    range.selectNodeContents(text);
+    const rect = range.getBoundingClientRect();
+    if (rect.width > 0) return rect.left;
+  }
+  return null;
+}
+
+/**
+ * The cross offset that opens the checked row's text over the trigger's text,
+ * for rows whose geometry differs from the trigger's (a menu row's check and
+ * icon). Null until the checked row renders.
+ */
+function readCheckedLabelCrossOffsetPx(
+  popover: HTMLElement,
+  trigger: Element,
+  checkedLabelSelector: string
+) {
+  const row = popover.querySelector(checkedLabelSelector);
+  if (!row) return null;
+  const triggerInk = firstTextInkLeft(trigger);
+  const rowInk = firstTextInkLeft(row);
+  if (triggerInk === null || rowInk === null) return null;
+  // The popover may enter scaled; its own width gives the scale to undo.
+  const popoverRect = popover.getBoundingClientRect();
+  const popoverScale = popoverRect.width / popover.offsetWidth || 1;
+  return (
+    triggerInk -
+    trigger.getBoundingClientRect().left -
+    (rowInk - popoverRect.left) / popoverScale
+  );
 }
 
 export const countSeparatorsThroughIndex = (
@@ -365,6 +406,13 @@ export const isSelectPopoverViewportConstrained = ({
 };
 
 export interface SelectionAlignedPopoverOptions {
+  /**
+   * The checked row's label, inside `popoverRef`, for rows whose geometry
+   * differs from the trigger's. Its text opens over the trigger's text.
+   * Without it, rows match the trigger and only the trigger label's slack
+   * moves the popover.
+   */
+  checkedLabelSelector?: string;
   /** Border width of the popover chrome; enters the anchor offset math. */
   chromeBorderWidth?: number;
   containerPadding?: number;
@@ -372,6 +420,8 @@ export interface SelectionAlignedPopoverOptions {
   items: ReadonlyArray<{ separatorBefore?: boolean }>;
   /** Explicit offset override; skips the selection-aligned math. */
   offset?: number | undefined;
+  /** The popover element; needed with `checkedLabelSelector`. */
+  popoverRef?: RefObject<HTMLElement | null>;
   /** Height of one popover row; defaults to the measured trigger height. */
   rowHeight?: number | undefined;
   selectedIndex: number;
@@ -387,11 +437,13 @@ export interface SelectionAlignedPopoverOptions {
  * pointer reaches the bottom chevron.
  */
 export const useSelectionAlignedPopover = ({
+  checkedLabelSelector,
   chromeBorderWidth = borderWidth.default,
   containerPadding = spacing.lg,
   isOpen,
   items,
   offset,
+  popoverRef,
   rowHeight,
   selectedIndex,
   size = "md",
@@ -576,12 +628,64 @@ export const useSelectionAlignedPopover = ({
     : 0;
   const verticalSubpixelCorrection =
     getSelectPopoverVerticalSubpixelCorrection(idealPopoverTop);
+  // Rows of their own geometry are measured against the trigger once they
+  // render, a commit after the popover, and again while the popover is open
+  // when either side's text or a font changes. Each measure lands before the
+  // popover paints.
+  const [checkedLabelCrossOffset, setCheckedLabelCrossOffset] = useState<number | null>(
+    null
+  );
+  useLayoutEffect(() => {
+    const popover = popoverRef?.current;
+    const triggerElement = triggerRef?.current;
+    if (!isOpen || !checkedLabelSelector || !popover || !triggerElement) {
+      setCheckedLabelCrossOffset(null);
+      return undefined;
+    }
+    let measured: number | null = null;
+    const measure = () => {
+      const next = readCheckedLabelCrossOffsetPx(
+        popover,
+        triggerElement,
+        checkedLabelSelector
+      );
+      if (next === null || (measured !== null && Math.abs(next - measured) < 0.01)) {
+        return;
+      }
+      measured = next;
+      flushSync(() => setCheckedLabelCrossOffset(next));
+    };
+    const initial = readCheckedLabelCrossOffsetPx(
+      popover,
+      triggerElement,
+      checkedLabelSelector
+    );
+    if (initial !== null) {
+      measured = initial;
+      setCheckedLabelCrossOffset(initial);
+    }
+    const observer = new MutationObserver(measure);
+    const content = { characterData: true, childList: true, subtree: true };
+    observer.observe(popover, content);
+    observer.observe(triggerElement, content);
+    // jsdom has no font set.
+    const fonts = popover.ownerDocument.fonts as FontFaceSet | undefined;
+    fonts?.addEventListener("loadingdone", measure);
+    return () => {
+      observer.disconnect();
+      fonts?.removeEventListener("loadingdone", measure);
+    };
+  }, [checkedLabelSelector, isOpen, popoverRef, triggerRef]);
   // macOS pop-ups anchor the TEXT, not the control box: the checked option's
   // ink opens exactly over the trigger's ink, so a trigger whose label text
   // sits away from its label box's start (e.g. end-aligned toward its
   // chevron) slides the popover sideways instead of moving the text.
   // Start-aligned triggers measure no slack and resolve to zero.
-  const crossOffset = trigger ? (readTriggerLabelInkInsetPx(trigger) ?? 0) : 0;
+  const crossOffset = checkedLabelSelector
+    ? (checkedLabelCrossOffset ?? 0)
+    : trigger
+      ? (readTriggerLabelInkInsetPx(trigger) ?? 0)
+      : 0;
 
   return {
     anchorIndex,

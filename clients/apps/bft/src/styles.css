@@ -2131,7 +2131,7 @@ p.bft-health-reasons {
   border-radius: 4px;
   background: linear-gradient(90deg, #f1f2f4 0%, #f7f7f9 50%, #f1f2f4 100%);
   background-size: 200% 100%;
-  animation: bft-shimmer 1.4s ease-in-out infinite;
+  animation: bft-shimmer 1.4s var(--motion-loop-skeleton-shimmer) infinite;
 }
 
 .bft-rows-skeleton {
@@ -3819,4 +3819,27 @@ p.bft-health-reasons {
   .bft-task-grid {
     grid-template-columns: minmax(0, 1fr) 250px;
   }
+}
+
+/* Daily brief operations */
+.bft-daily-brief-today {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 20px;
+}
+
+.bft-daily-brief-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+}
+
+.bft-daily-brief-muted {
+  color: var(--bft-text-3);
+}
+
+.bft-daily-brief-number {
+  font-variant-numeric: tabular-nums;
 }

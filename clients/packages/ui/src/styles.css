@@ -24,6 +24,7 @@
 @import "./components/settings-shortcut/settings-shortcut.css";
 @import "./components/settings/DeviceSettings.css";
 @import "./components/settings/DeviceSettingsContent.css";
+@import "./components/settings/DeviceSetupContent.css";
 @import "./components/settings/NotchWidthSetting.css";
 @import "./components/settings/CreatedSecretPanel.css";
 @import "./components/home-tasks/home-tasks.css";
@@ -115,6 +116,24 @@
   src: url("./fonts/InterVariable-Italic.woff2") format("woff2");
 }
 
+/* The design's monospace (--font-mono). Unshipped, code fell back to the system's monospace, which on a Mac
+   is SF Mono or Menlo, thinner or heavier than the design by machine. */
+@font-face {
+  font-family: "Geist Mono";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: block;
+  src: url("./fonts/GeistMono-Variable.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Geist Mono";
+  font-style: italic;
+  font-weight: 100 900;
+  font-display: block;
+  src: url("./fonts/GeistMono-Italic-Variable.woff2") format("woff2");
+}
+
 /* Radix writes these measurements on the collapse container. Its descendants
    do not use them and must not restyle whenever the container is measured. */
 @property --radix-collapsible-content-height {
@@ -193,7 +212,11 @@
   }
 }
 
-::highlight(comma-context-selection) {
+/* A context menu's preserved selection. Only the element around its ranges
+   carries the scope (preserveTextSelection.ts), so no other element computes
+   a style for this highlight when it restyles. */
+[data-comma-context-selection]::highlight(comma-context-selection),
+[data-comma-context-selection] ::highlight(comma-context-selection) {
   background-color: Highlight;
   color: HighlightText;
 }
@@ -203,76 +226,116 @@
    workspace loading heading, and the running Task card's progress line all
    render from this rule, so the cadence and the ramp stay identical.
 
-   The gradient cannot ride on currentcolor: painting the sweep requires
-   `color: transparent`, which is what currentcolor would then resolve to. The
-   two ends are tokens instead, overridable per caller.
+   The sweep runs on the compositor. The box paints its base colour as a
+   background and masks itself to its own glyphs (`mask-clip: text`); the
+   glyphs paint transparent, because glyphs painted in colour and then masked
+   to the same glyphs take their anti-aliasing twice and draw visibly thinner.
+   The highlight is a layer above the text that moves by transform. A loop on
+   any other property, such as `background-position`, makes the main thread
+   restyle, paint and commit the whole document at every display frame for as
+   long as one running line is mounted. The layer is the old background — 400% wide, the same
+   40/50/60% ramp and the same travel — so the sweep looks the same. Paint
+   containment makes the box the layer's containing block and keeps the wide
+   layer out of every scroll container's overflow.
+
+   `.comma-shine` is the sweep alone, for a box that keeps its own display
+   (a flex row, say); `.comma-shiny-text` is an inline-block line of it. Both
+   take their two colours from the --comma-shiny-text-* tokens.
 
    The paint rules repeat the class to reach (0,2,0). Callers are component
    classes of their own — .comma-recommendations-empty-copy sets a resting color
    at (0,1,0) and, being in the app stylesheet, is imported after this one, so
-   a single class would lose `color: transparent` on source order and leave the
-   standards path relying on -webkit-text-fill-color alone. */
+   a single class would lose the base colour on source order. */
+/* Looping animations move at most 60 times a second (steps), not at the display's refresh rate: each move makes the
+   window draw and present a frame, and on a 240 Hz display a smooth loading shine kept half a CPU core busy. The
+   loading shines take 96 steps over their 1.6 s. */
+:root {
+  --comma-loading-shine-steps: 96;
+}
+
+.comma-shine,
 .comma-shiny-text {
   --comma-shiny-text-base: var(--color-text-quaternary);
   --comma-shiny-text-highlight: var(--color-text-primary);
 }
 
-@supports ((background-clip: text) or (-webkit-background-clip: text)) {
+.comma-shiny-text.comma-shiny-text {
+  display: inline-block;
+}
+
+.comma-shine.comma-shine,
+.comma-shiny-text.comma-shiny-text {
+  color: var(--comma-shiny-text-base);
+}
+
+/* A browser that cannot mask to text (Firefox) shows the copy at rest. */
+@supports (mask-clip: text) or (-webkit-mask-clip: text) {
+  .comma-shine.comma-shine,
   .comma-shiny-text.comma-shiny-text {
-    display: inline-block;
+    contain: paint;
+    background-color: currentcolor;
+    -webkit-text-fill-color: transparent;
+    -webkit-mask-image: linear-gradient(#000 0 0);
+    -webkit-mask-clip: text;
+    mask-image: linear-gradient(#000 0 0);
+    mask-clip: text;
+  }
+
+  .comma-shine.comma-shine::after,
+  .comma-shiny-text.comma-shiny-text::after {
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: 400%;
     background-image: linear-gradient(
       90deg,
-      var(--comma-shiny-text-base) 0%,
-      var(--comma-shiny-text-base) 40%,
+      transparent 40%,
       var(--comma-shiny-text-highlight) 50%,
-      var(--comma-shiny-text-base) 60%,
-      var(--comma-shiny-text-base) 100%
+      transparent 60%
     );
-    background-repeat: no-repeat;
-    background-size: 400% 100%;
-    background-clip: text;
-    color: transparent;
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    animation: comma-shiny-text-shine var(--motion-duration-loading-shine) linear
-      infinite;
+    content: "";
+    pointer-events: none;
+    animation: comma-shiny-text-shine var(--motion-duration-loading-shine)
+      steps(var(--comma-loading-shine-steps)) infinite;
   }
 }
 
 @keyframes comma-shiny-text-shine {
   from {
-    background-position: 100% 0;
+    transform: translateX(-75%);
   }
 
   to {
-    background-position: 0% 0;
+    transform: translateX(0);
   }
 }
 
 /* The app drives this flag from the JS reduced-motion store; the media query
    covers the OS setting on its own. */
-:root[data-comma-reduced-motion="true"] .comma-shiny-text.comma-shiny-text {
-  background-image: none;
-  color: var(--comma-shiny-text-base);
-  animation: none !important;
-  -webkit-text-fill-color: currentcolor;
+:root[data-comma-reduced-motion="true"] .comma-shine.comma-shine::after,
+:root[data-comma-reduced-motion="true"] .comma-shiny-text.comma-shiny-text::after {
+  display: none;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .comma-shiny-text.comma-shiny-text {
-    background-image: none;
-    color: var(--comma-shiny-text-base);
-    animation: none !important;
-    -webkit-text-fill-color: currentcolor;
+  .comma-shine.comma-shine::after,
+  .comma-shiny-text.comma-shiny-text::after {
+    display: none;
   }
 }
 
 @media (forced-colors: active) {
+  .comma-shine.comma-shine,
   .comma-shiny-text.comma-shiny-text {
-    background-image: none;
+    background-color: transparent;
     color: CanvasText;
-    animation: none;
+    -webkit-mask-image: none;
+    mask-image: none;
     -webkit-text-fill-color: currentcolor;
+  }
+
+  .comma-shine.comma-shine::after,
+  .comma-shiny-text.comma-shiny-text::after {
+    display: none;
   }
 
   [data-slot="command-palette-input"]:focus-visible,
@@ -538,7 +601,8 @@
 }
 
 .login-code-caret-motion {
-  animation: login-code-caret-blink var(--motion-duration-caret-blink) infinite;
+  animation: login-code-caret-blink var(--motion-duration-caret-blink) steps(1, end)
+    infinite;
 }
 
 :root[data-comma-reduced-motion="true"] .login-code-cell-motion {
@@ -729,8 +793,29 @@
     transform-origin: center;
   }
 
-  [data-comma-icon] :where([stroke-width="2"]) {
-    stroke-width: var(--comma-icon-stroke-width, 2);
+  /* A stroke keeps the token's width on screen at every icon size, as in
+     Figma, where resizing an icon instance does not scale its stroke weight.
+     A stroke in viewBox units thins with the icon: 1.5 of 24 draws 1px in a
+     16px icon. The main strokes of both Central packages take the token, and
+     the stroke-2 package's optical sub-strokes keep their ratio to it. The
+     sub-strokes multiply by a px length: Firefox computes a unitless calc()
+     of 0.5625 here as 1 (the CI Firefox icon-geometry run), and in SVG 1px is
+     one user unit, so the length draws the same as the number. */
+  [data-comma-icon] :where([stroke-width]),
+  [data-comma-icon] :where([stroke-width]) * {
+    vector-effect: non-scaling-stroke;
+  }
+
+  [data-comma-icon] :where([stroke-width="2"], [stroke-width="1.5"]) {
+    stroke-width: var(--comma-icon-stroke-width, 1.5);
+  }
+
+  [data-comma-icon] :where([stroke-width="0.75"]) {
+    stroke-width: calc(var(--comma-icon-stroke-width, 1.5) * 0.375px);
+  }
+
+  [data-comma-icon] :where([stroke-width="0.5"]) {
+    stroke-width: calc(var(--comma-icon-stroke-width, 1.5) * 0.25px);
   }
 
   body {
@@ -1222,6 +1307,65 @@
     transform: translateX(var(--task-list-item-dot-width));
   }
 
+  /* A title an agent renames on screen. The new text rises into place through
+     a light blur while the old one lifts away over it, faster, so the two
+     never read as separate words. Only opacity, transform and filter move,
+     and only during the swap. The host sizes to the new title at once: the
+     leaving text is out of flow and clipped to it. */
+  .comma-title-swap {
+    position: relative;
+    display: block;
+  }
+
+  .comma-title-swap-text {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .comma-title-swap-text[data-motion="enter"] {
+    animation: comma-title-swap-enter var(--motion-duration-icon-swap)
+      var(--motion-easing-smooth-out) both;
+    will-change: filter, opacity, transform;
+  }
+
+  .comma-title-swap-text[data-motion="exit"] {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    animation: comma-title-swap-exit var(--motion-duration-state-swap-enter)
+      var(--motion-easing-smooth-out) both;
+    will-change: filter, opacity, transform;
+  }
+
+  @keyframes comma-title-swap-enter {
+    from {
+      opacity: 0;
+      filter: blur(var(--motion-blur-menu-enter));
+      transform: translate3d(0, 0.25em, 0);
+    }
+
+    to {
+      opacity: 1;
+      filter: blur(0);
+      transform: translate3d(0, 0, 0);
+    }
+  }
+
+  @keyframes comma-title-swap-exit {
+    from {
+      opacity: 1;
+      filter: blur(0);
+      transform: translate3d(0, 0, 0);
+    }
+
+    to {
+      opacity: 0;
+      filter: blur(var(--motion-blur-menu-enter));
+      transform: translate3d(0, -0.25em, 0);
+    }
+  }
+
   @keyframes task-list-item-icon-enter {
     from {
       opacity: 0;
@@ -1445,8 +1589,7 @@
     text-decoration-color: currentColor;
   }
 
-  .markdown-stream ::selection,
-  .markdown-stream ::highlight(comma-context-selection) {
+  .markdown-stream ::selection {
     background: color-mix(
       in srgb,
       var(--color-markdown-text-primary) 24%,
@@ -1645,13 +1788,15 @@
     display: inline-grid;
   }
 
+  /* No will-change: the compositor takes an icon only while its swap runs.
+     A standing hint kept two layers for every copy button in the transcript,
+     and every repainted frame re-layered and committed them all. */
   .t-icon-swap .t-icon {
     grid-area: 1 / 1;
     transition:
       opacity var(--icon-swap-dur) var(--icon-swap-ease),
       filter var(--icon-swap-dur) var(--icon-swap-ease),
       transform var(--icon-swap-dur) var(--icon-swap-ease);
-    will-change: opacity, filter, transform;
   }
 
   .t-icon-swap[data-state="a"] .t-icon[data-icon="a"],
@@ -1679,7 +1824,6 @@
     transition:
       opacity var(--icon-swap-dur) var(--icon-swap-ease),
       transform var(--icon-swap-dur) var(--icon-swap-ease);
-    will-change: opacity, transform;
   }
 
   .t-icon-swap[data-swap-blur="none"][data-state="a"] .t-icon[data-icon="a"],
@@ -2244,8 +2388,11 @@
 }
 
 /* Match Markstream's fallback weight after asynchronous highlighting. Inheriting
- * the chat's medium weight changes code metrics and shifts bottom-aligned turns. */
+ * the chat's medium weight changes code metrics and shifts bottom-aligned turns.
+ * The family is the design's monospace: Markstream's own `pre` rule inherits
+ * Tailwind's preflight stack instead of --font-mono. */
 .markdown-stream .markdown-stream-code-body pre {
+  font-family: var(--font-mono);
   font-weight: var(--vscode-editor-font-weight, 400);
 }
 

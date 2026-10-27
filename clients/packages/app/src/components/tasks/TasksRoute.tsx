@@ -2,7 +2,7 @@ import { countTaskLoopRules, taskLoopRuleKey } from "@comma/core/task-loop-filte
 import { openTaskTarget } from "./openTaskTarget";
 import { NewStationTaskDialog } from "./station/NewStationTaskDialog";
 import { useTaskLoopRuleFilter } from "./useTaskLoopRuleFilter";
-import { useCall, useTopic } from "@comma/core-client";
+import { useCall } from "@comma/core-client";
 import { useCommaLocale, useCommaMessages } from "@comma/i18n/react";
 import {
   InfinityIcon,
@@ -43,6 +43,7 @@ import {
 } from "./taskLoopLabels";
 import { taskLoopFilterOptions, useOpenTasksFilter } from "./taskChips";
 import { taskMentionsDraft } from "./taskMentions";
+import { taskSequenceEntry } from "./taskSequence";
 import { useTaskBadges } from "./useTaskBadges";
 import { useTaskOrder } from "./useTaskOrder";
 import { useWorkspaceTasks } from "./useWorkspaceTasks";
@@ -94,6 +95,7 @@ export function TasksRoute() {
     result,
     retryTasks,
     taskLoadError,
+    taskSyncError,
     tasks,
   } = useWorkspaceTasks({ stationTasks: true });
   const { orders, setBucketOrder } = useTaskOrder(activeGroupId, tasks);
@@ -423,16 +425,16 @@ export function TasksRoute() {
     tasks,
   ]);
 
-  // A Task is made on a machine of the workspace from an app that reaches the machines (the desktop app).
-  const reachesStations = useTopic({ topic: "stationsHome" }).value?.state;
-  const canCreateTask =
-    reachesStations !== undefined &&
-    reachesStations !== "unavailable" &&
-    !!result?.activeWorkspaceId;
+  // A Task runs in Comma's cloud or a cloud sandbox from any app; only the desktop app also reaches the machines,
+  // which the dialog offers when they are online.
+  const canCreateTask = !!result?.activeWorkspaceId;
   const [creating, setCreating] = useState(false);
   const openTask = useCallback(
-    (task: TaskViewModel) => {
-      void navigate(openTaskTarget(task));
+    (task: TaskViewModel, shown: readonly TaskViewModel[]) => {
+      void navigate({
+        ...openTaskTarget(task),
+        state: { taskSequence: shown.map(taskSequenceEntry) },
+      });
     },
     [navigate]
   );
@@ -531,7 +533,7 @@ export function TasksRoute() {
         filterSections={filterSections}
         hasMore={result?.hasMore === true}
         isDark={isDark}
-        loadError={taskLoadError}
+        loadError={taskLoadError ?? taskSyncError}
         loadMoreError={loadMoreState.error}
         loadMorePending={loadMoreState.pending}
         loading={loading}

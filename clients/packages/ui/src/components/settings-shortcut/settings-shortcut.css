@@ -96,7 +96,7 @@
 
   .settings-shortcut[data-state="editing"] .settings-shortcut__keycaps {
     animation: settings-shortcut-editing-wiggle var(--motion-duration-state-change)
-      var(--motion-easing-icon-swap) infinite alternate;
+      var(--motion-loop-shortcut-wiggle) infinite alternate;
     will-change: transform;
   }
 

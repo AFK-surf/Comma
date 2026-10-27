@@ -2,12 +2,13 @@
 // written as `auth_required`, which the desktop app answers by minting another credential; any other refusal is
 // `reconnecting`. The status file is what the app reads.
 import assert from "node:assert/strict";
-import { readFileSync, watch } from "node:fs";
+import { readFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { test } from "node:test";
 import { Effect, Fiber } from "effect";
 import { makeConnector } from "../../src/connector/connector.ts";
+import { eventually } from "./support/eventually.ts";
 import { tempDir } from "./support/temp.ts";
 
 const isolated = { env: { HOME: tempDir(), PATH: "/usr/bin:/bin:/usr/sbin:/sbin" } };
@@ -23,22 +24,20 @@ async function refusing(status: number): Promise<{ server: Server; url: string }
   return { server, url: `http://127.0.0.1:${address.port}` };
 }
 
-/** The first status the connector writes once the connection failed (it is written by a rename into its directory). */
-function failedStatus(statusPath: string): Promise<any> {
-  return new Promise((resolve) => {
-    const read = () => {
-      try {
-        const written = JSON.parse(readFileSync(statusPath, "utf8"));
-        if (written.state === "starting" || written.state === "connecting") return;
-        watcher.close();
-        resolve(written);
-      } catch {
-        // Not written yet.
-      }
-    };
-    const watcher = watch(dirname(statusPath), read);
-    read();
-  });
+/** The first status the connector writes once the connection failed, read until it is there: it then waits on its
+ * backoff, which only the test moves, and writes nothing more. (Watching the directory missed it: macOS's file events
+ * start after fs.watch returns and drop what the connector wrote before.) */
+async function failedStatus(statusPath: string): Promise<any> {
+  let written: any;
+  await eventually(() => {
+    try {
+      written = JSON.parse(readFileSync(statusPath, "utf8"));
+    } catch {
+      return false; // Not written yet.
+    }
+    return written.state !== "starting" && written.state !== "connecting";
+  }, "the failed connection's status");
+  return written;
 }
 
 async function statusAfterRefusal(status: number) {

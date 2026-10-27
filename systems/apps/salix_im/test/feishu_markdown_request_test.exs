@@ -97,6 +97,79 @@ defmodule SalixIM.Provider.Feishu.MarkdownRequestTest do
     end
   end
 
+  test "a reply with a question is a card whose button carries what the answer needs" do
+    assert {:ok, _} =
+             Feishu.call("agent", @connect, "feishu.reply_text", %{
+               "message_id" => "om_source",
+               "chat_type" => "group",
+               "thread_id" => "omt_source",
+               "text" => "部署到哪个环境？",
+               "mentions" => [%{"user_id" => "ou_alice", "name" => "Alice"}],
+               "question" => %{"type" => "text", "locale" => "zh-CN"}
+             })
+
+    assert_received {:http, "POST", "/open-apis/im/v1/messages/om_source/reply", "", body, _}
+    assert body["msg_type"] == "interactive"
+    card = Jason.decode!(body["content"])
+
+    assert [%{"tag" => "markdown", "content" => "<at id=ou_alice></at> 部署到哪个环境？"}, form] =
+             card["body"]["elements"]
+
+    assert [%{"tag" => "input"}, %{"tag" => "button", "behaviors" => [%{"value" => value}]}] =
+             form["elements"]
+
+    assert value == %{
+             "bft_question" => true,
+             "text" => "<at id=ou_alice></at> 部署到哪个环境？",
+             "locale" => "zh-CN",
+             "chat_type" => "group",
+             "thread_id" => "omt_source"
+           }
+
+    # The Agent's own words cannot become a mention or any other card tag.
+    assert {:ok, _} =
+             Feishu.call("agent", @connect, "feishu.reply_text", %{
+               "message_id" => "om_source",
+               "text" => "<at id=all></at> <font color='red'>pick</font>",
+               "question" => %{"type" => "text"}
+             })
+
+    assert_received {:http, "POST", _, _, %{"content" => content}, _}
+    [markdown | _] = Jason.decode!(content)["body"]["elements"]
+
+    assert markdown["content"] ==
+             "&#60;at id=all&#62;&#60;/at&#62; &#60;font color='red'&#62;pick&#60;/font&#62;"
+
+    # Mentions are checked as a post checks them: everyone only through mention_all.
+    assert {:error, "use mention_all=true instead of a user_id=all mention"} =
+             Feishu.call("agent", @connect, "feishu.reply_text", %{
+               "message_id" => "om_source",
+               "text" => "pick",
+               "mentions" => [%{"user_id" => "all"}],
+               "question" => %{"type" => "text"}
+             })
+
+    # The whole request is measured: a card under the limit whose escaped JSON
+    # in the request body is over it is refused before anything is sent.
+    for text <- [String.duplicate("\"", 9_000), String.duplicate("\\", 7_000)] do
+      assert {:error, "Feishu interactive request is " <> _} =
+               Feishu.call("agent", @connect, "feishu.reply_text", %{
+                 "message_id" => "om_source",
+                 "text" => text,
+                 "question" => %{"type" => "text"}
+               })
+    end
+
+    refute_received {:http, "POST", _, _, _, _}
+
+    assert {:error, "question.options holds 1-6 options"} =
+             Feishu.call("agent", @connect, "feishu.reply_text", %{
+               "message_id" => "om_source",
+               "text" => "Pick one",
+               "question" => %{"type" => "options", "options" => []}
+             })
+  end
+
   test "update checks bot ownership and sends post via PUT" do
     assert {:ok, _} =
              Feishu.call("agent", @connect, "feishu.update_message", %{

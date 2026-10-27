@@ -48,12 +48,21 @@ defmodule BridgeForTeams.Conversations do
     opts = Keyword.put_new(opts, :request_id, SystemsRuntime.Proc.uuid())
     attrs = Map.put_new(attrs, "client_request_id", Keyword.fetch!(opts, :request_id))
 
+    arguments = [
+      group_id,
+      router.salix_agent_id,
+      attrs
+    ]
+
+    # The authenticated product requester travels outside the public Task attrs.
+    arguments =
+      if match?(%{"kind" => "runtime"}, attrs["model"]) and is_nil(attrs["runs_on"]) and
+           is_binary(opts[:actor_user_id]),
+         do: arguments ++ [%{requester_user_id: opts[:actor_user_id]}],
+         else: arguments
+
     result =
-      case Client.call_optional(:create_placed_task_conversation, [
-             group_id,
-             router.salix_agent_id,
-             attrs
-           ]) do
+      case Client.call_optional(:create_placed_task_conversation, arguments) do
         {:error, :unsupported} -> {:error, :task_conversation_create_unavailable}
         result -> result
       end

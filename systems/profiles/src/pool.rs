@@ -97,10 +97,23 @@ pub fn usable(profile: &Profile, signals: &Signals, model: Option<&str>, now: i6
     if profile.disabled || signals.spent || matches!(profile.status, Status::Login | Status::Failed) {
         return false;
     }
+    used_up(profile, model, now).next().is_none()
+}
+
+/// The windows used up for this model that have not refilled.
+fn used_up<'a>(profile: &'a Profile, model: Option<&'a str>, now: i64) -> impl Iterator<Item = &'a Window> + 'a {
     let windows = profile.quota.as_ref().map(|q| q.windows.as_slice()).unwrap_or(&[]);
-    !windows.iter().any(|w| {
+    windows.iter().filter(move |w| {
         w.used_percent >= 100.0 && w.resets_at.is_none_or(|at| at > now) && counts_for(w, &profile.source, model)
     })
+}
+
+/// When a Profile's used-up windows for this model have all refilled (ms since the epoch): none when no window holds it
+/// back, or one that does has no known refill.
+pub fn refills_at(profile: &Profile, model: Option<&str>, now: i64) -> Option<i64> {
+    used_up(profile, model, now).try_fold(None, |latest: Option<i64>, w| {
+        w.resets_at.map(|at| Some(latest.map_or(at, |l| l.max(at))))
+    })?
 }
 
 /// How a Profile's allowance ranks: whether its short windows are nearly full; whether a long window refills within a
@@ -289,6 +302,24 @@ mod tests {
             ["a"]
         );
         assert!(rank(&[a], &request(Some("gemini-2.5-flash"))).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_profile_held_back_refills_when_its_last_used_up_window_for_the_model_does() {
+        let mut a = profile("a");
+        assert_eq!(refills_at(&a, None, NOW), None);
+        a.quota = quota(vec![
+            (100.0, 300, NOW + HOUR),
+            (100.0, 10_080, NOW + 3 * HOUR),
+            (40.0, 60, NOW + 5 * HOUR),
+        ]);
+        assert_eq!(refills_at(&a, None, NOW), Some(NOW + 3 * HOUR));
+        assert_eq!(refills_at(&a, None, NOW + 2 * HOUR), Some(NOW + 3 * HOUR));
+        assert_eq!(refills_at(&a, None, NOW + 4 * HOUR), None);
+        a.quota.as_mut().unwrap().windows[1].model = Some("gpt-5".into());
+        assert_eq!(refills_at(&a, Some("o3"), NOW), Some(NOW + HOUR));
+        a.quota.as_mut().unwrap().windows[0].resets_at = None;
+        assert_eq!(refills_at(&a, Some("o3"), NOW), None);
     }
 
     #[test]

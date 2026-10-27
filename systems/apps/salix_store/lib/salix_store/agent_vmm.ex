@@ -23,6 +23,7 @@ defmodule SalixStore.AgentVMM do
       field(:policy_revision, :integer)
       field(:desired_enabled, :boolean)
       field(:authorization_expires_at, :utc_datetime_usec)
+      field(:revocation_reason, :string)
       field(:next_controller_sequence, :integer)
       field(:enrollment_token_hash, :binary)
       field(:credential_hash, :binary)
@@ -91,8 +92,8 @@ defmodule SalixStore.AgentVMM do
   end
 
   @doc """
-  The Agent VMM registrations bound to a Group: the Hosts (a BFT Project's
-  Mac mini Runners) installed for it and not revoked. The unique index on
+  The Agent VMM registrations bound to a Group: the Hosts installed for it
+  and not revoked. The unique index on
   `(tenant_id, group_id, device_id)` allows one per Host device, so a Group
   can have several; at most `limit` ids are read.
   """
@@ -266,7 +267,7 @@ defmodule SalixStore.AgentVMM do
         )
 
       Enum.each(registrations, fn r ->
-        revoke_authority!(r, now)
+        revoke_authority!(r, now, "authorization_expired")
       end)
 
       %{retired: length(registrations), more?: length(registrations) == limit}
@@ -323,7 +324,7 @@ defmodule SalixStore.AgentVMM do
         Repo.rollback(:revision_conflict)
       end
 
-      revoke_authority!(registration, SystemsClock.utc_now())
+      revoke_authority!(registration, SystemsClock.utc_now(), "revoked")
 
       audit!(tenant_id, "registration", id, "revoked", "succeeded", %{})
       Repo.get!(Registration, id)
@@ -334,10 +335,13 @@ defmodule SalixStore.AgentVMM do
 
   # Fence authority first. Child retirement is paged by the settlement worker;
   # revocation does not wait for Host health or acquire Allocation -> Workload locks.
-  defp revoke_authority!(registration, now) do
+  # `reason` records why: "authorization_expired" for the 7-day deadline, else "revoked".
+  defp revoke_authority!(registration, now, reason)
+       when reason in ["authorization_expired", "revoked"] do
     Repo.update_all(from(r in Registration, where: r.id == ^registration.id),
       set: [
         status: "revoked",
+        revocation_reason: reason,
         desired_enabled: false,
         credential_hash: nil,
         enrollment_token_hash: nil,
@@ -390,24 +394,34 @@ defmodule SalixStore.AgentVMM do
     )
   end
 
-  @doc "Observe one Agent VMM host and a bounded allocation snapshot."
+  @inventory_page_limit 64
+
+  @doc """
+  Observe one Agent VMM host and a bounded allocation snapshot.
+
+  Only the connection fence and the inventory list shape are structural. The
+  inventory and the embedded observation are disposable health data: a bad
+  entry or field is dropped, so it never blocks the hello, binding
+  availability or authorization renewal (RFC 42 §3.5). At most
+  #{@inventory_page_limit} inventory entries are processed per request; later
+  observations carry the rest.
+  """
   def observe_registration(registration_id, gateway_instance_id, hello)
       when is_binary(registration_id) and is_binary(gateway_instance_id) and is_map(hello) do
     epoch = canonical_uint64_field(hello, "connectionEpoch")
     watermark = integer_field(hello, "inventoryWatermark")
     inventory = Map.get(hello, "inventory", [])
 
-    if is_nil(epoch) or watermark < 0 or not is_list(inventory) or length(inventory) > 64 do
+    if is_nil(epoch) or watermark < 0 or not is_list(inventory) do
       {:error, :invalid_observation}
     else
+      inventory = Enum.take(inventory, @inventory_page_limit)
+
       Repo.transaction(fn ->
         registration =
           Repo.one!(from(r in Registration, where: r.id == ^registration_id, lock: "FOR UPDATE"))
 
-        if authorization_expired?(registration) or registration.status != "ready" or
-             not registration.desired_enabled do
-          Repo.rollback(:registration_inactive)
-        end
+        reject_inactive_registration!(registration)
 
         # The pinned connector supplies a cryptographically random non-zero
         # connection fence. It is opaque, not an ordered counter: equality is
@@ -435,16 +449,18 @@ defmodule SalixStore.AgentVMM do
           Repo.rollback(:stale_connection)
         end
 
+        # An entry without an id, or an id the snapshot repeats with
+        # possibly contradictory facts, is dropped. Omission leaves the
+        # allocation's newer per-allocation facts untouched.
         inventory_by_id =
-          Map.new(inventory, fn item ->
-            id = Map.get(item, "allocationId")
-            if not is_binary(id) or id == "", do: Repo.rollback(:invalid_observation)
-            {id, item}
+          inventory
+          |> Enum.filter(&(is_map(&1) and bounded_text?(Map.get(&1, "allocationId"), 256)))
+          |> Enum.group_by(&Map.get(&1, "allocationId"))
+          |> Enum.flat_map(fn
+            {id, [item]} -> [{id, item}]
+            {_id, _duplicates} -> []
           end)
-
-        if map_size(inventory_by_id) != length(inventory) do
-          Repo.rollback(:invalid_observation)
-        end
+          |> Map.new()
 
         observed_ids = Map.keys(inventory_by_id)
 
@@ -460,9 +476,9 @@ defmodule SalixStore.AgentVMM do
             )
           )
 
-        if length(known_allocations) != length(observed_ids),
-          do: Repo.rollback(:invalid_observation)
-
+        # An allocation this registration does not own, or one the server
+        # already marked failed, is a residual Host-local fact. It changes no
+        # cloud state here; the local disposal and repair paths own it.
         observed_allocations = Enum.reject(known_allocations, &(&1.status == "released"))
 
         now = SystemsClock.utc_now()
@@ -489,10 +505,11 @@ defmodule SalixStore.AgentVMM do
           observed_provider_revision =
             integer_field(allocation.provider_observation || %{}, "allocation_revision")
 
-          if provider_revision <= 0 or is_nil(status),
-            do: Repo.rollback(:invalid_observation)
-
           cond do
+            provider_revision <= 0 or is_nil(status) ->
+              # An unreadable entry is dropped like any omitted allocation.
+              :ok
+
             observed_provider_revision > 0 and provider_revision < observed_provider_revision ->
               # A reconnect snapshot can have been captured before a command
               # completion advanced this allocation. The bounded snapshot is
@@ -545,27 +562,31 @@ defmodule SalixStore.AgentVMM do
           set: [next_controller_sequence: 1, updated_at: now]
         )
 
-        case Map.get(hello, "observation") do
-          observation when is_map(observation) ->
-            case settle_observation_locked(
-                   registration,
-                   gateway_instance_id,
-                   epoch,
-                   observation,
-                   now,
-                   true
-                 ) do
-              {:ok, _changed?} -> :ok
-              {:error, reason} -> Repo.rollback(reason)
-            end
+        # The previous fence's observation never describes this connection.
+        # An absent or unusable embedded observation leaves none.
+        settled_observation? =
+          case Map.get(hello, "observation") do
+            observation when is_map(observation) ->
+              match?(
+                {:ok, _changed?},
+                settle_observation_locked(
+                  registration,
+                  gateway_instance_id,
+                  epoch,
+                  observation,
+                  now,
+                  true
+                )
+              )
 
-          nil ->
-            Repo.delete_all(
-              from(o in RegistrationObservation, where: o.registration_id == ^registration.id)
-            )
+            _ ->
+              false
+          end
 
-          _ ->
-            Repo.rollback(:invalid_observation)
+        if not settled_observation? do
+          Repo.delete_all(
+            from(o in RegistrationObservation, where: o.registration_id == ^registration.id)
+          )
         end
 
         renew_authorization!(registration, now)
@@ -586,6 +607,14 @@ defmodule SalixStore.AgentVMM do
       |> case do
         {:ok, {committed_watermark, observed_at}} ->
           reconcile_scoped_environments(registration_id, committed_watermark, observed_at)
+
+          # Readiness creates the initial Shell after commit: a failed placement must not fail hello.
+          SalixStore.AgentVMMInstallations.ensure_initial_workload_for_registration(
+            registration_id
+          )
+
+          SalixStore.ComputeGroupStation.prepare_registration(registration_id, true)
+
           {:ok, :ok}
 
         {:error, reason} ->
@@ -759,32 +788,76 @@ defmodule SalixStore.AgentVMM do
             Map.get(binding.observation, "connection_epoch") == connection_epoch
         end)
 
-      if authorization_expired?(registration) or registration.status != "ready" or
-           not registration.desired_enabled,
-         do: Repo.rollback(:registration_inactive)
+      reject_inactive_registration!(registration)
 
       if not current?, do: Repo.rollback(:stale_connection)
+
+      now = SystemsClock.utc_now()
 
       case settle_observation_locked(
              registration,
              gateway_instance_id,
              connection_epoch,
              observation,
-             SystemsClock.utc_now(),
+             now,
              false
            ) do
         {:ok, _changed?} ->
           :ok
 
+        {:error, :invalid_observation} ->
+          # The current authenticated connection still proves the Host is
+          # live. An unusable observation is not stored, and it does not
+          # block the renewal.
+          renew_authorization!(registration, now)
+          {:error, :invalid_observation}
+
         {:error, reason} ->
           Repo.rollback(reason)
       end
+    end)
+    |> case do
+      {:ok, {:error, reason}} -> {:error, reason}
+      result -> result
+    end
+    |> tap(fn result ->
+      # Repairs an initial Shell that a crash skipped after the hello commit.
+      if match?({:ok, _}, result),
+        do:
+          SalixStore.AgentVMMInstallations.ensure_initial_workload_for_registration(
+            registration_id
+          )
+
+      if match?({:ok, _}, result),
+        do: SalixStore.ComputeGroupStation.prepare_registration(registration_id)
     end)
   rescue
     _ -> {:error, :unavailable}
   end
 
   def settle_registration_observation(_, _, _, _), do: {:error, :invalid_observation}
+
+  # The two inactive causes get distinct errors so the Host side can tell a
+  # lapsed authorization (Main re-enrolls) from a disabled or revoked one.
+  defp reject_inactive_registration!(registration) do
+    # A revoked registration keeps its recorded cause: an explicit removal
+    # whose deadline later passes is still `registration_inactive`.
+    expired? =
+      if registration.status == "revoked",
+        do: Map.get(registration, :revocation_reason) == "authorization_expired",
+        else: authorization_expired?(registration)
+
+    cond do
+      expired? ->
+        Repo.rollback(:authorization_expired)
+
+      registration.status != "ready" or not registration.desired_enabled ->
+        Repo.rollback(:registration_inactive)
+
+      true ->
+        :ok
+    end
+  end
 
   defp settle_observation_locked(
          registration,
@@ -858,41 +931,37 @@ defmodule SalixStore.AgentVMM do
     protocol = Map.get(observation, "protocolVersion")
     host_api = Map.get(observation, "hostApiVersion")
     release = Map.get(observation, "connectorRelease")
-    features = Map.get(observation, "supportedFeatures", [])
+    features = normalize_features(Map.get(observation, "supportedFeatures", []))
     health = Map.get(observation, "health", %{})
     health_status = Map.get(health, "status")
-    health_issue = Map.get(health, "issue")
-    health_message = Map.get(health, "message")
+
+    # A field this server does not recognize degrades to its absent value; a
+    # Host clock outside the window degrades to the server receive time.
+    health_issue =
+      Map.get(health, "issue")
+      |> known_or_nil([
+        "host_degraded",
+        "host_unavailable",
+        "observation_unavailable",
+        "observation_time_invalid"
+      ])
 
     with true <- sequence in 1..9_223_372_036_854_775_807,
          true <- watermark in 0..9_223_372_036_854_775_807,
-         {:ok, observed_at} <- observation_time(observation, "observedUnixMillis", received_at),
-         {:ok, inventory_at} <-
-           observation_time(observation, "inventoryObservedUnixMillis", received_at),
+         observed_at = observation_time(observation, "observedUnixMillis", received_at),
+         inventory_at = observation_time(observation, "inventoryObservedUnixMillis", received_at),
          true <- bounded_text?(gateway_instance_id, 128),
          true <- bounded_text?(connection_epoch, 20),
          true <- bounded_text?(protocol, 32),
          true <- bounded_text?(host_api, 32),
          true <- is_nil(release) or bounded_text?(release, 128),
-         true <- valid_features?(features),
          true <- health_status in ["healthy", "degraded", "unavailable"],
-         true <-
-           health_issue in [
-             nil,
-             "host_degraded",
-             "host_unavailable",
-             "observation_unavailable",
-             "observation_time_invalid"
-           ],
-         true <- is_nil(health_message) or bounded_text?(health_message, 256),
          {:ok, components} <- normalize_health_components(Map.get(health, "components", [])),
          {:ok, capacity} <- normalize_capacity(Map.get(observation, "capacity", %{})),
-         {:ok, usage} <- normalize_usage(Map.get(observation, "usage", %{})),
-         {:ok, candidate} <-
-           normalize_reclaim_candidate(
-             Map.get(observation, "reclaimCandidate"),
-             registration_id
-           ) do
+         {:ok, usage} <- normalize_usage(Map.get(observation, "usage", %{})) do
+      candidate =
+        normalize_reclaim_candidate(Map.get(observation, "reclaimCandidate"), registration_id)
+
       {:ok,
        %{
          registration_id: registration_id,
@@ -920,7 +989,7 @@ defmodule SalixStore.AgentVMM do
     end
   end
 
-  defp normalize_reclaim_candidate(nil, _registration_id), do: {:ok, nil}
+  defp normalize_reclaim_candidate(nil, _registration_id), do: nil
 
   defp normalize_reclaim_candidate(candidate, registration_id) when is_map(candidate) do
     expires = integer_field(candidate, "expiresUnixMillis")
@@ -930,20 +999,19 @@ defmodule SalixStore.AgentVMM do
            ~w(allocationId containerId containerInstanceId),
            &bounded_text?(candidate[&1], 256)
          ) do
-      {:ok,
-       %{
-         "registration_id" => registration_id,
-         "allocation_id" => candidate["allocationId"],
-         "container_id" => candidate["containerId"],
-         "instance_id" => candidate["containerInstanceId"],
-         "expires_at_ms" => expires
-       }}
-    else
-      {:error, :invalid_observation}
+      %{
+        "registration_id" => registration_id,
+        "allocation_id" => candidate["allocationId"],
+        "container_id" => candidate["containerId"],
+        "instance_id" => candidate["containerInstanceId"],
+        "expires_at_ms" => expires
+      }
     end
   end
 
-  defp normalize_reclaim_candidate(_, _), do: {:error, :invalid_observation}
+  defp normalize_reclaim_candidate(_, _), do: nil
+
+  defp known_or_nil(value, known), do: if(value in known, do: value)
 
   defp canonical_health_message("degraded", "host_degraded"),
     do: "Host health is degraded."
@@ -965,18 +1033,19 @@ defmodule SalixStore.AgentVMM do
     with {:ok, value} <- DateTime.from_unix(millis, :millisecond),
          true <- DateTime.compare(value, DateTime.add(received_at, -120, :second)) != :lt,
          true <- DateTime.compare(value, DateTime.add(received_at, 30, :second)) != :gt do
-      {:ok, %{value | microsecond: {elem(value.microsecond, 0), 6}}}
+      %{value | microsecond: {elem(value.microsecond, 0), 6}}
     else
-      _ -> {:error, :invalid_observation}
+      _ -> received_at
     end
   end
 
   defp bounded_text?(value, max), do: is_binary(value) and byte_size(value) in 1..max
 
-  defp valid_features?(values) do
-    is_list(values) and length(values) <= 32 and
-      Enum.all?(values, &bounded_text?(&1, 64)) and Enum.uniq(values) == values
+  defp normalize_features(values) when is_list(values) do
+    values |> Enum.filter(&bounded_text?(&1, 64)) |> Enum.uniq() |> Enum.take(32)
   end
+
+  defp normalize_features(_), do: []
 
   @public_health_components ~w(vmmd state-disk network egress quota containerd/runsc host-egress)
   @public_reconcile_error_codes ~w(
@@ -994,18 +1063,19 @@ defmodule SalixStore.AgentVMM do
     unauthenticated
     unavailable
   )
-  defp normalize_health_components(values) when is_list(values) and length(values) <= 16 do
-    if Enum.all?(values, fn value ->
-         is_map(value) and Map.get(value, "component") in @public_health_components and
-           Map.get(value, "status") in ["healthy", "degraded", "unavailable"]
-       end) do
-      {:ok, Map.new(values, &{Map.get(&1, "component"), Map.get(&1, "status")})}
-    else
-      {:error, :invalid_observation}
-    end
+  # An unknown component or status (for example from a newer Host) is dropped
+  # and the known entries kept. The known component set bounds the map.
+  defp normalize_health_components(values) when is_list(values) do
+    {:ok,
+     values
+     |> Enum.filter(fn value ->
+       is_map(value) and Map.get(value, "component") in @public_health_components and
+         Map.get(value, "status") in ["healthy", "degraded", "unavailable"]
+     end)
+     |> Map.new(&{Map.get(&1, "component"), Map.get(&1, "status")})}
   end
 
-  defp normalize_health_components(_), do: {:error, :invalid_observation}
+  defp normalize_health_components(_), do: {:ok, %{}}
 
   defp normalize_capacity(value) when is_map(value) do
     limits = fn item ->
@@ -1017,18 +1087,19 @@ defmodule SalixStore.AgentVMM do
 
     result = %{
       "per_environment_limits" => limits.(Map.get(value, "perEnvironmentLimits", %{})),
-      "max_egress_mode" => Map.get(value, "maxEgressMode")
+      # An unknown egress mode is dropped, not rejected.
+      "max_egress_mode" =>
+        Map.get(value, "maxEgressMode")
+        |> known_or_nil([
+          "EGRESS_MODE_UNSPECIFIED",
+          "EGRESS_MODE_DENY_ALL",
+          "EGRESS_MODE_PUBLIC_INTERNET"
+        ])
     }
 
     integers = Map.values(result["per_environment_limits"])
 
-    if Enum.all?(integers, &(&1 in 0..9_223_372_036_854_775_807)) and
-         result["max_egress_mode"] in [
-           nil,
-           "EGRESS_MODE_UNSPECIFIED",
-           "EGRESS_MODE_DENY_ALL",
-           "EGRESS_MODE_PUBLIC_INTERNET"
-         ] do
+    if Enum.all?(integers, &(&1 in 0..9_223_372_036_854_775_807)) do
       {:ok, result}
     else
       {:error, :invalid_observation}
@@ -1097,17 +1168,18 @@ defmodule SalixStore.AgentVMM do
 
     integers = Map.new(keys, &{Macro.underscore(&1), integer_field(value, &1)})
     stale = Map.get(value, "stale", false)
-    issue = Map.get(value, "issue")
+
+    issue =
+      Map.get(value, "issue")
+      |> known_or_nil([
+        "usage_unavailable",
+        "usage_stale",
+        "observation_unavailable",
+        "observation_time_invalid"
+      ])
 
     if Enum.all?(Map.values(integers), &(&1 in 0..9_223_372_036_854_775_807)) and
-         is_boolean(stale) and
-         issue in [
-           nil,
-           "usage_unavailable",
-           "usage_stale",
-           "observation_unavailable",
-           "observation_time_invalid"
-         ] do
+         is_boolean(stale) do
       {:ok, Map.merge(integers, %{"stale" => stale, "issue" => issue})}
     else
       {:error, :invalid_observation}
@@ -1631,10 +1703,13 @@ defmodule SalixStore.AgentVMM do
           )
         )
 
+      # A delayed failure from an older open must not invalidate renewed authority.
+      # Compare the request's captured expiry with the current locked session.
       if session && session.status == "ready" &&
            session.gateway_instance_id == session_fence.gateway_instance_id &&
            session.connection_epoch == session_fence.connection_epoch &&
-           session.allocation_generation == session_fence.allocation_generation do
+           session.allocation_generation == session_fence.allocation_generation &&
+           session.expires_at == session_fence.expires_at do
         allocation =
           Repo.one!(
             from(a in Compute.Allocation,
@@ -1653,6 +1728,16 @@ defmodule SalixStore.AgentVMM do
 
         Repo.update_all(from(a in Compute.Allocation, where: a.id == ^allocation.id),
           set: [updated_at: now],
+          inc: [revision: 1]
+        )
+
+        Repo.update_all(
+          from(w in Compute.Workload,
+            where:
+              w.id == ^workload_id and w.allocation_id == ^allocation.id and
+                w.desired_state == "ready" and w.observed_state == "ready"
+          ),
+          set: [observed_state: "pending", updated_at: now],
           inc: [revision: 1]
         )
       end

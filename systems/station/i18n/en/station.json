@@ -310,5 +310,17 @@
   "station.usage.priceNote": "USD per 1M tokens · each kind of token × its price, added up; Claude fast ×2. GPT is estimated at standard short-context prices, recording only input, cache reads and output. GPT prices checked on 2026-10-02; Claude uses the 2026-09 prices",
   "station.share.borrowedEdit": "This profile is shared by another station; change it on the station it is on",
   "station.share.hostOffline": "{host}, the station signed in to it, is not answering; it can't be used now",
-  "station.share.managersOnly": "Only workspace admins can share"
+  "station.share.managersOnly": "Only workspace admins can share",
+  "station.source.none": "No account is chosen to run {runtime} on this computer for this workspace: choose the local sign-in, a local model or the workspace's accounts in the device settings",
+  "station.source.localMissing": "This workspace uses the local sign-in, but {runtime} is not signed in on this computer",
+  "station.source.workspaceMissing": "This workspace uses the workspace's accounts, but no shared account can run {runtime}",
+  "station.source.machineOff": "This computer's local sign-in is not in use: choose the local sign-in for a workspace in the device settings first",
+  "station.source.noWorkspace": "This computer is in no workspace, so its local sign-in cannot be used",
+  "station.source.unknownWorkspace": "This computer is not connected to this workspace",
+  "station.source.workspaceUnavailable": "This workspace has no shared accounts yet",
+  "station.source.endpointMissing": "This workspace uses a local model on this computer, but no model server address is set for {runtime}",
+  "station.source.endpointNeeded": "Give the address of the model server on this computer first",
+  "station.source.endpointName": "Local model ({address})",
+  "station.source.notLocal": "Choose the local sign-in for this workspace before signing in",
+  "station.source.profileOutside": "{profile} is not in the account source this workspace chose for this computer"
 }

@@ -37,9 +37,11 @@ defmodule SalixStore.ComputeTest do
   end
 
   setup do
-    Repo.query!(
-      "TRUNCATE external_worker_operations, external_worker_bindings, compute_commands, compute_grants, compute_runtime_instances, compute_workloads, compute_allocations, compute_provider_bindings, compute_environments, compute_pools, agent_vmm_registrations CASCADE"
-    )
+    SalixStore.RepoTestSetup.exclusively(fn ->
+      Repo.query!(
+        "TRUNCATE external_worker_operations, external_worker_bindings, compute_commands, compute_grants, compute_runtime_instances, compute_workloads, compute_allocations, compute_provider_bindings, compute_environments, compute_pools, agent_vmm_registrations CASCADE"
+      )
+    end)
 
     :ok
   end
@@ -512,6 +514,100 @@ defmodule SalixStore.ComputeTest do
                | "tenant_id" => SalixStore.Ids.tenant_id_from_group!(other_group),
                  "group_id" => other_group
              })
+  end
+
+  test "a rejected Workload readiness write rolls back the provider observation" do
+    tenant = SalixStore.Ids.new_tenant_id()
+    group = SalixStore.Ids.new_group_id(tenant)
+
+    assert {:ok, record, :created} =
+             Compute.ensure_group_workload(%{
+               "tenant_id" => tenant,
+               "group_id" => group,
+               "provider" => "cloudflare",
+               "provider_resource_id" => "rollback-owner",
+               "provider_resource_name" => "rollback-owner",
+               "provider_spec" => %{"profile_key" => "cf-standard-2"},
+               "status" => "ready",
+               "created_at" => 1_000
+             })
+
+    workload = Repo.get!(Compute.Workload, record["workload_id"])
+    allocation = Repo.get!(Compute.Allocation, record["allocation_id"])
+    quoted_id = "'" <> String.replace(workload.id, "'", "''") <> "'"
+
+    Repo.query!(
+      "ALTER TABLE compute_workloads ADD CONSTRAINT test_reject_observed_pending CHECK (id <> " <>
+        quoted_id <> " OR observed_state <> 'pending') NOT VALID"
+    )
+
+    try do
+      assert {:error, :unavailable} =
+               Compute.observe_allocation_facts(
+                 allocation.id,
+                 allocation.revision,
+                 allocation.generation,
+                 %{"container_status" => "stopped"},
+                 [],
+                 workload
+               )
+
+      assert Repo.get!(Compute.Allocation, allocation.id).provider_observation ==
+               allocation.provider_observation
+
+      assert Repo.get!(Compute.Workload, workload.id).observed_state == "ready"
+    after
+      Repo.query!("ALTER TABLE compute_workloads DROP CONSTRAINT test_reject_observed_pending")
+    end
+  end
+
+  test "a Group Workload write keeps the facts its provider observed on the allocation" do
+    tenant = SalixStore.Ids.new_tenant_id()
+    group = SalixStore.Ids.new_group_id(tenant)
+
+    assert {:ok, record, :created} =
+             Compute.ensure_group_workload(%{
+               "tenant_id" => tenant,
+               "group_id" => group,
+               "provider" => "cloudflare",
+               "provider_resource_id" => "sandbox-owner",
+               "provider_resource_name" => "sandbox-owner",
+               "provider_spec" => %{"profile_key" => "cf-standard-2"},
+               "rollout_state" => "stable",
+               "status" => "ready",
+               "created_at" => 1_000
+             })
+
+    allocation = Repo.get!(Compute.Allocation, record["allocation_id"])
+
+    assert {:ok, _} =
+             Compute.observe_allocation_facts(
+               allocation.id,
+               allocation.revision,
+               allocation.generation,
+               %{
+                 "runtime_container_generation_id" => "container-1",
+                 "container_status" => "running"
+               },
+               []
+             )
+
+    assert {:ok, updated, _} =
+             Compute.update_group_workload(group, fn current ->
+               current
+               |> Map.put("last_station_activity_at", 2_000)
+               |> Map.delete("rollout_state")
+             end)
+
+    assert updated["last_station_activity_at"] == 2_000
+    assert updated["provider_resource_name"] == "sandbox-owner"
+    refute Map.has_key?(updated, "rollout_state")
+
+    observation = Repo.get!(Compute.Allocation, allocation.id).provider_observation
+    assert observation["runtime_container_generation_id"] == "container-1"
+    assert observation["container_status"] == "running"
+    assert observation["provider_resource_name"] == "sandbox-owner"
+    refute Map.has_key?(observation, "rollout_state")
   end
 
   # A Host whose current connection made its Project Environment's binding available.
@@ -1647,6 +1743,64 @@ defmodule SalixStore.ComputeTest do
     assert storage.next_retry_at == nil
   end
 
+  test "retrying import-slot capacity claims removes only import-slot parked claims" do
+    %{environment: environment, allocation: allocation} = compute_fixture()
+
+    {:ok, workload} =
+      Compute.create_workload(%{
+        id: "import-slot-workload",
+        environment_id: environment.id,
+        allocation_id: allocation.id,
+        kind: "shell",
+        template_key: "shell.default",
+        generation: 1
+      })
+
+    Code.require_file(
+      "../priv/repo/migrations/20261022000101_retry_import_slot_capacity_claims.exs",
+      __DIR__
+    )
+
+    version = 20_261_022_000_101
+    now = SystemsClock.utc_now()
+    ids = Enum.map(1..3, &"import-slot-claim-#{&1}")
+    cleanup = fn -> Repo.delete_all(from(c in Compute.ReconcilerClaim, where: c.id in ^ids)) end
+    cleanup.()
+
+    for {generation, token, resource} <- [
+          {1, "capacity-action-required", "import_slot"},
+          {2, "capacity-action-required", "storage_headroom"},
+          {3, "live-claim", "import_slot"}
+        ] do
+      Repo.insert!(%Compute.ReconcilerClaim{
+        id: "import-slot-claim-#{generation}",
+        provider: "agent_vmm",
+        workload_id: workload.id,
+        generation: generation,
+        claim_token: token,
+        attempt_count: 1,
+        last_error: %{"kind" => "action_required", "resource" => resource},
+        created_at: now,
+        updated_at: now
+      })
+    end
+
+    Repo.query!("DELETE FROM salix_schema_migrations WHERE version = $1", [version])
+
+    Ecto.Migrator.up(Repo, version, SalixStore.Repo.Migrations.RetryImportSlotCapacityClaims,
+      strict_version_order: false,
+      log: false
+    )
+
+    refute Repo.get(Compute.ReconcilerClaim, "import-slot-claim-1")
+
+    assert Repo.get!(Compute.ReconcilerClaim, "import-slot-claim-2").last_error["resource"] ==
+             "storage_headroom"
+
+    assert Repo.get(Compute.ReconcilerClaim, "import-slot-claim-3")
+    cleanup.()
+  end
+
   test "one creation request commits one placement under concurrency and keeps deliberate additional work" do
     fixture = compute_fixture()
     input = %{"environment_id" => fixture.environment.id, "kind" => "meeting_runtime"}
@@ -1770,6 +1924,68 @@ defmodule SalixStore.ComputeTest do
              Compute.project_page("tenant", "project", "project", %{limit: 101})
   end
 
+  test "default workload pages skip terminal receipts before the page limit" do
+    fixture = ready_fixture()
+
+    for {id, deletion, retired} <- [
+          {"list-01-deleted", %{"phase" => "complete"}, false},
+          {"list-02-retired", %{"phase" => "cloud_retired"}, false},
+          {"list-03-retired-allocation", nil, true},
+          {"list-04-deleting", %{"phase" => "cleaning"}, false},
+          {"list-05-action-required", %{"phase" => "action_required"}, false},
+          {"list-06-recoverable", nil, false}
+        ] do
+      assert {:ok, allocation} =
+               Compute.allocate(%{
+                 id: "allocation-#{id}",
+                 environment_id: fixture.environment.id,
+                 provider_binding_id: fixture.binding.id,
+                 generation: 1
+               })
+
+      assert {:ok, workload} =
+               Compute.create_workload(%{
+                 id: id,
+                 environment_id: fixture.environment.id,
+                 allocation_id: allocation.id,
+                 kind: "meeting_runtime",
+                 generation: 1
+               })
+
+      Repo.update_all(from(w in Compute.Workload, where: w.id == ^workload.id),
+        set: [deletion: deletion, observed_state: "failed"]
+      )
+
+      if retired do
+        Repo.update_all(from(a in Compute.Allocation, where: a.id == ^allocation.id),
+          set: [provider_observation: %{"cloud_retired" => true}]
+        )
+      end
+    end
+
+    assert {:ok, first} = Compute.project_page("tenant", "project", "project", %{limit: 2})
+    assert Enum.map(first.workloads, & &1.id) == ["list-04-deleting", "list-05-action-required"]
+    assert first.next_workload_cursor == "list-05-action-required"
+
+    assert {:ok, second} =
+             Compute.project_page("tenant", "project", "project", %{
+               limit: 2,
+               workload_after: first.next_workload_cursor
+             })
+
+    assert Enum.map(second.workloads, & &1.id) == ["list-06-recoverable", fixture.workload.id]
+    assert second.next_workload_cursor == nil
+
+    assert {:ok, bft} = Compute.project("tenant", "project", "project", 100)
+
+    assert MapSet.new(Enum.map(bft.workloads, & &1.id)) ==
+             MapSet.new(Enum.map(first.workloads ++ second.workloads, & &1.id))
+
+    # These remain durable receipts for exact reads and reconciliation.
+    assert Repo.get!(Compute.Workload, "list-01-deleted").deletion["phase"] == "complete"
+    assert Repo.get!(Compute.Workload, "list-02-retired").deletion["phase"] == "cloud_retired"
+  end
+
   test "Shell deletion closes admission and retains allocation authority until exact data cleanup" do
     fixture = compute_fixture()
 
@@ -1809,24 +2025,24 @@ defmodule SalixStore.ComputeTest do
     })
 
     assert {:error, :not_found} =
-             Deletion.start("other", "project", workload.id, 1, 1, "request", fn -> :ok end)
+             Deletion.start("other", "project", workload.id, 1, "request", fn -> :ok end)
 
     assert {:error, :not_found} =
-             Deletion.start("tenant", "project", workload.id, 1, 1, "request", fn ->
+             Deletion.start("tenant", "project", workload.id, 1, "request", fn ->
                {:error, :revoked}
              end)
 
     assert {:error, :revision_conflict} =
-             Deletion.start("tenant", "project", workload.id, 1, 2, "request", fn -> :ok end)
+             Deletion.start("tenant", "project", workload.id, 2, "request", fn -> :ok end)
 
     assert {:ok, deleting} =
-             Deletion.start("tenant", "project", workload.id, 1, 1, "request", fn -> :ok end)
+             Deletion.start("tenant", "project", workload.id, 1, "request", fn -> :ok end)
 
     assert deleting.desired_state == "draining"
     assert Repo.get!(Compute.Allocation, fixture.allocation.id).status == "ready"
 
     assert {:ok, replay} =
-             Deletion.start("tenant", "project", workload.id, 1, 1, "request", fn -> :ok end)
+             Deletion.start("tenant", "project", workload.id, 1, "request", fn -> :ok end)
 
     assert replay.deletion == deleting.deletion
 
@@ -1894,7 +2110,7 @@ defmodule SalixStore.ComputeTest do
     assert Repo.get!(Compute.Allocation, fixture.allocation.id).status == "released"
 
     assert {:ok, replay} =
-             Deletion.start("tenant", "project", workload.id, 1, 1, "request", fn -> :ok end)
+             Deletion.start("tenant", "project", workload.id, 1, "request", fn -> :ok end)
 
     assert replay.id == workload.id
   end
@@ -1904,7 +2120,7 @@ defmodule SalixStore.ComputeTest do
     alias SalixStore.ComputeWorkloadDeletion, as: Deletion
 
     assert {:error, :business_owner_required} =
-             Deletion.start("tenant", "project", fixture.workload.id, 1, 1, "request", fn ->
+             Deletion.start("tenant", "project", fixture.workload.id, 1, "request", fn ->
                :ok
              end)
 
@@ -1919,7 +2135,7 @@ defmodule SalixStore.ComputeTest do
              })
 
     assert {:error, :shared_allocation} =
-             Deletion.start("tenant", "project", shell.id, 1, 1, "request", fn -> :ok end)
+             Deletion.start("tenant", "project", shell.id, 1, "request", fn -> :ok end)
 
     assert Repo.get!(Compute.Workload, shell.id).desired_state == "ready"
   end
@@ -1964,12 +2180,10 @@ defmodule SalixStore.ComputeTest do
     assert {:error, :revision_conflict} =
              AgentVMM.configure_registration(registration.id, registration.revision, true)
 
-    assert {:error, :registration_inactive} =
-             AgentVMM.observe_registration(registration.id, "gateway", %{
-               "connectionEpoch" => "2",
-               "inventoryWatermark" => 0,
-               "inventory" => []
-             })
+    late_hello = %{"connectionEpoch" => "2", "inventoryWatermark" => 0, "inventory" => []}
+
+    assert {:error, :authorization_expired} =
+             AgentVMM.observe_registration(registration.id, "gateway", late_hello)
 
     assert {:error, :provider_unavailable} =
              Compute.allocate(%{
@@ -1982,6 +2196,10 @@ defmodule SalixStore.ComputeTest do
     assert {:ok, %{retired: 1}} = AgentVMM.expire_authorizations()
     expired = Repo.get!(AgentVMM.Registration, registration.id)
     assert expired.status == "revoked"
+
+    # The sweep keeps the cause, so late contact still reports expiry.
+    assert {:error, :authorization_expired} =
+             AgentVMM.observe_registration(registration.id, "gateway", late_hello)
 
     assert {:error, :revision_conflict} =
              AgentVMM.configure_registration(expired.id, expired.revision, true)

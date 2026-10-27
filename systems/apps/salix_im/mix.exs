@@ -36,6 +36,7 @@ defmodule SalixIM.MixProject do
       {:telemetry_metrics, "~> 1.0"},
       {:req, "~> 0.5"},
       {:jason, "~> 1.4"},
+      {:ex_json_schema, "~> 0.11"},
       {:mdex, "~> 0.13"},
       # 0.2.3 makes native AST conversion stack-safe for nested message markup.
       # Keep MDEx 0.13's node schema; later native releases add required fields.

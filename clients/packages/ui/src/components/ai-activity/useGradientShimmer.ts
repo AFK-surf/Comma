@@ -50,17 +50,19 @@ export function useGradientShimmer(
       !reducedMotion &&
       !forcedColors;
 
+    // The band's layer moves by transform, so the compositor runs the sweep.
     const sweep = ({ endPositionPx, startPositionPx }: ShimmerBand) => {
       if (typeof element.animate !== "function") return;
       const nextAnimation = element.animate(
         [
-          { backgroundPosition: `${startPositionPx}px center` },
-          { backgroundPosition: `${endPositionPx}px center` },
+          { transform: `translateX(${startPositionPx}px)` },
+          { transform: `translateX(${endPositionPx}px)` },
         ],
         {
           duration: gradientShimmerMotion.sweepDurationMs,
           easing: gradientShimmerMotion.easing,
           fill: "forwards",
+          pseudoElement: "::after",
         }
       );
       animation?.cancel();
@@ -174,8 +176,8 @@ export function useGradientShimmer(
 function supportsGradientText() {
   if (typeof window.CSS?.supports !== "function") return false;
   const clipsText =
-    window.CSS.supports("background-clip", "text") ||
-    window.CSS.supports("-webkit-background-clip", "text");
+    window.CSS.supports("mask-clip", "text") ||
+    window.CSS.supports("-webkit-mask-clip", "text");
   const mixesColors = window.CSS.supports(
     "color",
     "color-mix(in oklab, black 50%, white)"

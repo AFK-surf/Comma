@@ -2215,7 +2215,7 @@
       },
       "id": 600,
       "title": "Station Task delegations unanswered",
-      "description": "Lazy Salix series. No data may mean no matching event occurred; compare the required workload scrape health above. One point per delegation and stage (phase) that SalixIM.StationTaskWatch reported for a Task running on a Cloud VM or desktop station (kind). The Cloud Monitoring P2 pages on vm_not_ready, station_offline and not_given; given_no_reply is counted only, because a long turn and a dead one look alike.",
+      "description": "Lazy Salix series. No data may mean no matching event occurred; compare the required workload scrape health above. One point per delegation and stage (phase) that SalixIM.StationTaskWatch reported for a Task running on a Cloud VM or desktop station (kind). The Cloud Monitoring P2 pages on vm_not_ready, station_offline and not_given; given_no_reply is counted only, because a long turn and a dead one look alike. Managed Prometheus takes a pod's first sample of a series as its zero, so the first event of each series on a pod is never counted and the series shows from its second; no query form recovers it.",
       "datasource": {
         "type": "stackdriver",
         "uid": "${gcm_datasource}"
@@ -2277,7 +2277,7 @@
       },
       "id": 601,
       "title": "Station Task first reply p95",
-      "description": "Lazy Salix series. No data may mean no matching event occurred; compare the required workload scrape health above. Time from a delegation to the first Worker Message a station posted for it, every answered delegation. A rising p95 with no stall points is a slow station, not a stuck one.",
+      "description": "Lazy Salix series. No data may mean no matching event occurred; compare the required workload scrape health above. Time from a delegation to the first Worker Message a station posted for it, every answered delegation. A rising p95 with no stall points is a slow station, not a stuck one. Managed Prometheus takes a pod's first sample of a series as its zero, so the first event of each series on a pod is never counted and the series shows from its second; no query form recovers it.",
       "datasource": {
         "type": "stackdriver",
         "uid": "${gcm_datasource}"
@@ -2304,6 +2304,518 @@
           "promQLQuery": {
             "projectName": "${gcp_project}",
             "expr": "histogram_quantile(0.95, sum by (workload, le, kind) (rate(salix_station_tasks_first_reply_seconds_bucket{namespace=\"comma\",workload=\"comma\"}[30m])))",
+            "step": "$__interval"
+          }
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "transparent": false,
+      "repeatDirection": "h",
+      "options": {
+        "graphMode": "area",
+        "colorMode": "value",
+        "justifyMode": "auto",
+        "textMode": "auto",
+        "wideLayout": true,
+        "showPercentChange": false,
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "percentChangeColorMode": "standard",
+        "orientation": "auto"
+      },
+      "id": 610,
+      "title": "Cloud VM records by state",
+      "description": "How many Group Cloud VM records stand in each state (salix_vm_records). Every node publishes the same fleet once a minute from one aggregate read; the max across pods is the fleet. 0 is a real zero.",
+      "datasource": {
+        "type": "stackdriver",
+        "uid": "${gcm_datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 101,
+        "w": 8,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "promQL",
+          "aliasBy": "{{provider}} {{state}}",
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "${gcm_datasource}"
+          },
+          "timeSeriesList": {
+            "projectName": "",
+            "crossSeriesReducer": ""
+          },
+          "promQLQuery": {
+            "projectName": "${gcp_project}",
+            "expr": "max by (provider, state) (salix_vm_records{namespace=\"comma\",workload=\"comma\"})",
+            "step": "$__interval"
+          }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "transparent": false,
+      "repeatDirection": "h",
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "asc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12,
+            "showPoints": "never"
+          },
+          "unit": "s",
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "id": 611,
+      "title": "Cloud VM wake p50 / p95",
+      "description": "Lazy Salix series. No data may mean no matching event occurred; compare the required workload scrape health above. Seconds from a wake's start to the record write that made the VM ready (outcome ok), over the wakes of the last six hours. Wakes are rare, so a point is a few wakes; the failed attempts are counted in the wakes-per-day panel. The cloud_vm_wake_slow alert reads the p95 over one hour, so it can fire on a wake this smoother line hides. Managed Prometheus takes a pod's first sample of a series as its zero, so the first event of each series on a pod is never counted and the series shows from its second; no query form recovers it.",
+      "datasource": {
+        "type": "stackdriver",
+        "uid": "${gcm_datasource}"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 101,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "promQL",
+          "aliasBy": "{{provider}} p50",
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "${gcm_datasource}"
+          },
+          "timeSeriesList": {
+            "projectName": "",
+            "crossSeriesReducer": ""
+          },
+          "promQLQuery": {
+            "projectName": "${gcp_project}",
+            "expr": "histogram_quantile(0.5, sum by (le, provider) (rate(salix_vm_wake_duration_seconds_bucket{namespace=\"comma\",workload=\"comma\",outcome=\"ok\"}[6h])))",
+            "step": "$__interval"
+          }
+        },
+        {
+          "refId": "B",
+          "queryType": "promQL",
+          "aliasBy": "{{provider}} p95",
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "${gcm_datasource}"
+          },
+          "timeSeriesList": {
+            "projectName": "",
+            "crossSeriesReducer": ""
+          },
+          "promQLQuery": {
+            "projectName": "${gcp_project}",
+            "expr": "histogram_quantile(0.95, sum by (le, provider) (rate(salix_vm_wake_duration_seconds_bucket{namespace=\"comma\",workload=\"comma\",outcome=\"ok\"}[6h])))",
+            "step": "$__interval"
+          }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "transparent": false,
+      "repeatDirection": "h",
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "asc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12,
+            "showPoints": "never"
+          },
+          "unit": "s",
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "id": 612,
+      "title": "Cloud VM restore phases p95",
+      "description": "Lazy Salix series. No data may mean no matching event occurred; compare the required workload scrape health above. Each phase of the Container's restore of the archive from R2, as the station's receipt timed it: manifest read, first chunk byte, all chunks downloaded, written to disk, synced, and total. One receipt per wake that restored, over the last six hours. Managed Prometheus takes a pod's first sample of a series as its zero, so the first event of each series on a pod is never counted and the series shows from its second; no query form recovers it.",
+      "datasource": {
+        "type": "stackdriver",
+        "uid": "${gcm_datasource}"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 101,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "promQL",
+          "aliasBy": "{{phase}} p95",
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "${gcm_datasource}"
+          },
+          "timeSeriesList": {
+            "projectName": "",
+            "crossSeriesReducer": ""
+          },
+          "promQLQuery": {
+            "projectName": "${gcp_project}",
+            "expr": "histogram_quantile(0.95, sum by (le, phase) (rate(salix_vm_restore_duration_seconds_bucket{namespace=\"comma\",workload=\"comma\"}[6h])))",
+            "step": "$__interval"
+          }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "transparent": false,
+      "repeatDirection": "h",
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "asc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12,
+            "showPoints": "never"
+          },
+          "unit": "s",
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "id": 613,
+      "title": "Cloud VM archive p95",
+      "description": "Lazy Salix series. No data may mean no matching event occurred; compare the required workload scrape health above. Seconds from an archive's start to its end: archived (ok), or back to ready because it failed (error), was cancelled once begun (cancelled), or its station refused to park because it was busy or away (refused). The reason is why it started: idle, or a recovery after an interrupted wake. Over the last six hours. Managed Prometheus takes a pod's first sample of a series as its zero, so the first event of each series on a pod is never counted and the series shows from its second; no query form recovers it.",
+      "datasource": {
+        "type": "stackdriver",
+        "uid": "${gcm_datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 109,
+        "w": 6,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "promQL",
+          "aliasBy": "{{provider}} {{reason}} {{outcome}} p95",
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "${gcm_datasource}"
+          },
+          "timeSeriesList": {
+            "projectName": "",
+            "crossSeriesReducer": ""
+          },
+          "promQLQuery": {
+            "projectName": "${gcp_project}",
+            "expr": "histogram_quantile(0.95, sum by (le, provider, reason, outcome) (rate(salix_vm_archive_duration_seconds_bucket{namespace=\"comma\",workload=\"comma\"}[6h])))",
+            "step": "$__interval"
+          }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "transparent": false,
+      "repeatDirection": "h",
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "asc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12,
+            "showPoints": "never"
+          },
+          "unit": "s",
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "id": 614,
+      "title": "Cloud VM oldest record stuck in a passing state",
+      "description": "How long the oldest record in creating, waking, archiving or failed has stood there (salix_vm_transitional_oldest_age_seconds), 0 with none. A wake or archive passes in seconds to minutes; hours mean a stuck record that the reconciler retries without reaching anyone.",
+      "datasource": {
+        "type": "stackdriver",
+        "uid": "${gcm_datasource}"
+      },
+      "gridPos": {
+        "x": 6,
+        "y": 109,
+        "w": 6,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "promQL",
+          "aliasBy": "{{provider}} {{state}}",
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "${gcm_datasource}"
+          },
+          "timeSeriesList": {
+            "projectName": "",
+            "crossSeriesReducer": ""
+          },
+          "promQLQuery": {
+            "projectName": "${gcp_project}",
+            "expr": "max by (provider, state) (salix_vm_transitional_oldest_age_seconds{namespace=\"comma\",workload=\"comma\"})",
+            "step": "$__interval"
+          }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "transparent": false,
+      "repeatDirection": "h",
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "asc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12,
+            "showPoints": "never"
+          },
+          "unit": "short",
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "id": 615,
+      "title": "Cloud VM wakes per day",
+      "description": "Lazy Salix series. No data may mean no matching event occurred; compare the required workload scrape health above. Wake attempts that ended in the last 24 hours, by outcome: ready (ok), or the attempt failed because the Container never attached (timeout), stopped before its station connected (container_stopped), exited without restoring the archive (restore_failed), or started without restoring it (not_restored). One wake can count several failed attempts before its ok. Managed Prometheus takes a pod's first sample of a series as its zero, so the first event of each series on a pod is never counted and the series shows from its second; no query form recovers it.",
+      "datasource": {
+        "type": "stackdriver",
+        "uid": "${gcm_datasource}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 109,
+        "w": 6,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "promQL",
+          "aliasBy": "{{provider}} {{outcome}}",
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "${gcm_datasource}"
+          },
+          "timeSeriesList": {
+            "projectName": "",
+            "crossSeriesReducer": ""
+          },
+          "promQLQuery": {
+            "projectName": "${gcp_project}",
+            "expr": "sum by (provider, outcome) (increase(salix_vm_wake_duration_seconds_count{namespace=\"comma\",workload=\"comma\"}[24h]))",
+            "step": "$__interval"
+          }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "transparent": false,
+      "repeatDirection": "h",
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "asc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12,
+            "showPoints": "never"
+          },
+          "unit": "s",
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "id": 616,
+      "title": "Cloud VM ready seconds per day",
+      "description": "Lazy Salix series. No data may mean no matching event occurred; compare the required workload scrape health above. Ready time metered in the last 24 hours (salix_vm_ready_seconds_total), counted as the interval meter checkpoints it; only Cloudflare VMs are metered. A pod's first checkpoint of a series is its zero, so that interval's ready time is never counted.",
+      "datasource": {
+        "type": "stackdriver",
+        "uid": "${gcm_datasource}"
+      },
+      "gridPos": {
+        "x": 18,
+        "y": 109,
+        "w": 6,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "promQL",
+          "aliasBy": "{{provider}} {{profile}}",
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "${gcm_datasource}"
+          },
+          "timeSeriesList": {
+            "projectName": "",
+            "crossSeriesReducer": ""
+          },
+          "promQLQuery": {
+            "projectName": "${gcp_project}",
+            "expr": "sum by (provider, profile) (increase(salix_vm_ready_seconds_total{namespace=\"comma\",workload=\"comma\"}[24h]))",
+            "step": "$__interval"
+          }
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "transparent": false,
+      "repeatDirection": "h",
+      "options": {
+        "graphMode": "area",
+        "colorMode": "value",
+        "justifyMode": "auto",
+        "textMode": "auto",
+        "wideLayout": true,
+        "showPercentChange": false,
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "percentChangeColorMode": "standard",
+        "orientation": "auto"
+      },
+      "id": 617,
+      "title": "Cloud VM container losses (24h)",
+      "description": "Containers that stopped by themselves and lost their disk in the last 24 hours (salix_vm_container_loss_total), by reason: the Cloudflare runtime rolled a new version (rollout), the Container exited on its own (exit_code), or the Gateway kept no stop (unknown). Each one is a record archived from its last archive, or a never-archived VM started empty; the wake that follows restores it. A pod's first loss is counted only from its second sample; the cloud_vm_container_lost log event has every one.",
+      "datasource": {
+        "type": "stackdriver",
+        "uid": "${gcm_datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 117,
+        "w": 6,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "promQL",
+          "aliasBy": "{{provider}} {{reason}}",
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "${gcm_datasource}"
+          },
+          "timeSeriesList": {
+            "projectName": "",
+            "crossSeriesReducer": ""
+          },
+          "promQLQuery": {
+            "projectName": "${gcp_project}",
+            "expr": "sum by (provider, reason) (increase(salix_vm_container_loss_total{namespace=\"comma\",workload=\"comma\"}[24h]))",
             "step": "$__interval"
           }
         }

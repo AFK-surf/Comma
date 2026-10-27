@@ -1,6 +1,7 @@
 // The Comma client core (docs/clients.md, "Client core"): one per device, wherever its host runs it (Electron's utility
 // process, the web's worker). UIs connect to it, subscribe to its topics and make its named calls; everything the
 // product knows and does with the Comma API happens here.
+import { registerCoding } from "./coding.ts";
 import {
   CoreError,
   Kernel,
@@ -20,13 +21,16 @@ import { Channels } from "./channels.ts";
 import { IMessage } from "./imessage.ts";
 import { Compute } from "./compute.ts";
 import { Condensed } from "./condensed.ts";
+import { DeviceSetup } from "./device-setup/controller.ts";
 import { Devices } from "./devices.ts";
+import { AgentRequests } from "./agentRequests.ts";
 import { Labels } from "./labels.ts";
 import { LinkPreviews } from "./link-previews.ts";
 import { TaskConversations } from "./task-conversations.ts";
 import { TaskPreviews } from "./task-previews.ts";
 import { GroupTasks } from "./group-tasks.ts";
 import { MentionTasks } from "./mention-tasks.ts";
+import { ChatSuggestions } from "./chat-suggestions.ts";
 import { TaskWorkers } from "./task-workers.ts";
 import { SessionBrowsers } from "./session-browsers.ts";
 import {
@@ -45,12 +49,14 @@ import { Profiles } from "./profile.ts";
 import { QuickChat } from "./quick-chat.ts";
 import { AccountSessions } from "./account-sessions.ts";
 import { Downloads } from "./downloads.ts";
+import { FileStreams } from "./file-streams.ts";
 import { DriveCatalog } from "./drive-catalog.ts";
 import { DriveFiles } from "./drive/index.ts";
 import { registerSystemFiles } from "./system-files.ts";
 import { CORE_LIMITS, type CoreLimits } from "./limits.ts";
 import { Marks } from "./marks.ts";
 import { MeetingRecorder, registerNoMeetingRecorder } from "./meeting/recorder.ts";
+import { registerNoVoiceCall, VoiceCall } from "./voice-call.ts";
 import { Recommendations } from "./recommendations.ts";
 import { RecommendationMock } from "./recommendation-mock.ts";
 import { Recordings } from "./recordings.ts";
@@ -65,6 +71,8 @@ import { keepStationsLinked } from "./stations/always.ts";
 import { StationActivity } from "./stations/activity.ts";
 import { stationTaskCalls } from "./stations/tasks.ts";
 import { StationChats } from "./stations/chat.ts";
+import { StationComposer } from "./stations/composer.ts";
+import { StationConversations } from "./stations/conversation.ts";
 import { Stations } from "./stations/index.ts";
 import { Linear } from "./linear.ts";
 import { Telegram } from "./telegram.ts";
@@ -83,6 +91,7 @@ import { WebSessionLifecycle } from "./session/web-lifecycle.ts";
 import { History } from "./history.ts";
 import { TaskOrder } from "./task-order.ts";
 import { TaskShares } from "./task-shares.ts";
+import { MiniApps } from "./miniapps.ts";
 import { StationTasks } from "./station-tasks.ts";
 import { TaskSummaries } from "./task-summaries.ts";
 import { Tasks } from "./tasks.ts";
@@ -124,6 +133,7 @@ export class Core {
   readonly tasksArchive: TasksArchive;
   readonly quickChat: QuickChat;
   readonly taskShares: TaskShares;
+  readonly miniApps: MiniApps;
   readonly taskOrder: TaskOrder;
   readonly billing: Billing;
   readonly channels: Channels;
@@ -133,6 +143,7 @@ export class Core {
   readonly routerKeys: RouterKeys;
   readonly tailnet: Tailnet;
   readonly labels: Labels;
+  readonly agentRequests: AgentRequests;
   readonly condensed: Condensed;
   readonly voice: Voice;
   readonly notifications: Notifications;
@@ -140,6 +151,7 @@ export class Core {
   readonly stations: Stations;
   readonly stationActivity: StationActivity;
   readonly stationChats: StationChats;
+  readonly stationConversations: StationConversations;
   readonly compute: Compute;
   readonly search: Search;
   readonly skills: Skills;
@@ -149,6 +161,7 @@ export class Core {
   readonly groupTasks: GroupTasks;
   readonly recommendationMock: RecommendationMock;
   readonly mentionTasks: MentionTasks;
+  readonly chatSuggestions: ChatSuggestions;
   readonly taskWorkers: TaskWorkers;
   readonly sessionBrowsers: SessionBrowsers;
   readonly computeNodeOperations: ComputeNodeOperations;
@@ -159,6 +172,7 @@ export class Core {
   readonly profiles: Profiles;
   readonly accountSessions: AccountSessions;
   readonly downloads: Downloads;
+  readonly fileStreams: FileStreams;
   readonly driveCatalog: DriveCatalog;
   readonly marks: Marks;
   readonly models: Models;
@@ -172,6 +186,7 @@ export class Core {
   readonly drive: DriveFiles;
   /** Electron's meeting recorder, when the host has Main's meeting parts. */
   readonly meeting: MeetingRecorder | null = null;
+  readonly voiceCall: VoiceCall | null = null;
   /** The web session lifecycle, when the core runs it (`sessionSource: "core"` with the web's ports). */
   readonly webSession: WebSessionLifecycle | null = null;
   /** The Electron session lifecycle, when the core runs it (`sessionSource: "core"` with Main's ports). */
@@ -220,7 +235,18 @@ export class Core {
       stop() {},
       compute: () => ({ ok: this.session.value() }),
     });
-    this.session.onChange(() => this.kernel.store.invalidate({ topic: "session" }));
+    // Before any part's own handler (they are added after this one): a topic of the account that went, which no one
+    // shows any more, is dropped, so a part that starts its live topics again for the next account does not ask the
+    // server about it with the next account.
+    let accountKey = this.session.accountKey();
+    this.session.onChange(() => {
+      const key = this.session.accountKey();
+      if (key !== accountKey) {
+        accountKey = key;
+        this.kernel.store.evictIdle();
+      }
+      this.kernel.store.invalidate({ topic: "session" });
+    });
     if (host.sessionSource === "core") {
       const deps = { host, runner: this.runner, session: this.session, now };
       const lifecycle = host.bearerSession
@@ -246,6 +272,13 @@ export class Core {
     this.stationTasks = new StationTasks(ctx, this.workspaces, this.stations);
     this.tasks.onStationTasksChanged = (workspace) =>
       this.stationTasks.changed(workspace);
+    this.tasks.hosted = {
+      items: (account, workspace) => this.stationTasks.items(account, workspace),
+      keep: (topic) => this.stationTasks.keep(topic),
+      stop: (topic) => this.stationTasks.stop(topic),
+    };
+    this.stationTasks.tasksWorkspace = (account, wanted) =>
+      this.tasks.workspace(account, typeof wanted === "string" ? wanted : "")?.id ?? "";
     this.tasksArchive = new TasksArchive(
       ctx,
       this.tasks,
@@ -254,6 +287,7 @@ export class Core {
     );
     this.quickChat = new QuickChat(ctx, this.tasks, this.workspaces);
     this.taskShares = new TaskShares(ctx, this.tasks, this.workspaces);
+    this.miniApps = new MiniApps(ctx, this.quickChat);
     this.taskOrder = new TaskOrder(ctx);
     this.billing = new Billing(ctx, this.workspaces);
     this.channels = new Channels(ctx);
@@ -263,14 +297,36 @@ export class Core {
     this.routerKeys = new RouterKeys(ctx, this.workspaces);
     this.tailnet = new Tailnet(ctx, this.workspaces);
     this.labels = new Labels(ctx);
+    this.agentRequests = new AgentRequests(ctx);
     this.condensed = new Condensed(ctx, this.workspaces);
     this.voice = new Voice(ctx, this.workspaces);
     this.notifications = new Notifications(ctx);
-    this.devices = new Devices(ctx, this.workspaces);
+    const deviceSetup = new DeviceSetup(ctx, registerConnectorCredentials(ctx));
+    this.devices = new Devices(ctx, this.workspaces, deviceSetup);
     this.stationActivity = new StationActivity(ctx, this.stations);
     this.stationChats = new StationChats(ctx, this.stations, this.stationActivity);
+    // A Task a station hosts waits for its review once its chat asks its person nothing.
+    this.stationTasks.asking = (station, thread) => {
+      const row = this.stationActivity.rowOf(station, Number(thread));
+      return row ? Boolean(row.card ?? row.decision ?? row.need) : null;
+    };
+    this.stationActivity.onChanged(() => this.stationTasks.askingChanged());
     keepStationsLinked(ctx, this.workspaces, this.stationActivity);
-    stationTaskCalls(ctx, this.stations, this.stationChats, this.stationTasks);
+    const stationTaskActions = stationTaskCalls(
+      ctx,
+      this.stations,
+      this.stationChats,
+      this.stationTasks
+    );
+    this.stationConversations = new StationConversations(ctx, {
+      workspaces: this.workspaces,
+      stations: this.stations,
+      chats: this.stationChats,
+      activity: this.stationActivity,
+      composer: new StationComposer(ctx, this.stations),
+      tasks: this.stationTasks,
+      actions: stationTaskActions,
+    });
     this.compute = new Compute(ctx, this.workspaces);
     this.search = new Search(ctx, this.workspaces);
     this.skills = new Skills(ctx);
@@ -284,10 +340,10 @@ export class Core {
     this.taskPreviews = new TaskPreviews(ctx);
     this.groupTasks = new GroupTasks(ctx);
     this.mentionTasks = new MentionTasks(ctx);
+    this.chatSuggestions = new ChatSuggestions(ctx);
     this.taskWorkers = new TaskWorkers(ctx);
     this.sessionBrowsers = new SessionBrowsers(ctx);
     this.computeNodeOperations = new ComputeNodeOperations(ctx);
-    registerConnectorCredentials(ctx);
     this.browserViews = new BrowserViews(ctx);
     this.dynamicUis = new DynamicUis(ctx);
     this.dynamicUiStates = new DynamicUiStates(ctx);
@@ -295,7 +351,9 @@ export class Core {
     this.profiles = new Profiles(ctx);
     this.accountSessions = new AccountSessions(ctx);
     this.downloads = new Downloads(ctx);
+    this.fileStreams = new FileStreams(ctx);
     registerSystemFiles(ctx);
+    registerCoding(ctx);
     this.driveCatalog = new DriveCatalog(ctx);
     this.marks = new Marks(ctx);
     this.kernel.calls({
@@ -326,9 +384,23 @@ export class Core {
     this.models = new Models(ctx, this.workspaces);
     this.history = new History(ctx);
     this.chat = new Chat(ctx);
+    this.chat.hosted = this.stationConversations;
+    // What a Task's list and page do to one a station hosts is done on its station.
+    this.tasksArchive.hosted = this.stationConversations;
+    this.labels.hosted = this.stationConversations;
+    this.taskSummaries.hosted = this.stationConversations;
+    this.taskWorkers.hosted = this.stationConversations;
+    // Its files are its station's.
+    this.fileStreams.hosted = this.stationConversations;
+    this.downloads.hosted = this.stationConversations;
+    this.stationTasks.onChange(() => this.taskSummaries.hostedChanged());
     this.localFiles = new LocalFiles(ctx, this.chat);
     this.recordings = new Recordings(ctx);
-    registerFiles(ctx, (revision) => this.profiles.pendingAvatar(revision));
+    registerFiles(
+      ctx,
+      (revision) => this.profiles.pendingAvatar(revision),
+      () => this.stationConversations
+    );
     this.loopbackSignIns = new LoopbackSignIns(ctx, this.models);
     this.appUpdates = new AppUpdates(ctx);
     this.desktopPages = new DesktopPages(ctx);
@@ -337,6 +409,8 @@ export class Core {
     if (host.meeting)
       this.meeting = new MeetingRecorder(ctx, host.meeting, () => this.chat.locale);
     else registerNoMeetingRecorder(ctx);
+    if (host.voiceCall) this.voiceCall = new VoiceCall(ctx, host.voiceCall);
+    else registerNoVoiceCall(ctx);
     this.webSession?.start();
     this.electronSession?.start();
   }
@@ -447,6 +521,7 @@ export class Core {
   #stop(): void {
     this.chat.close();
     this.meeting?.close();
+    this.voiceCall?.close();
     this.webSession?.close();
     this.electronSession?.close();
   }

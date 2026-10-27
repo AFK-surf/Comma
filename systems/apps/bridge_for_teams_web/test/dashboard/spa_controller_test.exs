@@ -28,6 +28,7 @@ defmodule BridgeForTeamsWeb.Dashboard.SPAControllerTest do
             ~p"/orgs/#{org.slug}/meetings",
             ~p"/orgs/#{org.slug}/meetings/past",
             ~p"/orgs/#{org.slug}/meetings/settings",
+            ~p"/orgs/#{org.slug}/daily-brief",
             ~p"/orgs/#{org.slug}/information-flow",
             ~p"/orgs/#{org.slug}/operations",
             ~p"/orgs/#{org.slug}/operations/events",

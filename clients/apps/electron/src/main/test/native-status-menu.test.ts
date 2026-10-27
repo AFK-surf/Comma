@@ -50,11 +50,10 @@ describe("NativeStatusMenuService", () => {
       expect.objectContaining({ ...menu, kind: "status-menu.show" }),
     ]);
 
-    const changed = { ...menu, clickId: "status-item:click", rows: menu.rows.slice(2) };
+    const changed = { ...menu, rows: menu.rows.slice(2) };
     service.showStatusMenu(changed, onSelect, vi.fn());
     expect(hosts).toHaveLength(1);
     expect(hosts[0]!.hostFrames().at(-1)).toMatchObject({
-      clickId: "status-item:click",
       kind: "status-menu.show",
       rows: changed.rows,
     });

@@ -310,6 +310,11 @@ opens a fresh connector run for the same connector identity. Runtime bindings
 stay on the stable device runtime. Salix resolves them to the current online
 connector run only when it dispatches work.
 
+Salix sends a heartbeat every 15 seconds. It closes a connection when the
+connector sends no heartbeat for 45 seconds. The connector closes a connection
+that gets no frame for 45 seconds, then reconnects. This includes a connection
+that ended without a close frame, for example after a sleep or a network change.
+
 ## Path Semantics
 
 `--root` is the base directory for relative paths. Absolute paths resolve

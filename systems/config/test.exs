@@ -4,6 +4,7 @@ import Config
 # MIX_TEST_PARTITION. The partition number suffixes every database, the MinIO
 # bucket and the fixed listener port below; without it the names are unchanged.
 partition = System.get_env("MIX_TEST_PARTITION", "")
+test_db_host = System.get_env("SYSTEMS_TEST_DB_HOST", "127.0.0.1")
 
 # A test waits for the message its next step needs, not for an amount of
 # time: any shorter limit made the result depend on how loaded the machine
@@ -76,7 +77,7 @@ config :alert_router, AlertRouter.Repo,
   log: repo_log,
   username: "postgres",
   password: "postgres",
-  hostname: "127.0.0.1",
+  hostname: test_db_host,
   port: String.to_integer(System.get_env("ALERT_ROUTER_TEST_DB_PORT", "5432")),
   database: System.get_env("ALERT_ROUTER_TEST_DB", "alert_router_test") <> partition,
   pool: Ecto.Adapters.SQL.Sandbox,
@@ -167,7 +168,7 @@ config :salix_store, SalixStore.Repo,
   log: repo_log,
   username: "postgres",
   password: "postgres",
-  hostname: "127.0.0.1",
+  hostname: test_db_host,
   port: String.to_integer(System.get_env("SALIX_TEST_DB_PORT", "5432")),
   # Overridable so parallel checkouts (worktrees / sibling clones) with
   # DIVERGED unmerged migrations can isolate their test schemas instead of
@@ -249,7 +250,7 @@ config :comma_core, Comma.Repo,
   log: repo_log,
   username: "postgres",
   password: "postgres",
-  hostname: "127.0.0.1",
+  hostname: test_db_host,
   port: String.to_integer(System.get_env("COMMA_TEST_DB_PORT", "5432")),
   database: "comma_core_test" <> partition,
   pool: Ecto.Adapters.SQL.Sandbox,
@@ -260,6 +261,17 @@ config :comma_core, Comma.Repo,
   pool_size: 8,
   telemetry_prefix: [:comma, :repo],
   migration_primary_key: [name: :id, type: :binary_id]
+
+config :comma_core, :chat_suggestions, false
+
+config :comma_core, :mini_apps,
+  dispatch_base_url: "http://miniapp-dispatch.test",
+  dispatch_secret: "test-dispatch-secret",
+  cloudflare_account_id: "test-account",
+  cloudflare_api_token: "test-token",
+  dispatch_namespace: "comma-miniapps-test",
+  viewer_key: "test-mini-app-viewer-key-0123456789abcdef",
+  link_base_url: "http://127.0.0.1:5174/a/"
 
 config :comma_core, Oban,
   name: Comma.Oban,
@@ -291,7 +303,7 @@ config :billing_core, BillingCore.Repo,
   log: repo_log,
   username: "postgres",
   password: "postgres",
-  hostname: "127.0.0.1",
+  hostname: test_db_host,
   port: String.to_integer(System.get_env("BILLING_TEST_DB_PORT", "5432")),
   database: "billing_core_test" <> partition,
   pool: Ecto.Adapters.SQL.Sandbox,
@@ -307,7 +319,7 @@ config :bridge_for_teams_core, BridgeForTeams.Repo,
   log: repo_log,
   username: "postgres",
   password: "postgres",
-  hostname: "127.0.0.1",
+  hostname: test_db_host,
   port: String.to_integer(System.get_env("BRIDGE_TEST_DB_PORT", "5432")),
   database: System.get_env("BRIDGE_TEST_DB", "bridge_for_teams_test") <> partition,
   pool: Ecto.Adapters.SQL.Sandbox,
@@ -359,7 +371,9 @@ config :salix_web, native_triage: false
 # itself, or starts the worker under its own supervisor.
 config :salix_web,
   subscription_runtime_worker: false,
-  cloud_vm_archive_gc: false
+  cloud_vm_archive_gc: false,
+  coding_sandboxes: false,
+  l4es_recent: false
 
 config :salix_agent,
   subscription_quota_worker: false,
@@ -385,6 +399,13 @@ config :bridge_for_teams_core, BridgeForTeams.DashboardProjection.Reconciler, en
 # Mac mini provision-request watching is also driven directly by tests. The
 # background loop has no SQL sandbox connection.
 config :bridge_for_teams_core, BridgeForTeams.EnvironmentProvisioning.Reconciler, enabled: false
+
+# Daily brief retention tests call DailyBrief.prune_expired/1 directly.
+config :bridge_for_teams_core, BridgeForTeams.DailyBrief.Retention, enabled: false
+
+# Context lifecycle tests drive ContextLifecycle.Worker.run_once/1 directly.
+config :bridge_for_teams_core, BridgeForTeams.ContextLifecycle.Worker, enabled: false
+config :bridge_for_teams_core, BridgeForTeams.DailyBrief.DeliveryWorker, enabled: false
 
 # Ephemeral HTTP port for the web suite.
 config :bridge_for_teams_web,

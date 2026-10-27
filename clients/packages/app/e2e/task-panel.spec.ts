@@ -77,8 +77,9 @@ test("the chat-hosted Task panel reads and refreshes one Task without starting c
     ).toBeVisible();
     const details = page.getByRole("complementary", { name: "Task details" });
     // The panel names where the Task runs and its model, never its Agent.
-    await expect(details.getByTestId("task-panel-run")).toHaveText(
-      "on Mac Studio · Claude Sonnet"
+    await expect(details.getByTestId("task-panel-run-place")).toHaveText("Mac Studio");
+    await expect(details.getByTestId("task-panel-run-model")).toHaveText(
+      "Claude Sonnet"
     );
     await expect(details.getByText("Mira", { exact: true })).toHaveCount(0);
     await expect(details.getByText("Launch", { exact: true })).toBeVisible();
@@ -109,17 +110,15 @@ test("the chat-hosted Task panel reads and refreshes one Task without starting c
     await page.getByRole("button", { name: "Refresh", exact: true }).click();
     await expect(page.getByRole("alert")).toContainText("Task unavailable");
     await expect(details).toHaveCount(0);
-    await expect(page.getByText("on Mac Studio · Claude Sonnet")).toHaveCount(0);
+    await expect(page.getByText("Mac Studio", { exact: true })).toHaveCount(0);
     // Opening and refreshing this page must not provision Home or touch a
-    // transcript: it reads the Task, its labels and its summary (a Loop Task's
-    // Loop), and the workspaces that summary is read in.
+    // transcript: it reads only the Task and its labels. The Telegram session
+    // is refused anything else, and that refusal ends the session.
     expect(
       requests.filter(
         (request) =>
           request !== `GET ${previewPath}?include_worker=true` &&
-          request !== "GET /v1/comma/groups/grp_panel/task-labels" &&
-          request !== "GET /v1/comma/groups/grp_panel/task-summaries?ids=cnv_panel" &&
-          request !== "GET /v1/comma/workspaces"
+          request !== "GET /v1/comma/groups/grp_panel/task-labels"
       )
     ).toEqual([]);
   } finally {

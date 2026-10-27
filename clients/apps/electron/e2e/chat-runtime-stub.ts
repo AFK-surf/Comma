@@ -58,6 +58,8 @@ export type RuntimeUpload = {
   filename: string;
   path: string;
   token: string;
+  /** How a streamed upload's body came (`PUT`): `chunked` when Main sent it as it read the file. */
+  transferEncoding?: string | undefined;
   workspaceId: string;
 };
 
@@ -366,6 +368,30 @@ export async function startChatRuntimeStub({
         res,
         { name: upload.filename, path: upload.path, size: upload.bytes.byteLength },
         201
+      );
+      return;
+    }
+
+    // A file the core uploads from Main as it is attached: the raw body, sent chunked as Main reads the file.
+    if (method === "PUT" && path === `/v1/comma/groups/${account.groupId}/files`) {
+      const bytes = await readBuffer(req);
+      const filename = url.searchParams.get("name") ?? "file.bin";
+      const upload = {
+        bytes,
+        contentType: imageContentType(filename),
+        filename,
+        path: `/uploads/${String(uploads.length + 1).padStart(22, "0")}-${filename}`,
+        token,
+        transferEncoding: req.headers["transfer-encoding"],
+        workspaceId: account.workspaceId,
+      };
+      uploads.push(upload);
+      writeJson(
+        res,
+        Number(url.searchParams.get("size")) === bytes.byteLength
+          ? { name: upload.filename, path: upload.path, size: bytes.byteLength }
+          : { error: "upload_incomplete" },
+        Number(url.searchParams.get("size")) === bytes.byteLength ? 201 : 400
       );
       return;
     }

@@ -3,8 +3,6 @@ export type { TaskWorkspaceProps, TaskWorkspaceTask } from "./TaskWorkspace";
 export {
   TASK_STATUS_COLUMNS,
   TaskSummaryCard,
-  taskAriaLabel,
-  taskFreshnessLabel,
   taskNeutralIcon,
   taskProgressLabel,
   taskStatusIcon,

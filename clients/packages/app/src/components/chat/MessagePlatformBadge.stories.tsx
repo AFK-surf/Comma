@@ -67,26 +67,92 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 
+// Focusing Copy reveals the actions; each source badge sits just before it.
+async function expectBadgesBesideCopy(
+  canvasElement: HTMLElement,
+  lastText: string,
+  names: string[]
+) {
+  const canvas = within(canvasElement);
+  await canvas.findByText(lastText);
+  const articles: HTMLElement[] = [];
+  for (const name of names) {
+    const badge = canvas.getByTitle(name);
+    const article = badge.closest("article")!;
+    const copy = within(article).getByRole("button", { name: "Copy message" });
+    copy.focus();
+    await waitFor(() => {
+      expect(getComputedStyle(badge.parentElement!).opacity).toBe("1");
+    });
+    expect(badge.getBoundingClientRect().right).toBeLessThanOrEqual(
+      copy.getBoundingClientRect().left
+    );
+    articles.push(article);
+  }
+  return articles;
+}
+
 export const MixedPlatforms: Story = {
   play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    await canvas.findByText("The notes are ready to review.");
-    for (const name of ["WeChat", "Telegram", "Signal"]) {
-      const badge = canvas.getByTitle(name);
-      const article = badge.closest("article")!;
-      const copy = within(article).getByRole("button", { name: "Copy message" });
-      copy.focus();
-      await waitFor(() => {
-        expect(getComputedStyle(badge.parentElement!).opacity).toBe("1");
-      });
-      expect(badge.getBoundingClientRect().right).toBeLessThanOrEqual(
-        copy.getBoundingClientRect().left
-      );
-    }
+    await expectBadgesBesideCopy(canvasElement, "The notes are ready to review.", [
+      "WeChat",
+      "Telegram",
+      "Signal",
+    ]);
   },
 };
 
 export const Dark: Story = { ...MixedPlatforms, globals: { theme: "dark" } };
+
+export const OtherCommaApps: Story = {
+  args: {
+    messages: [
+      {
+        ...message("iphone-question", "user", "Remind me at six."),
+        clientSource: "iphone",
+      },
+      message("iphone-answer", "assistant", "I'll remind you at six."),
+      {
+        ...message("watch-question", "user", "What's next today?"),
+        clientSource: "watch",
+      },
+      message("watch-answer", "assistant", "A design review at four."),
+      {
+        ...message("android-question", "user", "Call me a ride."),
+        clientSource: "android",
+      },
+      message("android-answer", "assistant", "A car arrives in five minutes."),
+      {
+        ...message("windows-question", "user", "Open the budget sheet."),
+        clientSource: "windows",
+      },
+      message("windows-answer", "assistant", "The sheet is open."),
+      {
+        ...message("web-question", "user", "Draft the reply."),
+        clientSource: "web",
+      },
+      message("web-answer", "assistant", "The draft is ready."),
+    ],
+  },
+  play: async ({ canvasElement }) => {
+    const articles = await expectBadgesBesideCopy(
+      canvasElement,
+      "The draft is ready.",
+      ["iPhone", "Apple Watch", "Android", "Windows"]
+    );
+    for (const article of articles) {
+      // The app the user typed in is not a chat platform: the bubble keeps
+      // the default Comma colour.
+      expect(
+        article
+          .querySelector<HTMLElement>(".comma-chat-user-bubble")
+          ?.style.getPropertyValue("--comma-chat-user-bubble-background") ?? ""
+      ).toBe("");
+    }
+    // Storybook runs as the web app: a message sent from the web is this app's own.
+    expect(within(canvasElement).queryByTitle("Web")).toBeNull();
+  },
+};
 
 export const IMessageAndDiscord: Story = {
   args: {

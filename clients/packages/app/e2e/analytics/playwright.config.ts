@@ -1,7 +1,7 @@
 import { defineConfig, devices } from "@playwright/test";
 import { resolve } from "node:path";
 import { browserNetworkArgs } from "../../../../../scripts/test-network-browser.mjs";
-import { posthogHost } from "./posthog-capture";
+import { posthogHost, websiteOrigin } from "./posthog-capture";
 
 export default defineConfig({
   // Test startup must not invoke Git or request repository credentials.
@@ -58,14 +58,13 @@ export default defineConfig({
     {
       cwd: resolve(import.meta.dirname, "../../../../.."),
       // The site as built, like the app above: a development server compiles pages on first load and may reload them.
-      command:
-        "pnpm --filter @comma/website exec vite build --outDir ../clients/test-results/analytics-website --emptyOutDir && pnpm --filter @comma/website exec vite preview --outDir ../clients/test-results/analytics-website --host 127.0.0.1 --port 4188 --strictPort",
+      command: `pnpm --filter @comma/website exec vite build --outDir ../clients/test-results/analytics-website --emptyOutDir && pnpm --filter @comma/website exec vite preview --outDir ../clients/test-results/analytics-website --host 127.0.0.1 --port ${new URL(websiteOrigin).port} --strictPort`,
       env: {
         COMMA_BUILD_FLAVOR: "prod",
         COMMA_POSTHOG_KEY: "phc_nSEHiHpAFnzfmkiQyatA5KinuGxPsFzCAp94xdg8C2sv",
         COMMA_POSTHOG_HOST: posthogHost,
       },
-      url: "http://127.0.0.1:4188",
+      url: websiteOrigin,
       reuseExistingServer: false,
       timeout: 120_000,
     },

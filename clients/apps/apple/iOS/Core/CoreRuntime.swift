@@ -36,16 +36,20 @@ final class CoreRuntime: Sendable {
         var values = URLResourceValues()
         values.isExcludedFromBackup = true
         try? downloadRoot.setResourceValues(values)
+        let caches = try FileManager.default.url(for: .cachesDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
         return try make(custody: custody, dataDirectory: support.appendingPathComponent("core", isDirectory: true),
-                        downloadRoot: downloadRoot)
+                        downloadRoot: downloadRoot,
+                        localFilesRoot: caches.appendingPathComponent("core-local-files", isDirectory: true))
     }
 
     /// The client core with the credential store, directories and URL loading given (the app's, or a test's).
-    static func make(custody: SessionCustody, dataDirectory: URL, downloadRoot: URL,
+    static func make(custody: SessionCustody, dataDirectory: URL, downloadRoot: URL, localFilesRoot: URL? = nil,
                      configuration: URLSessionConfiguration = .default) throws -> CoreRuntime {
         let apple = AppleSignInSheet()
+        // Picked files wait here to upload; by default beside the core's data (a test's own directory).
+        let localFiles = HostLocalFiles(root: localFilesRoot ?? dataDirectory.appendingPathComponent("local-files"))
         let host = CoreHost(custody: custody, dataDirectory: dataDirectory, downloads: HostDownloads(root: downloadRoot),
-                            apple: apple, configuration: configuration)
+                            localFiles: localFiles, apple: apple, configuration: configuration)
         guard let url = Bundle.main.url(forResource: "core", withExtension: "hbc") else {
             throw HostFailure(message: "The app carries no client core (\(script)).")
         }

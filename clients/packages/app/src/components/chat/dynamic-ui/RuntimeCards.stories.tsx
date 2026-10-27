@@ -163,6 +163,7 @@ export const Place = gallery("place", [
 export const Feed = gallery("feed", [
   ["动态 A · 新闻列表", "news", fixtures.newsFixture],
   ["动态 B · 各应用摘要", "digest", fixtures.digestFixture],
+  ["动态 C · 状态列表", "list", fixtures.pullRequestsFixture],
 ]);
 
 /** A countdown that really runs: the deadline is set when the story mounts. */

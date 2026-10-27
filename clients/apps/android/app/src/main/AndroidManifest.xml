@@ -49,10 +49,7 @@
         <!-- Opens downloaded attachments in other apps, one read grant per file. -->
         <provider android:name=".media.file.MediaFileProvider"
             android:authorities="${applicationId}.media.files"
-            android:exported="false" android:grantUriPermissions="true">
-            <meta-data android:name="android.support.FILE_PROVIDER_PATHS"
-                android:resource="@xml/media_file_paths" />
-        </provider>
+            android:exported="false" android:grantUriPermissions="true" />
         <activity android:name=".tasks.pages.TaskListActivity" android:exported="false"
             android:theme="@style/Theme.Chat.Tasks" />
         <activity android:name=".tasks.pages.TaskDetailActivity" android:exported="false"

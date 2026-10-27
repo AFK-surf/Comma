@@ -1,3 +1,4 @@
+import { clockTimeoutSignal, realMainClock, type MainClock } from "./clock";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import * as oidc from "openid-client";
@@ -87,19 +88,23 @@ export class SystemBrowserGoogleAuth implements DesktopGoogleAuthProvider {
   readonly #oidc: OpenIdClientAdapter;
   readonly #openExternal: (url: string) => Promise<void>;
   readonly #timeoutMs: number;
+  readonly #clock: MainClock;
 
   constructor({
     locale = baseLocale,
     oidcAdapter = openIdClientAdapter,
     openExternal,
     timeoutMs = defaultTimeoutMs,
+    clock = realMainClock,
   }: {
     locale?: MainLocaleSource;
     oidcAdapter?: OpenIdClientAdapter | undefined;
     openExternal: (url: string) => Promise<void>;
     timeoutMs?: number | undefined;
+    clock?: MainClock;
   }) {
     this.#locale = locale;
+    this.#clock = clock;
     this.#oidc = oidcAdapter;
     this.#openExternal = openExternal;
     this.#timeoutMs = timeoutMs;
@@ -115,7 +120,10 @@ export class SystemBrowserGoogleAuth implements DesktopGoogleAuthProvider {
     signal?: AbortSignal | undefined;
   }): Promise<DesktopGoogleAuthorizationCode> {
     const timeoutMs = normalizeTimeout(this.#timeoutMs);
-    const operationSignal = combineAbortSignals(signal, AbortSignal.timeout(timeoutMs));
+    const operationSignal = combineAbortSignals(
+      signal,
+      clockTimeoutSignal(this.#clock, timeoutMs)
+    );
     let callback: LoopbackCallback | undefined;
     let completionHandedOff = false;
 

@@ -6,7 +6,7 @@ defmodule SalixAgent.Tools.Compute do
 
   @definitions [
     {"compute.workloads.list",
-     "List one page of enabled shared Workloads in this workspace. Compare kind, capabilities, status, network policy and resources. Pass the selected workload_id to each compute or process call. next_cursor continues with after_id. Private Agent runtime carriers are not shared Workloads.",
+     "List one page of shared execution targets authorized for this workspace. Select workload_id when this Session has no bound target. Use next_cursor as after_id for the next page.",
      :workloads_list},
     {"compute.workspace.stat", "Read metadata for one relative workspace path.", :workspace_stat},
     {"compute.workspace.list", "List one bounded relative workspace directory.", :workspace_list},
@@ -193,7 +193,7 @@ defmodule SalixAgent.Tools.Compute do
 
   defp target_help(_),
     do:
-      " Pass workload_id from compute.workloads.list. Never switch targets after an uncertain result."
+      " Omit workload_id for this Session's bound target. Otherwise, select workload_id from compute.workloads.list. Never switch targets after an uncertain result."
 
   defp schema(:workloads_list) do
     %{
@@ -229,7 +229,13 @@ defmodule SalixAgent.Tools.Compute do
       "required" => required,
       "properties" =>
         Map.new(required, &{&1, %{"type" => property_type(&1)}})
-        |> Map.put("workload_id", %{"type" => "string", "minLength" => 1, "maxLength" => 128})
+        |> Map.put("workload_id", %{
+          "type" => "string",
+          "minLength" => 1,
+          "maxLength" => 128,
+          "description" =>
+            "Optional for this Session's bound target. Required when selecting a shared target from compute.workloads.list."
+        })
     }
 
     base =

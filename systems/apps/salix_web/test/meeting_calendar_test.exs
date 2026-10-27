@@ -958,6 +958,17 @@ defmodule Salix.Bindings.MeetingCalendarTest do
     refute schedule["prompt"]
   end
 
+  test "a group without the channel notice still lists its meeting for joining", %{group: group} do
+    group = Map.put(group, "channel_notice", false)
+    stub_list([moved_exception(), recurring_master()], "sync-no-channel-notice")
+    assert {:ok, _} = sync_source(group)
+    assert {:ok, [event]} = MeetingCalendar.list(group, range_start(), range_end())
+    assert is_binary(event["meet_url"])
+    assert {:ok, plan} = MeetingPlan.get(group["group_id"], event["meeting_plan_id"])
+    assert plan["status"] == "planned"
+    assert {:error, :not_found} = Schedules.get(plan["preparation"]["schedule_ids"]["card"])
+  end
+
   test "the receiver queues exactly one card and not_required does not suppress it", %{
     group: group
   } do

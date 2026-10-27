@@ -32,8 +32,8 @@ export type ElectronE2eConnectorMode = "real" | "static";
 export type ElectronE2eSynchronicityMode = "off" | "fake";
 
 /**
- * What a test reaches in Main with `app.evaluate` (see `clients/e2e/helpers/electron-core-clock.ts`):
- * `commaE2eCore.advanceClock(ms)` moves the core's test clock (`coreTestClock`), and
+ * What a test reaches in Main with `app.evaluate` (see `clients/e2e/helpers/electron-test-clock.ts`):
+ * `commaE2eCore.advanceClock(ms)` moves Main's and the core's test clocks together (`testClock`), and
  * `commaE2eUpdateFeed.script(feed)` says what the update feed answers (`updateFeed: "scripted"`).
  */
 export type ElectronE2eGlobals = typeof globalThis & {
@@ -50,6 +50,10 @@ export type ElectronE2eGlobals = typeof globalThis & {
     call(name: string, params: unknown): Promise<unknown>;
     /** Whether `window` is Main's main window, as Main made it: a page's own reading changes while it loads. */
     isMainWindow(window: unknown): boolean;
+    /** Whether the core's process runs (it restarts on Main's clock after it went). */
+    running(): boolean;
+    /** Ends the core's process as a crash would; done once Main saw it go and set its restart. */
+    crash(): Promise<void>;
   };
   commaE2eUpdateFeed?: { script(feed: UpdateFeed): void };
 };
@@ -108,8 +112,11 @@ export interface ElectronE2eHooks {
   computeNodeLifecyclePath?: string;
   connectorMode?: ElectronE2eConnectorMode;
   synchronicityMode?: ElectronE2eSynchronicityMode;
-  /** The client core's clock stands still from its start and moves only when the test says (`commaE2eCore`). */
-  coreTestClock?: boolean;
+  /**
+   * Main's and the client core's clocks stand still from their start and move together only when the test says
+   * (`commaE2eCore.advanceClock`).
+   */
+  testClock?: boolean;
   /** `scripted`: the app's update feed answers what the test scripts (`commaE2eUpdateFeed`), not Velopack. */
   updateFeed?: "scripted";
   /** Where the test's stations listen, by endpoint id: the core reaches them there (loopback, no relays). */
@@ -161,7 +168,7 @@ interface ElectronE2eHookEnv {
   COMMA_ELECTRON_E2E_COMPUTE_NODE_LIFECYCLE_PATH?: string | undefined;
   COMMA_ELECTRON_E2E_CONNECTOR_MODE?: string | undefined;
   COMMA_ELECTRON_E2E_BACKGROUND_WINDOWS?: string | undefined;
-  COMMA_ELECTRON_E2E_CORE_TEST_CLOCK?: string | undefined;
+  COMMA_ELECTRON_E2E_TEST_CLOCK?: string | undefined;
   COMMA_ELECTRON_E2E_STATION_PEERS?: string | undefined;
   COMMA_ELECTRON_E2E_UPDATE_FEED?: string | undefined;
   NODE_ENV?: string | undefined;
@@ -286,7 +293,7 @@ export function resolveElectronE2eHooks({
     hooks.browserImportKeychainPassword = browserImportKeychainPassword;
   }
 
-  if (env.COMMA_ELECTRON_E2E_CORE_TEST_CLOCK === "1") hooks.coreTestClock = true;
+  if (env.COMMA_ELECTRON_E2E_TEST_CLOCK === "1") hooks.testClock = true;
   if (env.COMMA_ELECTRON_E2E_UPDATE_FEED === "scripted") hooks.updateFeed = "scripted";
   const stationPeers = env.COMMA_ELECTRON_E2E_STATION_PEERS?.trim();
   if (stationPeers) hooks.stationPeers = resolveStationPeers(stationPeers);
@@ -631,8 +638,8 @@ export async function activateElectronE2eStatusTrayOpenMainAfterRelease(
 }
 
 /**
- * The running core for an unpackaged test build: `commaE2eCore.advanceClock(ms)` moves its test clock
- * (`coreTestClock`); `commaE2eCore.reset()` asks it to reset the app (`app.reset`) and waits until Main started
+ * The running core for an unpackaged test build: `commaE2eCore.advanceClock(ms)` moves Main's and its test clocks
+ * together (`testClock`, `advanceClock`); `commaE2eCore.reset()` asks it to reset the app (`app.reset`) and waits until Main started
  * again; `commaE2eCore.started()` waits until Main's newest start (`started`: the launch's or a reset's) opened its
  * windows; `commaE2eCore.call(name, params)` makes a call on Main's own channel to the core. The core's process ends
  * with a reset, so its `app.reset` is never answered.
@@ -643,11 +650,13 @@ export function exposeElectronE2eCore(
   /** The start hooks the reset's new services take (`applyElectronE2eStartHooks`). */
   startHooks: (env: ElectronE2eStartHookEnv) => void,
   /** Main's main window, while one is open. */
-  mainWindow: () => unknown
+  mainWindow: () => unknown,
+  /** Moves the test clocks `ms` forward (`testClock`). */
+  advanceClock: (ms: number) => Promise<void>
 ) {
   if (!coreHost) return;
   (globalThis as ElectronE2eGlobals).commaE2eCore = {
-    advanceClock: (ms) => coreHost.advanceClock(ms),
+    advanceClock,
     reset: async (env = {}) => {
       startHooks(env);
       const before = started();
@@ -668,6 +677,8 @@ export function exposeElectronE2eCore(
     },
     call: (name, params) => coreHost.client().call(name as never, params as never),
     isMainWindow: (window) => window !== undefined && window === mainWindow(),
+    running: () => coreHost.running,
+    crash: () => coreHost.crashForTest(),
   };
 }
 
@@ -733,7 +744,7 @@ function hasAnyHook(hooks: ElectronE2eHooks) {
     hooks.statusTrayOpenMainBlockedMarkerFilePath ||
     hooks.statusTrayOpenMainReleaseFilePath ||
     hooks.systemNotificationsStatus ||
-    hooks.coreTestClock ||
+    hooks.testClock ||
     hooks.updateFeed ||
     hooks.stationPeers
   );
@@ -745,7 +756,7 @@ const startHookKeys = [
   "browserImportKeychainPassword",
   "cablePhoneOrigin",
   "computeNodeLifecyclePath",
-  "coreTestClock",
+  "testClock",
   "stationPeers",
   "synchronicityMode",
   "updateFeed",

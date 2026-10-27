@@ -60,20 +60,25 @@ defmodule CommaWeb.RecommendationSourceContext do
 
   def separate(data), do: {data, %{}}
 
+  # The budget is for the text the model reads. A context reaches the model
+  # inside its candidate, so the URL keys do not count. A short text leaves
+  # its unused share to the longer ones.
   def retain(contexts, data) do
     allowed = Comma.RecommendationContract.http_urls(data)
     contexts = contexts |> Map.take(MapSet.to_list(allowed)) |> Enum.sort()
 
-    empty =
-      Map.new(contexts, fn {url, context} ->
-        {url, context |> Map.put("text", "") |> Map.put("truncated", false)}
+    overhead =
+      contexts
+      |> Enum.map(fn {_url, context} ->
+        context |> Map.put("text", "") |> Map.put("truncated", false)
       end)
+      |> Jason.encode!()
+      |> byte_size()
 
-    allowance =
-      max(div(@max_bytes - byte_size(Jason.encode!(empty)), max(length(contexts), 1)), 0)
+    allowances = allowances(contexts, max(@max_bytes - overhead, 0))
 
     Map.new(contexts, fn {url, context} ->
-      text = fit(context["text"], allowance)
+      text = fit(context["text"], allowances[url])
 
       {url,
        context
@@ -82,12 +87,38 @@ defmodule CommaWeb.RecommendationSourceContext do
     end)
   end
 
+  # Shortest texts first: each takes what it needs, up to an even share of
+  # what is left.
+  defp allowances(contexts, budget) do
+    contexts
+    |> Enum.map(fn {url, context} -> {url, encoded_size(context["text"])} end)
+    |> Enum.sort_by(&elem(&1, 1))
+    |> Enum.with_index()
+    |> Enum.reduce({budget, %{}}, fn {{url, size}, index}, {budget, allowances} ->
+      allowance = min(size, div(budget, length(contexts) - index))
+      {budget - allowance, Map.put(allowances, url, allowance)}
+    end)
+    |> elem(1)
+  end
+
   # JSON escaping can cost more than UTF-8. Keep the serialized budget exact.
   defp fit(text, budget) do
-    if byte_size(Jason.encode!(text)) - 2 <= budget,
-      do: text,
-      else: fit(prefix(text, div(byte_size(text), 2)), budget)
+    if encoded_size(text) <= budget do
+      text
+    else
+      text
+      |> String.codepoints()
+      |> Enum.reduce_while({[], 0}, fn char, {kept, size} ->
+        size = size + encoded_size(char)
+        if size <= budget, do: {:cont, {[char | kept], size}}, else: {:halt, {kept, size}}
+      end)
+      |> elem(0)
+      |> Enum.reverse()
+      |> IO.iodata_to_binary()
+    end
   end
+
+  defp encoded_size(text), do: byte_size(Jason.encode!(text)) - 2
 
   defp prefix(text, bytes) when byte_size(text) <= bytes, do: text
 

@@ -58,6 +58,18 @@ Missing execution deadlines require a request lookup, not assumed expiry.
 Approval decisions differ from authorization receipts. Only the original decision winner can issue an IFC receipt.
 After 30 seconds of unknown results, recovery records that uncertainty and never reissues the receipt, including after consumption.
 
+### Request cards
+
+A request an Agent raises in a Comma Conversation records it (`surface_kind` `conversation`; `surface_ref` names the Conversation and the person's message the turn served).
+The web, desktop, Android, and iOS apps show them as cards under the Agent's reply to that message.
+A pending request with no reply yet goes on the newest turn. A finished request whose turn is not loaded is not shown.
+A per-Conversation index makes a read list only that Conversation's requests.
+`GET /v1/comma/groups/:g/conversations/:c/requests` lists every pending one, then the newest finished ones, at most 100. `/events` streams a snapshot and then each change. `POST …/:id/decline` declines one.
+A read fails when the store cannot be read.
+A member sees them only when they may read the Conversation. The projection omits the tenant, Session, Agent, and tool call.
+Only connect-account requests (`oauth_authorization`) have a card. The verified OAuth callback alone ends one as connected: the flow that started it, or another flow that connected the same provider and alias.
+A decline stores the ending before the Agent is told; delivery replays it. Clients show a pending request past its deadline as expired.
+
 ### Runtime failure notification
 
 Reply identity uses the accepted human source and trusted target. Context source IDs retain provenance.
@@ -83,6 +95,7 @@ Adapters own formatting. Feishu defaults to Markdown, rendered as a post. Use `f
 Provider retries use idempotent admission. External send confirmation differs from model completion and canonical append.
 Bound Slack concurrency and retries. Do not poll every Task or Participant for card updates.
 Slack and Feishu Task cards share one projection. See [Task cards](architecture/DOMAIN_CONCEPTS.md).
+A Slack, Feishu, or Lark send can carry a `question`: options or a field, and a send button. Anyone in the chat may answer. See [IM question cards](architecture/DOMAIN_CONCEPTS.md#im-question-cards).
 See [Slack command threads and receipt lifecycle](architecture/DOMAIN_CONCEPTS.md#slack-command-source-receipts).
 
 Triage has its own product admission contract. See [Bridge For Teams](bridge-for-teams/design.md).
@@ -116,6 +129,42 @@ No redirects or retries. A non-2xx status is a result.
 ### Outbound SSH
 
 See [Outbound SSH Session](architecture/DOMAIN_CONCEPTS.md#outbound-ssh-session).
+
+## Mini-app build tools and backends
+
+The Router tool `internal.apps.create {name, description?, repo?}` is Router only. Guests never get it. It returns `{app_id, repo, url}`. A retry makes a second app and repository.
+`url` is `<web origin>/#/apps/<workspace_id>/<app_id>/run`. It runs the live Version, or the latest ready preview before Publish, for Workspace members. The Router gives it to a user in a chat that does not show app cards, such as Signal or Telegram.
+In the Workspace's Comma Telegram chat, each app URL in a Router message gets a button (at most 3) that opens the app inside Telegram, in the [embedded panel](clients.md#embedded-task-panel).
+The Router-only reads `internal.apps.list {}` (the 50 newest and `has_more`) and `internal.apps.get {app_id}` include shared and installed apps.
+They return app URLs, Versions, visibility, status, grants, capabilities and secret names. `get` adds up to 50 owner Versions.
+They omit a member's own `private` app, which only its creator sees.
+`internal.apps.publish {app_id, version, visibility?}` uses the user API's Task review and GitHub merge path. It derives the Task from the stored Version.
+The Router also has `update`, `rollback`, `disable`, `enable`, `delete`, `link.get/create/reset/revoke`, `grants.set`, `secrets.set/delete`, `install`, `uninstall`, `remix` and `report` under `internal.apps`.
+The product resolves the current Workspace Router and active owner permissions. Caller parameters cannot select a User or Workspace.
+Private-app access, install ownership, capability validation and platform takedown rules remain in force.
+The station builds previews. The Router can publish them after Task review is ready.
+`internal.task.create` takes `mini_app {app_id}` only with `runs_on {kind: sandbox}` and the app's repository. Placement refusals: `mini_app_requires_sandbox`, `mini_app_repo_mismatch`, `mini_app_not_found`, `mini_apps_unavailable`.
+The skill `mini-app-builder` tells the Router when to make an app.
+
+The station offers the tools `app_deploy {notes?}` and `app_logs {version?}` only to sessions of a Task with `mini_app` ([tools](../systems/station/src/tools/apps.ts)).
+`app_deploy` commits and pushes the worktree. Then it packs `dist/` as a deterministic ustar, `dist-worker/index.js` if the manifest has a backend, `comma-app.json`, and an archive of HEAD.
+It sends `task.app_deploy`. Salix reads the files through `task.posted_file`, as for `task.post`.
+Salix accepts the request only from a Session of the Task's sandbox device on its current Workload generation, for the Task's own app. It checks the generation again before the deploy.
+The commit must be on the pushed session branch. A repeated key makes one Version and one card Message.
+`app_logs` returns the app's backend errors of the last 15 minutes, at most 200 lines.
+
+Backends run in Cloudflare Workers for Platforms ([dispatch Worker](../systems/cloudflare/miniapp-dispatch/README.md)). The Cloudflare API token stays in Salix server config (`comma.mini_apps`).
+Each Version is the script `app-<slug>-v<n>`. All Versions of an app bind the Durable Object `AppStorage` of the script `app-<slug>-data`, so data survives deploys.
+Owner secrets are `secret_text` bindings. Comma seals them at rest and uploads them again with each Version.
+The dispatch Worker is the only entry to app scripts. It has no public route for app traffic.
+- Threat: an internet caller runs or replays a backend call outside Comma authorization.
+- Authority: the shared secret in Salix config and the Worker's secret store. The dispatch Worker verifies the `salix-vm-gateway` HMAC headers and replay guard.
+- Fail-closed result: `404`.
+
+Comma forwards `/v1/comma/apps/:id/backend/*` only after it checks the viewer's access, the app status and the owner's billing. It adds the Version and the pairwise viewer ID.
+Limits: 50 ms CPU and 50 subrequests per request, 1 MiB request body, 5 MiB response.
+The outbound Worker sends only https on the default port to the manifest's `egress` hosts. It blocks IP literals, local names and Comma hosts, and does not follow redirects. It allows 600 requests per app per minute in each Cloudflare location.
+CI deploys both Workers from `main` (staging) and `prod` (stable).
 
 ## Verification
 
@@ -151,6 +200,11 @@ A channel welcome binds outcome `done`. An interactive Telegram card binds outco
 
 A plain Slack reply target is advisory. An explicit `end_turn` without a reply completes the turn and retires the target.
 Only a Task card obligation fences the ACK.
+A successful `im_api.internal.task.create` adds this obligation when a Slack reply target is pending, with four exceptions.
+The runtime already published the card, or the Task is a Triage delegation.
+The Task source is a Slack bot or app, or no person, such as a Worker report or a schedule.
+For the last two, `TaskCard` reports `task_card.status: not_applicable`, so the Task owes no card.
+A Slack reply target that a later person adds does not become a card obligation, and a generic `wait_for` can yield.
 A retryable model failure keeps the source and its target for the retry, unless a failure notice already reached the source.
 A final model failure or an exhausted guard without a destination settles locally when no send is pending.
 A Worker whose input came from a Task then sends that Task one failure report.

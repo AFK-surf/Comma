@@ -71,7 +71,7 @@ defmodule SalixIM.Triage.RouterContextProjection do
                  "Triage has replied in this Slack thread. Treat this as context only, not a new request. A later human follow-up continues this normal tracked conversation. If a Task locator is present, continue that exact Task when more investigation is needed. Pending investigations are proposals that may be suppressed or fail before Task creation; a Task locator may follow. On a human follow-up, use the supported canonical identity paths to find and reuse an existing Task. A proposal alone is not an active Task or a reason to wait.\n" <>
                    encoded,
                session_id: session_id,
-               name: "Bridge chat",
+               name: "Comma",
                role: "user",
                no_wake: true,
                trusted_origin: %{
@@ -264,7 +264,7 @@ defmodule SalixIM.Triage.RouterContextProjection do
       %{
         content: @frame <> encoded,
         session_id: session_id,
-        name: "Bridge chat",
+        name: "Comma",
         role: "user",
         no_wake: true
       }

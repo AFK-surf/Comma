@@ -8,7 +8,6 @@ const task = (
   overrides: Partial<TaskSummaryViewModel> = {}
 ): TaskSummaryViewModel => ({
   activityStatus: statusBucket === "in_progress" ? "working" : "idle",
-  freshness: "fresh",
   id: `task-${statusBucket}`,
   statusBucket,
   title: "Generate the quarterly launch brief",
@@ -83,7 +82,6 @@ export const HoverPreview: Story = {
     defaultOpen: true,
     task: task("in_progress", {
       activityStatus: "working",
-      freshness: "stale",
     }),
   },
   play: async ({ canvasElement }) => {

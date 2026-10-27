@@ -4,6 +4,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import org.junit.Assert.*
 import org.junit.Test
+import surf.comma.android.chat.live.toChatAttachment
 
 internal class FakeAuthorizedHttp(session: AuthorizedSession? = testSession()) : AuthorizedHttp {
     override val session = MutableStateFlow(session)
@@ -47,5 +48,18 @@ class MediaSourcesTest {
         }
         val a = MediaSource.MessageAttachment("c", "m", 0, testRef())
         assertNotEquals(mediaCacheKey(session, a), mediaCacheKey(session, a.copy(index = 1)))
+    }
+
+    @Test fun aFileTheCoreReadsByItsPlaceAloneIsAskedForByItsPlace() {
+        // A Task a station hosts: its message's file names its place, and no blob.
+        val file = surf.comma.android.conversation.MessageAttachment(
+            blockType = "image", blockIndex = 0, fileName = "shot.png", title = null, mimeType = null, size = 3,
+            workspacePath = null, widthPx = null, heightPx = null, blobRef = null, agentId = null, downloadable = true,
+        )
+        val source = file.toChatAttachment("station:st:7", "7:4", "image").file.source
+        assertEquals(MediaSource.MessageAttachment("station:st:7", "7:4", 0, null), source)
+        assertEquals(listOf("attachment", "station:st:7", "7:4", 0),
+            listOf("source", "conversation", "message", "index").map(source!!.fileSource("group")::get))
+        assertNull(source.ref)
     }
 }

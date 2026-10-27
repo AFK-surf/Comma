@@ -312,7 +312,8 @@ defmodule CommaWeb.ProactiveMailTest do
     assert {:ok, %{"snapshot" => %{"cards" => [], "summary" => [%{"text" => greeting}]}}} =
              CommaWeb.RecommendationRuntime.ensure(f.user, %{}, workspace)
 
-    assert greeting == hd(String.split(hd(profile.snapshot["summary"])["text"], "\n\n"))
+    # No row is left, so the summary keeps only its title and the break after it.
+    assert greeting == hd(String.split(hd(profile.snapshot["summary"])["text"], "\n\n")) <> "\n\n"
     refute greeting =~ "Review request"
 
     assert item["evidence"] == %{

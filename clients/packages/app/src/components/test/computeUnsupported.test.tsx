@@ -61,9 +61,7 @@ it("shows no compute environment in the desktop app on a computer that cannot ho
   installNativeBridgeMock({ platform: "electron" });
   const content = await openDevices();
   await content.findByRole("heading", { name: "Devices" });
-  expect(
-    content.queryByRole("region", { name: "Compute environment" })
-  ).not.toBeInTheDocument();
+  expect(content.queryByRole("region", { name: "Sandbox" })).not.toBeInTheDocument();
   expect(
     content.queryByRole("button", { name: "Open the desktop app" })
   ).not.toBeInTheDocument();
@@ -72,8 +70,6 @@ it("shows no compute environment in the desktop app on a computer that cannot ho
 it("offers the desktop app in a browser", async () => {
   installNativeBridgeMock({ platform: "web" });
   const content = await openDevices();
-  const section = within(
-    await content.findByRole("region", { name: "Compute environment" })
-  );
+  const section = within(await content.findByRole("region", { name: "Sandbox" }));
   expect(section.getByRole("button", { name: "Open the desktop app" })).toBeVisible();
 });

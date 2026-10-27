@@ -25,6 +25,7 @@ import { useCall, useTopic } from "@comma/core-client";
 import { supportedLocales } from "@comma/i18n";
 import { CommaAuthContext, type CommaAuthContextValue } from "./auth-context";
 import { LoginScreen } from "./LoginScreen";
+import { miniAppLinkTokenFromLocation } from "../miniAppLink";
 import type { SessionHostController } from "../session/controller";
 import {
   captureOauthResumeHandle,
@@ -297,6 +298,7 @@ export function CommaAuthGate({
         {...(guestHandoffPending
           ? { guestHandoffNotice: messages.auth_guest_handoff_notice() }
           : {})}
+        appLinkPending={miniAppLinkTokenFromLocation(window.location) !== undefined}
         revocationPending={snapshot.cleanup.revocation === "pending"}
         {...(oauthResumePending
           ? { oauthResumeNotice: messages.auth_oauth_continue_notice() }

@@ -1,8 +1,9 @@
-import type {
-  RecommendationAction,
-  RecommendationDocumentPart,
-  RecommendationEnvelope,
-  RecommendationGeneratedCard,
+import {
+  recommendationInlineLinkSchema,
+  type RecommendationAction,
+  type RecommendationDocumentPart,
+  type RecommendationEnvelope,
+  type RecommendationGeneratedCard,
 } from "@comma/recommendation-contract";
 import previewImage from "../../../../ui/src/components/chat-panel/assets/generated-image-preview.png";
 import type { CommaRecommendationLinkPreview } from "@comma/core/api-schemas";
@@ -538,9 +539,10 @@ export const LinkPreviews = {
   ),
 };
 
-// A routine row that is only its source link, as a mail suggestion is. Hover
-// the row or the briefing's source chip: the card leads with the task the row
-// starts, quotes the mail (a long bare URL included) and names the source.
+// A routine row that is only its source link, as a mail suggestion is. Its
+// card leads with the task the row starts, quotes the mail (a long bare URL
+// included) and names the source; the briefing's source chip shows the same
+// on hover.
 const outlookMessageUrl =
   "https://outlook.live.com/mail/0/inbox/id/AQMkADAwATM0MDAAMS1";
 const sourceContextCard = {
@@ -558,15 +560,17 @@ const sourceContextCard = {
       parts: [
         {
           kind: "inline-link",
-          link: {
+          link: recommendationInlineLinkSchema.parse({
             href: outlookMessageUrl,
             label:
               "Check whether disabling Find My on pengx17 and Xiao’s Apple Watch was intentional",
+            objective:
+              "Check whether disabling Find My on pengx17 and Xiao’s Apple Watch was intentional.",
             previewText:
               "Find My has been disabled on pengx17\nFind My: Find My has been disabled on pengx17 and Xiao’s Apple Watch. With Find My disabled, these devices can no longer be located, put in Lost Mode or erased remotely.\nIf you did not make this change, turn Find My back on at https://www.icloud.com/settings/find-my-device-security-options and change your Apple Account password.",
             sourceId: "outlook",
             taskPrompt: `Check whether disabling Find My on pengx17 and Xiao’s Apple Watch was intentional.\n\n${outlookMessageUrl}`,
-          },
+          }),
         },
       ],
     },

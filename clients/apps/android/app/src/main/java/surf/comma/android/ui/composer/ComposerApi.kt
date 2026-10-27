@@ -5,9 +5,10 @@ import android.graphics.RectF
 import android.net.Uri
 import android.text.Layout
 import android.text.TextPaint
+import surf.comma.android.media.PickedFile
 
-/** An image the user attached. The composer never compresses or uploads it. */
-data class ComposerAttachment(val id: String, val uri: Uri)
+/** A file the user attached, as its provider describes it. The composer never compresses or uploads it. */
+data class ComposerAttachment(val id: String, val uri: Uri, val file: PickedFile)
 
 /**
  * A frozen copy of what the user just sent, for the send transition. Everything is in window

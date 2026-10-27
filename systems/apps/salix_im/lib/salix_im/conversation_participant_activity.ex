@@ -105,6 +105,8 @@ defmodule SalixIM.ConversationParticipantActivity do
         |> put_optional("working_provider", working_provider(canonical))
         |> put_optional("loop_wake", loop_wake(canonical))
         |> put_optional("waiting", waiting(canonical))
+        |> put_optional("wait_tool", wait_tool(canonical))
+        |> put_optional("wait_started_at", wait_started_at(canonical))
         |> put_optional(
           "working_conversation_ids",
           working_conversation_ids(canonical, conversation_id)
@@ -137,9 +139,25 @@ defmodule SalixIM.ConversationParticipantActivity do
   defp loop_wake(_), do: nil
 
   # A structured wait, such as a Router waiting for a delegated Task. The hint
-  # carries only the fact, never the reason: that is model text.
+  # carries only the fact, never the reason: that is model text. A wait on a
+  # running tool call is that tool's work, not waiting: it names the tool.
+  defp waiting(%{"state" => "active", "wait" => %{"tool_name" => name}}) when is_binary(name),
+    do: nil
+
   defp waiting(%{"state" => "active", "wait" => %{}}), do: true
   defp waiting(_), do: nil
+
+  defp wait_tool(%{"state" => "active", "wait" => %{"tool_name" => name}}) when is_binary(name),
+    do: name
+
+  defp wait_tool(_), do: nil
+
+  # When the wait, or the tool call it waits on, began.
+  defp wait_started_at(%{"state" => "active", "wait" => %{"started_at_ms" => started}})
+       when is_integer(started),
+       do: started
+
+  defp wait_started_at(_), do: nil
 
   # A Router has one Session for Home and every Task it delegates. The other
   # Conversations with input in the current activation name that work, such as
@@ -193,7 +211,7 @@ defmodule SalixIM.ConversationParticipantActivity do
   defp presentation_activity(%{} = activity) do
     Map.take(
       activity,
-      ~w(phase status action summary summary_class goal tool_name display_strength display_priority display_hold_ms producer_epoch response_key sequence source_message_ids started_at completed_at updated_at)
+      ~w(phase status action summary summary_class goal target tool_name display_strength display_priority display_hold_ms producer_epoch response_key sequence source_message_ids started_at completed_at updated_at)
     )
   end
 

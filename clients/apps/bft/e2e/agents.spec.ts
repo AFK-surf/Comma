@@ -250,6 +250,7 @@ test("Configure offers the org's models and keeps an untouched model", async ({
           agent: { id: "a-router", name: "Front desk", role: "router" },
           model_key: "catalog:deepseek-flash",
           system_prompt: "Answer politely.",
+          prompt_editable: true,
           available: true,
           models: [
             {
@@ -336,6 +337,38 @@ test("Configure offers the org's models and keeps an untouched model", async ({
     { model: null, system_prompt: "Answer politely." },
   ]);
   expect(writes(requests).every((request) => request.csrf === csrf)).toBe(true);
+});
+
+test("an admin who is not an org owner sees the system prompt without editing it", async ({
+  page,
+}) => {
+  await open(
+    page,
+    `${base}/a-router`,
+    standard((request) =>
+      request.path === `${api}/a-router/config`
+        ? ok({
+            agent: { id: "a-router", name: "Front desk", role: "router" },
+            model_key: "",
+            system_prompt: "Answer politely.",
+            prompt_editable: false,
+            available: true,
+            models: [],
+          })
+        : undefined
+    )
+  );
+
+  await page
+    .getByRole("complementary", { name: "Front desk" })
+    .getByRole("button", { name: "Configure" })
+    .click();
+  const dialog = page.getByRole("dialog", { name: "Configure Front desk" });
+  await expect(dialog.getByLabel("System prompt")).toHaveValue("Answer politely.");
+  await expect(dialog.getByLabel("System prompt")).toBeDisabled();
+  await expect(
+    dialog.getByText("Only organization owners can change the system prompt.")
+  ).toBeVisible();
 });
 
 test("an admin starts a new Router session; a stale one shows the current", async ({

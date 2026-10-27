@@ -135,18 +135,54 @@ defmodule SalixAgent.Tools.TaskCard do
     end
   end
 
+  # A Slack bot or app, a Worker report and a schedule get no Slack card. The
+  # kernel adds no card obligation for this status, so a person's Slack reply
+  # target that arrives later is not turned into a card that nobody publishes.
+  @no_slack_card %{
+    "status" => "not_applicable",
+    "next_action" => "No Slack Task card is published or required for this Task's source."
+  }
+
   def after_create(result, ctx) do
+    case ctx[:trusted_origin] do
+      %{"provider" => "slack"} = origin ->
+        after_slack_create(result, origin, ctx)
+
+      origin ->
+        if result["created"] == true and no_person?(origin),
+          do: Map.put(result, "task_card", @no_slack_card),
+          else: result
+    end
+  end
+
+  # The current turn source is the activation's last unanswered person when
+  # one is present. A Worker report or a schedule means no person is present.
+  # A person keeps the existing card rule.
+  defp no_person?(nil), do: true
+
+  defp no_person?(%{"source_actor_type" => type}) when type in ["user", "provider_user"],
+    do: false
+
+  defp no_person?(%{} = origin), do: Map.get(origin, "provider") in [nil, "internal"]
+  defp no_person?(_origin), do: false
+
+  defp after_slack_create(result, origin, ctx) do
     with true <- result["created"] == true,
-         %{} = origin <- ctx[:trusted_origin],
-         "slack" <- origin["provider"],
-         "provider_user" <- origin["source_actor_type"],
          nil <- origin["triage_delegation"],
          true <- origin["agent_group_id"] == ctx[:group_id],
          source when is_binary(source) <- origin["source_message_id"],
          true <- source == ctx[:source_message_id],
-         %{} = target <- origin["provider_context"],
-         false <- target["app_authored"] == true,
-         connect when is_binary(connect) and connect != "" <- target["connect_id"],
+         %{} = target <- origin["provider_context"] do
+      if origin["source_actor_type"] == "provider_user" and target["app_authored"] != true,
+        do: publish_slack_card(result, target, ctx),
+        else: Map.put(result, "task_card", @no_slack_card)
+    else
+      _ -> result
+    end
+  end
+
+  defp publish_slack_card(result, target, ctx) do
+    with connect when is_binary(connect) and connect != "" <- target["connect_id"],
          channel when is_binary(channel) and channel != "" <- target["channel_id"],
          thread when is_binary(thread) and thread != "" <-
            target["thread_ts"] || target["message_ts"] do

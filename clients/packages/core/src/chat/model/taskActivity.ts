@@ -27,8 +27,28 @@ export function milestonesOfBlocks(
   };
 }
 
+/**
+ * What a Task's Activity reads of a message: a Salix Task's `ChatMessage`, or a station-hosted Task's entry read as one
+ * (`stations/chat.ts`).
+ */
+export type TaskActivityMessage = Pick<
+  ChatMessage,
+  | "actorId"
+  | "actorType"
+  | "brief"
+  | "createdAt"
+  | "display"
+  | "messageId"
+  | "milestones"
+  | "role"
+  | "routerRequest"
+  | "seq"
+  | "source"
+  | "text"
+>;
+
 /** Whether a transcript shows the message: one that only records milestones is shown nowhere but the Activity. */
-export function shownInTranscript(message: ChatMessage): boolean {
+export function shownInTranscript(message: Pick<ChatMessage, "milestones">): boolean {
   return message.milestones?.standalone !== true;
 }
 
@@ -110,7 +130,7 @@ function loopWake(message: { [key: string]: unknown }) {
 }
 
 const activities = new WeakMap<
-  readonly ChatMessage[],
+  readonly TaskActivityMessage[],
   { runs: readonly TaskLoopRun[]; activity: ChatTaskActivity | undefined }
 >();
 
@@ -121,7 +141,7 @@ const activities = new WeakMap<
  * milestone. Read once per message and run list.
  */
 export function taskActivity(
-  messages: readonly ChatMessage[],
+  messages: readonly TaskActivityMessage[],
   runs: readonly TaskLoopRun[] = NO_RUNS
 ): ChatTaskActivity | undefined {
   const held = activities.get(messages);
@@ -131,10 +151,26 @@ export function taskActivity(
   return activity;
 }
 
+/**
+ * The Activity with where reading the Task's earlier history stands (`ChatTaskActivity.earlier`): what is not read yet
+ * shows even before any milestone is.
+ */
+export function withEarlier(
+  activity: ChatTaskActivity | undefined,
+  earlier: ChatTaskActivity["earlier"]
+): ChatTaskActivity | undefined {
+  if (!earlier) return activity;
+  return {
+    key: `${earlier}:${activity?.key ?? ""}`,
+    groups: activity?.groups ?? [],
+    earlier,
+  };
+}
+
 type Awaiting = { entry: ChatTaskActivityEntry; author: string | undefined };
 
 function readActivity(
-  messages: readonly ChatMessage[],
+  messages: readonly TaskActivityMessage[],
   runs: readonly TaskLoopRun[]
 ): ChatTaskActivity | undefined {
   const groups: ChatTaskActivityGroup[] = [];
@@ -194,7 +230,7 @@ function readActivity(
   return { key: JSON.stringify(kept), groups: kept };
 }
 
-function requestOf(message: ChatMessage): ChatTaskActivityGroup["request"] {
+function requestOf(message: TaskActivityMessage): ChatTaskActivityGroup["request"] {
   if (message.brief)
     return {
       messageId: message.messageId,

@@ -21,7 +21,10 @@ import {
   createNativeStateBridgeMock,
   installNativeBridgeMock,
 } from "@comma/test-utils/native-bridge";
-import { APP_KEYBINDING_SEQUENCE_TIMEOUT_MS } from "@comma/ui/components/settings-shortcut";
+import {
+  APP_KEYBINDING_SEQUENCE_TIMEOUT_MS,
+  detectAppKeybindingPlatform,
+} from "@comma/ui/components/settings-shortcut";
 import { toast } from "@comma/ui/components/toast";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CommaApiSessionTransport } from "../session/controller";
@@ -45,6 +48,13 @@ import { CommaAppShortcutsProvider } from "../components/shortcuts/commaAppShort
 import type { AppShortcutPlatform } from "../components/shortcuts/appShortcutRegistry";
 
 const telegramSettings = () => within(screen.getByRole("region", { name: "Telegram" }));
+const instructionsDialog = () => screen.getByRole("dialog", { name: "System prompt" });
+// Closed once the dialog is gone and the page behind it answers again.
+const instructionsClosed = () =>
+  waitFor(() => {
+    expect(screen.queryByRole("dialog", { name: "System prompt" })).toBeNull();
+    setting("router.instructions").getByRole("button", { name: "Edit" });
+  });
 
 const testSessionTransport = (signal: AbortSignal): CommaApiSessionTransport => ({
   applyHeaders: () => undefined,
@@ -225,6 +235,30 @@ describe("AppSettingsRoute", () => {
     expect(summary).toBeEnabled();
     expect(start).toBeEnabled();
   });
+  it("lists Inbound API, Devices, Tailscale and Debug under Advanced, after Shared", async () => {
+    renderSettings();
+    await flush();
+
+    const nav = screen.getAllByRole("navigation")[0]!;
+    const groupLabels = Array.from(nav.querySelectorAll(":scope > div > p")).map(
+      (label) => label.textContent
+    );
+    expect(groupLabels.slice(-3)).toEqual(["Archived", "Shared", "Advanced"]);
+    const groupItems = (label: string) =>
+      within(within(nav).getByText(label, { selector: "p" }).parentElement!)
+        .getAllByRole("button")
+        .map((button) => button.textContent);
+    expect(groupItems("Advanced")).toEqual([
+      "Inbound API",
+      "Devices",
+      "Tailscale",
+      "Debug",
+    ]);
+    expect(groupItems("System")).not.toEqual(
+      expect.arrayContaining(["Inbound API", "Devices", "Tailscale", "Debug"])
+    );
+  });
+
   it("opens the category named by the settings deep link", async () => {
     const previousHash = window.location.hash;
     window.location.hash = "#/settings?category=recommendations";
@@ -763,7 +797,9 @@ describe("AppSettingsRoute", () => {
     await user.click(screen.getByRole("button", { name: "Keyboard shortcuts" }));
     await flush();
     expect(screen.getByText("Quick Chat")).toBeVisible();
-    expect(screen.getByLabelText("Keyboard shortcut: ⌘")).toBeVisible();
+    // A double tap of ⌘ on macOS, of Ctrl on Windows (and where the suite runs as Windows).
+    const key = detectAppKeybindingPlatform() === "windows" ? "Ctrl" : "⌘";
+    expect(screen.getByLabelText(`Keyboard shortcut: ${key}`)).toBeVisible();
   });
 
   it("turns Quick Chat off where this Mac can run it, and drops its shortcut", async () => {
@@ -830,6 +866,74 @@ describe("AppSettingsRoute", () => {
     expect(core.sentTo("models.setReplyStyle")).toEqual([
       { workspace: "ws-2", style: "concise" },
     ]);
+  });
+
+  it("edits the Router's system prompt beside the reply style, and resets it", async () => {
+    let held = { content: "", hash: "h0" };
+    const core = createScriptedCore({
+      values: (topic) => {
+        if (topic.topic === "workspace") return resolvedWorkspace("ws-2");
+        if (topic.topic === "router" && topic.workspace === "ws-2")
+          return { agent: "router", name: "Comma", reply_style: "concise" };
+        return undefined;
+      },
+      calls: (name, params) => {
+        if (name === "systemFiles.instructions") return held;
+        if (name !== "systemFiles.writeInstructions") return null;
+        const { content, expectedHash } = params as {
+          content: string;
+          expectedHash?: string;
+        };
+        if (expectedHash !== held.hash)
+          throw Object.assign(new Error("changed"), { code: "conflict", status: 409 });
+        held = { content, hash: `h-${content}` };
+        return held;
+      },
+    });
+    renderSettings(undefined, undefined, core);
+    await flush();
+    const edit = () =>
+      setting("router.instructions").getByRole("button", { name: "Edit" });
+    const field = () =>
+      within(instructionsDialog()).getByRole("textbox", { name: "System prompt" });
+
+    await user.click(edit());
+    await user.type(field(), "Be brief.");
+    await user.click(
+      within(instructionsDialog()).getByRole("button", { name: /Save/ })
+    );
+    await instructionsClosed();
+    expect(core.sentTo("systemFiles.writeInstructions")).toEqual([
+      { group: "grp_ws-2", content: "Be brief.", expectedHash: "h0" },
+    ]);
+    // The prompt adds to the reply style; it does not replace it.
+    expect(
+      document.querySelector('[data-setting-id="replies.style"]')
+    ).toHaveTextContent("Concise");
+
+    // Drive saved it meanwhile: the save is refused and the typed text stays for a save over it.
+    held = { content: "From Drive.", hash: "h2" };
+    await user.click(edit());
+    expect(field()).toHaveValue("Be brief.");
+    await user.type(field(), " Always.");
+    await user.click(
+      within(instructionsDialog()).getByRole("button", { name: /Save/ })
+    );
+    await waitFor(() =>
+      expect(
+        within(instructionsDialog()).getByText(
+          "The system prompt changed elsewhere. Your text is kept; save again to replace it."
+        )
+      ).toBeInTheDocument()
+    );
+    expect(field()).toHaveValue("Be brief. Always.");
+
+    // Reset clears it.
+    await user.click(
+      within(instructionsDialog()).getByRole("button", { name: /Reset/ })
+    );
+    await instructionsClosed();
+    expect(held.content).toBe("");
   });
 
   it("offers a guest no reply style, which belongs to an account's Router", () => {

@@ -2,6 +2,7 @@ defmodule SalixIM.TriageInvestigationRuntimeTest do
   require SystemsRuntime.Proc
 
   use SystemsClock.Case, async: false
+  use SalixStore.QueueCase, queues: [:conversation_log_recovery]
   use SalixAgent.TestSupport.Settle
   alias SalixIM.{ConversationServer, Conversations, TaskConversationInput}
   alias SalixIM.Triage.InvestigationAuthority
@@ -312,6 +313,7 @@ defmodule SalixIM.TriageInvestigationRuntimeTest do
     defdelegate binding(agent, source), to: ConversationSource
     defdelegate batch(binding, progress), to: ConversationSource
     defdelegate reject(binding, message, reason), to: ConversationSource
+    defdelegate retire(binding), to: ConversationSource
 
     def entry(binding, message) do
       with {:ok, entry} <- ConversationSource.entry(binding, message) do
@@ -394,6 +396,84 @@ defmodule SalixIM.TriageInvestigationRuntimeTest do
     })
 
     :ok
+  end
+
+  defmodule RetiredDuringAdmission do
+    defdelegate prefetch(agent), to: SalixIM.ConversationSource
+    defdelegate binding(agent, source), to: SalixIM.ConversationSource
+    defdelegate batch(binding, progress), to: SalixIM.ConversationSource
+    defdelegate reject(binding, message, reason), to: SalixIM.ConversationSource
+    defdelegate retire(binding), to: SalixIM.ConversationSource
+
+    def entry(binding, message) do
+      SalixAgent.TestSupport.RetiredSessionFixture.put!(binding.agent, binding.session_id)
+      SalixIM.ConversationSource.entry(binding, message)
+    end
+  end
+
+  for path <- [:consumer, :recovery, :admission] do
+    @retired_path path
+    @tag :retired_triage
+    test "a retired Triage command escalates through #{@retired_path}" do
+      SystemsRuntime.put_env(:salix_agent, :conversation_source_mod, nil)
+      f = create_fixture_task!(fixture!(skip_task_creation: true), pause_task_context: true)
+      settle()
+
+      {:ok, %{"participants" => participants}} =
+        Conversations.list_group_conversation_participants(f.group, f.task)
+
+      participant = Enum.find(participants, &(&1["agent_id"] == f.worker))
+      session = participant["payload"]["session_id"]
+      {:ok, worker} = SalixAgent.AgentControl.get_record(f.worker)
+
+      if @retired_path != :admission,
+        do: SalixAgent.TestSupport.RetiredSessionFixture.put!(worker, session)
+
+      source = %{
+        group_id: f.group,
+        conversation_id: f.task,
+        participant_id: participant["participant_id"]
+      }
+
+      SystemsRuntime.put_env(:salix_agent, :conversation_source_mod, SalixIM.ConversationSource)
+      SystemsRuntime.put_env(:salix_im, :agent_delivery_mod, SalixIM.TestSupport.AgentDelivery)
+
+      case @retired_path do
+        :admission ->
+          SystemsRuntime.put_env(:salix_agent, :conversation_source_mod, RetiredDuringAdmission)
+          assert :ok = SalixAgent.AgentActor.notify_conversation(f.worker, source)
+          settle()
+
+        :consumer ->
+          assert :ok = SalixAgent.AgentActor.notify_conversation(f.worker, source)
+          settle()
+
+        :recovery ->
+          assert {:ok, candidates} = SalixStore.ConversationLogRecovery.claim(8)
+          candidate = Enum.find(candidates, &(&1.conversation_id == f.task))
+          assert candidate
+
+          key = Keys.ctl_group_conversation_meta(f.group, f.task)
+          SalixStore.S3.Fake.blackhole({:fail, 503, :put, key})
+          on_exit(fn -> SalixStore.S3.Fake.clear_blackhole() end)
+          assert {:ok, :pending} = SalixIM.ConversationSource.recover(candidate)
+
+          assert {:ok, %{"status" => "active"}} =
+                   Conversations.get_group_conversation_record(f.group, f.task)
+
+          SalixStore.S3.Fake.clear_blackhole()
+          assert SalixIM.ConversationSource.recover(candidate) in [:ok, {:ok, :pending}]
+      end
+
+      assert {:ok, %{"status" => "escalated"} = task} =
+               Conversations.get_group_conversation_record(f.group, f.task)
+
+      assert task["source_refs"]["triage_investigation"] == f.grant
+      assert {:error, :not_found} = InternalSessionStore.read(f.worker, session)
+
+      assert {:ok, %{"read_only" => true}} =
+               SalixAgent.RetiredSessions.get_summary(worker, session)
+    end
   end
 
   test "a provider-confirmed reply joins the exact Task once and enables ordinary Worker follow-up" do

@@ -101,7 +101,7 @@ public struct Conversation: Codable, Equatable, Identifiable, Sendable {
 public struct Freshness: Codable, Equatable, Sendable { public let state: String }
 
 /// Whether the server lets the member archive a Task now. `reason` says why not: `not_finished`,
-/// `schedule_bound`, or a reason this client does not know yet.
+/// or a reason this client does not know yet.
 public struct ArchiveAvailability: Codable, Equatable, Sendable {
     public let allowed: Bool
     public let reason: String?

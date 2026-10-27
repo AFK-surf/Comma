@@ -28,6 +28,8 @@ type LoginScreenProps = {
   guest?: SessionGuestController | undefined;
   /** Shown after a guest chose to sign up, so the next sign-in keeps the chat. */
   guestHandoffNotice?: string | undefined;
+  /** An app link waits to open (`/a/<token>`): sign in to open it, or continue as a guest. */
+  appLinkPending?: boolean | undefined;
   revocationPending?: boolean | undefined;
   /**
    * Generic banner shown while an OAuth IdP round trip is pending
@@ -60,6 +62,7 @@ function StagedLoginScreen({
   authenticator,
   guest,
   guestHandoffNotice,
+  appLinkPending = false,
   requestGoogleLogin,
   revocationPending = false,
   oauthResumeNotice,
@@ -340,6 +343,7 @@ function StagedLoginScreen({
       <div className="app-login-stage">
         {oauthResumeNotice && <LoginNotice text={oauthResumeNotice} />}
         {guestHandoffNotice && <LoginNotice text={guestHandoffNotice} />}
+        {appLinkPending && <LoginNotice text={messages.mini_app_sign_in_notice()} />}
         {hasChallenge ? (
           <Login
             copy={loginCopy}
@@ -373,7 +377,9 @@ function StagedLoginScreen({
             {...(guest && guestAvailable
               ? {
                   secondaryAction: {
-                    label: messages.auth_guest_try(),
+                    label: appLinkPending
+                      ? messages.mini_app_continue_as_guest()
+                      : messages.auth_guest_try(),
                     onPress: handleTryAsGuest,
                     pending: guestPending,
                   },
@@ -401,6 +407,7 @@ function LegacyLoginScreen({
   authenticator,
   guest,
   guestHandoffNotice,
+  appLinkPending = false,
   revocationPending = false,
   oauthResumeNotice,
 }: LoginScreenProps) {
@@ -595,6 +602,7 @@ function LegacyLoginScreen({
       <div className="app-login-container">
         {oauthResumeNotice && <LoginNotice text={oauthResumeNotice} />}
         {guestHandoffNotice && <LoginNotice text={guestHandoffNotice} />}
+        {appLinkPending && <LoginNotice text={messages.mini_app_sign_in_notice()} />}
         <img
           className="app-login-logo"
           src={commaLogoUrl}
@@ -716,7 +724,9 @@ function LegacyLoginScreen({
                   onPress={tryAsGuest}
                   disabled={busy}
                 >
-                  {messages.auth_guest_try()}
+                  {appLinkPending
+                    ? messages.mini_app_continue_as_guest()
+                    : messages.auth_guest_try()}
                 </Button>
               )}
             </div>

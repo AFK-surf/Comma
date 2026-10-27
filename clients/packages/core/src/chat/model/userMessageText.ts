@@ -2,6 +2,11 @@
 // quotes, the text and workspace files it attached, and a command it names. The page element it was sent about is
 // context for the model alone. Every client shows the message from this (`ChatMessage.display`); none reads the wire
 // text again.
+import type { ChatMessagePart } from "@comma/chat-contract";
+import {
+  modelMentionsAsWords,
+  splitUserTaskMentionParts,
+} from "./mentionSerialization.ts";
 import {
   parseAttachedTextBlocks,
   parseAttachmentsBlock,
@@ -48,6 +53,14 @@ export function decodeUserMessage(text: string): UserMessageDisplay {
     files: attached.attachments,
     ...(command ? { command } : {}),
   };
+}
+
+/** The parts a person's message shows: its body (a command as `/name`), its mentioned Tasks as their chips. */
+export function userParts(display: UserMessageDisplay): ChatMessagePart[] {
+  const shown = display.command
+    ? `/${display.command}`
+    : modelMentionsAsWords(display.body);
+  return splitUserTaskMentionParts(shown) ?? [{ kind: "markdown", text: shown }];
 }
 
 export function stripBrowserElementInspectionContext(message: string) {

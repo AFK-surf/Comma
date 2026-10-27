@@ -42,6 +42,17 @@ The Activity reads the Task's whole history. A client that holds only the latest
 A long Activity shows its first group and its latest two groups. A long group shows its first two and its latest three milestones. A fold row stands for the rest until pressed.
 Implementation: [contract](../../systems/apps/salix_im/lib/salix_im/conversation_milestone.ex), [Activity pages](../../systems/apps/comma_core/lib/comma/task_activity_messages.ex), [client projection](../../clients/packages/core/src/chat/model/taskActivity.ts).
 
+A station-hosted Task keeps its milestones on its station, with the same limits.
+An agent records them with the station tool `chat_post` (`milestones`). The station keeps them on the post's entry.
+A post with milestones alone is a `milestone` entry. It has no text, no Session gets it, and it is not unread or a notice.
+Stations send milestones with the Task's Messages (`task.put`, `task.post`), and Salix reads them with `task.read`.
+When Salix keeps a Task that a station's Session works on, the station's milestones become `milestone` blocks of the Worker's Message.
+The station marks what the Router writes with `task.say` as a `request`.
+
+The client groups a station chat the same way. A `request` entry starts a group, and the brief is the chat's first Message when a person wrote it.
+The client reads the chat before its held page for the Activity alone, in pages of 500 entries.
+Implementation: [station tool](../../systems/station/src/tools/chat.ts), [replication](../../systems/station/src/tasks/tasks.ts), [client projection](../../clients/packages/core/src/stations/chat.ts).
+
 ## Authority
 
 Mutate Conversation facts only through `ConversationServer -> ConversationActor`.
@@ -89,7 +100,9 @@ Bound status queries and SSE recovery. Stale events cannot overwrite newer snaps
 Status hints use current activation sources and the structured wait, with no scan or extra RPC. Hints carry no source IDs or wait reasons.
 Sources from one `wechat`, `telegram`, or `signal` channel give `working_provider`. Comma shows its capsule.
 Only Loop sources give `loop_wake: true`. Home keeps that Participant active with no activity bubble.
-Other Conversations with input give `working_conversation_ids`, at most eight. A wait gives `waiting: true`. Comma shows both only on Home. Agent tools omit them.
+Other Conversations with input give `working_conversation_ids`, at most eight.
+A wait on a running tool call gives `wait_tool`, the canonical tool name. Another wait gives `waiting: true`. Both give `wait_started_at` (ms).
+Comma shows these only on Home. Agent tools omit them.
 See [Storage](../storage-search.md) for archive errors and [Tasks](tasks-background-execution.md) for Task state.
 
 ## Provider ingress and egress
@@ -104,6 +117,7 @@ The ordered log supplies Router, Worker, and Meeting inputs to their Sessions.
 Provider callbacks commit checked input and provenance through ConversationServer before acknowledgment.
 Each verified provider source keeps its first accepted input per target Session.
 After Router reset, a new callback can admit the source to the new Session. Reset alone never replays the log.
+Reset copies internal Session frontiers. A retired Router Session has no internal frontier and permits a fresh Session with empty sources.
 Chat shows `platform_message` when present, never provider prompt envelopes or delivery control events. Search omits internal delivery records.
 Public Message appends cannot supply owner-only input fields.
 After a successful explicit send, the dispatcher attempts a `provider.message` record through that owner, with no delivery targets or Agent input.
@@ -134,7 +148,19 @@ Admission makes three attempts for other transient failures. A terminal failure 
 An exhausted Triage command escalates its Task before the rejected position commits. Escalation keeps the grant, so an accepted Worker can still complete the Task.
 If storage cannot commit the rejection, progress stays unchanged and recovery retries after five seconds.
 Missing and retired bindings stop that source drain.
-An explicit Participant delivery-status query includes `source_progress` and needs at most one Session read. Provider delivery records stay in `deliveries`.
+
+Stored retired Session history or an external birth marker also ends consumption, even when the Participant remains active.
+Recovery treats that source as complete. A read-only refusal during admission ends the drain without retries or a rejection write.
+Storage probe failures keep recovery pending. Retirement does not advance a Session frontier or delete history.
+
+Before completing a retired source, consumption and recovery preserve Triage command escalation through the Conversation owner.
+The check reads at most one tail Message and uses the existing grant, Participant, Session, and tail fences.
+An escalation write failure keeps recovery pending.
+
+An explicit Participant delivery-status query includes `source_progress` and reads one internal Session.
+When absent, it probes retired history and reads the birth marker, with at most two additional storage calls.
+Retired Sessions report `status: "retired"`. Storage failures report `status: "unavailable"`.
+Provider delivery records stay in `deliveries`.
 
 Recovery uses the PostgreSQL `conversation_log_recovery` due index. It never traverses Group or Conversation directories.
 One row per pending Conversation records the greatest prepared sequence and provider status version.

@@ -1,6 +1,10 @@
+// A station's chat as the page of the Task it hosts shows it (`chatView`): its latest page, older pages as asked and
+// new entries as the station says them, what is sent from here through its outbox, how each card stands, files put on
+// the station, and its Activity read back to its brief. What any Task's page does with it is station-conversation's.
 import { CoreClient, topicKey, type Topic } from "@comma/core-kernel/client";
 import { describe, expect, it } from "vitest";
-import type { StationChatValue } from "../src/contract.ts";
+import type { ChatQuestionPart } from "@comma/chat-contract";
+import type { ChatViewValue } from "../src/contract.ts";
 import {
   FakeHost,
   FakeStations,
@@ -12,7 +16,10 @@ import {
 } from "../src/testing/index.ts";
 
 const WS = "wsp_1";
+const GROUP = "grp_1";
 const ME = "user-1@example.test";
+const ID = "station:st_a:7";
+const view = { workspace: WS, group: GROUP, conversation: ID, surface: "win_main" };
 
 function setup() {
   const host = new FakeHost();
@@ -26,6 +33,10 @@ function setup() {
       workspaces: [{ id: WS, name: "Main", role: "owner" }],
       relay_urls: [],
     })
+    .on("GET", "/v1/comma/workspaces", {
+      data: [{ id: WS, group_id: GROUP, name: "Main", status: "ready" }],
+    })
+    .on("GET", `/v1/comma/groups/${GROUP}/station-tasks`, { tasks: [] })
     .on("GET", `/v1/comma/workspaces/${WS}/stations`, {
       stations: [{ id: "st_a", name: "Studio", version: "1", online: true }],
     })
@@ -43,7 +54,7 @@ function setup() {
     );
   const a = stations.station("st_a", WS);
   const core = startTestCore(host);
-  const client = new CoreClient(inProcessOpener(core, host), {
+  const client = new CoreClient(inProcessOpener(core, host, "win_main"), {
     schedule: () => undefined,
   });
   const values = new Map<string, unknown>();
@@ -57,7 +68,12 @@ function setup() {
     return () => values.get(k) as T;
   };
   core.observeSession(signedIn());
-  return { host, core, client, time, stations, a, watch };
+  /** The Task's page, shown: what it shows now. */
+  const open = () => {
+    const chat = watch<ChatViewValue>({ topic: "chatView", ...view });
+    return () => chat()!.state!;
+  };
+  return { host, core, client, time, stations, a, watch, open };
 }
 
 const card = {
@@ -72,95 +88,35 @@ describe("Station chat", () => {
       t.a.entry(i + 1, i % 2 === 0 ? "person" : "agent", `m${i + 1}`)
     );
     t.a.threads.set(7, { title: "Fix CI", entries, read: 60 });
-    t.a.chats = [
-      {
-        id: "s_1",
-        session: "s_1",
-        thread: 7,
-        title: "Fix CI",
-        agents: [
-          {
-            key: "s_1",
-            runtime: "claude",
-            model: "opus",
-            effort: "high",
-            process: "running",
-            pending: 0,
-            lastTurn: null,
-          },
-        ],
-        last: null,
-        unread: false,
-        lastActiveAt: 0,
-      },
-    ];
-    const chat = t.watch<StationChatValue>({
-      topic: "stationChat",
-      workspace: WS,
-      station: "st_a",
-      thread: "7",
-    });
+    const state = t.open();
     await t.time.pass(100);
-    expect(chat()).toMatchObject({
-      thread: 7,
-      title: "Fix CI",
-      link: { state: "online" },
-      more: true,
-      loading: false,
-      agents: [
-        {
-          session: "s_1",
-          name: "opus · high",
-          state: { status: "running" },
-          running: true,
-        },
-      ],
-    });
-    expect(chat()!.messages.map((m) => m.seq)).toEqual(
+    expect(state().history?.hasOlder).toBe(true);
+    expect(state().serverMessages.map((m) => m.seq)).toEqual(
       Array.from({ length: 50 }, (_, i) => i + 11)
     );
-    expect(chat()!.messages[0]).toMatchObject({
-      kind: "person",
-      mine: true,
-      author: "Ada",
-    });
-    expect(chat()!.messages[1]).toMatchObject({
-      kind: "agent",
-      mine: false,
-      author: "Opus",
-    });
+    expect(state().serverMessages[0]).toMatchObject({ role: "user", text: "m11" });
+    expect(state().serverMessages[1]).toMatchObject({ role: "assistant", text: "m12" });
 
-    await t.client.call("stations.older", {
-      workspace: WS,
-      station: "st_a",
-      thread: 7,
-    });
+    await t.client.call("chatView.older", view);
     await t.time.pass(100);
-    expect(chat()!.messages).toHaveLength(60);
-    expect(chat()!.more).toBe(false);
+    expect(state().serverMessages).toHaveLength(60);
+    expect(state().history?.hasOlder).toBe(false);
 
     // A new entry the station says; then one after a gap, whose missed entry is read.
     t.a.feed!.say("thread", { id: 7, entries: [t.a.entry(61, "agent", "m61")] });
     await t.time.pass(100);
-    expect(chat()!.messages.at(-1)).toMatchObject({ seq: 61, text: "m61" });
+    expect(state().serverMessages.at(-1)).toMatchObject({ seq: 61, text: "m61" });
     t.a.threads
       .get(7)!
       .entries.push(t.a.entry(62, "agent", "m62"), t.a.entry(63, "agent", "m63"));
     t.a.feed!.say("thread", { id: 7, entries: [t.a.entry(63, "agent", "m63")] });
     await t.time.pass(100);
     expect(
-      chat()!
-        .messages.slice(-3)
+      state()
+        .serverMessages.slice(-3)
         .map((m) => m.seq)
     ).toEqual([61, 62, 63]);
     expect(t.a.asked).toContain("GET /threads/7/entries?after=61");
-
-    // Seen to its end: marked read once for the newest.
-    await t.client.call("stations.read", { workspace: WS, station: "st_a", thread: 7 });
-    await t.client.call("stations.read", { workspace: WS, station: "st_a", thread: 7 });
-    expect(t.a.writes.filter((w) => w.path === "/threads/7/read")).toEqual([
-      { method: "PUT", path: "/threads/7/read", body: { n: 63 } },
-    ]);
   });
 
   it("sends through the outbox: once the chat holds the message it leaves; a failed one is sent again as itself", async () => {
@@ -170,36 +126,29 @@ describe("Station chat", () => {
       entries: [t.a.entry(1, "agent", "Hi")],
       read: 1,
     });
-    const chat = t.watch<StationChatValue>({
-      topic: "stationChat",
-      workspace: WS,
-      station: "st_a",
-      thread: "7",
-    });
+    const state = t.open();
     await t.time.pass(100);
-    await t.client.call("stations.send", {
-      workspace: WS,
-      station: "st_a",
-      thread: 7,
+    await t.client.call("chatView.send", {
+      ...view,
       text: " Also the docs ",
-      attachments: [{ name: "a.png", path: "/uploads/a.png", size: 3 }],
+      clientRequestId: "req-0001",
     });
     await t.time.pass(100);
     expect(t.a.writes[0]).toMatchObject({
       method: "POST",
       path: "/threads/7/messages",
-      body: {
-        text: "Also the docs",
-        attachments: [{ name: "a.png", path: "/uploads/a.png", size: 3 }],
-      },
+      body: { text: "Also the docs" },
     });
-    expect(chat()!.outbox).toEqual([]);
-    expect(chat()!.messages.at(-1)).toMatchObject({
+    expect(state().pending).toEqual([]);
+    // Named by the id it was sent under, in the chat after.
+    expect(state().serverMessages.at(-1)).toMatchObject({
+      role: "user",
       text: "Also the docs",
-      mine: true,
+      clientRequestId: "req-0001",
     });
 
-    // The station refuses it for now: it stays, failed; sent again, it carries the same key.
+    // The station refuses it for now: it stays, failed; sent again under its id before the station took it, it is the
+    // same message; sent again as a retry, it carries the same key.
     const keys: (string | undefined)[] = [];
     t.a.on("POST", "/threads/7/messages", (request) => {
       keys.push(request.headers.find(([n]) => n === "idempotency-key")?.[1]);
@@ -208,18 +157,16 @@ describe("Station chat", () => {
         body: new TextEncoder().encode(JSON.stringify({ error: "station starting" })),
       };
     });
-    await t.client.call("stations.send", {
-      workspace: WS,
-      station: "st_a",
-      thread: 7,
-      text: "Second",
-    });
+    const second = { ...view, text: "Second", clientRequestId: "req-0002" };
+    await t.client.call("chatView.send", second);
     await t.time.pass(100);
-    expect(chat()!.outbox).toMatchObject([
+    await t.client.call("chatView.send", second);
+    await t.time.pass(100);
+    expect(state().pending).toMatchObject([
       {
-        id: expect.stringMatching(/^out-/),
+        clientRequestId: "req-0002",
         text: "Second",
-        state: "failed",
+        status: "failed",
         error: "station starting",
       },
     ]);
@@ -233,56 +180,16 @@ describe("Station chat", () => {
         body: new TextEncoder().encode(JSON.stringify({ n: 1001 })),
       };
     });
-    const id = chat()!.outbox[0]!.id;
-    await t.client.call("stations.retry", {
-      workspace: WS,
-      station: "st_a",
-      thread: 7,
-      id,
-    });
+    await t.client.call("chatView.retry", { ...view, clientRequestId: "req-0002" });
     await t.time.pass(1_100);
-    expect(chat()!.outbox).toEqual([]);
-    expect(chat()!.messages.at(-1)).toMatchObject({ seq: 1001, text: "Second" });
+    expect(state().pending).toEqual([]);
+    expect(state().serverMessages.at(-1)).toMatchObject({
+      seq: 1001,
+      text: "Second",
+      clientRequestId: "req-0002",
+    });
     expect(keys).toHaveLength(2);
     expect(keys[1]).toBe(keys[0]);
-  });
-
-  it("makes the chat of a session that has none when the first message goes", async () => {
-    const t = setup();
-    t.a.chats = [
-      {
-        id: "s_9",
-        session: "s_9",
-        thread: null,
-        title: null,
-        agents: [{ key: "s_9", runtime: "codex", pending: 0, lastTurn: null }],
-        last: null,
-        unread: false,
-        lastActiveAt: 0,
-      },
-    ];
-    const chat = t.watch<StationChatValue>({
-      topic: "stationChat",
-      workspace: WS,
-      station: "st_a",
-      session: "s_9",
-    });
-    await t.time.pass(100);
-    expect(chat()).toMatchObject({
-      thread: null,
-      messages: [],
-      agents: [{ session: "s_9" }],
-    });
-    await t.client.call("stations.send", {
-      workspace: WS,
-      station: "st_a",
-      session: "s_9",
-      text: "Go",
-    });
-    await t.time.pass(100);
-    expect(t.a.made).toEqual(["s_9"]);
-    expect(chat()).toMatchObject({ thread: 100 });
-    expect(chat()!.messages.map((m) => m.text)).toEqual(["Go"]);
   });
 
   it("says how each card stands: waiting, chosen, replied or replaced", async () => {
@@ -302,6 +209,7 @@ describe("Station chat", () => {
       ],
       read: 6,
     });
+    // Its station says the last card waits.
     t.a.chats = [
       {
         id: "s_1",
@@ -325,38 +233,26 @@ describe("Station chat", () => {
           },
           before: [],
           card,
-          dismissed: true,
         },
       },
     ];
-    const chat = t.watch<StationChatValue>({
-      topic: "stationChat",
-      workspace: WS,
-      station: "st_a",
-      thread: "7",
-    });
-    t.watch({ topic: "stationChats", workspace: WS });
+    const state = t.open();
     await t.time.pass(100);
-    const states = chat()!
-      .messages.filter((m) => m.card)
-      .map((m) => m.cardState);
-    expect(states).toEqual([
-      { resolved: true, outcome: { kind: "chose", by: null, label: "Ship" } },
-      { resolved: true, outcome: { kind: "replied", by: "Lin" } },
-      { resolved: true, outcome: { kind: "replaced" } },
-      { resolved: false, dismissed: true },
+    const questions = state().serverMessages.flatMap((m) =>
+      (m.parts ?? []).filter(
+        (part): part is ChatQuestionPart => part.kind === "question"
+      )
+    );
+    expect(questions.map((q) => q.state)).toEqual([
+      { status: "answered", choiceIds: ["1"] },
+      { status: "replied" },
+      { status: "replaced" },
+      { status: "open" },
     ]);
-    expect(chat()!.messages[0]!.card).toMatchObject({
-      options: [{ label: "Wait" }, { label: "Ship", recommended: true }],
-    });
   });
 
-  it("puts a file on the station and stops an agent", async () => {
+  it("puts a file on the station for a new Task's first message", async () => {
     const t = setup();
-    t.a.on("POST", "/sessions/s_1/stop", () => ({
-      status: 200,
-      body: new TextEncoder().encode(JSON.stringify({ ok: true })),
-    }));
     t.watch({ topic: "stations", workspace: WS });
     await t.time.pass(100);
     expect(
@@ -368,11 +264,68 @@ describe("Station chat", () => {
       })
     ).toEqual({ name: "notes v2.txt", path: "/uploads/notes v2.txt", size: 3 });
     expect(t.a.asked).toContain("POST /uploads?name=notes%20v2.txt");
-    await t.client.call("stations.stopAgent", {
-      workspace: WS,
-      station: "st_a",
-      session: "s_1",
-    });
-    expect(t.a.asked).toContain("POST /sessions/s_1/stop");
+  });
+
+  it("shows a station-hosted Task's milestones as its Activity, read back to its brief, each step named as the page names its message", async () => {
+    const t = setup();
+    const milestones = (n: number, titles: string[]) =>
+      t.a.entry(n, "agent", "", { kind: "milestone", text: null, milestones: titles });
+    const entries = [
+      t.a.entry(1, "person", "Send the invites"),
+      milestones(2, ["Wrote the invite for Bob"]),
+      t.a.entry(3, "agent", "Sent Bob's invite"),
+      ...Array.from({ length: 52 }, (_, i) =>
+        t.a.entry(i + 4, i % 2 === 0 ? "person" : "agent", `m${i + 4}`)
+      ),
+      t.a.entry(56, "agent", "Also invite Cy", {
+        author: "salix/Router",
+        authorName: "Router",
+        request: true,
+      }),
+      milestones(57, ["Wrote the invite for Cy"]),
+      t.a.entry(58, "agent", "Sent Cy's invite", { milestones: ["Sent the invites"] }),
+      t.a.entry(59, "person", "thanks"),
+      milestones(60, ["Archived the drafts"]),
+    ];
+    t.a.threads.set(7, { title: "Invites", entries, read: 60 });
+    const state = t.open();
+    await t.time.pass(100);
+    const steps = () =>
+      state().taskActivity?.groups.map((group) => [
+        group.request?.kind,
+        group.request?.text,
+        group.entries.map((entry) => [entry.title, entry.messageId]),
+      ]);
+
+    // Milestones alone are shown only in the Activity.
+    expect(
+      state()
+        .serverMessages.map((m) => m.seq)
+        .slice(-4)
+    ).toEqual([55, 56, 58, 59]);
+    expect(state().history?.hasOlder).toBe(true);
+    // From what the chat holds: the Router's request and a person's later message, each step opening the agent's
+    // next post, or the last one shown while none has come; each named as the page names the message.
+    expect(steps()).toEqual([
+      [
+        "follow_up",
+        "Also invite Cy",
+        [
+          ["Wrote the invite for Cy", "7:58"],
+          ["Sent the invites", "7:58"],
+        ],
+      ],
+      ["follow_up", "thanks", [["Archived the drafts", "7:59"]]],
+    ]);
+    expect(state().taskActivity?.earlier).toBeUndefined();
+
+    // The rest is read for the Activity alone: the brief and its steps; the chat holds what it held.
+    await t.client.call("chatView.readTaskActivity", view);
+    await t.time.pass(100);
+    expect(t.a.asked).toContain("GET /threads/7/entries?before=11&limit=500");
+    expect(steps()![0]).toEqual(["brief", "", [["Wrote the invite for Bob", "7:3"]]]);
+    expect(steps()).toHaveLength(3);
+    expect(state().taskActivity?.earlier).toBeUndefined();
+    expect(state().serverMessages[0]!.seq).toBe(11);
   });
 });

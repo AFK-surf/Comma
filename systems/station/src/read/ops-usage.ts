@@ -9,8 +9,9 @@ import { usage } from "./usage.ts";
 export const usageOps: Record<string, ReadOp> = {
   // `reading`: the counter's readingAll (absent: true).
   usage: (store, a) => usage(store, a.lang, BigInt(a.from), BigInt(a.to), BigInt(a.tz), typeof a.reading === "boolean" ? a.reading : true),
-  machineSessions: (store) => machineSessions(store),
-  machineSession: (store, a) => machineSession(store, a.lang, a.runtime, a.id, a.limit),
+  // `allowed`: the runtimes whose local sign-in a Workspace chose (only those are read).
+  machineSessions: (store, a) => machineSessions(store, a.allowed),
+  machineSession: (store, a) => machineSession(store, a.lang, a.runtime, a.id, a.limit, a.allowed),
   memory: (store) => memory(store.dataDir),
   host: (store, a) => hostInfo(store.dataDir, a.seen),
 };

@@ -1972,7 +1972,7 @@ const isOwnFile = (request: string) => {
   if (url.href in externalFiles) return true;
   return (
     url.origin === location.origin &&
-    /^\/(__pages|__dynamic-ui|assets|brand)\//.test(url.pathname)
+    /^\/(__pages|__dynamic-ui|__mini-app|assets|brand)\//.test(url.pathname)
   );
 };
 // The images mounts in this window loaded, by request ("image <url>").

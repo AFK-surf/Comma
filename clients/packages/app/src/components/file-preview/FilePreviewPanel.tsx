@@ -1,3 +1,4 @@
+import type { ChatConversationFile } from "@comma/chat-contract";
 import type { AttachmentUploadInput } from "@comma/core/chat";
 import { mediaElementSource, useMediaContextMenu } from "./useMediaContextMenu";
 import {
@@ -14,7 +15,14 @@ import { useCommaMessages } from "@comma/i18n/react";
 import { useId, type ReactNode } from "react";
 import { ShellIconButtonControl } from "../ShellIconButton";
 import { DriveFileName } from "../drive/DriveFileName";
+import type {
+  DownloadLink,
+  ResolveFileBytes,
+  SaveToDownloads,
+} from "../../runtime-files/fileDownloads";
+import type { ConversationFileSource } from "../../runtime-files/fileSources";
 import { FilePreviewContent, filePreviewKind } from "./FilePreviewContent";
+import type { RangedFile } from "./PdfFilePreview";
 
 /** Drive's existing filename and shell controls, shared by both preview entries. */
 function FilePreviewToolbar({
@@ -91,33 +99,52 @@ export function FilePreviewPanel({
   mimeType,
   blob,
   mediaUrl,
+  mediaKey,
+  ranged,
   error,
   placeholder,
   panelId,
   testId,
   download,
+  save,
+  link,
+  parts,
   openIn,
   extraActions,
   children,
   onOpenBrowser,
   onAttachFiles,
+  attachment,
+  onAttachConversationFiles,
 }: {
   fileName: string;
   mimeType?: string | undefined;
   blob?: Blob | undefined;
   mediaUrl?: string | undefined;
+  /** The file `mediaUrl` reads, when that URL can be renewed: a new URL of it keeps the playback position. */
+  mediaKey?: string | undefined;
+  ranged?: RangedFile | undefined;
   error?: string | undefined;
   placeholder?: string | undefined;
   panelId: string;
   testId: string;
   download: ChatPanelMediaDownloadAction;
+  /** How the desktop saves the shown file without reading it whole, for the media menu's Save (a chat file). */
+  save?: SaveToDownloads | undefined;
+  /** How a browser downloads the shown file itself, for the media menu's Save (a chat file on the web). */
+  link?: DownloadLink | undefined;
+  /** How the shown file is read a part at a time for a browser to save, when it has no link (a Task's on a machine). */
+  parts?: ResolveFileBytes | undefined;
   openIn?: ChatPanelFileOpenInAction | undefined;
   extraActions?: ReactNode;
   children?: ReactNode;
   onOpenBrowser: (url: string) => void;
   onAttachFiles?: ((files: AttachmentUploadInput[]) => unknown) | undefined;
+  /** The message attachment shown, which Add to Context attaches by reference (`onAttachConversationFiles`). */
+  attachment?: ConversationFileSource | undefined;
+  onAttachConversationFiles?: ((files: ChatConversationFile[]) => unknown) | undefined;
 }) {
-  const imageMenu = useMediaContextMenu(onAttachFiles);
+  const imageMenu = useMediaContextMenu(onAttachFiles, onAttachConversationFiles);
   const kind = filePreviewKind(fileName, mimeType || blob?.type);
   const document =
     kind === "text" || kind === "markdown" || kind === "html" || kind === "pdf";
@@ -158,16 +185,19 @@ export function FilePreviewPanel({
                 )
               )
                 return;
-              imageMenu.open(
-                event,
-                (kind === "image" || kind === "video") && blob
+              imageMenu.open(event, {
+                ...((kind === "image" || kind === "video") && blob
                   ? {
                       fileName,
                       resolve: async () => blob,
                       ...(media instanceof HTMLVideoElement ? { video: media } : {}),
                     }
-                  : mediaElementSource(media)
-              );
+                  : mediaElementSource(media)),
+                ...(save ? { save } : {}),
+                ...(link ? { link } : {}),
+                ...(parts ? { parts } : {}),
+                ...(attachment ? { attachment } : {}),
+              });
             }}
           >
             <FilePreviewContent
@@ -175,6 +205,8 @@ export function FilePreviewPanel({
               mimeType={mimeType}
               blob={blob}
               mediaUrl={mediaUrl}
+              mediaKey={mediaKey}
+              ranged={ranged}
               error={error}
               placeholder={placeholder}
               onOpenBrowser={onOpenBrowser}

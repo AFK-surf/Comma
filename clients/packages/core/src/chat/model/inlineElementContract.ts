@@ -3,7 +3,6 @@ import type {
   ChatDeviceSetupOffer,
   ChatInlineMessagePart,
   ChatInlineMessagePartKind,
-  ChatInlineTask,
   ChatMessagePart,
   ChatQuestionAnswerPart,
   ChatQuestionChoice,
@@ -61,6 +60,25 @@ const inlineElementContracts = {
       return part.summary;
     },
   },
+  // A deployed Mini App; only the block walk decodes it, for agent messages.
+  "mini-app": {
+    decode() {
+      return undefined;
+    },
+    equals(left, right) {
+      return (
+        left.appId === right.appId &&
+        left.appVersion === right.appVersion &&
+        left.name === right.name &&
+        left.summary === right.summary &&
+        left.messageId === right.messageId &&
+        left.conversationId === right.conversationId
+      );
+    },
+    toPlainText(part) {
+      return part.summary;
+    },
+  },
   "device-setup-offer": {
     decode(rawBlock) {
       const block = objectValue(rawBlock);
@@ -82,6 +100,18 @@ const inlineElementContracts = {
     },
     toPlainText(part) {
       return part.offer.name;
+    },
+  },
+  // An Agent's Mac app card; only the block walk decodes it, for agent messages (`macAppItemValue`).
+  "mac-app-item": {
+    decode() {
+      return undefined;
+    },
+    equals(left, right) {
+      return JSON.stringify(left.item) === JSON.stringify(right.item);
+    },
+    toPlainText(part) {
+      return part.item.title;
     },
   },
   // A question carries the id of the message that asks it, so the block walk decodes it (`questionPartValue`).
@@ -152,7 +182,6 @@ const inlineElementContracts = {
         task: {
           activityStatus: stringValue(block.activity_status),
           conversationId,
-          freshness: freshnessValue(block.freshness),
           status,
           ...(status === undefined ? {} : { statusBucket: taskStatusBucket(status) }),
           title: stringValue(block.title),
@@ -165,7 +194,6 @@ const inlineElementContracts = {
       return (
         left.task.activityStatus === right.task.activityStatus &&
         left.task.conversationId === right.task.conversationId &&
-        left.task.freshness === right.task.freshness &&
         left.task.status === right.task.status &&
         left.task.title === right.task.title &&
         left.task.unavailable === right.task.unavailable &&
@@ -351,13 +379,6 @@ function stringValue(value: unknown) {
 
 function numberValue(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-}
-
-function freshnessValue(value: unknown): ChatInlineTask["freshness"] {
-  const candidate = typeof value === "string" ? value : objectValue(value)?.state;
-  return candidate === "fresh" || candidate === "stale" || candidate === "unknown"
-    ? candidate
-    : undefined;
 }
 
 /**

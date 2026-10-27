@@ -3,6 +3,7 @@ import { installNativeBridgeMock } from "@comma/test-utils/native-bridge";
 import { createScriptedCore } from "@comma/test-utils/scripted-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FilePreviewPanel } from "../components/chat-sidebar/FilePreviewPanel";
+import { textPreviewLimit } from "../components/file-preview/FilePreviewContent";
 import type { ConversationFileSource } from "../runtime-files/fileSources";
 
 const registry = vi.hoisted(() => ({ beginAttempt: vi.fn() }));
@@ -28,10 +29,23 @@ const text = (value: string, type = "text/plain"): FileBytes => ({
   bytes: new TextEncoder().encode(value),
   type,
 });
-/** A core whose `files.read` answers what `read` gives for each call. */
+/**
+ * A core whose reads answer what `read` gives for each call: the head a text preview asks for (`files.readRange`, the
+ * whole file being that head), or a whole file. It cannot stream (`fileStream` unsupported), so an image is read whole.
+ */
 const coreWith = (read: (params: unknown) => Promise<FileBytes> | FileBytes) =>
   createScriptedCore({
-    calls: (name, params) => (name === "files.read" ? read(params) : null),
+    values: (topic) =>
+      topic.topic === "fileStream" ? { status: "unsupported" } : undefined,
+    calls: (name, params) =>
+      name === "files.readRange"
+        ? Promise.resolve(read(params)).then((span) => ({
+            ...span,
+            size: span.bytes.byteLength,
+          }))
+        : name === "files.read"
+          ? read(params)
+          : null,
   });
 const onOpenBrowser = vi.fn();
 const panel = (core: ReturnType<typeof coreWith>, source = file) =>
@@ -80,7 +94,7 @@ describe("selected file preview ownership", () => {
     expect(screen.queryByTestId("file-preview-loading")).not.toBeInTheDocument();
   });
 
-  it("addresses the original worker attachment and drops late data when selection changes", async () => {
+  it("reads the head of a text file it shows, addressed to the original worker attachment, and drops late data when selection changes", async () => {
     const first = deferred<FileBytes>();
     const second = deferred<FileBytes>();
     const read = vi
@@ -91,11 +105,15 @@ describe("selected file preview ownership", () => {
     const { rerender } = render(panel(core));
     await waitFor(() => expect(read).toHaveBeenCalledTimes(1));
     expect(read).toHaveBeenNthCalledWith(1, {
-      source: "attachment",
-      group: "group",
-      conversation: "worker-conversation",
-      message: "message",
-      index: 2,
+      source: {
+        source: "attachment",
+        group: "group",
+        conversation: "worker-conversation",
+        message: "message",
+        index: 2,
+      },
+      offset: 0,
+      length: textPreviewLimit + 1,
     });
     rerender(
       panel(core, {
@@ -106,7 +124,7 @@ describe("selected file preview ownership", () => {
       })
     );
     await waitFor(() =>
-      expect(core.cancelledTo("files.read")).toEqual([read.mock.calls[0]![0]])
+      expect(core.cancelledTo("files.readRange")).toEqual([read.mock.calls[0]![0]])
     );
     await act(async () => second.resolve(text("Second file content")));
     expect(await screen.findByText("Second file content")).toBeVisible();
@@ -139,12 +157,12 @@ describe("selected file preview ownership", () => {
     const { unmount } = render(panel(core));
     await waitFor(() => expect(read).toHaveBeenCalledOnce());
     unmount();
-    await waitFor(() => expect(core.cancelledTo("files.read")).toHaveLength(1));
+    await waitFor(() => expect(core.cancelledTo("files.readRange")).toHaveLength(1));
     await act(async () => result.resolve(text("Closed content")));
     expect(screen.queryByTestId("file-preview-panel")).not.toBeInTheDocument();
   });
 
-  it("says a file over the limit is too large to preview", async () => {
+  it("says an image the host cannot stream is too large to read whole", async () => {
     render(
       panel(
         coreWith(() =>
@@ -152,12 +170,25 @@ describe("selected file preview ownership", () => {
             code: "too_large",
             message: "The file is larger than 10 MB.",
           })
-        )
+        ),
+        { ...file, fileName: "poster.png", mimeType: "image/png" }
       )
     );
     expect(
       await screen.findByText("This file exceeds the 10 MB preview limit.")
     ).toBeVisible();
+  });
+
+  it("reads nothing of a file whose type it cannot show", async () => {
+    const read = vi.fn(() => text("never read"));
+    const core = coreWith(read);
+    render(
+      panel(core, { ...file, fileName: "archive.zip", mimeType: "application/zip" })
+    );
+    expect(
+      await screen.findByText("A preview is not available for this file type.")
+    ).toBeVisible();
+    expect(read).not.toHaveBeenCalled();
   });
 
   it("retires a displayed object URL when the Session is revoked", async () => {

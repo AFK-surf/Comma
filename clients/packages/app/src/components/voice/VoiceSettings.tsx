@@ -2,6 +2,7 @@ import { useCommaMessages } from "@comma/i18n/react";
 import { CreatedSecretPanel } from "@comma/ui/components/settings";
 import { Dialog } from "@comma/ui/components/dialog";
 import { useState } from "react";
+import { nativePlatformClipboard } from "../../nativePlatformActions";
 import type { VoiceKeyCreated as CommaVoiceApiKeyCreated } from "@comma/core-client";
 
 const E164 = /^\+[1-9]\d{6,14}$/;
@@ -55,6 +56,7 @@ export function CreatedVoiceKeyPanel({
       example={voiceKeyExample(created)}
       label={m.settings_voice_key_created_title()}
       name={created.name}
+      onCopy={nativePlatformClipboard.writeText}
       onDismiss={onDismiss}
       secret={created.key}
       testIds={{
@@ -74,7 +76,8 @@ export type VoiceDialogState =
   | { kind: "remove-number"; e164: string }
   | { kind: "new-key" }
   | { kind: "rename-key"; keyId: string; name: string }
-  | { kind: "delete-key"; keyId: string; name: string };
+  | { kind: "delete-key"; keyId: string; name: string }
+  | { kind: "custom-voice" };
 
 export interface VoiceDialogProps {
   dialog: VoiceDialogState;
@@ -89,6 +92,7 @@ export interface VoiceDialogProps {
   onCreateKey: (name: string) => void;
   onRenameKey: (keyId: string, name: string) => void;
   onDeleteKey: (keyId: string) => void;
+  onCreateCustomVoice: (description: string) => void;
 }
 
 /**
@@ -116,6 +120,7 @@ function VoiceDialogBody({
   onCreateKey,
   onRenameKey,
   onDeleteKey,
+  onCreateCustomVoice,
 }: VoiceDialogProps) {
   const m = useCommaMessages();
   const [draft, setDraft] = useState(dialog.kind === "rename-key" ? dialog.name : "");
@@ -295,6 +300,34 @@ function VoiceDialogBody({
         />
       );
     }
+    case "custom-voice":
+      return (
+        <Dialog
+          {...common}
+          actions={[
+            cancel,
+            {
+              label: m.settings_voice_custom_create(),
+              hierarchy: "primary",
+              disabled: !value || pending,
+              onPress: () => onCreateCustomVoice(value),
+            },
+          ]}
+          description={m.settings_voice_custom_dialog_description()}
+          input={{
+            autoFocus: true,
+            label: m.settings_voice_custom_label(),
+            maxLength: 1000,
+            name: "description",
+            placeholder: m.settings_voice_custom_placeholder(),
+            value: draft,
+            onChange: (event) => setDraft(event.target.value),
+            ...(error ? { errorMessage: error } : {}),
+          }}
+          title={m.settings_voice_custom_title()}
+          variant="input"
+        />
+      );
     case "delete-key":
       return (
         <Dialog

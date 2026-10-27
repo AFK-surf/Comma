@@ -36,6 +36,72 @@ defmodule SalixWeb.EnvGetTest do
     {:ok, tenant_id: tenant["tenant_id"], group_id: group["group_id"], agent: agent}
   end
 
+  test "public lists hide disconnected coding sandboxes but preserve exact and internal reads",
+       ctx do
+    sandbox_id = SalixStore.CodingSandboxes.device_id("cnv1_history")
+
+    {laptop_run, laptop} =
+      connect_runtime!(ctx.tenant_id, ctx.group_id, SystemsClock.system_time(:millisecond))
+
+    {:ok, _, sandbox} =
+      Registry.connect("sandbox-node", %{
+        "tenant_id" => ctx.tenant_id,
+        "group_id" => ctx.group_id,
+        "device_id" => sandbox_id,
+        "connector_id" => "conn-sbx-history",
+        "alias" => "sandbox",
+        "name" => "Coding sandbox"
+      })
+
+    assert {:ok, _} = Registry.mark_disconnected(laptop_run)
+
+    assert {:ok, connected} = Control.list_group_environments(ctx.group_id, ctx.tenant_id)
+
+    assert MapSet.new(connected, & &1["device_id"]) ==
+             MapSet.new([sandbox_id, laptop["device_id"]])
+
+    assert {:ok, %{devices: active_devices}} =
+             EnvDispatch.list_devices(ctx.agent["agent_id"], limit: 100)
+
+    assert Enum.any?(active_devices, &(&1["device_id"] == sandbox_id))
+
+    assert {:ok, _} = Registry.mark_disconnected(sandbox["connector_run_id"])
+
+    assert {:ok, [remaining]} = Control.list_group_environments(ctx.group_id, ctx.tenant_id)
+    assert remaining["device_id"] == laptop["device_id"]
+    assert [%{"device_id" => id}] = Control.list_environments(ctx.tenant_id)
+    assert id == laptop["device_id"]
+
+    assert {:ok, %{records: page}} =
+             Control.page_group_environments(ctx.group_id, ctx.tenant_id, limit: 100)
+
+    assert Enum.map(page, & &1["device_id"]) == [id]
+
+    assert {:ok, %{records: first, next_cursor: cursor}} =
+             Control.page_group_environments(ctx.group_id, ctx.tenant_id, limit: 1)
+
+    assert is_binary(cursor)
+
+    assert {:ok, %{records: last, next_cursor: nil}} =
+             Control.page_group_environments(ctx.group_id, ctx.tenant_id,
+               limit: 1,
+               cursor: cursor
+             )
+
+    assert Enum.map(first ++ last, & &1["device_id"]) == [id]
+
+    assert {:ok, %{devices: devices}} =
+             EnvDispatch.list_devices(ctx.agent["agent_id"], limit: 100)
+
+    refute Enum.any?(devices, &(&1["device_id"] == sandbox_id))
+
+    assert {:ok, %{"status" => "disconnected"}} =
+             Control.get_environment(sandbox_id, ctx.group_id, ctx.tenant_id)
+
+    assert {:ok, internal} = Registry.list_by_group(ctx.group_id)
+    assert Enum.any?(internal, &(&1["device_id"] == sandbox_id))
+  end
+
   test "exact public device read projects canonical runtime availability without listing", ctx do
     now = SystemsClock.system_time(:millisecond)
     {connector_run_id, binding} = connect_runtime!(ctx.tenant_id, ctx.group_id, now)

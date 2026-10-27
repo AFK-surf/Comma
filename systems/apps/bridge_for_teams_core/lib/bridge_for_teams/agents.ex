@@ -148,20 +148,22 @@ defmodule BridgeForTeams.Agents do
   defp transfer_product_configuration(id) do
     frozen =
       Repo.transaction(fn ->
-        agent = Repo.one!(from a in Agent, where: a.id == ^id, lock: "FOR UPDATE")
+        agent = Repo.one!(from(a in Agent, where: a.id == ^id, lock: "FOR UPDATE"))
         # Operator-only legacy read; product Agent DTO fields are virtual.
         archived_at =
           Repo.one(
-            from a in Agent,
+            from(a in Agent,
               where: a.id == ^id,
               select: type(fragment("archived_at"), :utc_datetime_usec)
+            )
           )
 
         if agent.configuration_authority == "legacy" do
           outstanding =
             Repo.exists?(
-              from r in ReconcileOutbox,
+              from(r in ReconcileOutbox,
                 where: r.aggregate == "agent" and r.aggregate_id == ^id and r.status != "done"
+              )
             )
 
           if outstanding, do: Repo.rollback(:drain_agent_configuration_outbox)
@@ -182,7 +184,7 @@ defmodule BridgeForTeams.Agents do
              if(archived_at, do: DateTime.to_unix(archived_at), else: nil)
            ) do
       Repo.transaction(fn ->
-        locked = Repo.one!(from a in Agent, where: a.id == ^id, lock: "FOR UPDATE")
+        locked = Repo.one!(from(a in Agent, where: a.id == ^id, lock: "FOR UPDATE"))
 
         Repo.update!(
           Ecto.Changeset.change(locked, configuration_authority: "salix", role: claimed["role"])
@@ -258,12 +260,13 @@ defmodule BridgeForTeams.Agents do
   defp pending_product_creation(%Agent{id: id} = association) do
     row =
       Repo.one(
-        from r in ReconcileOutbox,
+        from(r in ReconcileOutbox,
           where:
             r.aggregate == "agent" and r.aggregate_id == ^id and
               r.op == "create_owned_agent" and r.status in ["pending", "failed"],
           order_by: [desc: r.created_at],
           limit: 1
+        )
       )
 
     case row do
@@ -494,7 +497,7 @@ defmodule BridgeForTeams.Agents do
   # product-owned background work. No configuration fields are copied here.
   defp ensure_associations(project, records) do
     ids = Enum.map(records, & &1["agent_id"])
-    query = from a in Agent, where: a.project_id == ^project.id and a.salix_agent_id in ^ids
+    query = from(a in Agent, where: a.project_id == ^project.id and a.salix_agent_id in ^ids)
     existing = Repo.all(query) |> Map.new(&{&1.salix_agent_id, &1})
     now = SystemsClock.utc_now()
 
@@ -877,7 +880,8 @@ defmodule BridgeForTeams.Agents do
       "attempted_name_configured" => configured?(attrs["name"]),
       "attempted_role" => attrs["role"],
       "attempted_model" => model_audit_value(attrs["model"]),
-      "attempted_instructions_configured" => configured?(attrs["system_prompt"]),
+      "attempted_instructions_configured" =>
+        configured?(attrs["router_system_prompt"]) || configured?(attrs["system_prompt"]),
       "attempted_model_configured" =>
         configured?(attrs["model"]) || configured?(attrs["llm_config"]),
       "attempted_inline_model_configured" => configured?(attrs["llm_config"])
@@ -1018,7 +1022,7 @@ defmodule BridgeForTeams.Agents do
       "status" => Agent.lifecycle(agent),
       "archived_at" => agent.salix["archived_at"],
       "model" => model_audit_value(agent.salix["model"]),
-      "instructions_configured" => configured?(agent.salix["system_prompt"]),
+      "instructions_configured" => configured?(Agent.instructions(agent)),
       "model_configured" => model_configured?(agent),
       "inline_model_configured" => configured?(agent.salix["llm_config"])
     }
@@ -1049,7 +1053,7 @@ defmodule BridgeForTeams.Agents do
       "status" => Agent.lifecycle(agent),
       "archived_at" => agent.salix["archived_at"],
       "model" => model_audit_value(agent.salix["model"]),
-      "instructions_configured" => configured?(agent.salix["system_prompt"]),
+      "instructions_configured" => configured?(Agent.instructions(agent)),
       "model_configured" => model_configured?(agent),
       "inline_model_configured" => configured?(agent.salix["llm_config"])
     }

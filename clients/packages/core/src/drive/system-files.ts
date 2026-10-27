@@ -6,7 +6,7 @@
 //   imports/         raw files of a migration, read-only
 //   Comma/           what Comma renders for the owner (Notebook.md), read-only
 //   Skills/          one read-only file per skill, its SKILL.md
-//   Instructions.md  the Router's effective instructions, read-only
+//   Instructions.md  the Router's effective instructions; a save replaces them, a delete clears them
 //
 // Bounds: a load lists each root in at most 20 pages of 500 files and reads the instructions once.
 import { CoreError } from "@comma/core-kernel";
@@ -124,21 +124,27 @@ export function loadSystemFiles(
         })
       ),
       {
-        contentsHash: `${instructions.content.length}:${instructions.content.slice(0, 64)}`,
+        contentsHash:
+          instructions.hash ??
+          `${instructions.content.length}:${instructions.content.slice(0, 64)}`,
         deviceId: "",
         id: "system:Instructions.md",
         modifiedAt: 0,
         name: "Instructions.md",
         sizeBytes: utf8.encode(instructions.content).length,
         spaceId: SYSTEM_SPACE,
-        system: { kind: "instructions", group: groupId },
-        writable: false,
+        system: {
+          kind: "instructions",
+          group: groupId,
+          hash: instructions.hash ?? undefined,
+        },
+        writable: true,
       },
     ])
   );
 }
 
-/** An entry's text, and for a memory file the hash it has now (an edit starts from it). */
+/** An entry's text, and for a memory file or the instructions the hash it has now (an edit starts from it). */
 export function readSystemFile(
   ctx: Ctx,
   account: Account,
@@ -180,10 +186,38 @@ export function readSystemFile(
       `${base(ref.group)}/instructions`,
       routerInstructionsSchema
     )
-    .pipe(Effect.map((instructions) => ({ text: instructions.content })));
+    .pipe(
+      Effect.map((instructions) => ({
+        text: instructions.content,
+        hash: instructions.hash ?? undefined,
+        size: utf8.encode(instructions.content).length,
+      }))
+    );
 }
 
-/** Saves a memory file if it still holds `expectedHash`; a 409 (the Router changed it) fails `changed`. */
+/** Replaces the Router's instructions if they still hold `expectedHash`; empty text clears them. */
+function saveInstructions(
+  ctx: Ctx,
+  account: Account,
+  group: string,
+  text: string,
+  expectedHash: string | undefined
+): Effect.Effect<{ hash?: string | undefined; size: number }, CoreError> {
+  return ctx.api
+    .request(account, "PUT", `${base(group)}/instructions`, routerInstructionsSchema, {
+      content: text,
+      expected_hash: expectedHash,
+    })
+    .pipe(
+      Effect.map((saved) => ({
+        hash: saved.hash ?? undefined,
+        size: utf8.encode(saved.content).length,
+      })),
+      Effect.mapError(changedOn409)
+    );
+}
+
+/** Saves a memory file or the instructions if they still hold `expectedHash`; a 409 (they changed) fails `changed`. */
 export function saveSystemFile(
   ctx: Ctx,
   account: Account,
@@ -192,6 +226,8 @@ export function saveSystemFile(
   expectedHash: string | undefined
 ): Effect.Effect<{ hash?: string | undefined; size: number }, CoreError> {
   const ref = file.system;
+  if (ref?.kind === "instructions")
+    return saveInstructions(ctx, account, ref.group, text, expectedHash);
   if (ref?.kind !== "vfs" || !file.writable)
     return Effect.fail(CoreError.invalid("this file is read-only"));
   return ctx.api
@@ -209,13 +245,15 @@ export function saveSystemFile(
     );
 }
 
-/** Deletes a memory file if it still holds what was read. */
+/** Deletes a memory file, or clears the instructions, if it still holds what was read. */
 export function deleteSystemFile(
   ctx: Ctx,
   account: Account,
   file: DriveFile
 ): Effect.Effect<void, CoreError> {
   const ref = file.system;
+  if (ref?.kind === "instructions")
+    return saveInstructions(ctx, account, ref.group, "", ref.hash).pipe(Effect.asVoid);
   if (ref?.kind !== "vfs" || !file.writable)
     return Effect.fail(CoreError.invalid("this file is read-only"));
   const hash = ref.hash ? `&expected_hash=${encodeURIComponent(ref.hash)}` : "";

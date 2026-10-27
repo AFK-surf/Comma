@@ -34,4 +34,23 @@ defmodule SalixMeet.CalendarPreparationTest do
     assert description =~ "&lt;script&gt;"
     assert {:ok, ""} = CalendarPreparation.human_description(description)
   end
+
+  test "writeback replaces a block written under the pre-rename markers" do
+    original = "Agenda\n"
+
+    legacy =
+      "<!-- cue:meeting-preparation:begin --><h3>Meeting preparation</h3>" <>
+        "<p>September topics</p><!-- cue:meeting-preparation:end -->"
+
+    assert {:ok, description} = CalendarPreparation.merge(original <> legacy, "October topics")
+    assert String.starts_with?(description, original)
+    assert description =~ "October topics"
+    refute description =~ "September topics"
+    refute description =~ "cue:meeting-preparation"
+    assert {:ok, ^original} = CalendarPreparation.human_description(original <> legacy)
+    assert {:ok, ^original} = CalendarPreparation.human_description(legacy <> original)
+
+    assert {:ok, ^original} =
+             CalendarPreparation.human_description(legacy <> description)
+  end
 end

@@ -1,6 +1,5 @@
 import { useDriveCatalogMentions } from "../../drive/useDriveCatalogMentions";
 import { useTaskSummaries } from "../../tasks/useTaskArchive";
-import { useProductInboxSnapshot } from "../../../product-inbox";
 import { driveNodeAvailable, ensureDriveFileBlob } from "../../drive/driveBackend";
 import {
   getDriveStore,
@@ -18,7 +17,7 @@ import type {
   RecommendationEnvelope,
   RecommendationSource,
 } from "@comma/recommendation-contract";
-import { useCall, useTopic } from "@comma/core-client";
+import { useCall, useTopic, useTopicSelect } from "@comma/core-client";
 import type { MentionTask } from "@comma/core/contract";
 import { useOnboardingAhead } from "../../onboarding/useOnboardingAhead";
 
@@ -272,7 +271,16 @@ export function useComposerMentionSources({
   models?: boolean;
   workspaceId: string | undefined;
 }): ComposerMentionSources {
-  const projection = useProductInboxSnapshot();
+  // Which of the Group's Tasks the focused list holds archived, as one key: the
+  // list's other changes (statuses, unread marks) render nothing here.
+  const archivedKey = useTopicSelect({ topic: "tasks", workspace: "" }, (value) =>
+    enabled && groupId
+      ? (value?.items ?? [])
+          .filter((item) => item.groupId === groupId && item.status === "archived")
+          .map((item) => item.conversationId)
+          .join("\u0000")
+      : ""
+  );
   // The Group's Tasks as the core keeps them (null while it reads them). Let go at
   // once, so a later showing finds out whether they are a minute old.
   const { value: groupTasks } = useTopic(
@@ -348,29 +356,18 @@ export function useComposerMentionSources({
     [modelsAsked, modelsShown, shownModels]
   );
 
-  const tasks = useMemo<MentionSourceState<ComposerTaskMentionItem>>(
-    () =>
-      !enabled || !groupId
-        ? { items: EMPTY_ITEMS, status: "ready" }
-        : groupTasks
-          ? {
-              items: taskItems(
-                groupTasks.filter(
-                  (task) =>
-                    !projection?.items.some(
-                      (item) =>
-                        item.conversationId === task.id &&
-                        item.groupId === groupId &&
-                        item.status === "archived"
-                    )
-                ),
-                excludeConversationId
-              ),
-              status: "ready",
-            }
-          : { items: EMPTY_ITEMS, status: "loading" },
-    [enabled, excludeConversationId, groupTasks, projection, groupId]
-  );
+  const tasks = useMemo<MentionSourceState<ComposerTaskMentionItem>>(() => {
+    if (!enabled || !groupId) return { items: EMPTY_ITEMS, status: "ready" };
+    if (!groupTasks) return { items: EMPTY_ITEMS, status: "loading" };
+    const archived = new Set(archivedKey.split("\u0000"));
+    return {
+      items: taskItems(
+        groupTasks.filter((task) => !archived.has(task.id)),
+        excludeConversationId
+      ),
+      status: "ready",
+    };
+  }, [archivedKey, enabled, excludeConversationId, groupTasks, groupId]);
   const plugins = useMemo<MentionSourceState<ComposerPluginMentionItem>>(
     () => ({
       items:

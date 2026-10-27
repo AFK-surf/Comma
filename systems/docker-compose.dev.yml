@@ -45,6 +45,7 @@ services:
       interval: 2s
       timeout: 3s
       retries: 30
+    restart: unless-stopped
 
   minio-init:
     image: minio/mc@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
@@ -74,12 +75,14 @@ services:
       interval: 2s
       timeout: 3s
       retries: 30
+    restart: unless-stopped
 
   mailpit:
     image: axllent/mailpit:latest
     ports:
       - "${COMMA_DEV_SMTP_PORT:-1025}:1025"
       - "${COMMA_DEV_MAILPIT_PORT:-8025}:8025"
+    restart: unless-stopped
 
   postgres:
     image: postgres:16
@@ -96,6 +99,7 @@ services:
       interval: 2s
       timeout: 3s
       retries: 30
+    restart: unless-stopped
 
   clickhouse:
     image: clickhouse/clickhouse-server:24.8
@@ -110,6 +114,7 @@ services:
       interval: 2s
       timeout: 3s
       retries: 60
+    restart: unless-stopped
 
   llm-mock:
     image: node:24-alpine
@@ -133,6 +138,7 @@ services:
       interval: 2s
       timeout: 3s
       retries: 30
+    restart: unless-stopped
 
   telegram-mock:
     image: node:24-alpine
@@ -157,6 +163,7 @@ services:
       interval: 2s
       timeout: 3s
       retries: 30
+    restart: unless-stopped
 
   comma-migrate:
     <<: *comma-runtime

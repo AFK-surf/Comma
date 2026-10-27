@@ -19,7 +19,7 @@ import { isImeKeyEvent } from "@comma/ui/components/utils";
 import { resolveProviderBrandLogo } from "@comma/ui/components/provider-brand-logos";
 import { taskNeutralIcon, taskStatusIcon } from "@comma/ui/components/task-workspace";
 import { toast } from "@comma/ui/components/toast";
-import { formatNumber, formatRelativeDate, type CommaLocale } from "@comma/i18n";
+import { formatRelativeDate } from "@comma/i18n";
 import { useCommaLocale, useCommaMessages } from "@comma/i18n/react";
 import {
   memo,
@@ -30,13 +30,13 @@ import {
   useMemo,
   useRef,
   useState,
-  type ChangeEvent,
   type KeyboardEvent,
   type ReactNode,
 } from "react";
 import { nativePlatformClipboard } from "../../../nativePlatformActions";
 import type { CommaSkill } from "@comma/core/api-schemas";
 import type { RecommendationSource } from "@comma/recommendation-contract";
+import { animateSuggestionAcceptance } from "../suggestions/suggestionAcceptanceMotion";
 import { chatQuoteLabel, type ChatDraftQuote } from "./draftQuotes";
 import {
   chatSnippetTitle,
@@ -56,11 +56,8 @@ import {
 } from "@comma/core/chat";
 import { ModelVendorIcon } from "@comma/ui/components/model-icons/ModelVendorIcon";
 import { MENTION_MENU_ID, projectMentionTokens } from "./mentionProjection";
-import {
-  ATTACHMENT_ACCEPT,
-  draftUploadPreviewRef,
-  isGroupImagePreviewPath,
-} from "@comma/core/chat";
+import { attachmentMeta, useFileIntake, useUploadFailureToast } from "./fileIntake";
+import { draftUploadPreviewRef, isGroupImagePreviewPath } from "@comma/core/chat";
 import type {
   AttachmentUploadInput,
   ChatImagePreviewRef,
@@ -77,6 +74,7 @@ import {
   type ComposerRoutineMentionItem,
 } from "./useComposerMentionSources";
 import { DriveFileIcon } from "../../drive/DriveFileIcon";
+import { MAC_APPS_PLUGIN_ID, MacAppsPluginIcon } from "../../plugins/MacApps";
 import {
   isLocalFilePreviewRef,
   useLocalFilePreviews,
@@ -143,11 +141,16 @@ function RoutineMentionIcon({ routine }: { routine: ComposerRoutineMentionItem }
 
 function PluginMentionIcon({
   brand,
+  id,
   name,
 }: {
   brand: string | null | undefined;
+  id: string;
   name: string;
 }) {
+  if (id === MAC_APPS_PLUGIN_ID) {
+    return <MacAppsPluginIcon />;
+  }
   const BrandLogo = resolveProviderBrandLogo(brand ?? name);
   if (BrandLogo) {
     return <BrandLogo />;
@@ -167,23 +170,20 @@ function PluginMentionIcon({
  * attachment without one will never receive a preview, so it must not be held
  * in a loading state waiting for something that is not coming. One still
  * uploading shows from the bytes the core holds; the preview is kept by the
- * attachment's id, so it stays as the ref moves to the uploaded file.
+ * attachment's id, so it stays as the ref moves to the uploaded file. A
+ * message's attachment stored by reference has no bytes here: it shows from
+ * the stored file.
  */
 const imagePreviewRef = (attachment: DraftAttachment) =>
   isLocalFilePreviewRef(attachment.id)
     ? attachment.id
     : attachment.status === "uploading"
-      ? draftUploadPreviewRef(attachment.id)
+      ? attachment.byReference
+        ? undefined
+        : draftUploadPreviewRef(attachment.id)
       : attachment.path && isGroupImagePreviewPath(attachment.path)
         ? attachment.path
         : undefined;
-
-const attachmentsFromFiles = (files: File[]): AttachmentUploadInput[] =>
-  files.map((file) => ({
-    data: file,
-    name: file.name,
-    size: file.size,
-  }));
 
 // Memoized so stream-chunk emits (which change channel state but not the
 // draft or any composer input) skip the composer subtree entirely.
@@ -195,6 +195,7 @@ export const Composer = memo(function Composer({
   draftSnippets = EMPTY_SNIPPETS,
   fill,
   mentionSources,
+  onAcceptSuggestion,
   onAttachFiles,
   onDraftChange,
   onPickAttachments,
@@ -208,12 +209,14 @@ export const Composer = memo(function Composer({
   onSend,
   placeholder,
   sendLabel,
+  suggestion,
   showVoiceButton = false,
   size,
   skills = [],
   controlCommandsEnabled = false,
   submitDisabled,
   submitPending = false,
+  surfaceDropActive,
   toolbarLeading,
   variant = "default",
 }: {
@@ -227,6 +230,8 @@ export const Composer = memo(function Composer({
   fill?: ComposerDraftFill | undefined;
   /** Tasks, routines, and plugins for the "@" panel; Add works without it. */
   mentionSources?: ComposerMentionSources | undefined;
+  onAcceptSuggestion?: (() => void) | undefined;
+  suggestion?: string | undefined;
   onAttachFiles?: (files: AttachmentUploadInput[]) => void;
   onDraftChange: (draft: string) => void;
   onPickAttachments?: () => unknown;
@@ -253,6 +258,8 @@ export const Composer = memo(function Composer({
   controlCommandsEnabled?: boolean;
   submitDisabled: boolean;
   submitPending?: boolean;
+  /** Set when the surface around the composer takes dropped files for it: files are dragged over that surface. */
+  surfaceDropActive?: boolean | undefined;
   toolbarLeading?: ReactNode;
   variant?: "default" | "compact";
 }) {
@@ -375,8 +382,6 @@ export const Composer = memo(function Composer({
   );
   const uploadErrorToastId = `chat-upload-error-${useId()}`;
   const driveAttachErrorToastId = `chat-drive-attach-error-${useId()}`;
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const pendingFilePickerFinishRef = useRef<(() => void) | null>(null);
   const [compactTextareaHeight, setCompactTextareaHeight] = useState(
     COMPACT_TEXTAREA_MIN_HEIGHT
   );
@@ -515,78 +520,11 @@ export const Composer = memo(function Composer({
     () => [...quoteAttachments, ...snippetAttachments, ...fileAttachments],
     [fileAttachments, quoteAttachments, snippetAttachments]
   );
-  const failedAttachments = draftAttachments.filter(
-    (attachment) => attachment.status === "failed"
-  );
-  // Upload failures surface as ONE aggregated error toast, however many
-  // attachments failed - sonner updates the same id in place, so repeated
-  // failures never stack or replay the enter animation. The toast dismisses
-  // itself once every failure is retried away or removed.
-  const failedAttachmentsKey = failedAttachments
-    .map((attachment) => `${attachment.id}\u0000${attachment.error ?? ""}`)
-    .join("\n");
-  useEffect(() => {
-    if (failedAttachments.length === 0) {
-      toast.dismiss(uploadErrorToastId);
-      return;
-    }
-
-    const first = failedAttachments[0]!;
-    const title =
-      failedAttachments.length === 1
-        ? messages.chat_upload_failed_named({ name: first.name })
-        : messages.chat_upload_failed_count({ count: failedAttachments.length });
-    // One shared failure reason (the common case - e.g. the connector is
-    // down) reads as the detail; mixed reasons fall back to the file list.
-    const distinctErrors = [
-      ...new Set(
-        failedAttachments.flatMap((attachment) =>
-          attachment.error ? [attachment.error] : []
-        )
-      ),
-    ];
-    const description =
-      failedAttachments.length === 1
-        ? first.error
-        : distinctErrors.length === 1
-          ? distinctErrors[0]
-          : failedAttachments.map((attachment) => attachment.name).join(", ");
-    const failedIds = failedAttachments.map((attachment) => attachment.id);
-
-    toast.error(title, {
-      ...(description ? { description } : {}),
-      actions: [
-        {
-          label: messages.chat_retry_upload(),
-          onPress: () => {
-            for (const id of failedIds) onRetryAttachment?.(id);
-          },
-        },
-        {
-          hierarchy: "tertiary-gray",
-          label: messages.chat_remove_attachment(),
-          onPress: () => {
-            for (const id of failedIds) onRemoveAttachment?.(id);
-          },
-        },
-      ],
-      id: uploadErrorToastId,
-      testId: "chat-upload-error",
-    });
-    // failedAttachmentsKey covers the identity-unstable failedAttachments array.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    failedAttachmentsKey,
-    messages,
-    onRemoveAttachment,
-    onRetryAttachment,
+  useUploadFailureToast(
+    draftAttachments,
     uploadErrorToastId,
-  ]);
-  useEffect(
-    () => () => {
-      toast.dismiss(uploadErrorToastId);
-    },
-    [uploadErrorToastId]
+    onRetryAttachment,
+    onRemoveAttachment
   );
 
   const compactExpanded =
@@ -628,64 +566,62 @@ export const Composer = memo(function Composer({
     editor.scrollTop = editor.scrollHeight;
   }, [draft, fill]);
 
+  const acceptedSuggestionRef = useRef<{
+    editor: HTMLElement;
+    text: string;
+    at: number;
+  } | null>(null);
+  useLayoutEffect(() => {
+    const accepted = acceptedSuggestionRef.current;
+    if (!accepted) return;
+    acceptedSuggestionRef.current = null;
+    const { editor, text, at } = accepted;
+    if (draft !== text || editor.ownerDocument.activeElement !== editor) return;
+    // The rich editor has committed the controlled draft before this effect.
+    const range = editor.ownerDocument.createRange();
+    range.selectNodeContents(editor);
+    range.collapse(false);
+    const selection = editor.ownerDocument.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    return animateSuggestionAcceptance(editor, at);
+  }, [draft]);
+
   // Cmd/Ctrl+Enter is an alternate submit gesture. It uses the same direct
   // Conversation send path as the button and plain Enter.
   const handleComposerKeyDown = (event: KeyboardEvent<HTMLElement>) => {
     if (event.defaultPrevented || disabled || isImeKeyEvent(event.nativeEvent)) return;
+    if (
+      event.key === "Tab" &&
+      !event.shiftKey &&
+      !event.altKey &&
+      !event.metaKey &&
+      !event.ctrlKey &&
+      draft === "" &&
+      suggestion
+    ) {
+      event.preventDefault();
+      acceptedSuggestionRef.current = {
+        editor: event.currentTarget,
+        text: suggestion,
+        // The wave's schedule counts from the key press.
+        at: event.timeStamp,
+      };
+      onDraftChange(suggestion);
+      onAcceptSuggestion?.();
+      return;
+    }
     if (event.key !== "Enter" || !(event.metaKey || event.ctrlKey)) return;
     if (event.altKey || event.shiftKey) return;
     event.preventDefault();
     submit(draft);
   };
 
-  const handleAttachPress = useCallback(() => {
-    if (onPickAttachments) {
-      try {
-        return Promise.resolve(onPickAttachments()).then(
-          () => undefined,
-          () => undefined
-        );
-      } catch {
-        // Native selection failures remain inside the Main-owned command boundary.
-        return Promise.resolve();
-      }
-    }
-
-    const input = fileInputRef.current;
-    if (!input) return;
-
-    pendingFilePickerFinishRef.current?.();
-    return new Promise<void>((resolve) => {
-      let settled = false;
-      const finish = () => {
-        if (settled) return;
-        settled = true;
-        input.removeEventListener("change", finish);
-        input.removeEventListener("cancel", finish);
-        if (pendingFilePickerFinishRef.current === finish) {
-          pendingFilePickerFinishRef.current = null;
-        }
-        resolve();
-      };
-
-      pendingFilePickerFinishRef.current = finish;
-      input.addEventListener("change", finish, { once: true });
-      input.addEventListener("cancel", finish, { once: true });
-      try {
-        input.click();
-      } catch (error) {
-        finish();
-        throw error;
-      }
-    });
-  }, [onPickAttachments]);
-
-  useEffect(
-    () => () => {
-      pendingFilePickerFinishRef.current?.();
-    },
-    []
-  );
+  const {
+    attachPress: handleAttachPress,
+    fileInput,
+    transferFiles: handleTransferredFiles,
+  } = useFileIntake({ onAttachFiles, onPickAttachments });
 
   // A Drive file chosen through "@" is attached the way a picked file is:
   // its bytes are read, then take the same intake as a drop or a paste. A
@@ -801,7 +737,7 @@ export const Composer = memo(function Composer({
             icon: <PaperclipIcon />,
             keywords: addFilesKeywords,
             action: () => {
-              void handleAttachPress();
+              void handleAttachPress?.();
             },
           },
         ],
@@ -899,7 +835,13 @@ export const Composer = memo(function Composer({
           items: mentionSources.plugins.items.map((plugin) => ({
             id: `plugin:${plugin.id}`,
             label: plugin.name,
-            icon: <PluginMentionIcon brand={plugin.brand} name={plugin.name} />,
+            icon: (
+              <PluginMentionIcon
+                brand={plugin.brand}
+                id={plugin.id}
+                name={plugin.name}
+              />
+            ),
             tokenLabel: plugin.name,
             plainText: `@${plugin.id}`,
             data: { kind: "plugin", pluginId: plugin.id },
@@ -1017,65 +959,13 @@ export const Composer = memo(function Composer({
     tasksGroupLabel,
   ]);
 
-  const handleFilesSelected = (event: ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(event.currentTarget.files ?? []);
-    if (files.length > 0) {
-      onAttachFiles?.(attachmentsFromFiles(files));
-    }
-    event.currentTarget.value = "";
-  };
-
-  // Shared by the drop overlay and Cmd/Ctrl+V: both hand over a DataTransfer,
-  // and both take the same intake, so a pasted file is admitted, reported, and
-  // retried exactly like a dropped one.
-  const handleTransferredFiles = useCallback(
-    (transfer: DataTransfer) => {
-      const files = Array.from(transfer.files);
-      if (files.length === 0) {
-        return;
-      }
-      onAttachFiles?.(attachmentsFromFiles(files));
-    },
-    [onAttachFiles]
-  );
-
-  useEffect(() => {
-    if (!onAttachFiles) {
-      return undefined;
-    }
-
-    const preventWindowFileNavigation = (event: DragEvent) => {
-      if (!Array.from(event.dataTransfer?.types ?? []).includes("Files")) {
-        return;
-      }
-      event.preventDefault();
-    };
-
-    window.addEventListener("dragover", preventWindowFileNavigation);
-    window.addEventListener("drop", preventWindowFileNavigation);
-    return () => {
-      window.removeEventListener("dragover", preventWindowFileNavigation);
-      window.removeEventListener("drop", preventWindowFileNavigation);
-    };
-  }, [onAttachFiles]);
-
   return (
     <div
       ref={shellRef}
       className="comma-chat-composer-shell"
       data-compact-multiline={compactExpanded ? "true" : undefined}
     >
-      {onAttachFiles ? (
-        <input
-          ref={fileInputRef}
-          accept={ATTACHMENT_ACCEPT}
-          className="app-sr-only"
-          multiple
-          onChange={handleFilesSelected}
-          tabIndex={-1}
-          type="file"
-        />
-      ) : null}
+      {fileInput}
       <AiInput
         attachLabel={messages.chat_add_attachment()}
         attachments={aiAttachments}
@@ -1087,20 +977,24 @@ export const Composer = memo(function Composer({
         onSubmit={submit}
         onValueChange={onDraftChange}
         richValueFromText={projectMentionTokens}
-        {...(onAttachFiles || onPickAttachments
-          ? { onAttachPress: handleAttachPress }
-          : {})}
-        {...(onAttachFiles
+        {...(handleAttachPress ? { onAttachPress: handleAttachPress } : {})}
+        {...(handleTransferredFiles
           ? {
-              onDropFiles: handleTransferredFiles,
+              ...(surfaceDropActive === undefined
+                ? { onDropFiles: handleTransferredFiles }
+                : { surfaceDropActive }),
               onPasteFiles: handleTransferredFiles,
             }
           : {})}
         {...(onPasteSnippet ? { onPasteText: handlePasteText } : {})}
-        placeholder={placeholder ?? messages.chat_composer_placeholder()}
+        placeholder={
+          (draft === "" && !disabled ? suggestion : undefined) ??
+          placeholder ??
+          messages.chat_composer_placeholder()
+        }
         richText
         sendLabel={sendLabel ?? messages.chat_send_message()}
-        showAttachButton={Boolean(onAttachFiles || onPickAttachments)}
+        showAttachButton={handleAttachPress !== undefined}
         showVoiceButton={voiceButtonVisible}
         {...(voiceCaptureActive
           ? {
@@ -1128,41 +1022,6 @@ export const Composer = memo(function Composer({
     </div>
   );
 });
-
-function attachmentMeta(
-  attachment: DraftAttachment,
-  locale: CommaLocale,
-  uploadingLabel: string,
-  uploadFailedLabel: string
-) {
-  if (attachment.status === "uploading") {
-    return uploadingLabel;
-  }
-
-  if (attachment.status === "failed") {
-    return uploadFailedLabel;
-  }
-
-  return formatAttachmentSize(attachment.size, locale);
-}
-
-function formatAttachmentSize(size: number | undefined, locale: CommaLocale) {
-  if (size === undefined || !Number.isFinite(size) || size < 0) {
-    return undefined;
-  }
-
-  if (size < 1024) {
-    return `${formatNumber(size, locale, { maximumFractionDigits: 0 })} B`;
-  }
-
-  if (size < 1024 * 1024) {
-    return `${formatNumber(size / 1024, locale, { maximumFractionDigits: 0 })} KB`;
-  }
-
-  return `${formatNumber(size / (1024 * 1024), locale, {
-    maximumFractionDigits: 1,
-  })} MB`;
-}
 
 // Voice input records through the desktop app's audio tap; a browser has none.
 function requestDesktopVoice() {

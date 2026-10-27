@@ -1,4 +1,5 @@
 import type { Session, WebContents } from "electron";
+import { realMainClock, type MainClock } from "./clock";
 
 interface SecurityLogger {
   warn(message: string, context?: Record<string, unknown>): void;
@@ -11,16 +12,23 @@ type PermissionSessionTarget = Pick<
 >;
 
 const packagedRendererOrigin = "assets://.";
+const miniAppRuntimeUrl = "comma-app://runtime/";
+
+/** A dynamic UI widget or Comma app frame: it never navigates or redirects. */
+const isSandboxedFrameUrl = (url: string | undefined) =>
+  Boolean(url?.startsWith("comma-ui:") || url?.startsWith("comma-app:"));
 
 export function installWindowSecurity({
   allowedNavigationOrigins = [],
   allowedWindowOpenOrigins = [],
   logger,
+  handleAppLink,
   webContents,
 }: {
   allowedNavigationOrigins?: string[];
   allowedWindowOpenOrigins?: string[];
   logger?: SecurityLogger;
+  handleAppLink?: (url: string) => boolean;
   webContents: WebContentsSecurityTarget;
 }) {
   const navigationOrigins = normalizeOriginSet([
@@ -30,6 +38,7 @@ export function installWindowSecurity({
   const windowOpenOrigins = normalizeOriginSet(allowedWindowOpenOrigins);
 
   webContents.setWindowOpenHandler(({ url }) => {
+    if (handleAppLink?.(url)) return { action: "deny" };
     if (isAllowedUrl(url, windowOpenOrigins)) {
       return { action: "allow" };
     }
@@ -39,6 +48,10 @@ export function installWindowSecurity({
   });
 
   webContents.on("will-navigate", (event, url) => {
+    if (handleAppLink?.(url)) {
+      event.preventDefault();
+      return;
+    }
     if (isAllowedUrl(url, navigationOrigins)) {
       return;
     }
@@ -48,19 +61,31 @@ export function installWindowSecurity({
   });
   webContents.on("will-frame-navigate", (event) => {
     if (
-      event.frame?.url.startsWith("comma-ui:") ||
-      event.initiator?.url.startsWith("comma-ui:")
+      isSandboxedFrameUrl(event.frame?.url) ||
+      isSandboxedFrameUrl(event.initiator?.url)
     ) {
       event.preventDefault();
     }
   });
   webContents.on("will-redirect", (event) => {
-    if (event.frame?.url.startsWith("comma-ui:") || event.url.startsWith("comma-ui:"))
+    if (isSandboxedFrameUrl(event.frame?.url) || isSandboxedFrameUrl(event.url))
       event.preventDefault();
   });
 }
 
-export function installDynamicUiNetworkSecurity(target: Session) {
+/**
+ * The network guard of sandboxed frames: dynamic UI widgets (`comma-ui:`) and
+ * Comma apps (`comma-app:`). A session has one `onBeforeRequest` listener, so
+ * both live here.
+ *
+ * A Comma app frame loads only the runtime document and `blob:` / `data:`
+ * URLs (design AFK-surf/Cue#4070 §7.1). Every other request of the frame or a
+ * frame inside it fails: http, https, WebSocket and every other scheme.
+ */
+export function installDynamicUiNetworkSecurity(
+  target: Session,
+  { clock = realMainClock }: { clock?: MainClock } = {}
+) {
   // Frame-less Worker scripts share a window budget; attribution is not required.
   const budgets = new Map<
     number,
@@ -68,6 +93,19 @@ export function installDynamicUiNetworkSecurity(target: Session) {
   >();
   const pending = new Map<number, number>();
   target.webRequest.onBeforeRequest((details, callback) => {
+    if (details.url.startsWith("comma-app:")) {
+      callback({ cancel: details.url !== miniAppRuntimeUrl });
+      return;
+    }
+    let app = details.referrer?.startsWith("comma-app:") ?? false;
+    for (let ancestor = details.frame; ancestor && !app; ancestor = ancestor.parent)
+      app = ancestor.url.startsWith("comma-app:");
+    if (app) {
+      callback({
+        cancel: !details.url.startsWith("blob:") && !details.url.startsWith("data:"),
+      });
+      return;
+    }
     let frame = details.frame;
     let card =
       pending.has(details.id) || (details.referrer?.startsWith("comma-ui:") ?? false);
@@ -95,7 +133,7 @@ export function installDynamicUiNetworkSecurity(target: Session) {
       return;
     }
     const key = details.webContentsId ?? -1;
-    const now = Date.now();
+    const now = clock.now();
     let budget = budgets.get(key);
     if (!budget) {
       budget = { start: now, count: 0, active: new Set() };
@@ -141,10 +179,48 @@ export function installDynamicUiNetworkSecurity(target: Session) {
   target.webRequest.onErrorOccurred(finish);
 }
 
-export function installSessionSecurity(session: PermissionSessionTarget) {
+/**
+ * Every permission is refused, except the microphone alone for the app's own page (`microphoneOrigins`, its top
+ * frame) while `microphoneAllowed` says so (voice labs on): the desktop's voice call records it there. Cameras,
+ * screens and other origins stay refused.
+ */
+export function installSessionSecurity(
+  session: PermissionSessionTarget,
+  {
+    microphoneOrigins = [],
+    microphoneAllowed = async () => false,
+  }: {
+    microphoneOrigins?: readonly string[];
+    microphoneAllowed?: () => Promise<boolean>;
+  } = {}
+) {
+  const microphone = normalizeOriginSet([...microphoneOrigins]);
   session.setPermissionCheckHandler(() => false);
-  session.setPermissionRequestHandler((_webContents, _permission, callback) => {
-    callback(false);
+  session.setPermissionRequestHandler((_webContents, permission, callback, details) => {
+    const media = (details ?? {}) as {
+      mediaTypes?: string[];
+      isMainFrame?: boolean;
+      requestingUrl?: string;
+    };
+    const origin = media.requestingUrl
+      ? normalizeOrigin(media.requestingUrl)
+      : undefined;
+    const appMicrophone =
+      permission === "media" &&
+      media.isMainFrame === true &&
+      Array.isArray(media.mediaTypes) &&
+      media.mediaTypes.length > 0 &&
+      media.mediaTypes.every((type) => type === "audio") &&
+      origin !== undefined &&
+      microphone.has(origin);
+    if (!appMicrophone) {
+      callback(false);
+      return;
+    }
+    microphoneAllowed().then(
+      (allowed) => callback(allowed),
+      () => callback(false)
+    );
   });
 }
 

@@ -1,7 +1,8 @@
 // Settings › Voice: the caller numbers verified for a workspace's voice line (each proved by an SMS code, optionally
-// guarded by a PIN), the voice agent API keys that custom voice clients connect with, and whether voice calls are
-// available now. Read while the page shows them; the two halves are read and fail independently. A number change
-// answers the new numbers; a key change reads the keys again. A new key's plaintext is answered to the caller only.
+// guarded by a PIN), the voice agent API keys that custom voice clients connect with, whether voice calls are
+// available now, and the call preferences (the voice, a custom voice made from a description, Router calls). Read
+// while the page shows them; the two halves are read and fail independently. A number or preference change answers
+// the new integration; a key change reads the keys again. A new key's plaintext is answered to the caller only.
 //
 // Bounds: one read per page shown, two requests (numbers, keys); each change is one request (keys: then one read).
 import { CoreError, Priority, type Topic, type Value } from "@comma/core-kernel";
@@ -14,7 +15,12 @@ import {
   voiceKeySchema,
   voiceVerificationSchema,
 } from "./comma/schemas.ts";
-import type { VoiceIntegration, VoiceKeyCreated, VoiceValue } from "./contract.ts";
+import type {
+  VoiceChoice,
+  VoiceIntegration,
+  VoiceKeyCreated,
+  VoiceValue,
+} from "./contract.ts";
 import { type Ctx, Live } from "./ctx.ts";
 import type { Workspaces } from "./workspaces.ts";
 
@@ -36,6 +42,21 @@ const params = {
     return v;
   },
 };
+
+/** A call voice parameter: null (the platform's), a preset by name, or the custom voice. */
+function voiceChoice(raw: unknown): VoiceChoice | null {
+  if (raw === null) return null;
+  const v = raw as { kind?: unknown; name?: unknown } | undefined;
+  if (v?.kind === "custom") return { kind: "custom" };
+  if (
+    v?.kind === "preset" &&
+    typeof v.name === "string" &&
+    v.name !== "" &&
+    v.name.length <= 128
+  )
+    return { kind: "preset", name: v.name };
+  throw CoreError.invalid("voice is null, a preset or the custom voice");
+}
 
 const empty = (): VoiceValue => ({
   workspace: null,
@@ -199,6 +220,36 @@ export class Voice {
             Effect.tap(() => this.#reread()),
             Effect.as(null)
           );
+        },
+      },
+      "voice.setPreferences": {
+        doing: true,
+        run: (p) => {
+          const workspace = params.string(p, "workspace");
+          const raw = (p ?? {}) as { voice?: unknown; routerCalls?: unknown };
+          const body: Record<string, unknown> = {};
+          if ("voice" in raw) body.voice = voiceChoice(raw.voice);
+          if (raw.routerCalls !== undefined) {
+            if (typeof raw.routerCalls !== "boolean")
+              throw CoreError.invalid("routerCalls is a boolean");
+            body.router_calls = raw.routerCalls;
+          }
+          if (Object.keys(body).length === 0)
+            throw CoreError.invalid("voice or routerCalls is required");
+          return number(p, "PUT", `${linePath(workspace)}/preferences`, body);
+        },
+      },
+      "voice.createCustomVoice": {
+        doing: true,
+        run: (p) => {
+          const workspace = params.string(p, "workspace");
+          const description = params.string(p, "description", 1000).trim();
+          if (description === "") throw CoreError.invalid("description is required");
+          const name = params.optional(p, "name");
+          return number(p, "POST", `${linePath(workspace)}/custom-voice`, {
+            description,
+            ...(name ? { name } : {}),
+          });
         },
       },
       "voice.deleteKey": {

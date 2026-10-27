@@ -71,6 +71,8 @@ defmodule BridgeForTeams.Salix.Erpc do
   @internal_provider SalixIM.Provider.Internal
   @provider_connects SalixIM.ProviderConnects
   @slack_history_reader SalixIM.SlackHistoryReader
+  @daily_brief_source SalixIM.DailyBriefSource
+  @daily_brief_surface SalixIM.DailyBriefSurface
   @triage_read_model SalixIM.Triage.ReadModel
   @ifc_admin SalixIM.IFC.Admin
   @meet SalixMeet
@@ -160,6 +162,15 @@ defmodule BridgeForTeams.Salix.Erpc do
     do:
       @task_placement
       |> call(:create_task_conversation, [group_id, router_agent_id, attrs], hint: group_id)
+      |> unknown_before_release(@task_placement)
+
+  @impl true
+  def create_placed_task_conversation(group_id, router_agent_id, attrs, trusted_context),
+    do:
+      @task_placement
+      |> call(:create_task_conversation, [group_id, router_agent_id, attrs, trusted_context],
+        hint: group_id
+      )
       |> unknown_before_release(@task_placement)
 
   @impl true
@@ -790,6 +801,38 @@ defmodule BridgeForTeams.Salix.Erpc do
         hint: request[:group_id] || request["group_id"],
         timeout: @slack_history_read_timeout
       )
+
+  @impl true
+  def daily_brief_channels(request), do: daily_brief_call(:channels, request)
+
+  @impl true
+  def daily_brief_read_window(request), do: daily_brief_call(:read_window, request)
+
+  @impl true
+  def daily_brief_messages(request), do: daily_brief_call(:messages, request)
+
+  @impl true
+  def daily_brief_member_threads(request), do: daily_brief_call(:member_threads, request)
+
+  @impl true
+  def daily_brief_lookup_members(request), do: daily_brief_call(:lookup_members, request)
+
+  @impl true
+  def daily_brief_user_names(request), do: daily_brief_call(:user_names, request)
+
+  defp daily_brief_call(function, request),
+    do:
+      call(@daily_brief_source, function, [request],
+        hint: request[:group_id],
+        timeout: @slack_history_read_timeout
+      )
+
+  @impl true
+  def daily_brief_permalinks(request), do: daily_brief_call(:permalinks, request)
+
+  @impl true
+  def daily_brief_post(request),
+    do: call(@daily_brief_surface, :post, [request], hint: request[:group_id])
 
   @impl true
   def ensure_task_agent(tenant_id, group_id),

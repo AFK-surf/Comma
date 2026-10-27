@@ -9,6 +9,7 @@ import { defineConfig } from "vitest/config";
 import { commaLogoAnimationMarkupPlugin } from "./vite/comma-logo-animation-markup";
 import { appShellOrigin, onAppShellOrigin } from "./vite/app-shell-origin";
 import { frameQueryEngine, servedDynamicUiFrame } from "./vite/dynamic-ui-frame";
+import { servedMiniAppFrame } from "./vite/mini-app-frame";
 import { externalFiles } from "./e2e/app-shell/fixtures/external-files";
 import { noDependencySourceMapsPlugin } from "./vite/no-dependency-source-maps";
 import {
@@ -41,9 +42,25 @@ const testTransform = {
         import.meta.dirname,
         "packages/chat-contract/src/dynamic-ui/cardFixtures.ts"
       ),
+      "@comma/chat-contract/mini-app-runtime": resolve(
+        import.meta.dirname,
+        "packages/chat-contract/src/mini-app/runtime.ts"
+      ),
       "@comma/chat-contract": resolve(
         import.meta.dirname,
         "packages/chat-contract/src/index.ts"
+      ),
+      "@comma/miniapp-sdk/mock": resolve(
+        import.meta.dirname,
+        "packages/miniapp-sdk/src/mock.ts"
+      ),
+      "@comma/miniapp-sdk/frame": resolve(
+        import.meta.dirname,
+        "packages/miniapp-sdk/src/frame.ts"
+      ),
+      "@comma/miniapp-sdk": resolve(
+        import.meta.dirname,
+        "packages/miniapp-sdk/src/index.ts"
       ),
       "@comma/config": resolve(import.meta.dirname, "packages/config/src/index.ts"),
       "@comma/core/contract": resolve(
@@ -93,6 +110,7 @@ const testTransform = {
         import.meta.dirname,
         "packages/mesh/src/memory.ts"
       ),
+      "@comma/mesh/web": resolve(import.meta.dirname, "packages/mesh/src/web.ts"),
       "@comma/mesh": resolve(import.meta.dirname, "packages/mesh/src/index.ts"),
       "@comma/session-contract": resolve(
         import.meta.dirname,
@@ -685,6 +703,7 @@ function browserProject(name: string, include: string[]) {
               servedDynamicUiFrame(
                 testTransform.resolve.alias as Record<string, string>
               ),
+              servedMiniAppFrame(testTransform.resolve.alias as Record<string, string>),
               servedWebApp("/assets/"),
               servedWebApp("/brand/"),
             ]

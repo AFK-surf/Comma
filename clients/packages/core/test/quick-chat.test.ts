@@ -333,3 +333,33 @@ describe("a Quick Chat message", () => {
     expect(t.api.seen("POST", messages)).toHaveLength(1);
   });
 });
+
+describe("a live dictation ticket", () => {
+  const tickets = "/v1/comma/me/dictation/tickets";
+
+  it("comes from the member's session with the socket to open", async () => {
+    const t = setup();
+    const ticket = {
+      url: "wss://api.comma.test/v1/comma/dictation",
+      ticket: "dictation_id.secret",
+      expires_at: 1_787_563_320,
+    };
+    t.api.on("POST", tickets, json(201, ticket));
+    await t.time.pass(100);
+    const answer = t.client.call("quickChat.dictationTicket", {});
+    await t.time.pass(100);
+    expect(await answer).toEqual(ticket);
+  });
+
+  it("fails where the server has no live dictation", async () => {
+    const t = setup();
+    t.api.on("POST", tickets, json(503, { error: "dictation_unavailable" }));
+    await t.time.pass(100);
+    const answer = t.client.call("quickChat.dictationTicket", {}).then(
+      () => "answered",
+      (error: { status?: number }) => error.status
+    );
+    await t.time.pass(100);
+    expect(await answer).toBe(503);
+  });
+});

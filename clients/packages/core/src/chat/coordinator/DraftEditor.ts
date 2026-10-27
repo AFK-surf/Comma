@@ -1,6 +1,7 @@
 import type {
   ChatCommandReceipt,
   ChatLeasedAttachInput,
+  ChatLeasedAttachConversationFilesInput,
   ChatLeasedAttachLocalFilesInput,
   ChatLeasedAttachmentIdInput,
   ChatLeasedSetDraftInput,
@@ -107,6 +108,16 @@ export class DraftEditor {
     const entry = this.#entries.required(input);
     claimDraftOwner(entry, input.surfaceId);
     entry.channel.attachLocalFiles(input.files);
+    entry.boundary.assertCurrent();
+    return this.#publisher.receipt(entry);
+  }
+
+  attachConversationFiles(
+    input: ChatLeasedAttachConversationFilesInput
+  ): ChatCommandReceipt {
+    const entry = this.#entries.required(input);
+    claimDraftOwner(entry, input.surfaceId);
+    entry.channel.attachConversationFiles(input.files);
     entry.boundary.assertCurrent();
     return this.#publisher.receipt(entry);
   }

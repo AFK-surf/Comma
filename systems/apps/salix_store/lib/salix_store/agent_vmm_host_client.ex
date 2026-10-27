@@ -4,9 +4,7 @@ defmodule SalixStore.AgentVMMHostClient do
 
   The returned CONNECT target is derived from Salix's current durable session
   projection. Gateway connection/session maps remain transport-only state.
-  The typed runtime path is the implementation anchor for
-  `tla/salix/VMMWorkloadLifecycle.tla`; the URL carries the current allocation
-  generation and connection epoch fence.
+  The URL carries the current allocation generation and Host connection epoch.
   """
 
   alias SalixStore.{AgentVMM, Compute, Repo}
@@ -52,11 +50,16 @@ defmodule SalixStore.AgentVMMHostClient do
   end
 
   @doc "Call a typed host operation during provider bootstrap or cleanup."
-  def provider_call(operation, args, workload_id)
+  def provider_call(operation, args, workload_id, expected \\ nil)
       when is_atom(operation) and is_map(args) and is_binary(workload_id) do
     with {:ok, name} <- operation_name(operation),
          {:ok, "workspace"} <- capability_for_transport_operation(name) do
-      typed_call(name, maybe_request_id(operation, args), workload_id, &resolve_provider/1)
+      typed_call(
+        name,
+        maybe_request_id(operation, args),
+        workload_id,
+        &resolve_provider(&1, expected)
+      )
     end
   end
 
@@ -213,6 +216,23 @@ defmodule SalixStore.AgentVMMHostClient do
   defp resolve_provider(workload_id) do
     with {:ok, session} <- AgentVMM.current_host_session_for_workload(workload_id) do
       resolve_session(session, workload_id)
+    end
+  end
+
+  defp resolve_provider(workload_id, nil), do: resolve_provider(workload_id)
+
+  defp resolve_provider(workload_id, %{
+         workload_generation: workload_generation,
+         allocation_id: allocation_id,
+         allocation_generation: allocation_generation
+       }) do
+    with {:ok, resolved} <- resolve_provider(workload_id),
+         true <-
+           (resolved.workload_generation == workload_generation and
+              resolved.allocation_id == allocation_id and
+              resolved.allocation_generation == allocation_generation) ||
+             {:error, :stale_generation} do
+      {:ok, resolved}
     end
   end
 

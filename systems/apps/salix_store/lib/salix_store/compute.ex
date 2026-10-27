@@ -18,7 +18,7 @@ defmodule SalixStore.Compute do
   alias SalixStore.ComputeContract
   alias SalixStore.Compute.WorkloadCredential
 
-  @providers ~w(cloudflare agent_vmm)
+  @providers ~w(cloudflare agent_vmm l4es)
   @environment_states ~w(pending ready draining stopped revoked)
   @allocation_states ~w(pending allocating ready draining released failed)
   @command_classes ~w(read_only desired_state side_effecting)
@@ -31,7 +31,9 @@ defmodule SalixStore.Compute do
   @cloudflare_gateway_attempt_limit 64
   @managed_provider_capabilities %{
     "agent_vmm" => ~w(runtime_exec runtime_process service_private),
-    "cloudflare" => ~w(runtime_exec service_public_http)
+    "cloudflare" => ~w(runtime_exec service_public_http),
+    # A coding Task's sandbox (SalixStore.CodingSandboxes): no shared runtime.
+    "l4es" => []
   }
   @agent_vmm_remote_policy %{
     "per_environment_limits" => %{
@@ -487,8 +489,8 @@ defmodule SalixStore.Compute do
   # Group runtime facts reuse Workload and Allocation. The compatibility-shaped
   # return value is a projection for current product callers, never stored JSON.
   @group_device_fields ~w(env_id device_id connector_id alias name workspace_dir station_id)
-  @group_archive_fields ~w(wake_requested_at archive_started_at archive archive_ref connector_archive archive_operation_id archive_reason archive_progress archive_cancel_requested archive_last_operation archived_at wake_operation_id last_wake_at archive_gc_operations archive_previous connector_archive_previous archive_retry_at)
-  @group_activity_fields ~w(active_operations last_operation_at last_operation_result last_vm_operation_agent_id last_agent_settled_after_vm_at)
+  @group_archive_fields ~w(wake_requested_at archive_started_at archive archive_ref connector_archive archive_operation_id archive_reason archive_progress archive_cancel_requested archive_last_operation archived_at wake_operation_id last_wake_at archive_gc_operations archive_previous connector_archive_previous archive_retry_at archive_refusals)
+  @group_activity_fields ~w(active_operations last_operation_at last_operation_result last_vm_operation_agent_id last_agent_settled_after_vm_at last_station_activity_at)
   @group_runtime_fields ~w(runtime_targets runtime_connector runtime_activity runtime_idle runtime_idle_token runtime_selection_until runtime_wake_at runtime_wake_claim cloudflare_control last_discarded_generation)
   @group_provider_fields ~w(provider_resource_id provider_resource_name provider_spec current_worker_version_id desired_worker_version_id worker_release_id worker_release_kind rollout_state cloudflare_worker operation_drain_summary)
   @group_lifecycle_fields ~w(provider_migration node_id attempt_at ready_at error last_error billing_decision last_metered_at created_by_agent_id container_loss)
@@ -502,6 +504,22 @@ defmodule SalixStore.Compute do
   rescue
     ArgumentError -> {:error, :invalid_group}
   end
+
+  @doc "The existing Environment of the Group's one authorized, enabled VMM Host."
+  def group_vmm_environment(tenant_id, group_id),
+    do: SalixStore.ComputeGroupStation.environment(tenant_id, group_id)
+
+  @doc "The authorized VMM registration, Environment and exact ProviderBinding."
+  def group_vmm_placement(tenant_id, group_id),
+    do: SalixStore.ComputeGroupStation.placement(tenant_id, group_id)
+
+  @doc "Ensure the Group's reusable Station Workload on its VMM Host."
+  def ensure_group_station(tenant_id, group_id),
+    do: SalixStore.ComputeGroupStation.ensure(tenant_id, group_id)
+
+  @doc "The Group's VMM Station, independent of its existing Cloudflare VM."
+  def group_station(tenant_id, group_id),
+    do: SalixStore.ComputeGroupStation.get(tenant_id, group_id)
 
   @doc "Resolve Group Compute ownership without treating an unreadable Workload as absent."
   @spec group_provider_ownership(String.t(), String.t()) ::
@@ -538,13 +556,11 @@ defmodule SalixStore.Compute do
 
   def group_provider_ownership(_, _), do: {:error, :group_workload_unavailable}
 
-  @doc "Check the exact Group/Device admission hold after a provider cutover."
-  def group_provider_mutation_admission(tenant_id, group_id, device_id)
-      when is_binary(device_id) do
-    case group_provider_ownership(tenant_id, group_id) do
-      {:managed,
+  @doc "Check new commands against the selected device's exact Workload authority."
+  def group_provider_mutation_admission(tenant_id, group_id, device_id) do
+    case SalixStore.ComputeStation.device_owner(tenant_id, group_id, device_id) do
+      {:group_default,
        %{
-         "device_id" => ^device_id,
          "provider" => "cloudflare",
          "provider_migration" => %{
            "phase" => "committed",
@@ -553,17 +569,8 @@ defmodule SalixStore.Compute do
        }} ->
         {:error, :provider_cutover_archive_pending}
 
-      {:managed,
-       %{
-         "provider_migration" => %{
-           "phase" => "committed",
-           "archive_hold" => "awaiting_durable_archive"
-         }
-       }} ->
-        {:error, :group_workload_unavailable}
-
-      {:managed, _} ->
-        :ok
+      {kind, _record} when kind in [:group_default, :workload] ->
+        SalixStore.ComputeStation.admit_device(tenant_id, group_id, device_id)
 
       :unmanaged ->
         :ok
@@ -572,8 +579,6 @@ defmodule SalixStore.Compute do
         error
     end
   end
-
-  def group_provider_mutation_admission(_, _, _), do: {:error, :group_workload_unavailable}
 
   @doc "Create a Group default only after the release handoff has admitted this writer."
   def ensure_group_workload(facts) do
@@ -2125,6 +2130,8 @@ defmodule SalixStore.Compute do
             |> Map.put("active_operation_count", map_size(operations))
             |> Map.put("last_operation_at", attrs.started_at)
             |> group_maybe_put("last_vm_operation_agent_id", attrs.agent_id)
+            # The VM is in use again: refused idle archives no longer run in a row.
+            |> Map.delete("archive_refusals")
 
           {:changed, updated, {:ok, operation_id}}
         end
@@ -2304,6 +2311,70 @@ defmodule SalixStore.Compute do
     end
   end
 
+  @doc """
+  The Group Cloud VM fleet, as the observability gauges read it: one row per
+  provider and status with the count of records and, for a status a record
+  should pass through, the oldest record's basis time (ms since the epoch):
+  `creating` from its provision start, `waking` from `last_wake_at`,
+  `archiving` from `archive_started_at`, `failed` from its last write. One
+  aggregate over the group-default Workload rows (one per Group with a Cloud
+  VM); the result has at most providers x statuses rows.
+  """
+  @spec group_workload_fleet() ::
+          {:ok,
+           [
+             %{
+               provider: String.t(),
+               status: String.t(),
+               count: non_neg_integer(),
+               oldest_ms: integer() | nil
+             }
+           ]}
+          | {:error, term()}
+  def group_workload_fleet do
+    with :ok <- SalixStore.ComputeMigration.ensure_open() do
+      rows =
+        Repo.all(
+          from(e in Environment,
+            join: w in Workload,
+            on: w.environment_id == e.id,
+            join: a in Allocation,
+            on: a.id == w.allocation_id,
+            join: b in ProviderBinding,
+            on: b.id == a.provider_binding_id,
+            where: e.owner_type == "group" and fragment("?->>'group_default' = 'true'", w.spec),
+            group_by: [b.provider, w.observed_state],
+            select: %{
+              provider: b.provider,
+              status: w.observed_state,
+              count: count(w.id),
+              oldest_ms:
+                min(
+                  fragment(
+                    """
+                    CASE ?
+                      WHEN 'creating' THEN COALESCE((? #>> '{lifecycle,provision_started_at}')::bigint, (EXTRACT(EPOCH FROM ?) * 1000)::bigint)
+                      WHEN 'waking' THEN (? #>> '{archive,last_wake_at}')::bigint
+                      WHEN 'archiving' THEN (? #>> '{archive,archive_started_at}')::bigint
+                      WHEN 'failed' THEN (EXTRACT(EPOCH FROM ?) * 1000)::bigint
+                    END
+                    """,
+                    w.observed_state,
+                    w.spec,
+                    w.created_at,
+                    w.spec,
+                    w.spec,
+                    w.updated_at
+                  )
+                )
+            }
+          )
+        )
+
+      {:ok, rows}
+    end
+  end
+
   defp group_workload_rows(group, lock? \\ false) do
     tenant = SalixStore.Ids.tenant_id_from_group!(group)
 
@@ -2352,10 +2423,17 @@ defmodule SalixStore.Compute do
       )
       |> Repo.update!()
 
+    # A Group write owns only its own provider fields. The facts the provider
+    # observed on this allocation (image, container, runtime) stay as they are.
+    provider_observation =
+      (allocation.provider_observation || %{})
+      |> Map.drop(@group_provider_fields)
+      |> Map.merge(Map.take(facts, @group_provider_fields))
+
     allocation =
       allocation
       |> Ecto.Changeset.change(
-        provider_observation: Map.take(facts, @group_provider_fields),
+        provider_observation: provider_observation,
         revision: allocation.revision + 1,
         updated_at: SystemsClock.timestamp(:utc_datetime_usec)
       )
@@ -2395,7 +2473,8 @@ defmodule SalixStore.Compute do
     now = SystemsClock.utc_now()
 
     with :ok <- required_strings(attrs, [:id, :tenant_id, :owner_type, :owner_id, :pool_id]),
-         true <- attrs.owner_type in ["project", "swarm", "group"] || {:error, :invalid_owner},
+         true <-
+           attrs.owner_type in ["project", "swarm", "group", "task"] || {:error, :invalid_owner},
          %Pool{tenant_id: tenant_id, status: "active"} <- Repo.get(Pool, attrs.pool_id),
          true <- tenant_id == attrs.tenant_id || {:error, :scope_mismatch},
          :ok <- validate_retention(Map.get(attrs, :retention, %{"mode" => "retain"})) do
@@ -2424,7 +2503,8 @@ defmodule SalixStore.Compute do
   @doc "Idempotently materialize one owner Environment on one exact Pool."
   def ensure_environment(attrs) when is_map(attrs) do
     with :ok <- required_strings(attrs, [:id, :tenant_id, :owner_type, :owner_id, :pool_id]),
-         true <- attrs.owner_type in ["project", "swarm", "group"] || {:error, :invalid_owner},
+         true <-
+           attrs.owner_type in ["project", "swarm", "group", "task"] || {:error, :invalid_owner},
          {:ok, %Pool{}} <- resolve_pool(attrs.tenant_id, attrs.pool_id) do
       case Repo.transaction(fn ->
              lock_key =
@@ -3277,43 +3357,80 @@ defmodule SalixStore.Compute do
     _ -> {:error, :unavailable}
   end
 
-  @doc "Merge one exact provider observation and remove obsolete facts."
-  def observe_allocation_facts(id, expected_revision, generation, facts, obsolete_keys)
+  @doc "Merge exact provider facts, optionally committing their Workload readiness under its CAS."
+  def observe_allocation_facts(
+        id,
+        expected_revision,
+        generation,
+        facts,
+        obsolete_keys,
+        workload \\ nil
+      )
       when is_binary(id) and is_integer(expected_revision) and is_integer(generation) and
              is_map(facts) and is_list(obsolete_keys) do
     Repo.transaction(fn ->
-      allocation =
-        Repo.one!(from(a in Allocation, where: a.id == ^id, lock: "FOR UPDATE"))
+      with {:ok, workload} <- lock_observed_workload(workload, id) do
+        allocation =
+          Repo.one!(from(a in Allocation, where: a.id == ^id, lock: "FOR UPDATE"))
 
-      environment = Repo.get!(Environment, allocation.environment_id)
+        environment = Repo.get!(Environment, allocation.environment_id)
 
-      if allocation.revision != expected_revision or allocation.generation != generation or
-           environment.generation != generation do
-        Repo.rollback(:stale_generation)
-      end
+        if allocation.revision != expected_revision or allocation.generation != generation or
+             environment.generation != generation or
+             (not is_nil(workload) and allocation.status == "released") do
+          Repo.rollback(:stale_generation)
+        end
 
-      merged =
-        (allocation.provider_observation || %{})
-        |> Map.merge(facts)
-        |> Map.drop(obsolete_keys)
+        merged =
+          (allocation.provider_observation || %{})
+          |> Map.merge(facts)
+          |> Map.drop(obsolete_keys)
 
-      if merged == (allocation.provider_observation || %{}) do
-        allocation
-      else
-        {1, _} =
-          Repo.update_all(from(a in Allocation, where: a.id == ^id),
-            set: [
-              provider_observation: merged,
-              updated_at: SystemsClock.timestamp(:utc_datetime_usec)
-            ],
-            inc: [revision: 1]
-          )
+        if merged != (allocation.provider_observation || %{}) do
+          {1, _} =
+            Repo.update_all(from(a in Allocation, where: a.id == ^id),
+              set: [
+                provider_observation: merged,
+                updated_at: SystemsClock.timestamp(:utc_datetime_usec)
+              ],
+              inc: [revision: 1]
+            )
+        end
+
+        if not is_nil(workload) and workload.observed_state == "ready" and
+             facts["container_status"] in ["created", "stopped", "absent"] do
+          case observe_workload(workload.id, workload.revision, workload.generation, "pending") do
+            {:ok, _} -> :ok
+            {:error, reason} -> Repo.rollback(reason)
+          end
+        end
 
         Repo.get!(Allocation, id)
       end
     end)
+    |> case do
+      {:ok, {:error, _} = error} -> error
+      result -> result
+    end
   rescue
     _ -> {:error, :unavailable}
+  end
+
+  defp lock_observed_workload(nil, _allocation_id), do: {:ok, nil}
+
+  defp lock_observed_workload(%Workload{} = expected, allocation_id) do
+    case Repo.one(
+           from(w in Workload,
+             where:
+               w.id == ^expected.id and w.generation == ^expected.generation and
+                 w.allocation_id == ^allocation_id and w.allocation_id == ^expected.allocation_id and
+                 w.desired_state == "ready" and is_nil(w.deletion),
+             lock: "FOR UPDATE"
+           )
+         ) do
+      nil -> {:error, :stale_generation}
+      workload -> {:ok, workload}
+    end
   end
 
   def observe_runtime(attrs) when is_map(attrs) do
@@ -3661,11 +3778,12 @@ defmodule SalixStore.Compute do
     _ -> {:error, :unavailable}
   end
 
+  # A newer carrier may offer features this server does not know. They are
+  # not negotiated (the open result lists only known features), not rejected.
   defp validate_runtime_carrier_features(kind, supported) when is_list(supported) do
     server_required = required_features_for_kind(kind)
 
-    if Enum.all?(server_required, &(&1 in supported)) and
-         Enum.all?(supported, &(&1 in @runtime_carrier_features)) do
+    if Enum.all?(server_required, &(&1 in supported)) do
       :ok
     else
       {:error, :required_runtime_feature_missing}
@@ -4865,44 +4983,58 @@ defmodule SalixStore.Compute do
         _ -> nil
       end
 
-    if is_binary(command.workload_id) and is_binary(resource) do
-      now = SystemsClock.utc_now()
+    cond do
+      # A busy import slot is transient Host concurrency. The failed command
+      # stays a retryable desired-state attempt: the reconciler's next claim
+      # pass re-dispatches allocation.ensure with the same request_id
+      # (enqueue_command_with_status reissues a failed attempt) and owns the
+      # retry count and backoff. Only storage headroom needs operator action.
+      resource == "import_slot" ->
+        :ok
 
-      row = %{
-        id: "agent_vmm:#{command.workload_id}:#{command.target_generation}",
-        provider: "agent_vmm",
-        workload_id: command.workload_id,
-        generation: command.target_generation,
-        claim_token: "capacity-action-required",
-        attempt_count: 1,
-        next_retry_at: nil,
-        lease_expires_at: nil,
-        last_error: %{
-          "kind" => "action_required",
-          "code" => "resource_capacity_exhausted",
-          "resource" => resource
-        },
-        created_at: now,
-        updated_at: now
-      }
+      is_binary(command.workload_id) and is_binary(resource) ->
+        park_storage_headroom_locked(command, resource)
 
-      Repo.insert_all(ReconcilerClaim, [row],
-        conflict_target: [:provider, :workload_id, :generation],
-        on_conflict: [
-          set: [
-            claim_token: row.claim_token,
-            next_retry_at: nil,
-            lease_expires_at: nil,
-            last_error: row.last_error,
-            updated_at: now
-          ]
-        ]
-      )
-
-      :ok
-    else
-      {:error, :capacity_dimension_required}
+      true ->
+        {:error, :capacity_dimension_required}
     end
+  end
+
+  defp park_storage_headroom_locked(command, resource) do
+    now = SystemsClock.utc_now()
+
+    row = %{
+      id: "agent_vmm:#{command.workload_id}:#{command.target_generation}",
+      provider: "agent_vmm",
+      workload_id: command.workload_id,
+      generation: command.target_generation,
+      claim_token: "capacity-action-required",
+      attempt_count: 1,
+      next_retry_at: nil,
+      lease_expires_at: nil,
+      last_error: %{
+        "kind" => "action_required",
+        "code" => "resource_capacity_exhausted",
+        "resource" => resource
+      },
+      created_at: now,
+      updated_at: now
+    }
+
+    Repo.insert_all(ReconcilerClaim, [row],
+      conflict_target: [:provider, :workload_id, :generation],
+      on_conflict: [
+        set: [
+          claim_token: row.claim_token,
+          next_retry_at: nil,
+          lease_expires_at: nil,
+          last_error: row.last_error,
+          updated_at: now
+        ]
+      ]
+    )
+
+    :ok
   end
 
   @doc false
@@ -5198,7 +5330,15 @@ defmodule SalixStore.Compute do
     workloads =
       Repo.all(
         from(w in Workload,
-          where: w.environment_id in ^environment_ids,
+          join: a in Allocation,
+          on: a.id == w.allocation_id,
+          where:
+            w.environment_id in ^environment_ids and
+              fragment(
+                "COALESCE(?->>'phase', '') NOT IN ('complete', 'cloud_retired')",
+                w.deletion
+              ) and
+              fragment("COALESCE(?->>'cloud_retired', 'false') <> 'true'", a.provider_observation),
           order_by: [desc: w.updated_at, desc: w.id],
           limit: ^limit
         )
@@ -5263,8 +5403,15 @@ defmodule SalixStore.Compute do
         from(w in Workload,
           join: e in Environment,
           on: e.id == w.environment_id,
+          join: a in Allocation,
+          on: a.id == w.allocation_id,
           where:
             e.tenant_id == ^tenant_id and e.owner_type == ^owner_type and e.owner_id == ^owner_id and
+              fragment(
+                "COALESCE(?->>'phase', '') NOT IN ('complete', 'cloud_retired')",
+                w.deletion
+              ) and
+              fragment("COALESCE(?->>'cloud_retired', 'false') <> 'true'", a.provider_observation) and
               w.id > ^workload_after,
           order_by: w.id,
           limit: ^(limit + 1)

@@ -2,8 +2,8 @@ import Foundation
 import Synchronization
 
 /**
- * A Comma API inside the test process. It answers the requests made through `configuration` by method and path and
- * keeps each request. Every server has a host of its own, so the servers of different tests never see each other's
+ * A Comma API inside the test process. It answers the requests made through `configuration` by method and path (JSON,
+ * or a file's bytes when the answer is `Data`) and keeps each request. Every server has a host of its own, so the servers of different tests never see each other's
  * requests. A request with no answer gets a 404.
  */
 final class FakeServer: @unchecked Sendable {
@@ -98,9 +98,14 @@ final class FakeServerProtocol: URLProtocol, @unchecked Sendable {
         let answer = server.answer(FakeServer.Request(method: request.httpMethod ?? "GET", path: url.path,
                                                       authorization: request.value(forHTTPHeaderField: "Authorization"),
                                                       body: body, raw: raw))
-        let data = (try? JSONSerialization.data(withJSONObject: answer.json, options: .fragmentsAllowed)) ?? Data()
+        // An answer of bytes (a file) goes as it is; any other answer as JSON.
+        let bytes = answer.json as? Data
+        let data = bytes ?? (try? JSONSerialization.data(withJSONObject: answer.json, options: .fragmentsAllowed)) ?? Data()
+        let headers = bytes == nil
+            ? ["Content-Type": "application/json"]
+            : ["Content-Type": "application/octet-stream", "Content-Length": String(data.count)]
         let response = HTTPURLResponse(url: url, statusCode: answer.status, httpVersion: "HTTP/1.1",
-                                       headerFields: ["Content-Type": "application/json"])!
+                                       headerFields: headers)!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: data)
         client?.urlProtocolDidFinishLoading(self)

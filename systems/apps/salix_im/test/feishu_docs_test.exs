@@ -31,6 +31,7 @@ defmodule SalixIM.FeishuDocsTest do
 
     def call(conn, _opts) do
       conn = fetch_query_params(conn)
+      auth = conn |> get_req_header("authorization") |> List.first()
       {:ok, raw, conn} = read_body(conn, length: 30_000_000)
 
       body =
@@ -54,9 +55,14 @@ defmodule SalixIM.FeishuDocsTest do
       {status, response} =
         case Agent.get(__MODULE__, &Map.get(&1.routes, {conn.method, conn.request_path})) do
           # An answer that depends on the query, such as a page cursor.
-          {status, answer} when is_function(answer, 1) -> {status, answer.(conn.query_params)}
-          nil -> {404, %{"code" => 1_770_002, "msg" => "not found"}}
-          route -> route
+          {status, answer} when is_function(answer, 1) ->
+            {status, answer.(Map.put(conn.query_params, "__authorization", auth))}
+
+          nil ->
+            {404, %{"code" => 1_770_002, "msg" => "not found"}}
+
+          route ->
+            route
         end
 
       conn
@@ -110,6 +116,29 @@ defmodule SalixIM.FeishuDocsTest do
          %{"alias" => "feishu-ann", "open_id" => "ou_ann", "name" => "Ann", "status" => "active"},
          %{"alias" => "feishu-bo", "open_id" => "ou_bo", "name" => "Bo", "status" => "expired"}
        ]}
+    end
+
+    @impl true
+    def access_token(_agent_id, alias_name), do: {:ok, "u-" <> alias_name}
+  end
+
+  defmodule ManyAccounts do
+    @moduledoc "Twelve signed-in people; one of them labelled app."
+    @behaviour SalixIM.Ports.FeishuUserAccounts
+
+    @impl true
+    def list(_group_id) do
+      {:ok,
+       [%{"alias" => "app", "open_id" => "ou_appy", "name" => "Appy", "status" => "active"}] ++
+         for(
+           n <- 1..11,
+           do: %{
+             "alias" => "p#{n}",
+             "open_id" => "ou_p#{n}",
+             "name" => "P#{n}",
+             "status" => "active"
+           }
+         )}
     end
 
     @impl true
@@ -739,7 +768,8 @@ defmodule SalixIM.FeishuDocsTest do
       })
     end
 
-    test "a search runs as every active account and names who found each meeting", ctx do
+    test "a search runs as the app and every active account and names who found each meeting",
+         ctx do
       FakeFeishu.route(
         "POST",
         "/open-apis/vc/v1/meetings/search",
@@ -756,10 +786,11 @@ defmodule SalixIM.FeishuDocsTest do
                  "start" => "2026-10-19"
                })
 
-      # The expired account is skipped.
-      assert Enum.map(meetings, & &1["account"]) == ["feishu-ray", "feishu-ann"]
+      # The app searches first; the expired account is skipped.
+      assert Enum.map(meetings, & &1["account"]) == ["app", "feishu-ray", "feishu-ann"]
 
       assert pages == [
+               %{"account" => "app", "page_token" => "p2"},
                %{"account" => "feishu-ray", "page_token" => "p2"},
                %{"account" => "feishu-ann", "page_token" => "p2"}
              ]
@@ -771,7 +802,8 @@ defmodule SalixIM.FeishuDocsTest do
                  "page_token" => "p2"
                })
 
-      [ray, ann] = requests("POST", "/open-apis/vc/v1/meetings/search")
+      [app, ray, ann] = requests("POST", "/open-apis/vc/v1/meetings/search")
+      assert app.authorization == "Bearer t-docs"
       assert ray.authorization == "Bearer u-feishu-ray"
       assert ann.authorization == "Bearer u-feishu-ann"
 
@@ -931,14 +963,24 @@ defmodule SalixIM.FeishuDocsTest do
     end
 
     test "a read tries each account until one may see the meeting", ctx do
-      FakeFeishu.route(
-        "GET",
-        "/open-apis/vc/v1/meetings/7002",
-        ok(%{"meeting" => %{"topic" => "1:1"}})
-      )
+      # The app may not see this meeting; Ray may.
+      FakeFeishu.route("GET", "/open-apis/vc/v1/meetings/7002", fn
+        %{"__authorization" => "Bearer t-docs"} ->
+          %{"code" => 121_005, "msg" => "no permission"}
+
+        _person ->
+          ok(%{"meeting" => %{"topic" => "1:1"}})
+      end)
 
       assert {:ok, %{"account" => "feishu-ray", "recording" => "unavailable: " <> _}} =
                worker_call(ctx, "feishu.get_meeting", %{"meeting_id" => "7002"})
+
+      # account=app reads as the app alone.
+      assert {:error, _refused} =
+               worker_call(ctx, "feishu.get_meeting", %{
+                 "meeting_id" => "7002",
+                 "account" => "app"
+               })
 
       assert {:error, "no signed-in Feishu account feishu-zoe; feishu.list_accounts names them"} =
                worker_call(ctx, "feishu.get_note", %{"note_id" => "n", "account" => "feishu-zoe"})
@@ -954,11 +996,237 @@ defmodule SalixIM.FeishuDocsTest do
       assert {:ok, %{"accounts" => [_, _, _]}} = worker_call(ctx, "feishu.list_accounts", %{})
     end
 
-    test "without a signed-in account the bot says how to add one", ctx do
+    test "without a signed-in account the app searches alone and says how a person signs in",
+         ctx do
       SystemsRuntime.delete_env(:salix_im, :feishu_user_accounts_mod)
 
-      assert {:error, "no Feishu account is signed in" <> _} =
+      FakeFeishu.route(
+        "POST",
+        "/open-apis/vc/v1/meetings/search",
+        ok(%{"items" => [%{"id" => "7003"}], "has_more" => false})
+      )
+
+      assert {:ok, %{"meetings" => [%{"account" => "app"}], "guidance" => guidance}} =
                worker_call(ctx, "feishu.search_meetings", %{"query" => "Daily"})
+
+      assert guidance =~ "oauth.request_authorization with provider feishu"
+
+      assert [%{authorization: "Bearer t-docs"}] =
+               requests("POST", "/open-apis/vc/v1/meetings/search")
+    end
+
+    test "documents and wiki pages are found by keyword and read without a link", ctx do
+      FakeFeishu.route(
+        "POST",
+        "/open-apis/search/v2/doc_wiki/search",
+        ok(%{
+          "res_units" => [
+            %{
+              "title_highlighted" => "Ditto x RC <h>Daily</h> SyncUp",
+              "entity_type" => "DOC",
+              "result_meta" => %{
+                "url" => "https://x.feishu.cn/docx/DocxDaily0001",
+                "token" => "DocxDaily0001",
+                "doc_types" => "DOCX"
+              }
+            }
+          ],
+          "has_more" => false
+        })
+      )
+
+      FakeFeishu.route(
+        "POST",
+        "/open-apis/docs_ai/v1/documents/DocxDaily0001/fetch",
+        ok(%{"document" => %{"content" => "Decided: cloud browser."}})
+      )
+
+      assert {:ok, %{"documents" => hits, "failed_accounts" => []}} =
+               worker_call(ctx, "feishu.search_docs", %{"query" => "Daily"})
+
+      assert Enum.map(hits, & &1["account"]) == ["app", "feishu-ray", "feishu-ann"]
+
+      assert %{
+               "title" => "Ditto x RC Daily SyncUp",
+               "url" => "https://x.feishu.cn/docx/DocxDaily0001",
+               "token" => "DocxDaily0001"
+             } = hd(hits)
+
+      [app, ray, _ann] = requests("POST", "/open-apis/search/v2/doc_wiki/search")
+      assert app.authorization == "Bearer t-docs"
+      assert ray.authorization == "Bearer u-feishu-ray"
+
+      assert ray.body == %{
+               "query" => "Daily",
+               "page_size" => 15,
+               "doc_filter" => %{},
+               "wiki_filter" => %{}
+             }
+
+      # A hit is read as the account that found it.
+      assert {:ok, %{"content" => "Decided: cloud browser."}} =
+               worker_call(ctx, "feishu.fetch_doc", %{
+                 "doc" => "https://x.feishu.cn/docx/DocxDaily0001",
+                 "account" => "feishu-ray"
+               })
+
+      assert List.last(requests("POST", "/open-apis/docs_ai/v1/documents/DocxDaily0001/fetch")).authorization ==
+               "Bearer u-feishu-ray"
+    end
+
+    test "a search is labelled by the identities whose items it returns", ctx do
+      ifc_mode(ctx.group_id, "enforce")
+
+      hit = %{
+        "title_highlighted" => "Plan",
+        "result_meta" => %{
+          "url" => "https://x.feishu.cn/docx/DocxPlan00001",
+          "token" => "DocxPlan00001"
+        }
+      }
+
+      route = fn app_answer ->
+        FakeFeishu.route("POST", "/open-apis/search/v2/doc_wiki/search", fn
+          %{"__authorization" => "Bearer t-docs"} -> app_answer
+          %{"__authorization" => "Bearer u-feishu-ray"} -> ok(%{"res_units" => [hit]})
+          _ann -> ok(%{"res_units" => []})
+        end)
+      end
+
+      route.(ok(%{"res_units" => []}))
+
+      assert {:ok, %{"__ifc__" => ray_only}} =
+               worker_call(ctx, "feishu.search_docs", %{
+                 "query" => "Plan",
+                 "account" => "feishu-ray"
+               })
+
+      refute ray_only == %{"label" => ["agent_private"]}
+
+      # The app finds nothing, or fails: only Ray's items come back, labelled as Ray's.
+
+      assert {:ok, %{"documents" => [%{"account" => "feishu-ray"}], "__ifc__" => ^ray_only}} =
+               worker_call(ctx, "feishu.search_docs", %{"query" => "Plan"})
+
+      route.(%{"code" => 99_991_672, "msg" => "no permission"})
+
+      assert {:ok,
+              %{
+                "documents" => [_],
+                "failed_accounts" => [%{"account" => "app"}],
+                "__ifc__" => ^ray_only
+              }} =
+               worker_call(ctx, "feishu.search_docs", %{"query" => "Plan"})
+
+      # An item the app found has no audience this read can name.
+      route.(ok(%{"res_units" => [hit]}))
+
+      assert {:ok, %{"__ifc__" => %{"label" => ["agent_private"]}}} =
+               worker_call(ctx, "feishu.search_docs", %{"query" => "Plan"})
+    end
+
+    test "a search reads as ten identities per call and continues with accounts_from", ctx do
+      SystemsRuntime.put_env(:salix_im, :feishu_user_accounts_mod, ManyAccounts)
+
+      FakeFeishu.route(
+        "POST",
+        "/open-apis/search/v2/doc_wiki/search",
+        ok(%{
+          "res_units" => [
+            %{"title_highlighted" => "Plan", "result_meta" => %{"token" => "DocxPlan00001"}}
+          ]
+        })
+      )
+
+      assert {:ok, %{"documents" => first, "more_accounts" => %{"accounts_from" => 10}}} =
+               worker_call(ctx, "feishu.search_docs", %{"query" => "Plan"})
+
+      # The app, then the person labelled app (named by open_id), then p1..p8.
+      assert Enum.map(first, & &1["account"]) ==
+               ["app", "ou_appy"] ++ for(n <- 1..8, do: "p#{n}")
+
+      assert {:ok, %{"documents" => rest} = page} =
+               worker_call(ctx, "feishu.search_docs", %{"query" => "Plan", "accounts_from" => 10})
+
+      assert Enum.map(rest, & &1["account"]) == ["p9", "p10", "p11"]
+      refute Map.has_key?(page, "more_accounts")
+      assert length(requests("POST", "/open-apis/search/v2/doc_wiki/search")) == 13
+
+      # The person labelled app reads as themselves through that name; app is
+      # the app.
+      assert {:ok, _} =
+               worker_call(ctx, "feishu.search_docs", %{"query" => "Plan", "account" => "ou_appy"})
+
+      assert {:ok, _} =
+               worker_call(ctx, "feishu.search_docs", %{"query" => "Plan", "account" => "app"})
+
+      assert requests("POST", "/open-apis/search/v2/doc_wiki/search")
+             |> Enum.take(-2)
+             |> Enum.map(& &1.authorization) == ["Bearer u-app", "Bearer t-docs"]
+    end
+
+    test "a read tries ten identities per call and continues with accounts_from", ctx do
+      SystemsRuntime.put_env(:salix_im, :feishu_user_accounts_mod, ManyAccounts)
+
+      # Only p9, the eleventh identity, may see the meeting.
+      FakeFeishu.route("GET", "/open-apis/vc/v1/meetings/7009", fn
+        %{"__authorization" => "Bearer u-p9"} -> ok(%{"meeting" => %{"topic" => "Late"}})
+        _other -> %{"code" => 121_005, "msg" => "no permission"}
+      end)
+
+      assert {:error, refused} =
+               worker_call(ctx, "feishu.get_meeting", %{"meeting_id" => "7009"})
+
+      assert refused =~ "call again with accounts_from 10"
+      assert length(requests("GET", "/open-apis/vc/v1/meetings/7009")) == 10
+
+      assert {:ok, %{"account" => "p9", "meeting" => %{"topic" => "Late"}}} =
+               worker_call(ctx, "feishu.get_meeting", %{
+                 "meeting_id" => "7009",
+                 "accounts_from" => 10
+               })
+
+      assert requests("GET", "/open-apis/vc/v1/meetings/7009")
+             |> Enum.drop(10)
+             |> Enum.map(& &1.authorization) == ["Bearer u-p9"]
+    end
+
+    test "a cloud space and the wiki are walked as the app or as a person", ctx do
+      FakeFeishu.route(
+        "GET",
+        "/open-apis/drive/v1/files",
+        ok(%{
+          "files" => [%{"name" => "Plans", "type" => "folder", "token" => "fld1"}],
+          "has_more" => false
+        })
+      )
+
+      FakeFeishu.route(
+        "GET",
+        "/open-apis/wiki/v2/spaces",
+        ok(%{"items" => [%{"space_id" => "sp1", "name" => "Team"}], "has_more" => false})
+      )
+
+      assert {:ok, %{"files" => [%{"account" => "feishu-ann", "token" => "fld1"}]}} =
+               worker_call(ctx, "feishu.list_drive_files", %{
+                 "account" => "feishu-ann",
+                 "folder" => "root1"
+               })
+
+      [listed] = requests("GET", "/open-apis/drive/v1/files")
+      assert listed.authorization == "Bearer u-feishu-ann"
+      assert listed.query["folder_token"] == "root1"
+
+      assert {:ok, %{"files" => files}} = worker_call(ctx, "feishu.list_drive_files", %{})
+      assert Enum.map(files, & &1["account"]) == ["app", "feishu-ray", "feishu-ann"]
+
+      assert {:ok, _spaces} =
+               worker_call(ctx, "feishu.list_wiki_spaces", %{"account" => "feishu-ray"})
+
+      assert {:ok, _spaces} = worker_call(ctx, "feishu.list_wiki_spaces", %{"account" => "app"})
+
+      assert requests("GET", "/open-apis/wiki/v2/spaces") |> Enum.map(& &1.authorization) ==
+               ["Bearer u-feishu-ray", "Bearer t-docs"]
     end
   end
 end

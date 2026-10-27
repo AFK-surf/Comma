@@ -12,6 +12,7 @@ import type {
   NativePayloadClass,
 } from "@comma/native-bridge";
 import { nativePeerPortChannel } from "@comma/native-bridge";
+import { realMainClock, type MainClock } from "../../clock";
 
 export interface NativeCallerContext {
   webContentsId: number;
@@ -301,22 +302,26 @@ export class WebContentsRegistry {
 }
 
 export class NativeEventBus {
+  readonly #clock: MainClock;
   readonly #logger: NativeIpcLogger;
   readonly #observability: NativeObservabilitySink;
   readonly #permissionPolicy: PermissionPolicy;
   readonly #registry: WebContentsRegistry;
 
   constructor({
+    clock = realMainClock,
     logger = noopNativeIpcLogger,
     observability = noopNativeObservabilitySink,
     permissionPolicy = allowAllPermissionPolicy,
     registry,
   }: {
+    clock?: MainClock;
     logger?: NativeIpcLogger;
     observability?: NativeObservabilitySink;
     permissionPolicy?: PermissionPolicy;
     registry: WebContentsRegistry;
   }) {
+    this.#clock = clock;
     this.#logger = logger;
     this.#observability = observability;
     this.#permissionPolicy = permissionPolicy;
@@ -350,7 +355,7 @@ export class NativeEventBus {
         kind: "native-event",
         status: "bad-payload",
         target,
-        timestamp: new Date().toISOString(),
+        timestamp: new Date(this.#clock.now()).toISOString(),
         trace,
       });
       throw new Error(`Invalid payload for ${event.channel}.`);
@@ -376,7 +381,7 @@ export class NativeEventBus {
       kind: "native-event",
       status: "ok",
       target,
-      timestamp: new Date().toISOString(),
+      timestamp: new Date(this.#clock.now()).toISOString(),
       trace,
     });
     return targets.length;
@@ -600,6 +605,7 @@ function rendererIdentityForRegistration(
 }
 
 export class IpcGateway {
+  readonly #clock: MainClock;
   readonly #ipcMain: IpcMainLike;
   readonly #logger: NativeIpcLogger;
   readonly #observability: NativeObservabilitySink;
@@ -608,6 +614,7 @@ export class IpcGateway {
   readonly #senderPolicy: SenderPolicy;
 
   constructor({
+    clock = realMainClock,
     ipcMain,
     logger = noopNativeIpcLogger,
     observability = noopNativeObservabilitySink,
@@ -615,6 +622,7 @@ export class IpcGateway {
     resolveCallerContext,
     senderPolicy,
   }: {
+    clock?: MainClock;
     ipcMain: IpcMainLike;
     logger?: NativeIpcLogger;
     observability?: NativeObservabilitySink;
@@ -622,6 +630,7 @@ export class IpcGateway {
     resolveCallerContext: (event: unknown) => NativeCallerContext;
     senderPolicy: SenderPolicy;
   }) {
+    this.#clock = clock;
     this.#ipcMain = ipcMain;
     this.#logger = logger;
     this.#observability = observability;
@@ -647,7 +656,7 @@ export class IpcGateway {
     this.#ipcMain.handle(contract.channel, async (event, rawInput) => {
       const caller = this.#resolveCallerContext(event);
       const capabilityId = contract.id ?? contract.channel;
-      const startedAt = Date.now();
+      const startedAt = this.#clock.now();
       const trace = createNativeObservationTrace({
         flowId: "native-command",
         source: `renderer:${caller.windowId}`,
@@ -664,12 +673,12 @@ export class IpcGateway {
           caller,
           capabilityId,
           channel: contract.channel,
-          durationMs: Date.now() - startedAt,
+          durationMs: this.#clock.now() - startedAt,
           kind: "native-command",
           payloadClass: contract.payloadClass ?? "control",
           ...(contract.permission ? { permission: contract.permission } : {}),
           status,
-          timestamp: new Date().toISOString(),
+          timestamp: new Date(this.#clock.now()).toISOString(),
           trace,
           transport: contract.transport ?? "ipc-rpc",
           ...extras,

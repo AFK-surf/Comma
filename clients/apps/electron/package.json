@@ -18,15 +18,16 @@
     "release:version:staging": "tsx ./scripts/resolve-staging-release-version.ts",
     "release:velopack": "tsx ./scripts/download-release-feed.ts && NODE_ENV=production pnpm build:native && electron-forge package && tsx ./scripts/sign-macos-app.ts && tsx ./scripts/release-velopack.ts",
     "release:velopack:prod": "COMMA_BUILD_FLAVOR=prod pnpm release:velopack",
-    "release:velopack:staging": "COMMA_BUILD_FLAVOR=staging pnpm release:velopack"
+    "release:velopack:staging": "COMMA_BUILD_FLAVOR=staging pnpm release:velopack",
+    "build:native:device-bluetooth": "tsx ./scripts/build-device-bluetooth.ts"
   },
   "dependencies": {
     "@comma/app": "workspace:*",
     "@comma/chat-contract": "workspace:*",
     "@comma/config": "workspace:*",
     "@comma/core": "workspace:*",
-    "@comma/core-kernel": "workspace:*",
     "@comma/core-client": "workspace:*",
+    "@comma/core-kernel": "workspace:*",
     "@comma/i18n": "workspace:*",
     "@comma/mesh": "workspace:*",
     "@comma/native-bridge": "workspace:*",
@@ -68,7 +69,7 @@
     "@types/react-dom": "^19.2.3",
     "@types/ws": "^8.18.2",
     "@vitejs/plugin-react": "^6.0.2",
-    "electron": "^42.4.1",
+    "electron": "^45.0.0",
     "tsx": "^4.22.4",
     "typescript": "^6.0.3",
     "vite": "^8.0.16"

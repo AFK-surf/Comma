@@ -1,51 +1,48 @@
 defmodule Comma.ProfileAvatar.Storage.GCS do
-  @moduledoc "Google Cloud Storage adapter using Workload Identity/ADC through Goth."
+  @moduledoc """
+  Google Cloud Storage adapter using Workload Identity/ADC through Goth.
+
+  It speaks the JSON API's resumable-upload protocol directly: the session URL
+  is returned before any object bytes are sent, so the caller can durably
+  persist it, and completion or cancellation are requests to that URL.
+  """
 
   @behaviour Comma.ProfileAvatar.Storage
 
-  alias GoogleApi.Storage.V1.Api.Objects
-  alias GoogleApi.Storage.V1.Connection
-  alias GoogleApi.Storage.V1.Model.Object
-
   @goth_name Comma.ProfileAvatar.Goth
+  @base_url "https://storage.googleapis.com"
   @connect_timeout_ms 5_000
   @request_timeout_ms 30_000
 
   @impl true
   def start_put(key, content_type) do
-    metadata = %Object{name: key, contentType: content_type}
+    case request(:post, "#{@base_url}/upload/storage/v1/b/#{bucket()}/o",
+           params: [uploadType: "resumable", ifGenerationMatch: "0"],
+           headers: [{"x-upload-content-type", content_type}],
+           json: %{"name" => key, "contentType" => content_type}
+         ) do
+      {:ok, %{status: 200} = response} ->
+        case Req.Response.get_header(response, "location") do
+          [session_url | _] -> {:ok, session_url}
+          [] -> {:error, :missing_upload_session}
+        end
 
-    with {:ok, connection} <- connection(),
-         {:ok, %Tesla.Env{} = response} <-
-           Objects.storage_objects_insert_resumable(
-             connection,
-             bucket(),
-             "resumable",
-             body: metadata,
-             ifGenerationMatch: "0"
-           ),
-         session_url when is_binary(session_url) <- Tesla.get_header(response, "location") do
-      {:ok, session_url}
-    else
-      nil -> {:error, :missing_upload_session}
-      {:ok, _unexpected_response} -> {:error, :invalid_upload_session_response}
-      other -> other
+      {:ok, %{status: status}} ->
+        {:error, {:unexpected_status, status}}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
-  # google_api_storage exposes resumable-session initiation but not the
-  # session completion/cancellation calls. Keep those two protocol requests
-  # narrow and isolated here so the caller can durably persist the session URL
-  # before any object bytes are sent.
   @impl true
   def finish_put(session_url, path, content_type, byte_size) do
-    with {:ok, connection} <- connection(),
-         {:ok, body} <- File.read(path),
+    with {:ok, body} <- File.read(path),
          {:ok, %{status: status}} when status in [200, 201] <-
-           Tesla.put(connection, session_url, body,
+           request(:put, session_url,
+             body: body,
              headers: [
                {"content-type", content_type},
-               {"content-length", Integer.to_string(byte_size)},
                {"content-range", "bytes 0-#{byte_size - 1}/#{byte_size}"}
              ]
            ) do
@@ -58,34 +55,29 @@ defmodule Comma.ProfileAvatar.Storage.GCS do
 
   @impl true
   def cancel_put(session_url) do
-    with {:ok, connection} <- connection() do
-      case Tesla.delete(connection, session_url) do
-        {:ok, %{status: status}} when status in [200, 204, 404, 410, 499] -> :ok
-        {:ok, %{status: status}} -> {:error, {:unexpected_status, status}}
-        other -> other
-      end
+    case request(:delete, session_url) do
+      {:ok, %{status: status}} when status in [200, 204, 404, 410, 499] -> :ok
+      {:ok, %{status: status}} -> {:error, {:unexpected_status, status}}
+      {:error, reason} -> {:error, reason}
     end
   end
 
   @impl true
   def get(key) do
-    with {:ok, connection} <- connection() do
-      case Objects.storage_objects_get(connection, bucket(), key, alt: "media") do
-        {:ok, %{body: body}} when is_binary(body) -> {:ok, body}
-        {:error, %{status: 404}} -> {:error, :not_found}
-        other -> other
-      end
+    case request(:get, object_url(key), params: [alt: "media"]) do
+      {:ok, %{status: 200, body: body}} when is_binary(body) -> {:ok, body}
+      {:ok, %{status: 404}} -> {:error, :not_found}
+      {:ok, %{status: status}} -> {:error, {:unexpected_status, status}}
+      {:error, reason} -> {:error, reason}
     end
   end
 
   @impl true
   def delete(key) do
-    with {:ok, connection} <- connection() do
-      case Objects.storage_objects_delete(connection, bucket(), key) do
-        {:ok, _response} -> :ok
-        {:error, %{status: 404}} -> :ok
-        other -> other
-      end
+    case request(:delete, object_url(key)) do
+      {:ok, %{status: status}} when status in [200, 204, 404] -> :ok
+      {:ok, %{status: status}} -> {:error, {:unexpected_status, status}}
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -93,24 +85,43 @@ defmodule Comma.ProfileAvatar.Storage.GCS do
     Supervisor.child_spec({Goth, name: @goth_name}, id: @goth_name)
   end
 
-  defp connection do
-    case Goth.fetch(@goth_name) do
-      {:ok, token} -> {:ok, connection_for_token(token.token)}
-      {:error, reason} -> {:error, reason}
+  # Bodies are kept as sent: avatars are stored uncompressed and a decoded body
+  # would no longer be the object's bytes.
+  defp request(method, url, options \\ []) do
+    with {:ok, token} <- token() do
+      [
+        method: method,
+        url: url,
+        auth: {:bearer, token},
+        compressed: false,
+        decode_body: false,
+        retry: false,
+        connect_options: [timeout: @connect_timeout_ms],
+        receive_timeout: @request_timeout_ms
+      ]
+      |> Keyword.merge(options)
+      |> Keyword.merge(config()[:request_options] || [])
+      |> Req.request()
     end
   end
 
-  @doc false
-  def connection_for_token(token) when is_binary(token) do
-    middleware = token |> Connection.new() |> Tesla.Client.middleware()
+  defp token do
+    case config()[:token] do
+      token when is_binary(token) ->
+        {:ok, token}
 
-    Tesla.client(
-      middleware,
-      {Tesla.Adapter.Httpc, connect_timeout: @connect_timeout_ms, timeout: @request_timeout_ms}
-    )
+      nil ->
+        case Goth.fetch(@goth_name) do
+          {:ok, token} -> {:ok, token.token}
+          {:error, reason} -> {:error, reason}
+        end
+    end
   end
 
-  defp bucket do
-    Comma.ProfileAvatar.Storage.config() |> Keyword.fetch!(:bucket)
-  end
+  defp object_url(key),
+    do: "#{@base_url}/storage/v1/b/#{bucket()}/o/#{URI.encode(key, &URI.char_unreserved?/1)}"
+
+  defp bucket, do: config() |> Keyword.fetch!(:bucket)
+
+  defp config, do: Comma.ProfileAvatar.Storage.config()
 end

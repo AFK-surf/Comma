@@ -121,11 +121,8 @@ let stdin = ''; process.stdin.on('data', chunk => stdin += chunk); process.stdin
         window.location.hash = "#/settings";
       });
       await page.getByRole("button", { name: "Devices", exact: true }).click();
-      await page.getByRole("button", { name: "Enable this Mac", exact: true }).click();
-      await page
-        .getByRole("dialog", { name: "Enable this Mac", exact: true })
-        .getByRole("button", { name: "Enable this Mac", exact: true })
-        .click();
+      // Enabling binds the one workspace the card names: there is no dialog.
+      await page.getByRole("button", { name: "Set up", exact: true }).click();
       await expect
         .poll(
           async () =>
@@ -133,7 +130,7 @@ let stdin = ''; process.stdin.on('data', chunk => stdin += chunk); process.stdin
               .length
         )
         .toBe(1);
-      // The setup steps return to the main view once all three are ready.
+      // The card shows setup progress in place; the workloads stay on the same page.
       await expect(
         page.getByRole("button", { name: "Refresh workloads", exact: true })
       ).toBeVisible();

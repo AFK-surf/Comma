@@ -421,6 +421,7 @@ function runtimeBootstrap(workerSource: string, createCards: typeof cardEngine) 
       )
         throw Error("Invalid UI payload");
       const content = document.createElement("div");
+      content.className = "wc-root";
       content.style.display = "flow-root";
       document.body.append(content);
       // Template content is inert. Never attach these parsed nodes to the document.
@@ -935,7 +936,7 @@ function runtimeBootstrap(workerSource: string, createCards: typeof cardEngine) 
 export function dynamicUiDocument() {
   const css = `
 :root{color-scheme:light;--comma-background:light-dark(#fff,#18191b);--comma-foreground:light-dark(#222326,#f1f1f1);--comma-muted:light-dark(#70707b,#a4a5a9);--comma-border:light-dark(#e4e4e7,#343538);--comma-surface:light-dark(#f4f4f5,#27282b)}*{box-sizing:border-box;min-width:0}html{overflow:hidden;background:transparent}
-img{max-width:100%;height:auto}body{margin:0;padding:2px;background:transparent;color:var(--comma-secondary,var(--comma-foreground,CanvasText));font-family:var(--comma-font,system-ui);font-size:var(--comma-size,13px);font-weight:450;line-height:1.5;overflow-wrap:anywhere;-webkit-font-smoothing:antialiased}
+img{max-width:100%;height:auto}body{margin:0;padding:2px 2px 4px;background:transparent;color:var(--comma-secondary,var(--comma-foreground,CanvasText));font-family:var(--comma-font,system-ui);font-size:var(--comma-size,13px);font-weight:450;line-height:1.5;overflow-wrap:anywhere;-webkit-font-smoothing:antialiased}
 h2,h3,p{margin:0}h2,.widget-title{font-size:var(--comma-h2,12px);font-weight:500;color:var(--comma-muted,GrayText)}h3{font-size:var(--comma-h3,13px);font-weight:600}small,.sub,.widget-meta{font-size:var(--comma-small,12px);color:var(--comma-muted,GrayText)}
 .stack{display:flex;flex-direction:column;gap:var(--comma-control,8px)}.row,.widget-head,.widget-footer{display:flex;flex-wrap:wrap;align-items:center;gap:var(--comma-control,8px)}
 .grid,.widget-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,168px),1fr));gap:var(--comma-space,16px)}.span-2{grid-column:span 2}.muted{color:var(--comma-muted,GrayText)}

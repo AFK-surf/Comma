@@ -8,6 +8,9 @@
 // shown workspace, reconnected after 1, 2, 4… up to 15 s; a failed read without a stream to wake it is tried again
 // after 1, 2, 4… up to 15 s. No polling of the list. The stream of the read's own group owns its recovery once the
 // read has settled which group it is.
+//
+// A list asked with `hosted` takes in the Tasks the workspace's stations host (station-tasks.ts keeps them, while such
+// a list is shown), each among the others by its last change: one list, whichever kept a Task.
 import { taskStatusBucket, taskStatusFailed } from "@comma/i18n";
 import { CoreError, Priority, type Topic, type Value } from "@comma/core-kernel";
 import { Effect, Option, Result } from "effect";
@@ -81,11 +84,11 @@ export function taskItem(
       : { archiveVersion: conversation.updated_at }),
     conversationId: conversation.id,
     groupId: conversation.group_id,
-    ...(conversation.freshness ? { freshness: conversation.freshness.state } : {}),
     id: `${conversation.group_id}:${conversation.id}`,
     kind: conversation.kind,
     ...(conversation.origin === undefined ? {} : { origin: conversation.origin }),
     labels: conversation.labels ?? [],
+    ...(conversation.pull_request ? { pullRequest: conversation.pull_request } : {}),
     ...(conversation.client_platform === undefined
       ? {}
       : { clientPlatform: conversation.client_platform }),
@@ -131,12 +134,10 @@ function errorCode(error: CoreError): NonNullable<ProductInboxListResult["errorC
   return "unknown";
 }
 
-const stale = (item: ProductInboxItem): ProductInboxItem => ({
-  ...item,
-  freshness: "stale",
-});
-
-/** A first page read again: the rest of what was loaded stays, marked stale, without the tasks the new page has. */
+/**
+ * A first page read again: the rest of what was loaded stays as read, without the tasks the new page has. The list is
+ * newest change first, so a task that changed since moved onto the new first page; what stays behind did not change.
+ */
 function refreshed(pages: Page[], first: Page): Page[] {
   if (pages.length <= 1) return [first];
   const ids = new Set(first.items.map((item) => item.id));
@@ -144,9 +145,26 @@ function refreshed(pages: Page[], first: Page): Page[] {
     first,
     ...pages.slice(1).map((page) => ({
       ...page,
-      items: page.items.filter((item) => !ids.has(item.id)).map(stale),
+      items: page.items.filter((item) => !ids.has(item.id)),
     })),
   ];
+}
+
+/** `hosted` among `items`, which are newest change first: each before the first that changed earlier. */
+function among(
+  items: ProductInboxItem[],
+  hosted: ProductInboxItem[]
+): ProductInboxItem[] {
+  if (hosted.length === 0) return items;
+  const out: ProductInboxItem[] = [];
+  const rest = hosted.toSorted((a, b) => b.updatedAt - a.updatedAt);
+  let next = 0;
+  for (const item of items) {
+    while (next < rest.length && rest[next]!.updatedAt > item.updatedAt)
+      out.push(rest[next++]!);
+    out.push(item);
+  }
+  return [...out, ...rest.slice(next)];
 }
 
 /** A next page: what it has leaves the earlier pages. */
@@ -172,6 +190,14 @@ export class Tasks {
   #nextStage = 0;
   /** Told when a workspace's task stream says its stations changed their Tasks. */
   onStationTasksChanged: ((workspace: string) => void) | undefined;
+  /** The Tasks a workspace's stations host, as the list shows them (`hosted`), and what keeps them current while shown. */
+  hosted:
+    | {
+        items(account: Account, workspace: string): ProductInboxItem[];
+        keep(topic: Topic): Effect.Effect<void>;
+        stop(topic: Topic): void;
+      }
+    | undefined;
   #focus: string | null = null;
   #accountKey: string | null = null;
 
@@ -180,8 +206,20 @@ export class Tasks {
     this.#workspaces = workspaces;
     this.#live = new Live(ctx.runner);
     ctx.kernel.source("tasks", {
-      start: (topic) => this.#live.run(topic, this.#keep(topic)),
-      stop: (topic) => this.#live.stop(topic),
+      start: (topic) =>
+        this.#live.run(
+          topic,
+          topic.hosted === "1" && this.hosted
+            ? Effect.all([this.#keep(topic), this.hosted.keep(topic)], {
+                concurrency: "unbounded",
+                discard: true,
+              })
+            : this.#keep(topic)
+        ),
+      stop: (topic) => {
+        this.#live.stop(topic);
+        if (topic.hosted === "1") this.hosted?.stop(topic);
+      },
       compute: (topic): Value => ({ ok: this.#value(topic) }),
     });
     workspaces.onChange(() => this.#invalidate());
@@ -683,6 +721,10 @@ export class Tasks {
     const workspace = this.#workspaceOf(account, topic.workspace);
     const state = this.#state(workspace);
     const kept = workspace ? account.doc<Kept>(doc(workspace))?.value : undefined;
+    const hosted =
+      topic.hosted === "1" && workspace && this.hosted
+        ? this.hosted.items(account, workspace)
+        : [];
     const base = {
       ...(workspace ? { activeWorkspaceId: workspace } : {}),
       ...(workspaces.length > 0 ? { workspaces } : {}),
@@ -693,7 +735,7 @@ export class Tasks {
       if (state.live)
         return {
           ...base,
-          items: [],
+          items: hosted.map(withStatus),
           lastSyncedAt: this.#ctx.now(),
           source: "live-sync",
         };
@@ -706,7 +748,9 @@ export class Tasks {
       ...base,
       ...(state.error ? { errorCode: state.error } : {}),
       ...(last?.hasMore === undefined ? {} : { hasMore: last.hasMore }),
-      items: this.#staged(kept.pages.flatMap((page) => page.items)).map(withStatus),
+      items: among(this.#staged(kept.pages.flatMap((page) => page.items)), hosted).map(
+        withStatus
+      ),
       lastSyncedAt: kept.readAt,
       ...(last?.hasMore && last.nextCursor ? { nextCursor: last.nextCursor } : {}),
       source: state.live && !state.error ? "live-sync" : "cache",

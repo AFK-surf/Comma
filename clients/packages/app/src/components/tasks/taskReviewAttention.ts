@@ -1,6 +1,7 @@
 import { useCallback } from "react";
 import {
   useRevisionMarks,
+  useRevisionMarksOf,
   useRevisionMarkWriter,
   type RevisionMarks,
 } from "../revisionMarks";
@@ -19,6 +20,11 @@ export type TaskReviewSeenMarks = RevisionMarks;
 
 export function useTaskReviewSeenMarks(): TaskReviewSeenMarks {
   return useRevisionMarks("taskReviewSeen", LEGACY_STORAGE_KEY);
+}
+
+/** The "seen" marks of `ids` alone: rows of a few Tasks render again only when one of theirs moves. */
+export function useTaskReviewSeenMarksOf(ids: readonly string[]): TaskReviewSeenMarks {
+  return useRevisionMarksOf("taskReviewSeen", LEGACY_STORAGE_KEY, ids);
 }
 
 /** Records that a task was seen at a revision. */

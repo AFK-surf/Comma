@@ -146,9 +146,14 @@ import XCTest
         // A pre-task goes into the router composer and waits there for the member to send it.
         let slack = app.element("platform-conn-slack")
         XCTAssertTrue(slack.waitForExistence(timeout: 5))
-        XCTAssertEqual(slack.label, "Slack, 2 suggested tasks")
+        XCTAssertEqual(slack.label, "Slack, 3 suggested tasks")
         XCTAssertEqual(app.element("platform-conn-github").label, "GitHub, acme, nothing new")
         slack.tap()
+        // A member task's card shows the source words it quotes, and its minus stops suggesting the source item.
+        let task = app.element("pretask-item-0")
+        XCTAssertTrue(task.waitForExistence(timeout: 5))
+        XCTAssertTrue(task.label.contains("the rerun is green"), "The card shows its quote: \(task.label)")
+        XCTAssertTrue(app.element("pretask-dismiss-item-0").exists)
         let item = app.element("pretask-item-1")
         XCTAssertTrue(item.waitForExistence(timeout: 5))
         item.tap()

@@ -70,8 +70,8 @@ describe("SettingsPanel", () => {
     expect(settingsCopy).toHaveClass("gap-xxs", "tracking-normal");
     expect(settingsCopy).not.toHaveClass("gap-xs", "tracking-[-0.14px]");
     expect(
-      screen.getByRole("button", { name: "Select team member" })
-    ).toBeInTheDocument();
+      screen.getByRole("button", { name: /Select team member/ })
+    ).toHaveTextContent("Select team member");
     const toggle = screen.getByRole("switch");
     const toggleRoot = toggle.closest("label");
     expect(toggle).toBeInTheDocument();

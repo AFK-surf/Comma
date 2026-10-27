@@ -64,6 +64,14 @@ defmodule SalixIM.ConversationMilestone do
 
   def prepare(attrs), do: {:ok, attrs}
 
+  @doc """
+  Whether `content` records milestones and nothing else: such a Message is
+  shown only in the Task's Activity, so it answers no one.
+  """
+  @spec only_milestones?(term()) :: boolean()
+  def only_milestones?([_ | _] = content), do: Enum.all?(content, &milestone?/1)
+  def only_milestones?(_content), do: false
+
   defp milestone?(block), do: match?(%{"type" => "milestone"}, block)
 
   defp validate_milestones(milestones) when length(milestones) <= @max_milestones do

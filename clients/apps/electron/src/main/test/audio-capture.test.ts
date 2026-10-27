@@ -11,6 +11,7 @@ import {
   type AudioCaptureState,
 } from "@comma/native-bridge";
 import { sessionProductLease } from "@comma/session-contract";
+import { realMainClock, type MainClock } from "../clock";
 import { AudioCaptureService } from "../modules/audio-capture";
 import { frameLevel, WavSink } from "../modules/audio-capture/wav";
 import type {
@@ -405,7 +406,9 @@ describe("AudioCaptureService", () => {
 
   it("flags a suspected missing grant after sustained all-zero audio, then clears it", async () => {
     let nowMs = 1_700_000_000_000;
-    const { native, service } = createService({ now: () => nowMs });
+    const { native, service } = createService({
+      clock: { ...realMainClock, now: () => nowMs },
+    });
 
     await service.start({ source: { kind: "system" } });
     const tap = native.taps[0];
@@ -559,7 +562,9 @@ describe("AudioCaptureService", () => {
 
   it("stops the tap at the length ceiling but still lets stop claim the recording", async () => {
     let nowMs = 1_000;
-    const { admitted, native, published } = createService({ now: () => nowMs });
+    const { admitted, native, published } = createService({
+      clock: { ...realMainClock, now: () => nowMs },
+    });
 
     await admitted.service.start({ maxDurationMs: 1_000, source: { kind: "system" } });
     nowMs += 1_500;
@@ -730,7 +735,9 @@ describe("AudioCaptureService pause and resume", () => {
 
   it("excludes paused time from the silence and length heuristics", async () => {
     let nowMs = 1_700_000_000_000;
-    const { native, service } = createService({ now: () => nowMs });
+    const { native, service } = createService({
+      clock: { ...realMainClock, now: () => nowMs },
+    });
     await service.start({ maxDurationMs: 5_000, source: { kind: "system" } });
     native.taps[0]?.emit(new Float32Array(48 * 2));
 
@@ -892,9 +899,9 @@ class FakeMicrophone implements MicrophoneCapture {
 }
 
 function createService({
+  clock,
   microphone,
   nativeAvailable = true,
-  now,
   openExternalUrl,
   screenAccessStatus,
   onSaved,
@@ -902,9 +909,9 @@ function createService({
   onSaved?: NonNullable<
     ConstructorParameters<typeof AudioCaptureService>[0]["onSaved"]
   >;
+  clock?: MainClock;
   microphone?: MicrophoneCapture;
   nativeAvailable?: boolean;
-  now?: () => number;
   openExternalUrl?: (url: string) => Promise<void>;
   screenAccessStatus?: () => "granted" | "unknown";
 } = {}) {
@@ -940,11 +947,11 @@ function createService({
     }),
   };
   const service = new AudioCaptureService({
+    ...(clock ? { clock } : {}),
     encoder,
     ...(onSaved ? { onSaved } : {}),
     loadNative: async () => (nativeAvailable ? native : undefined),
     ...(microphone ? { microphone } : {}),
-    ...(now ? { now } : {}),
     onStateChanged: (state) => published.push(state),
     ...(openExternalUrl ? { openExternalUrl } : {}),
     recordingsDir,

@@ -185,7 +185,7 @@ describe("AirDrop to chat attachments", () => {
     await h.sessionWhen((state) => state?.conversation?.title === "Current chat");
     const intake = await approveAirDropForChat(h.options);
     expect(h.reception.confirm).toHaveBeenCalledWith(
-      expect.objectContaining({ chatTitle: "Current chat", senderName: "iPhone" }),
+      expect.objectContaining({ chatTitle: "Comma", senderName: "iPhone" }),
       h.controller.signal
     );
     expect((await h.session())?.attachmentIntakeInFlight).toBe(true);
@@ -294,7 +294,7 @@ describe("AirDrop to chat attachments", () => {
       })
     ).toBeUndefined();
     expect(h.reception.refuse).toHaveBeenLastCalledWith(
-      expect.objectContaining({ chatTitle: "Current chat" }),
+      expect.objectContaining({ chatTitle: "Comma" }),
       "directory"
     );
     expect(h.reception.confirm).not.toHaveBeenCalled();

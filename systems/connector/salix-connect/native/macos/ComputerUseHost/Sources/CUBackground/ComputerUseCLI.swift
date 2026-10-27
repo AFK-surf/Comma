@@ -163,10 +163,14 @@ public enum ComputerUseCLI {
                 elementIndex: optionalInt(flags, "--element-index")
             )
         case "set-value":
+            // An empty value clears the field.
+            guard let value = flags["--value"] else {
+                throw ComputerUseCLIError.missingValue("--value")
+            }
             return try .setValue(
                 snapshotID: requiredString(flags, "--snapshot-id"),
                 elementIndex: requiredInt(flags, "--element-index"),
-                value: requiredString(flags, "--value")
+                value: value
             )
         case "press-key":
             return try .pressKey(

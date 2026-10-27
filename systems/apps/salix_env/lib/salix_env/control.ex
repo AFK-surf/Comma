@@ -36,7 +36,7 @@ defmodule SalixEnv.Control do
   @spec list_environments(String.t()) :: [map()]
   def list_environments(tenant_id) do
     case Registry.list_by_tenant(tenant_id) do
-      {:ok, records} -> Enum.map(records, &environment_json/1)
+      {:ok, records} -> public_environments(records)
       {:error, _} -> []
     end
   end
@@ -46,7 +46,7 @@ defmodule SalixEnv.Control do
   def list_group_environments(group_id, tenant_id) do
     if Ids.valid_group_id_for_tenant?(group_id, tenant_id) do
       case Registry.list_by_group(group_id) do
-        {:ok, records} -> {:ok, Enum.map(records, &environment_json/1)}
+        {:ok, records} -> {:ok, public_environments(records)}
         {:error, _} = error -> error
       end
     else
@@ -61,7 +61,7 @@ defmodule SalixEnv.Control do
     if Ids.valid_group_id_for_tenant?(group_id, tenant_id) do
       case Registry.page_by_group(group_id, opts) do
         {:ok, %{records: records, next_cursor: next_cursor}} ->
-          {:ok, %{records: Enum.map(records, &environment_json/1), next_cursor: next_cursor}}
+          {:ok, %{records: public_environments(records), next_cursor: next_cursor}}
 
         {:error, _} = error ->
           error
@@ -81,11 +81,22 @@ defmodule SalixEnv.Control do
     if Ids.valid_group_id_for_tenant?(group_id, tenant_id) do
       with {:ok, %{records: records, next_cursor: next_cursor}} <-
              Registry.page_owned_by_group(group_id, owner_user_id, opts) do
-        {:ok, %{records: Enum.map(records, &environment_json/1), next_cursor: next_cursor}}
+        {:ok, %{records: public_environments(records), next_cursor: next_cursor}}
       end
     else
       {:error, :not_found}
     end
+  end
+
+  # Keep Task-owned sandbox records for lifecycle operations and exact reads.
+  # Only connected sandboxes provide an entry point in public device lists.
+  defp public_environments(records) do
+    records
+    |> Enum.reject(fn record ->
+      SalixStore.CodingSandboxes.device?(record["device_id"]) and
+        record["status"] != "connected"
+    end)
+    |> Enum.map(&environment_json/1)
   end
 
   @doc "The device of a tenant/group's Cloud VM, or nil when the Group has none."

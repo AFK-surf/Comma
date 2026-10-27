@@ -13,21 +13,29 @@ export class ClientControl extends Context.Service<
     call(token: string, body: unknown): Effect.Effect<unknown, Error>;
     /** GET a path under /v1 (modules, describe). */
     get?(token: string, path: string): Effect.Effect<unknown, Error>;
+    /** POST one JSON-RPC message to Main's MCP server `server`; null when it answers a notification. */
+    mcp?(token: string, server: string, message: unknown): Effect.Effect<unknown, Error>;
   }
 >()("station/ClientControl") {}
 
 const usage = "usage: comma modules | comma describe <module> | comma call <module> <api> [--json '<object>']";
 const toError = (e: unknown) => (e instanceof Error ? e : new Error(String(e)));
 
-/** Main's control endpoint over HTTP: bounded, no redirects, 30 seconds. */
+/** Main's control endpoint over HTTP: bounded, no redirects, 30 seconds; an MCP message has its caller's deadline. */
 export function liveClientControl(endpoint: string) {
-  const request = (method: string, url: string, token: string, body?: unknown) =>
+  // Interrupting the request (its deadline) aborts the fetch.
+  const request = (method: string, url: string, token: string, body?: unknown, accept?: string) =>
     Effect.tryPromise({
-      try: async () => {
+      try: async (signal) => {
         const response = await fetch(url, {
           method,
+          signal,
           redirect: "manual",
-          headers: { authorization: `Bearer ${token}`, ...(body === undefined ? {} : { "content-type": "application/json" }) },
+          headers: {
+            authorization: `Bearer ${token}`,
+            ...(body === undefined ? {} : { "content-type": "application/json" }),
+            ...(accept ? { accept } : {}),
+          },
           body: body === undefined ? undefined : JSON.stringify(body),
         });
         const raw = Buffer.from(await response.arrayBuffer());
@@ -36,10 +44,14 @@ export function liveClientControl(endpoint: string) {
         return raw.length ? JSON.parse(raw.toString()) : null;
       },
       catch: toError,
-    }).pipe(Effect.timeout("30 seconds"), Effect.mapError(toError));
+    });
+  const bounded = <A>(effect: Effect.Effect<A, Error>) => effect.pipe(Effect.timeout("30 seconds"), Effect.mapError(toError));
   return Layer.succeed(ClientControl)({
-    call: (token, body) => request("POST", `${endpoint}/v1/invoke`, token, body),
-    get: (token, path) => request("GET", `${endpoint}/v1/${path}`, token),
+    call: (token, body) => bounded(request("POST", `${endpoint}/v1/invoke`, token, body)),
+    get: (token, path) => bounded(request("GET", `${endpoint}/v1/${path}`, token)),
+    // Streamable HTTP clients accept both; Main answers with plain JSON.
+    mcp: (token, server, message) =>
+      request("POST", `${endpoint}/v1/mcp/${encodeURIComponent(server)}`, token, message, "application/json, text/event-stream"),
   });
 }
 

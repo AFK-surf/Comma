@@ -1,6 +1,6 @@
 // The agents' tools for their conversations (the Rust station's hub.rs `tools`): chat_post, chat_state, chat_history,
 // chat_list, chat_read, session_send, session_history. Names, descriptions and input schemas are the Rust station's,
-// byte for byte (test/hub-tools.test.ts reads them from hub.rs and compares); what they do is src/sessions/.
+// but for chat_post's milestones, which came after it; what they do is src/sessions/.
 import { chatHistory, chatPost, chatState } from "../sessions/conversations.ts";
 import type { Hub } from "../sessions/hub.ts";
 import { sessionSend } from "../sessions/messages.ts";
@@ -13,7 +13,7 @@ import { slackTools } from "./slack.ts";
 export const CHAT_POST = {
   name: "chat_post",
   description:
-    "Post a message to one of your conversations: in Slack's formatting (mrkdwn) for a Slack thread, Markdown for a still.fail chat. Users always have a chat input box and can reply freely. An optional card can make a real decision easier: concrete options to pick from, or a field to write in; do not add filler options or create unnecessary questions. A post that ends your turn says how with kind: all_done (nothing in the chat is left unfinished: done says why, with the evidence) or need_human (a person has to give, do or decide something: need says what; after posting a card, this is how the turn ends).",
+    "Post a message to one of your conversations: in Slack's formatting (mrkdwn) for a Slack thread, Markdown for a still.fail chat. Users always have a chat input box and can reply freely. An optional card can make a real decision easier: concrete options to pick from, or a field to write in; do not add filler options or create unnecessary questions. A post that ends your turn says how with kind: all_done (nothing in the chat is left unfinished: done says why, with the evidence) or need_human (a person has to give, do or decide something: need says what; after posting a card, this is how the turn ends). People follow your work on a Task through its Activity, shown beside the chat: each time you finish a key step, record it in milestones, one short line in the language people use there that names the outcome, not the tool (e.g. Wrote the invite for Bob). Record one per item when the work covers a few items (each recipient, file or source); for many items, one per batch (e.g. Wrote invoices 1-50 of 200), so one request gets about eight at most. Record none for trivial steps, for reporting back, or for a run that found nothing new. Steps finished together go in one post. A post of milestones alone (no text) shows nowhere but the Activity and wakes no one: post it in the same response as your next tool calls, or give the milestones with your next post or your report.",
   inputSchema: {
     "type": "object",
     "properties": {
@@ -28,6 +28,15 @@ export const CHAT_POST = {
       "text": {
         "type": "string",
         "description": "The message, formatted for where it goes (posted as written). With a card: what it asks and the facts it turns on, so it can be answered from this message alone."
+      },
+      "milestones": {
+        "type": "array",
+        "maxItems": 20,
+        "items": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "description": "Still.fail chats (Tasks) only: the key steps you finished since your last post, in order, each one line of at most 80 characters naming the outcome. Shown only in the Task's Activity, never in the chat. Without text, the post records them alone: it notifies no one and cannot end your turn (chat_state does)."
       },
       "kind": {
         "type": "string",

@@ -68,7 +68,7 @@ export function sanitizeAttribution(input: unknown): Record<string, string> {
 /** Where one visit came from: the referring host and the link's campaign. */
 export function sanitizeVisit(input: unknown): Record<string, string> {
   if (!input || typeof input !== "object") return {};
-  return Object.fromEntries(
+  const visit = Object.fromEntries(
     Object.entries(input).filter(([key, value]) => {
       if (typeof value !== "string") return false;
       if (key === "referrer_host") return host(value);
@@ -77,6 +77,12 @@ export function sanitizeVisit(input: unknown): Record<string, string> {
       );
     })
   );
+  // PostHog's web analytics reads a session's source and channel from the
+  // same host under its own name, "$direct" without one.
+  if (visit.referrer_host)
+    visit.$referring_domain =
+      visit.referrer_host === "direct" ? "$direct" : visit.referrer_host;
+  return visit;
 }
 
 export function visitSource(): Record<string, string> {

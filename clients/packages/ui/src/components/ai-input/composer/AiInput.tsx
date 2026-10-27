@@ -36,6 +36,7 @@ export const AiInput = ({
   onAttachmentRemove,
   onAttachPress,
   onDropFiles,
+  surfaceDropActive,
   onPasteFiles,
   onPasteText,
   dropPlaceholder,
@@ -92,7 +93,11 @@ export const AiInput = ({
     shellRef,
   });
   const attachTooltip = useAttachTooltip(attachments, onAttachPress, showAttachButton);
-  const drop = useFileDrop(onDropFiles);
+  const shellDrop = useFileDrop(onDropFiles);
+  const drop =
+    surfaceDropActive === undefined
+      ? shellDrop
+      : { dropActive: surfaceDropActive, dropEnabled: true, shellDropProps: {} };
   const promptValue = usePromptValue({
     attachments,
     currentValue,

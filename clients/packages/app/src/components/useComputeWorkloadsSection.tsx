@@ -16,11 +16,22 @@ const locationUnknown = (w: CommaComputeWorkload) =>
 const workloadLabel = (w: CommaComputeWorkload) =>
   w.name || `${w.kind === "shell" ? "Shell" : w.kind} ${w.id.slice(-8)}`;
 
+/** Only a problem that does not retry by itself needs the member's retry. */
+const needsRetry = (w: Pick<CommaComputeWorkload, "problem" | "generation">) =>
+  w.problem?.retryable === false && w.generation !== undefined;
+
+/** The devices list's names, by Comma Device id, and this device's id. */
+export interface ComputeWorkloadDevices {
+  names: ReadonlyMap<string, string>;
+  localId?: string | undefined;
+}
+
 export function useComputeWorkloadsSection(
   /** Whether this app reaches the Comma cloud (the core reads Compute there). */
   cloud: boolean,
   enabled: boolean,
-  observationTick?: number
+  observationTick?: number,
+  devices?: ComputeWorkloadDevices
 ) {
   const sharedObservation = observationTick !== undefined;
   const m = useCommaMessages();
@@ -150,18 +161,44 @@ export function useComputeWorkloadsSection(
                   ? m.compute_work_failed()
                   : m.compute_work_other();
   const rows = [...(projection?.workloads ?? [])];
-  if (accepted && !rows.some((w) => w.id === accepted.id)) rows.unshift(accepted);
+  if (
+    accepted &&
+    !["deleted", "cloud_retired"].includes(accepted.phase ?? "") &&
+    !["complete", "cloud_retired"].includes(accepted.deletion?.phase ?? "") &&
+    !rows.some((w) => w.id === accepted.id)
+  )
+    rows.unshift(accepted);
   const row = rows.find((w) => w.id === selected?.id);
   const current =
     selected && (!row || (selected.revision ?? 0) >= (row.revision ?? 0))
       ? selected
       : row;
-  const location = (w: CommaComputeWorkload): string =>
-    w.location?.provider === "agent_vmm"
-      ? m.compute_location_mac()
-      : w.location?.provider === "cloudflare"
-        ? m.compute_location_cloud()
-        : m.compute_location_unknown();
+  const location = (w: Pick<CommaComputeWorkload, "location">): string => {
+    if (w.location?.provider === "cloudflare") return m.compute_location_cloud();
+    if (w.location?.provider !== "agent_vmm") return m.compute_location_unknown();
+    const device = w.location.device_id;
+    if (device && device === devices?.localId) return m.compute_location_this_device();
+    return (device && devices?.names.get(device)) || m.compute_location_device();
+  };
+  /** One short reason while the current generation has a problem. */
+  const problemReason = (
+    w: Pick<CommaComputeWorkload, "problem">
+  ): string | undefined => {
+    switch (w.problem?.code) {
+      case undefined:
+        return undefined;
+      case "capacity_unavailable":
+        return m.compute_workload_problem_capacity_unavailable();
+      case "image_unavailable":
+        return m.compute_workload_problem_image_unavailable();
+      case "runtime_instance_changed":
+        return m.compute_workload_problem_runtime_instance_changed();
+      case "host_unreachable":
+        return m.compute_workload_problem_host_unreachable();
+      default:
+        return m.compute_workload_problem_other();
+    }
+  };
   const openWorkload = (w: CommaComputeWorkload) => {
     if (!workspaceId || !cloud) return;
     const epoch = ++selectionEpoch.current;
@@ -179,15 +216,8 @@ export function useComputeWorkloadsSection(
       }
     );
   };
-  const retry = async (w: CommaComputeWorkload) => {
-    if (
-      !workspaceId ||
-      !cloud ||
-      lock.current ||
-      w.revision === undefined ||
-      w.generation === undefined
-    )
-      return;
+  const retry = async (w: Pick<CommaComputeWorkload, "id" | "generation">) => {
+    if (!workspaceId || !cloud || lock.current || w.generation === undefined) return;
     const targetScope = workspaceId;
     lock.current = true;
     setPending(true);
@@ -195,7 +225,6 @@ export function useComputeWorkloadsSection(
       const workload = await call("compute.retry", {
         workspace: workspaceId,
         id: w.id,
-        revision: w.revision,
         generation: w.generation,
       });
       if (scope.current === targetScope) {
@@ -212,14 +241,7 @@ export function useComputeWorkloadsSection(
   };
   const mutate = async () => {
     const targetWorkload = dialogTarget;
-    if (
-      !targetWorkload ||
-      !workspaceId ||
-      !cloud ||
-      lock.current ||
-      targetWorkload.revision === undefined
-    )
-      return;
+    if (!targetWorkload || !workspaceId || !cloud || lock.current) return;
     lock.current = true;
     setPending(true);
     setActionError("");
@@ -230,7 +252,6 @@ export function useComputeWorkloadsSection(
         workload = await call("compute.rename", {
           workspace: workspaceId,
           id: targetWorkload.id,
-          revision: targetWorkload.revision,
           name: name.trim(),
         });
       } else {
@@ -238,7 +259,6 @@ export function useComputeWorkloadsSection(
         workload = await call("compute.delete", {
           workspace: workspaceId,
           id: targetWorkload.id,
-          revision: targetWorkload.revision,
           generation: targetWorkload.generation,
           ...(targetWorkload.deletion?.request_id
             ? { request: targetWorkload.deletion.request_id }
@@ -370,6 +390,8 @@ export function useComputeWorkloadsSection(
     deleteLabel,
     stateLabel,
     location,
+    problemReason,
+    needsRetry,
     firstPage: () => setWorkloadAfter(""),
     nextPage: () => setWorkloadAfter(projection?.next_workload_cursor ?? ""),
     hasPreviousPage: !!workloadAfter,

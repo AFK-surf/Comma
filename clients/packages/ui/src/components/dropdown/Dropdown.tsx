@@ -92,7 +92,7 @@ const DropdownTriggerContent = ({
       {...definedProps({ leading: selectedLeading })}
       label={
         <AriaSelectValue className="block min-w-0 truncate text-sm text-primary">
-          {({ selectedText, defaultChildren }) => (
+          {({ selectedText, defaultChildren, isPlaceholder }) => (
             <span
               className={cx(
                 "block truncate whitespace-nowrap",
@@ -100,7 +100,8 @@ const DropdownTriggerContent = ({
               )}
               data-slot="dropdown-trigger-label"
             >
-              {selectedText ?? defaultChildren ?? placeholder}
+              {/* Nothing selected: React Aria's text is empty, so this says what to choose. */}
+              {isPlaceholder ? placeholder : (selectedText ?? defaultChildren)}
             </span>
           )}
         </AriaSelectValue>

@@ -35,13 +35,7 @@ defmodule SalixStore.SigV4 do
     {amz_date, date_stamp} = timestamps(now)
     payload_hash = payload_hash_override || sha256_hex(body)
 
-    host =
-      case uri.port do
-        nil -> uri.host
-        80 when uri.scheme == "http" -> uri.host
-        443 when uri.scheme == "https" -> uri.host
-        port -> "#{uri.host}:#{port}"
-      end
+    host = host(uri)
 
     base_headers =
       headers
@@ -93,12 +87,88 @@ defmodule SalixStore.SigV4 do
     base_headers ++ [{"authorization", authorization}]
   end
 
+  @doc """
+  A query-string signed URL for `method` on `url` (path-style, `query` already
+  on it), valid for `expires_in` seconds from `now`: anyone holding it can make
+  that one request until then, and no one can make another with it. Only the
+  `host` header is signed, so a ranged GET (`Range`) still reads with it.
+  """
+  @spec presign(
+          String.t(),
+          String.t(),
+          SalixStore.Config.t(),
+          pos_integer(),
+          :calendar.datetime() | nil
+        ) :: String.t()
+  def presign(method, url, cfg, expires_in, now \\ nil)
+      when is_integer(expires_in) and expires_in > 0 and expires_in <= 604_800 do
+    uri = URI.parse(url)
+    variant = variant(cfg)
+    {amz_date, date_stamp} = timestamps(now)
+    scope = "#{date_stamp}/#{cfg.region}/#{variant.service}/#{variant.request_type}"
+    prefix = variant.query_prefix
+
+    query =
+      URI.query_decoder(uri.query || "")
+      |> Enum.to_list()
+      |> Kernel.++([
+        {"#{prefix}-Algorithm", variant.algorithm},
+        {"#{prefix}-Credential", "#{cfg.access_key_id}/#{scope}"},
+        {"#{prefix}-Date", amz_date},
+        {"#{prefix}-Expires", Integer.to_string(expires_in)},
+        {"#{prefix}-SignedHeaders", "host"}
+      ])
+
+    canonical_query =
+      query
+      |> Enum.map(fn {k, v} -> {uri_encode(k, true), uri_encode(v, true)} end)
+      |> Enum.sort()
+      |> Enum.map_join("&", fn {k, v} -> "#{k}=#{v}" end)
+
+    canonical_request =
+      Enum.join(
+        [
+          method,
+          canonical_uri(uri.path),
+          canonical_query,
+          "host:#{host(uri)}\n",
+          "host",
+          "UNSIGNED-PAYLOAD"
+        ],
+        "\n"
+      )
+
+    string_to_sign =
+      Enum.join([variant.algorithm, amz_date, scope, sha256_hex(canonical_request)], "\n")
+
+    signature =
+      cfg.secret_access_key
+      |> signing_key(date_stamp, cfg.region, variant)
+      |> hmac(string_to_sign)
+      |> Base.encode16(case: :lower)
+
+    URI.to_string(%{
+      uri
+      | query: canonical_query <> "&#{prefix}-Signature=#{signature}"
+    })
+  end
+
   # ---- helpers ----
+
+  defp host(uri) do
+    case uri.port do
+      nil -> uri.host
+      80 when uri.scheme == "http" -> uri.host
+      443 when uri.scheme == "https" -> uri.host
+      port -> "#{uri.host}:#{port}"
+    end
+  end
 
   defp variant(%{atomic_operations: :gcp}) do
     %{
       algorithm: "GOOG4-HMAC-SHA256",
       key_prefix: "GOOG4",
+      query_prefix: "X-Goog",
       service: "storage",
       request_type: "goog4_request",
       date_header: "x-goog-date",
@@ -110,6 +180,7 @@ defmodule SalixStore.SigV4 do
     %{
       algorithm: "AWS4-HMAC-SHA256",
       key_prefix: "AWS4",
+      query_prefix: "X-Amz",
       service: "s3",
       request_type: "aws4_request",
       date_header: "x-amz-date",

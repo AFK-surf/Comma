@@ -93,11 +93,11 @@ describe("TaskDetailsPanel labels", () => {
     expect(screen.getByRole("button", { name: "Done" })).toBeDisabled();
     await user.click(screen.getByRole("button", { name: "Comma" }));
     expect(onOpenTasksFilter).toHaveBeenLastCalledWith({ platform: "comma" });
-    await user.click(screen.getByRole("button", { name: "macOS" }));
+    await user.click(screen.getByRole("button", { name: "Created on macOS" }));
     expect(onOpenTasksFilter).toHaveBeenLastCalledWith({ clientPlatform: "macos" });
   });
 
-  it("names where the Task runs and its model, never the Agent that runs it", () => {
+  it("names where the Task runs and its model under Environment, never the Agent that runs it", () => {
     const { rerender } = render(
       <TaskDetailsPanel
         conversation={conversation}
@@ -109,9 +109,22 @@ describe("TaskDetailsPanel labels", () => {
         }}
       />
     );
-    expect(screen.getByTestId("task-panel-run")).toHaveTextContent(
-      "on Mac Studio · Claude Sonnet"
+    expect(screen.getByTestId("task-panel-run-place")).toHaveTextContent("Mac Studio");
+    expect(screen.getByTestId("task-panel-run-model")).toHaveTextContent(
+      "Claude Sonnet"
     );
+    // The place and model are the Task's Environment, apart from its Properties.
+    const environment = screen.getByTestId("task-panel-environment");
+    expect(
+      within(environment).getByRole("heading", { name: "Environment" })
+    ).toBeVisible();
+    expect(environment).toContainElement(screen.getByTestId("task-panel-run-place"));
+    expect(environment).toContainElement(screen.getByTestId("task-panel-run-model"));
+    expect(
+      within(screen.getByTestId("task-panel-properties")).queryByTestId(
+        "task-panel-run-place"
+      )
+    ).toBeNull();
     rerender(
       <CommaI18nProvider locale="zh-CN">
         <TaskDetailsPanel
@@ -122,9 +135,9 @@ describe("TaskDetailsPanel labels", () => {
         />
       </CommaI18nProvider>
     );
-    expect(screen.getByTestId("task-panel-run")).toHaveTextContent(
-      "在 云电脑 上 · 官方模型"
-    );
+    expect(screen.getByRole("heading", { name: "运行环境" })).toBeVisible();
+    expect(screen.getByTestId("task-panel-run-place")).toHaveTextContent("云电脑");
+    expect(screen.getByTestId("task-panel-run-model")).toHaveTextContent("官方模型");
     // A station runs its runtime's default model when the Task names none.
     rerender(
       <CommaI18nProvider locale="en">
@@ -139,12 +152,60 @@ describe("TaskDetailsPanel labels", () => {
         />
       </CommaI18nProvider>
     );
-    expect(screen.getByTestId("task-panel-run")).toHaveTextContent(
-      "on a computer · Codex default model"
+    expect(screen.getByTestId("task-panel-run-place")).toHaveTextContent("Computer");
+    expect(screen.getByTestId("task-panel-run-model")).toHaveTextContent(
+      "Codex default model"
     );
-    // A server before it sends no place: the panel shows none.
+    // A server before it sends no place: the panel shows no Environment.
     rerender(<TaskDetailsPanel conversation={conversation} groupId={GROUP} open />);
-    expect(screen.queryByTestId("task-panel-run")).toBeNull();
+    expect(screen.queryByTestId("task-panel-environment")).toBeNull();
+    expect(screen.queryByTestId("task-panel-run-place")).toBeNull();
+    expect(screen.queryByTestId("task-panel-run-model")).toBeNull();
+  });
+
+  it("opens the model picker from the Task's model, where the viewer may switch it", async () => {
+    const onSwitchRun = vi.fn();
+    const { rerender } = render(
+      <TaskDetailsPanel
+        conversation={conversation}
+        groupId={GROUP}
+        open
+        onSwitchRun={onSwitchRun}
+        run={{
+          place: { kind: "station", deviceId: "dev_studio", name: "Mac Studio" },
+          model: { kind: "runtime", provider: "codex" },
+        }}
+      />
+    );
+    await userEvent.click(
+      screen.getByRole("button", { name: "Codex default model · Switch model" })
+    );
+    expect(onSwitchRun).toHaveBeenCalledOnce();
+    // A run that names no model still offers one.
+    rerender(
+      <TaskDetailsPanel
+        conversation={conversation}
+        groupId={GROUP}
+        open
+        onSwitchRun={onSwitchRun}
+        run={{ place: { kind: "station", deviceId: "dev_studio" } }}
+      />
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Switch model" }));
+    expect(onSwitchRun).toHaveBeenCalledTimes(2);
+    // A viewer who cannot switch it sees the model alone.
+    rerender(
+      <TaskDetailsPanel
+        conversation={conversation}
+        groupId={GROUP}
+        open
+        run={{
+          place: { kind: "station", deviceId: "dev_studio" },
+          model: { kind: "runtime", provider: "codex" },
+        }}
+      />
+    );
+    expect(screen.queryByTestId("task-panel-run-switch")).toBeNull();
   });
 
   it("ends an in-progress Task by hand from the status menu", async () => {

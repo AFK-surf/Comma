@@ -86,6 +86,6 @@ describe("the account's database", () => {
     expect(account.doc("tasks:grp_1")?.value).toEqual({ kept: true });
     expect(account.doc(`stations.list.${WS}`)).toBeNull();
     expect(host.dbs.get(name)).toBe(db);
-    expect(db.all("PRAGMA user_version")[0]![0]).toBe(2);
+    expect(db.all("PRAGMA user_version")[0]![0]).toBe(3);
   });
 });

@@ -8,7 +8,7 @@ import { join } from "node:path";
 import type { AgentDriver, AgentSession, OpenOptions, RuntimeEvent, TurnOutcome } from "../src/agents/runtime.ts";
 import type { ChatMessage, ChatSurface, InboundFile, InboundMessage, ThreadRef } from "../src/sessions/chat.ts";
 import { type HubConfig, hubConfig } from "../src/sessions/config.ts";
-import { type ColdStorage, Hub } from "../src/sessions/hub.ts";
+import { type ColdStorage, Hub, type HubOptions } from "../src/sessions/hub.ts";
 import { InternalChat } from "../src/sessions/internal.ts";
 import { chatTools } from "../src/tools/chat.ts";
 import { type Attachment, Store } from "../src/store/store.ts";
@@ -202,7 +202,7 @@ export const reply = (to: InboundMessage, ts: string, text: string, over: Partia
   ...over,
 });
 
-export type Setup = { maxNudges?: number; maxWarmClaude?: number; warmMinutes?: number; teamRequireMention?: boolean; link?: boolean; cold?: ColdStorage; clock?: Clock.Clock };
+export type Setup = { maxNudges?: number; maxWarmClaude?: number; warmMinutes?: number; teamRequireMention?: boolean; link?: boolean; cold?: ColdStorage; clock?: Clock.Clock; eligible?: HubOptions["eligible"] };
 
 /// A TestClock for a rig (its hub's, its store's, its sessions'): `adjust(ms)` moves it on, and what was due by then runs.
 /// `asked()` counts the waits begun on it; `begun(n)` resolves once `n` have, each then sleeping on it (an adjust
@@ -241,9 +241,11 @@ export class Rig {
   codex = new FakeDriver("codex");
   hub: Hub;
   clock: Clock.Clock | undefined;
+  eligible: HubOptions["eligible"];
 
   constructor(o: Setup = {}) {
     this.clock = o.clock;
+    this.eligible = o.eligible;
     this.dir = mkdtempSync(join(tmpdir(), "hub-"));
     this.raw = {
       profiles: [
@@ -282,6 +284,7 @@ export class Rig {
       runners: () => [],
       cold: o.cold,
       clock: this.clock,
+      eligible: this.eligible,
     });
   }
 

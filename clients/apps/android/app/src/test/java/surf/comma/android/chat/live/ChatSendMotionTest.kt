@@ -246,8 +246,9 @@ class ChatSendMotionTest {
         assertEquals(last.target.right, last.box.right, 1f)
         assertContinuous("text top", tops, maxStep = 60 * density)
         assertSmooth("text top", tops, maxChange = 14 * density)
-        // The list made room on the same spring, also without a jump.
-        assertContinuous("glide", samples.map { it.glide }, maxStep = 60 * density)
+        // The list made room on the same spring, also without a jump. Its first step is the new row's height, which the
+        // rows' translation takes up; from there it only runs down.
+        assertContinuous("glide", samples.map { it.glide }.dropWhile { it == 0f }, maxStep = 60 * density)
         assertAllShown()
         assertRestingGap(id)
     }

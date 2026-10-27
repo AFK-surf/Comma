@@ -99,14 +99,28 @@ defmodule Comma.RecommendationDraft do
     }
   end
 
+  @doc """
+  The JSON object of a model answer. Some chat models write their reasoning
+  inline before the answer, as `<think>…</think>` (MiniMax), or put the object in
+  a Markdown code block although asked not to. Both wrap the same one object.
+  """
   def decode(text) when is_binary(text) and byte_size(text) <= @max_response_bytes do
-    case Jason.decode(text) do
+    case text |> answer() |> Jason.decode() do
       {:ok, draft} when is_map(draft) -> {:ok, draft}
       _ -> {:error, :invalid_briefing_content}
     end
   end
 
   def decode(_), do: {:error, :invalid_briefing_content}
+
+  defp answer(text) do
+    text = text |> String.replace(~r/\A\s*<think>.*?<\/think>/s, "") |> String.trim()
+
+    case Regex.run(~r/\A```(?:json)?\s*\n(.*)\n```\z/s, text) do
+      [_, body] -> body
+      nil -> text
+    end
+  end
 
   def compile(draft, context, run, failures, opts \\ []) do
     with {:ok, draft} <- project(draft, context, run, opts[:locale]),

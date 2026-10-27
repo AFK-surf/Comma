@@ -37,7 +37,7 @@ Jobs   账号池   空闲进程回收   自动归档
 ## 4. 会话
 
 - 一个会话可以在多个 thread 里（单会话连接、网页对话把会话拉进来）。一个 thread 里也可以有多个会话。
-- runtime 在会话创建时确定，之后不能换。model、effort、profile 可以在两个 turn 之间改。
+- runtime、model、effort、profile 都可以在两个 turn 之间改（`POST /sessions/:key/settings`，turn 进行中不改）。换 runtime 时，没给的 model、effort 用新 runtime 的默认，profile 由账号池在新 runtime 里挑；下一轮在新 runtime 上另起运行时会话，agent 用 `session_history`、`chat_history` 读回之前的（跟换账号一样，见第 9 节）。会话的 key、thread、文件都不变。
 - Slack 会话用连接绑定的 runtime / model / effort。连接绑定了 profile 就用它，否则由账号池挑。网页对话由发起人选。
 - 会话的所有状态变更都在它的 actor 里串行执行。
 - 输入投递：
@@ -66,7 +66,7 @@ still.fail 直接提供 HTTP MCP，不为每个会话另起进程。工具的名
 - 每个会话有自己的 token，MCP 服务按 token 识别会话。agent 不能冒充其他会话。
 - `slack_api` 以连接的 Slack bot 身份调 Web API。别的会话所在的 thread 不能写。
 - Claude：启动时用 `--mcp-config` 传入 MCP 服务，header 为 `Authorization: Bearer ${STILLFAIL_MCP_TOKEN}`。token 作为该会话进程的环境变量注入。
-- Codex：MCP 服务不写进账号配置。`thread/start` / `thread/resume` 的 `config` 按 thread 传 `mcp_servers.stillfail.url` 和 `mcp_servers.stillfail.http_headers`，因为一个 app-server 进程承载多个会话。
+- Codex：MCP 服务不写进账号配置。`thread/start` / `thread/resume` 的 `config` 按 thread 传 `mcp_servers.stillfail.url` 和 `mcp_servers.stillfail.http_headers`，因为一个 app-server 进程承载多个会话。仍加载着的 thread 被 `thread/resume` 原样接回，`config` 不再生效；它的 MCP 连接若已失败（当时 station 的 MCP 端点未开），站点先 `thread/unsubscribe` 再 `thread/resume`，让它重新连接。MCP 端点打开前，station 不开始任何轮次。
 
 ## 7. 结束状态约定
 
@@ -91,6 +91,7 @@ still.fail 直接提供 HTTP MCP，不为每个会话另起进程。工具的名
 - profile = 运行时配置目录 + 接入方式（订阅 / API key / 自定义 env）+ 启用的模型 + 登录检查和额度缓存。
 - 新会话只在启用了所选模型的 profile 里挑，跳过登录失效、key 被拒或额度用尽的。
 - 已有会话尽量留在原账号（运行时缓存在那个账号上），不可用时换一个。运行时会话记录按 runtime 放在所有 profile 共享的目录里，换账号 resume 不需要迁移。
+- 会话跑过的运行时会话按顺序记下（`runtime_sessions`），每个记着它的 runtime（有这一列之前记下的是空的，就是会话自己的 runtime；换 runtime 时先补上）。执行记录把它们连起来读，每个按自己的 runtime 读。
 
 ## 10. 内存
 

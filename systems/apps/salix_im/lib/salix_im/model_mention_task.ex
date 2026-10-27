@@ -64,8 +64,7 @@ defmodule SalixIM.ModelMentionTask do
            effort: Enum.find(effort, &(&1 != "")),
            name: String.trim(name),
            text: rest,
-           uploads:
-             @upload |> Regex.scan(rest, capture: :all_but_first) |> List.flatten() |> Enum.uniq(),
+           uploads: uploads_named(rest),
            local_files: length(ConversationMessage.local_file_refs(content))
          }}
 
@@ -122,20 +121,98 @@ defmodule SalixIM.ModelMentionTask do
       end
 
     answer(group_id, conversation_id, router, message_id, reply)
-    if context, do: tell_router(group_id, message_id, context)
+    if context, do: tell_router(group_id, "model-task:" <> message_id, context)
     :ok
   end
+
+  @doc """
+  Starts a Task from the New task window (`CommaWeb.WindowTasks`) as a model
+  mention in Home does, without the message in Home: the catalog `model` (and
+  its `effort`) runs it, `text` is its first Message, and the uploads `text`
+  names are shared into it first. Made once per `request_id` of `user_id`.
+  Answers the Task as soon as it is made, for the window to open it; the
+  Router is told after, off the request and without a round of its own.
+  """
+  @spec start_from_window(String.t(), String.t(), String.t(), String.t(), map()) ::
+          {:ok, map()} | {:error, term()}
+  def start_from_window(
+        group_id,
+        router,
+        user_id,
+        request_id,
+        %{model: model, text: text} = asked
+      )
+      when is_binary(text) and text != "" do
+    mention = %{
+      model: model,
+      effort: asked[:effort],
+      name: model,
+      text: text,
+      uploads: uploads_named(text),
+      local_files: 0
+    }
+
+    with :ok <- share_uploads(group_id, router, mention.uploads),
+         {:ok, %{"conversation_id" => task_id} = created} <-
+           create_task(
+             group_id,
+             router,
+             user_id,
+             mention,
+             "comma-window-task:" <> user_id <> ":" <> request_id,
+             %{"origin_agent_id" => router}
+           ) do
+      tell_router_later(
+        group_id,
+        "window-task:" <> user_id <> ":" <> request_id,
+        "The person started a Task from the New task window, so you were not asked: " <>
+          "\"#{title(text)}\" (conversation #{task_id}) runs with #{model}. " <>
+          "It is in your Task list; their words were its first message. This is context only, not a request."
+      )
+
+      {:ok, created}
+    end
+  end
+
+  @doc """
+  Why a Task the window asked for was refused, as the person reads it: the
+  model, its effort or place, or a file it names. `:error` for a failure the
+  same request may get past when tried again (the Group, its Task agent, the
+  Task's create), whose Task may even have been made.
+  """
+  @spec refusal_message(term()) :: {:ok, String.t()} | :error
+  def refusal_message({:upload, path, _reason}),
+    do: {:ok, "#{upload_name(path)} could not be passed to the Task; attach it again."}
+
+  def refusal_message({:model, _reason} = reason), do: {:ok, refusal(reason)}
+  def refusal_message({:runs_on, _reason, _source} = reason), do: {:ok, refusal(reason)}
+
+  def refusal_message(reason) when reason in [:invalid_model_configuration, :router_changed],
+    do: {:ok, refusal(reason)}
+
+  def refusal_message(_reason), do: :error
 
   defp create(_group_id, _router, _conversation_id, _message_id, _user_id, %{text: ""}),
     do: {:error, :empty}
 
   defp create(group_id, router, conversation_id, message_id, user_id, mention) do
     with :ok <- share_uploads(group_id, router, mention.uploads) do
-      create_task(group_id, router, conversation_id, message_id, user_id, mention)
+      create_task(
+        group_id,
+        router,
+        user_id,
+        mention,
+        "comma-model-task:" <> conversation_id <> ":" <> message_id,
+        %{
+          "origin_agent_id" => router,
+          "parent_conversation_id" => conversation_id,
+          "parent_message_id" => message_id
+        }
+      )
     end
   end
 
-  defp create_task(group_id, router, conversation_id, message_id, user_id, mention) do
+  defp create_task(group_id, router, user_id, mention, client_request_id, source_refs) do
     model =
       %{"kind" => "catalog", "model" => mention.model, "allow_paid" => true}
       |> put_present("reasoning_effort", mention.effort)
@@ -147,12 +224,8 @@ defmodule SalixIM.ModelMentionTask do
         "model" => model,
         "content" => mention.text,
         "title" => title(mention.text),
-        "client_request_id" => "comma-model-task:" <> conversation_id <> ":" <> message_id,
-        "source_refs" => %{
-          "origin_agent_id" => router,
-          "parent_conversation_id" => conversation_id,
-          "parent_message_id" => message_id
-        }
+        "client_request_id" => client_request_id,
+        "source_refs" => source_refs
       }
       |> owned_by(user_id)
     )
@@ -192,6 +265,9 @@ defmodule SalixIM.ModelMentionTask do
       {:error, reason} -> {:error, {:group, reason}}
     end
   end
+
+  defp uploads_named(text),
+    do: @upload |> Regex.scan(text, capture: :all_but_first) |> List.flatten() |> Enum.uniq()
 
   defp upload_name(path) do
     case Regex.run(~r/\A\/uploads\/[A-Za-z0-9_-]{22}-(.+)\z/, path) do
@@ -254,11 +330,25 @@ defmodule SalixIM.ModelMentionTask do
     end
   end
 
+  # Told off the request: the window's answer does not wait for it. Over the
+  # bounded pool, the Router learns of the Task from its Task list instead.
+  defp tell_router_later(group_id, source_id, context) do
+    case SystemsRuntime.TaskSupervisor.start_child(SalixIM.ConversationNotificationTasks, fn ->
+           tell_router(group_id, source_id, context)
+         end) do
+      {:ok, _pid} ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning("salix window task context not started reason=#{inspect(reason)}")
+    end
+  end
+
   # What happened, for the Router's next round: staged without waking it.
-  defp tell_router(group_id, message_id, context) do
+  defp tell_router(group_id, source_id, context) do
     case RouterConversationInput.append_provider_input(
            group_id,
-           "model-task:" <> message_id,
+           source_id,
            %{content: context, name: "Comma", role: "user", no_wake: true},
            %{"provider" => "comma", "event_type" => "model_task"}
          ) do

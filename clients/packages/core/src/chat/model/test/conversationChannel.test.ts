@@ -15,6 +15,7 @@ import type {
   SalixMessage,
 } from "../../api";
 import { CommaApiError } from "../../api";
+import type { CommaGroupFile } from "../../../comma/api-schemas";
 import {
   ConversationChannel,
   normalizeServerMessages,
@@ -27,8 +28,19 @@ import {
   ATTACHED_FILES_HEADER,
   ATTACHED_ONLY_TEXT,
   MAX_ATTACHMENT_BYTES,
+  MAX_ATTACHMENTS_PER_MESSAGE,
 } from "../protocol";
 import type { AttachmentTranscoder } from "../conversationChannel";
+
+function sentFromClient(id: string, metadata: Record<string, unknown>): SalixMessage {
+  return {
+    message_id: id,
+    actor_type: "user",
+    kind: "message",
+    content: [{ type: "text", text: "Hello" }],
+    metadata,
+  };
+}
 
 // The file's timers run on the test's clock: a test moves it.
 beforeEach(() => {
@@ -453,6 +465,48 @@ describe("ConversationChannel", () => {
     expect(corrected[1]?.platformSource).toBe("signal");
   });
 
+  it("names the Comma app a user message was sent from", () => {
+    const projected = normalizeServerMessages(
+      [
+        sentFromClient("from-iphone", { client_kind: "ios", client_platform: "ios" }),
+        sentFromClient("from-watch", {
+          client_kind: "watch",
+          client_platform: "watchos",
+        }),
+        sentFromClient("from-android", {
+          client_kind: "android",
+          client_platform: "android",
+        }),
+        sentFromClient("from-mac", {
+          client_kind: "electron",
+          client_platform: "macos",
+        }),
+        sentFromClient("from-windows", {
+          client_kind: "electron",
+          client_platform: "windows",
+        }),
+        sentFromClient("from-web", { client_kind: "web", client_platform: "windows" }),
+        sentFromClient("from-api", { client_kind: "api", client_platform: "unknown" }),
+      ],
+      [],
+      "user_chat"
+    );
+    expect(projected.map((projectedMessage) => projectedMessage.clientSource)).toEqual([
+      "iphone",
+      "watch",
+      "android",
+      "mac",
+      "windows",
+      "web",
+      undefined,
+    ]);
+    expect(
+      projected.every(
+        (projectedMessage) => projectedMessage.platformSource === undefined
+      )
+    ).toBe(true);
+  });
+
   it("binds a platform photo to the sending Agent's blob without offering a download", () => {
     const blobRef = {
       kind: "blob",
@@ -517,7 +571,6 @@ describe("ConversationChannel", () => {
       undefined,
     ],
     ["incomplete ref", { blob_ref: { uuid: "u", size: 1 } }, undefined],
-    ["oversize", { blob_ref: { uuid: "u", hash: "h", size: 10_000_001 } }, undefined],
     ["fractional size", { blob_ref: { uuid: "u", hash: "h", size: 1.5 } }, undefined],
     ["string size", { blob_ref: { uuid: "u", hash: "h", size: "1" } }, undefined],
     [
@@ -531,9 +584,9 @@ describe("ConversationChannel", () => {
       "empty.txt",
     ],
     [
-      "exact byte limit",
-      { file_name: "report.pdf", blob_ref: { uuid: "u", hash: "h", size: 10_000_000 } },
-      "report.pdf",
+      "file of any size",
+      { file_name: "clip.mp4", blob_ref: { uuid: "u", hash: "h", size: 33_000_000 } },
+      "clip.mp4",
     ],
     [
       "name at UTF-8 limit",
@@ -848,6 +901,88 @@ describe("ConversationChannel", () => {
       "conflict"
     );
     expect(refresh).toHaveBeenCalledOnce();
+    channel.stop();
+  });
+
+  it("says a Task's model cannot start until it runs on another, and switches it as asked", async () => {
+    const api = createConversationApi();
+    api.client.setTaskRun = vi.fn(async () =>
+      conversation({ kind: "agent_task", status: "active", updated_at: 2 })
+    );
+    const channel = createChannel(api, { initialKind: "agent_task" });
+    const projected = () =>
+      toConversationProjection(channel.getSnapshot(), {
+        groupId: "grp_1",
+        workspaceId: "wsp_1",
+      });
+    const command = taskMessage("command", {
+      role_label: "delegator",
+      metadata: { message_type: "task_command" },
+    });
+    const blocked = taskMessage("blocked", {
+      content: [{ type: "text", text: "⚠️ cannot start" }],
+      metadata: {
+        message_type: "task_run_blocked",
+        task_run_blocked: { error: "no account is chosen to run Codex" },
+      },
+    });
+    const switched = taskMessage("switched", {
+      actor_type: "system",
+      content: [{ type: "text", text: "A person switched this Task." }],
+      metadata: { message_type: "task_run_switched" },
+    });
+    const task = (messages: SalixMessage[], updated_at: number) => ({
+      conversation: conversation(
+        { kind: "agent_task", status: "active", updated_at },
+        messages
+      ),
+      notModified: false,
+    });
+    channel.start();
+    api.resolvePoll(0, task([command, blocked], 1));
+    await flushMicrotasks();
+    expect(projected().taskRunBlocked).toEqual({
+      messageId: "blocked",
+      error: "no account is chosen to run Codex",
+    });
+
+    // Another viewer switched it: the Task is read again, and its model no longer stands in the way.
+    api.emitTaskInvalidation(0, "owner-a.1");
+    await flushMicrotasks();
+    expect(api.polls).toHaveLength(2);
+    api.resolvePoll(1, task([command, blocked, switched], 2));
+    await flushMicrotasks();
+    expect(projected().taskRunBlocked).toBeUndefined();
+    // Where it runs now comes with the Task's stream, opened again after each read.
+    expect(api.taskStreams).toHaveLength(2);
+
+    const run = {
+      runsOn: { kind: "station", deviceId: "dev_1" },
+      model: { kind: "runtime", provider: "claude" },
+    } as const;
+    await start(channel.setTaskRun(run));
+    expect(api.client.setTaskRun).toHaveBeenCalledWith("grp_1", "cnv_1", run);
+    channel.stop();
+  });
+
+  it("a Worker's word after its station's cannot-start message means it runs", async () => {
+    const api = createConversationApi();
+    const channel = createChannel(api, { initialKind: "agent_task" });
+    channel.start();
+    api.resolvePoll(0, {
+      conversation: conversation({ kind: "agent_task", status: "active" }, [
+        taskMessage("blocked", { metadata: { message_type: "task_run_blocked" } }),
+        taskMessage("reply", { content: [{ type: "text", text: "Done." }] }),
+      ]),
+      notModified: false,
+    });
+    await flushMicrotasks();
+    expect(
+      toConversationProjection(channel.getSnapshot(), {
+        groupId: "grp_1",
+        workspaceId: "wsp_1",
+      }).taskRunBlocked
+    ).toBeUndefined();
     channel.stop();
   });
 
@@ -2287,6 +2422,193 @@ describe("ConversationChannel", () => {
     ]);
   });
 
+  it("uploads a local file from the host as it is attached and sends its path", async () => {
+    const api = createConversationApi();
+    const localUploads: {
+      attrs: { localFileRef: string; name: string; size: number };
+      resolve: (file: CommaGroupFile) => void;
+      reject: (error: unknown) => void;
+    }[] = [];
+    Object.assign(api.client, {
+      uploadLocalFile: vi.fn(
+        (
+          _groupId: string,
+          attrs: { localFileRef: string; name: string; size: number }
+        ) =>
+          new Promise<CommaGroupFile>((resolve, reject) => {
+            localUploads.push({
+              attrs: {
+                localFileRef: attrs.localFileRef,
+                name: attrs.name,
+                size: attrs.size,
+              },
+              resolve,
+              reject,
+            });
+          })
+      ),
+    });
+    const onLocalFilesCommitted = vi.fn(() => undefined);
+    const channel = createChannel(api, {
+      onLocalFilesCommitted,
+      requestIds: ["req_up"],
+    });
+    const localFile = {
+      localFileRef: `lfi1_${"u".repeat(43)}`,
+      mediaType: "video/mp4",
+      name: "comma.mp4",
+      size: 57_900_000,
+    };
+
+    channel.attachLocalFiles([localFile]);
+    expect(channel.getSnapshot().draftAttachments).toMatchObject([
+      { name: "comma.mp4", status: "uploading" },
+    ]);
+    expect(localUploads.map((upload) => upload.attrs)).toEqual([
+      { localFileRef: localFile.localFileRef, name: "comma.mp4", size: 57_900_000 },
+    ]);
+    expect(api.uploadCalls).toHaveLength(0);
+
+    // Sent while it uploads: the message waits for the file, not the person.
+    const send = start(channel.send("compress this"));
+    expect(api.sendCalls).toHaveLength(0);
+    expect(channel.getSnapshot().draftAttachments).toEqual([]);
+
+    localUploads[0]!.resolve({
+      name: "comma.mp4",
+      path: "/uploads/AAAAAAAAAAAAAAAAAAAAAA-comma.mp4",
+      size: 57_900_000,
+    });
+    await flushMicrotasks();
+    expect(api.sendCalls[0]).toMatchObject({
+      clientRequestId: "req_up",
+      localFiles: undefined,
+    });
+    expect(api.sendCalls[0]?.text).toContain(
+      "comma.mp4 (workspace file: /uploads/AAAAAAAAAAAAAAAAAAAAAA-comma.mp4)"
+    );
+    api.resolveSend(0, conversation({ status: "waiting" }, []));
+    await send;
+    expect(onLocalFilesCommitted).not.toHaveBeenCalled();
+  });
+
+  it("has the server store a message's attachment by reference, of any size, and sends its path", async () => {
+    const api = createConversationApi();
+    const stored: {
+      groupId: string;
+      file: unknown;
+      resolve: (file: CommaGroupFile) => void;
+    }[] = [];
+    Object.assign(api.client, {
+      storeConversationFile: vi.fn(
+        (groupId: string, file: unknown) =>
+          new Promise<CommaGroupFile>((resolve) =>
+            stored.push({ groupId, file, resolve })
+          )
+      ),
+    });
+    const channel = createChannel(api, { requestIds: ["req_ref"] });
+    const clip = {
+      conversationId: "task_1",
+      messageId: "msg_clip",
+      index: 1,
+      name: "clip.mp4",
+      size: 33_000_000,
+    };
+
+    channel.attachConversationFiles([clip]);
+    expect(channel.getSnapshot().draftAttachments).toMatchObject([
+      { name: "clip.mp4", status: "uploading", size: 33_000_000, byReference: true },
+    ]);
+    expect(stored.map(({ file }) => file)).toEqual([clip]);
+    expect(api.uploadCalls).toHaveLength(0);
+
+    stored[0]!.resolve({
+      name: "clip.mp4",
+      path: "/uploads/CCCCCCCCCCCCCCCCCCCCCC-clip.mp4",
+      size: 33_000_000,
+    });
+    await flushMicrotasks();
+    const send = start(channel.send("trim the intro"));
+    await flushMicrotasks();
+    expect(api.sendCalls[0]?.text).toContain(
+      "clip.mp4 (workspace file: /uploads/CCCCCCCCCCCCCCCCCCCCCC-clip.mp4)"
+    );
+    api.resolveSend(0, conversation({ status: "waiting" }, []));
+    await send;
+  });
+
+  it("counts message attachments toward the files one message takes", () => {
+    const api = createConversationApi();
+    Object.assign(api.client, {
+      storeConversationFile: vi.fn(() => new Promise<CommaGroupFile>(() => undefined)),
+    });
+    const channel = createChannel(api);
+
+    channel.attachConversationFiles(
+      Array.from({ length: MAX_ATTACHMENTS_PER_MESSAGE + 1 }, (_, index) => ({
+        conversationId: "task_1",
+        messageId: "msg_many",
+        index,
+        name: `file-${index}.pdf`,
+        size: 1,
+      }))
+    );
+    expect(
+      channel.getSnapshot().draftAttachments.map((attachment) => attachment.status)
+    ).toEqual([...Array(MAX_ATTACHMENTS_PER_MESSAGE).fill("uploading"), "failed"]);
+    expect(api.client.storeConversationFile).toHaveBeenCalledTimes(
+      MAX_ATTACHMENTS_PER_MESSAGE
+    );
+  });
+
+  it("uploads a failed local file again on retry", async () => {
+    const api = createConversationApi();
+    const answers: ((ok: boolean) => void)[] = [];
+    Object.assign(api.client, {
+      uploadLocalFile: vi.fn(
+        () =>
+          new Promise<CommaGroupFile>((resolve, reject) => {
+            answers.push((ok) =>
+              ok
+                ? resolve({
+                    name: "a.bin",
+                    path: "/uploads/BBBBBBBBBBBBBBBBBBBBBB-a.bin",
+                    size: 3,
+                  })
+                : reject(new Error("offline"))
+            );
+          })
+      ),
+    });
+    const channel = createChannel(api);
+    const ref = `lfi1_${"r".repeat(43)}`;
+
+    channel.attachLocalFiles([
+      {
+        localFileRef: ref,
+        mediaType: "application/octet-stream",
+        name: "a.bin",
+        size: 3,
+      },
+    ]);
+    answers[0]!(false);
+    await flushMicrotasks();
+    expect(channel.getSnapshot().draftAttachments).toMatchObject([
+      { status: "failed" },
+    ]);
+
+    channel.retryAttachment(ref);
+    expect(channel.getSnapshot().draftAttachments).toMatchObject([
+      { status: "uploading" },
+    ]);
+    answers[1]!(true);
+    await flushMicrotasks();
+    expect(channel.getSnapshot().draftAttachments).toMatchObject([
+      { path: "/uploads/BBBBBBBBBBBBBBBBBBBBBB-a.bin", status: "uploaded" },
+    ]);
+  });
+
   it("reconciles committed local refs after a lost send response", async () => {
     const api = createConversationApi();
     const onLocalFilesCommitted = vi.fn(() => undefined);
@@ -2802,6 +3124,7 @@ describe("ConversationChannel", () => {
           state: "active",
           status: "is waiting: private reason",
           waiting: true,
+          wait_started_at: 1_780_000_000_000,
           working_conversation_ids: ["cnv_task", "", "cnv_task", "cnv_other"],
           updated_at: 1_780_000_000_123,
         },
@@ -2811,6 +3134,7 @@ describe("ConversationChannel", () => {
 
     expect(channel.getSnapshot().participantStatus).toMatchObject({
       waiting: true,
+      waitStartedAt: 1_780_000_000_000,
       workingConversationIds: ["cnv_task", "cnv_other"],
     });
     expect(
@@ -2822,8 +3146,29 @@ describe("ConversationChannel", () => {
       ).participantStatus
     ).toMatchObject({
       waiting: true,
+      waitStartedAt: 1_780_000_000_000,
       workingConversationIds: ["cnv_task", "cnv_other"],
     });
+
+    // A running tool call is the Participant's work, not a wait: it names the tool.
+    api.emit(
+      0,
+      {
+        type: "participant_status",
+        conversation_id: "cnv_1",
+        participant_id: "ptp_1",
+        state: "active",
+        status: "is waiting: async tool call still running: cloud_vm.start",
+        wait_tool: "cloud_vm.start",
+        updated_at: 1_780_000_000_234,
+      } as CommaConversationEvent,
+      "participant_status"
+    );
+    expect(channel.getSnapshot().participantStatus).toMatchObject({
+      waitTool: "cloud_vm.start",
+    });
+    expect(channel.getSnapshot().participantStatus).not.toHaveProperty("waiting");
+    expect(channel.getSnapshot().participantStatus).not.toHaveProperty("waitStartedAt");
 
     api.emit(
       0,
@@ -2834,6 +3179,8 @@ describe("ConversationChannel", () => {
         state: "stopped",
         status: "",
         waiting: true,
+        wait_tool: "cloud_vm.start",
+        wait_started_at: 1_780_000_000_000,
         working_conversation_ids: ["cnv_task"],
         updated_at: 1_780_000_000_456,
       } as CommaConversationEvent,
@@ -2844,6 +3191,8 @@ describe("ConversationChannel", () => {
       "workingConversationIds"
     );
     expect(channel.getSnapshot().participantStatus).not.toHaveProperty("waiting");
+    expect(channel.getSnapshot().participantStatus).not.toHaveProperty("waitTool");
+    expect(channel.getSnapshot().participantStatus).not.toHaveProperty("waitStartedAt");
   });
 
   it("projects the exact participant display status independently of local awaiting state", () => {
@@ -3831,6 +4180,7 @@ describe("ConversationChannel", () => {
       { phase: "thinking", status: "failed", summary_class: "public" },
       { phase: "thinking", summary: " ", summary_class: "public" },
       { goal: "x".repeat(513), phase: "thinking", summary_class: "public" },
+      { phase: "thinking", summary_class: "public", target: "x".repeat(513) },
     ]) {
       api.emit(
         0,
@@ -3857,6 +4207,24 @@ describe("ConversationChannel", () => {
       summary: "Authorized public summary",
       summaryClass: "public",
     });
+
+    // A public tool call names what it works on for the reader's wording.
+    api.emit(
+      0,
+      activityEvent({
+        phase: "execution",
+        sequence: 53,
+        summary: "Working",
+        summary_class: "public",
+        target: "北京天气",
+        tool_name: "web.search",
+      } as never),
+      "activity"
+    );
+    expect(channel.getSnapshot().activity).toMatchObject({
+      target: "北京天气",
+      toolName: "web.search",
+    });
   });
 
   it("canonicalizes generic product copy and strips non-public payload", () => {
@@ -3877,11 +4245,13 @@ describe("ConversationChannel", () => {
         sequence: 60,
         summary: "PRIVATE_GENERIC_SUMMARY",
         summary_class: "generic",
+        target: "PRIVATE_TARGET",
         tool_name: "private.tool",
-      }),
+      } as never),
       "activity"
     );
 
+    expect(channel.getSnapshot().activity?.target).toBeUndefined();
     expect(channel.getSnapshot().activity).toMatchObject({
       action: "Thinking",
       phase: "thinking",

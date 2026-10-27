@@ -461,9 +461,6 @@ defmodule SalixAgent.SubscriptionStore do
 
   # API-key Profiles a request may use. A tenant connects a handful; the cap
   # keeps one dispatch bounded however many are saved.
-  @doc "Whether one of the tenant's Custom Profiles lists the model id."
-  def custom_model?(tenant, model), do: match?({:ok, _}, custom_model_info(tenant, model))
-
   @doc """
   A Custom Profile of the tenant that lists `model`: `{:ok, info}`, with what
   that Profile says of the model in `model_info` (`%{}` when nothing), or
@@ -657,6 +654,32 @@ defmodule SalixAgent.SubscriptionStore do
   @candidate_scan 200
 
   def candidates(tenant, provider, model, only \\ nil, exclude \\ [], catalog_model \\ nil) do
+    with {:ok, records} <- serving_accounts(tenant, provider, only, exclude) do
+      {:ok,
+       records
+       |> SalixAgent.Profiles.rank(model: catalog_model, provider_model: model)
+       |> Enum.take(3)}
+    end
+  end
+
+  @doc """
+  The enabled, signed-in accounts that serve the model but that their used-up
+  windows hold back, when no account of the provider can take it now (none
+  otherwise). Same filter as `candidates/6`.
+  """
+  def held_back(tenant, provider, model, only \\ nil, catalog_model \\ nil) do
+    with {:ok, records} <- serving_accounts(tenant, provider, only, []) do
+      opts = [model: catalog_model, provider_model: model]
+
+      {:ok,
+       if(SalixAgent.Profiles.rank(records, opts) == [],
+         do: SalixAgent.Profiles.rank(records, [keep_unusable: true] ++ opts),
+         else: []
+       )}
+    end
+  end
+
+  defp serving_accounts(tenant, provider, only, exclude) do
     sql = """
     SELECT value,version FROM subscription_accounts a
     WHERE tenant_id=$1 AND value->>'source'=$2
@@ -668,12 +691,7 @@ defmodule SalixAgent.SubscriptionStore do
     """
 
     with {:ok, %{rows: rows}} <- query(sql, [tenant, provider, only, exclude]) do
-      records = Enum.map(rows, fn [v, version] -> Map.put(v, "version", version) end)
-
-      {:ok,
-       records
-       |> SalixAgent.Profiles.rank(model: catalog_model, provider_model: model)
-       |> Enum.take(3)}
+      {:ok, Enum.map(rows, fn [v, version] -> Map.put(v, "version", version) end)}
     end
   end
 

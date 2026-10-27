@@ -20,11 +20,22 @@ func buildComputerUseDaemonRequest(action string, params map[string]any) (comput
 		request.Thinking = thinking
 	}
 
+	if payload, ok, err := computerUseBackgroundPayload(action, args); err != nil {
+		return computerUseDaemonRequest{}, err
+	} else if ok {
+		request.Action = computerUseAction(action, payload)
+		return request, nil
+	}
+
 	switch action {
 	case "open_permission_flow":
 		request.Control = "open-permission-flow"
 	case "start":
-		request.Action = computerUseAction("start", map[string]any{"apps": stringArrayValue(args["apps"])})
+		mode, err := computerUseMode(args)
+		if err != nil {
+			return computerUseDaemonRequest{}, err
+		}
+		request.Action = computerUseAction("start", map[string]any{"apps": stringArrayValue(args["apps"]), "mode": mode})
 	case "end", "stop":
 		request.Action = computerUseAction("end", nil)
 	case "status":
@@ -186,6 +197,121 @@ func buildComputerUseDaemonRequest(action string, params map[string]any) (comput
 	}
 
 	return request, nil
+}
+
+// computerUseMode reads start's mode. Background is the default: it reads the
+// target window's accessibility tree and acts on its elements without taking
+// over the user's screen. Foreground is for apps without usable accessibility.
+func computerUseMode(args map[string]any) (string, error) {
+	switch mode := strings.TrimSpace(stringValue(args["mode"])); mode {
+	case "", "background":
+		return "background", nil
+	case "foreground":
+		return mode, nil
+	default:
+		return "", fmt.Errorf("'mode' must be background or foreground, got %q", mode)
+	}
+}
+
+// computerUseBackgroundPayload builds the background-mode actions, which act on
+// a snapshot from get_app_state. click, scroll and drag exist in both modes; a
+// snapshot_id selects the background form.
+func computerUseBackgroundPayload(action string, args map[string]any) (map[string]any, bool, error) {
+	snapshotID := strings.TrimSpace(stringValue(args["snapshot_id"]))
+	switch action {
+	case "get_app_state":
+		app := strings.TrimSpace(stringValue(args["app"]))
+		if app == "" {
+			return nil, false, errors.New("'app' is required")
+		}
+		payload := map[string]any{"app": app}
+		if title := strings.TrimSpace(stringValue(args["window_title"])); title != "" {
+			payload["window_title"] = title
+		}
+		return payload, true, nil
+	case "type_text", "set_value", "press_key", "perform_secondary_action":
+		if snapshotID == "" {
+			return nil, false, errors.New("'snapshot_id' is required; call get_app_state first")
+		}
+	case "click", "scroll", "drag":
+		if snapshotID == "" {
+			return nil, false, nil
+		}
+	default:
+		return nil, false, nil
+	}
+
+	payload := map[string]any{"snapshot_id": snapshotID}
+	copyInt := func(key string, required bool) error {
+		value, ok, err := optionalInt(args[key])
+		if err != nil {
+			return fmt.Errorf("'%s' must be an integer", key)
+		}
+		if !ok {
+			if required {
+				return fmt.Errorf("'%s' is required", key)
+			}
+			return nil
+		}
+		payload[key] = value
+		return nil
+	}
+	copyString := func(key string) error {
+		value := stringValue(args[key])
+		if strings.TrimSpace(value) == "" {
+			return fmt.Errorf("'%s' is required", key)
+		}
+		payload[key] = value
+		return nil
+	}
+
+	var err error
+	switch action {
+	case "click":
+		if _, hasIndex := args["element_index"]; hasIndex {
+			err = copyInt("element_index", true)
+		} else if err = copyInt("x", true); err == nil {
+			err = copyInt("y", true)
+		}
+	case "type_text":
+		// Typed text and a field's value go as written: spaces and newlines
+		// are part of them.
+		if text, _ := args["text"].(string); text == "" {
+			err = errors.New("'text' is required")
+		} else {
+			payload["text"] = text
+			err = copyInt("element_index", false)
+		}
+	case "set_value":
+		// An empty value clears the field.
+		if value, ok := args["value"].(string); !ok {
+			err = errors.New("'value' is required")
+		} else if err = copyInt("element_index", true); err == nil {
+			payload["value"] = value
+		}
+	case "press_key":
+		err = copyString("key")
+	case "perform_secondary_action":
+		if err = copyInt("element_index", true); err == nil {
+			err = copyString("action")
+		}
+	case "scroll":
+		if err = copyInt("element_index", true); err == nil {
+			if err = copyString("direction"); err == nil {
+				err = copyInt("pages", false)
+			}
+		}
+	case "drag":
+		for _, key := range []string{"from_x", "from_y", "to_x", "to_y"} {
+			if err = copyInt(key, true); err != nil {
+				break
+			}
+		}
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	return payload, true, nil
 }
 
 func computerUseAction(name string, payload map[string]any) map[string]any {

@@ -5,10 +5,17 @@ import { useSyncExternalStore } from "react";
 import { openNativePlatformExternalUrl } from "../nativePlatformActions";
 
 /**
- * The website's download page. `start=mac` makes the page begin the macOS
- * download as it opens (website/src/main.ts).
+ * The website's download page. It offers the reader's system first; on a Mac,
+ * `start=mac` also makes it begin the macOS download as it opens
+ * (website/src/main.ts).
  */
-export const commaMacDownloadUrl = "https://comma.surf/download?start=mac";
+export function commaDesktopDownloadUrl(
+  userAgent = globalThis.navigator?.userAgent ?? ""
+) {
+  return /Macintosh/.test(userAgent)
+    ? "https://comma.surf/download?start=mac"
+    : "https://comma.surf/download";
+}
 
 export type DesktopAppFeature =
   | "browser"
@@ -44,7 +51,7 @@ function subscribe(listener: () => void) {
 const read = () => prompt;
 
 /**
- * Tells a web user that a feature they tried needs the Comma app for Mac.
+ * Tells a web user that a feature they tried needs the Comma desktop app.
  * One dialog per window; a second request replaces the first. The desktop
  * app never shows it, whichever caller asks.
  */
@@ -68,6 +75,14 @@ const featureLabels: Record<DesktopAppFeature, (m: Messages) => string> = {
   voice: (m) => m.desktop_app_feature_voice(),
 };
 
+/** Features only the macOS app has; the prompt names the Mac app for them. */
+const macOnlyFeatures: ReadonlySet<DesktopAppFeature> = new Set([
+  "computer-use",
+  "compute-node",
+  "dock",
+  "keep-awake",
+]);
+
 export function DesktopAppPromptHost() {
   const m = useCommaMessages();
   const current = useSyncExternalStore(subscribe, read, read);
@@ -81,7 +96,9 @@ export function DesktopAppPromptHost() {
         if (!open) close();
       }}
       title={m.desktop_app_required_title()}
-      description={m.desktop_app_required_description({
+      description={(macOnlyFeatures.has(current.feature)
+        ? m.desktop_app_required_description_mac
+        : m.desktop_app_required_description)({
         feature: featureLabels[current.feature](m),
       })}
       actions={[
@@ -91,7 +108,7 @@ export function DesktopAppPromptHost() {
           hierarchy: "primary",
           onPress: () => {
             close();
-            void openNativePlatformExternalUrl(commaMacDownloadUrl);
+            void openNativePlatformExternalUrl(commaDesktopDownloadUrl());
           },
         },
       ]}

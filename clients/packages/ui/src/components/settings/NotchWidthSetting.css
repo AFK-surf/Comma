@@ -201,15 +201,11 @@
   overflow: hidden;
 }
 
-/* The logo's own clip path already bounds its zoom. With the SVG viewport
-   clip on top of it, Chromium paints the zooming ring unclipped in the
-   viewport's first pixel column: a white line left of the mark. */
 .comma-notch-width__mark {
   flex: none;
   width: calc(14 * var(--notch-pt));
   height: calc(14 * var(--notch-pt));
   margin-inline: calc(3 * var(--notch-pt));
-  overflow: visible;
   color: var(--color-base-white);
 }
 
@@ -220,9 +216,10 @@
 /* The zoom swallows the outgoing ring into a crescent that closes about 1.04s
    into the 3.4s cycle; at this size its last frames read as a stray line.
    It fades out from 0.8s to 0.97s instead, as NotchHost's logo does. The
-   ring is hidden under the zoom by then, so the loop's frames are unchanged. */
+   ring is hidden under the zoom by then, so the loop's frames are unchanged.
+   Ten steps over the 0.17s fade keep it under 60 a second. */
 .comma-notch-width__mark .comma-logo-animation__outer {
-  animation: comma-notch-width-ring var(--comma-logo-cycle) linear infinite;
+  animation: comma-notch-width-ring var(--comma-logo-cycle) steps(10) infinite;
   animation-delay: var(--comma-logo-delay, 0s);
 }
 

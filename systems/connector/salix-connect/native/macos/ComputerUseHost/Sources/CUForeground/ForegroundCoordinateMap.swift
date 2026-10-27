@@ -1,5 +1,6 @@
 import AppKit
 import CoreGraphics
+import CUShared
 import Foundation
 
 /// Tracks the dimensions of the last screenshot handed to the agent so
@@ -62,24 +63,13 @@ enum ForegroundCoordinateMap {
         )
     }
 
-    /// Mirror of `ScreenCapture.scaleToAnthropicLimits` arithmetic,
-    /// computed directly from the display's native pixel mode. Keep in
-    /// sync with `AnthropicImageLimits` — if the constants there change,
-    /// bump them here too.
+    /// The size `ScreenCapture.scaleToAnthropicLimits` produces for the
+    /// display's native pixel mode.
     private static func predictAnthropicClampedSize(forDisplayID id: CGDirectDisplayID) -> (width: Int, height: Int) {
         let mode = CGDisplayCopyDisplayMode(id)
-        let pw = CGFloat(mode?.pixelWidth ?? Int(CGDisplayBounds(id).width))
-        let ph = CGFloat(mode?.pixelHeight ?? Int(CGDisplayBounds(id).height))
+        let pw = mode?.pixelWidth ?? Int(CGDisplayBounds(id).width)
+        let ph = mode?.pixelHeight ?? Int(CGDisplayBounds(id).height)
         guard pw > 0, ph > 0 else { return (1, 1) }
-
-        let maxLong: CGFloat = 1568
-        let maxArea: CGFloat = 629_145
-        let longEdgeScale = maxLong / max(pw, ph)
-        let areaScale = sqrt(maxArea / (pw * ph))
-        let scale = min(1.0, min(longEdgeScale, areaScale))
-        return (
-            width: max(1, Int((pw * scale).rounded())),
-            height: max(1, Int((ph * scale).rounded()))
-        )
+        return AnthropicImageLimits.fittedSize(width: pw, height: ph)
     }
 }

@@ -114,6 +114,36 @@ defmodule SalixIM.TaskExecution do
 
   def ifc_request(_name, _args, _ctx), do: :none
 
+  @doc """
+  The person whose own request created the Task this Worker turn runs: the
+  author of the Router message the Task was created from. Only the Task's first
+  command counts, in an ordinary one-shot Task the person asked for. A later
+  command the Router sends into the Task may come from another member's request
+  or from no person's, and a scheduled or Loop Task is work no person asked for
+  at the time it runs.
+  """
+  def task_requester(ctx) do
+    origin = value(ctx, :trusted_origin) || %{}
+
+    with {:ok, scope, task, _source} <- assigned_command(ctx),
+         {:ok, command} <-
+           Conversations.get_group_conversation_message(
+             scope.group_id,
+             origin["conversation_id"],
+             origin["message_id"]
+           ),
+         1 <- command["seq"],
+         true <- get_in(command, ["metadata", "task_command"]) == true,
+         nil <- task["loop"],
+         refs when is_map(refs) <- task["source_refs"],
+         {:ok, user_id} <-
+           requester(scope.group_id, refs["parent_conversation_id"], refs["parent_message_id"]) do
+      {:ok, user_id}
+    else
+      _ -> {:error, :requester_required}
+    end
+  end
+
   # An ordinary Task assigns work even when it grants no external IM effects.
   # Admit only a report to that Task, as the assigned agent, not as a human.
   # The canonical assignment and consumed delegator message are the authority.

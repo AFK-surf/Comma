@@ -630,6 +630,15 @@ defmodule SalixAgent.Tools.Schemas do
       },
       "required" => ["meeting_plan_id", "dispatch_revision", "channel", "operation"]
     },
+    "daily_brief.set_time" => %{
+      "type" => "object",
+      "additionalProperties" => false,
+      "properties" => %{
+        "brief" => %{"type" => "string", "enum" => ["mine", "team"]},
+        "time" => %{"type" => "string", "pattern" => "^([01][0-9]|2[0-3]):[0-5][0-9]$"}
+      },
+      "required" => ["brief", "time"]
+    },
     "meeting.preparation.set_personal_reminders" => %{
       "type" => "object",
       "additionalProperties" => false,

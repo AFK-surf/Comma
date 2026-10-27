@@ -10,5 +10,13 @@
   <!-- Core Audio process taps and microphone intake both gate on audio-input. -->
   <key>com.apple.security.device.audio-input</key>
   <true/>
+  <!-- The Mac apps plugins: Calendar and Reminders, Contacts, and Apple Events
+       to Messages, Mail, Notes, Music and System Events (MacAppsHost). -->
+  <key>com.apple.security.personal-information.calendars</key>
+  <true/>
+  <key>com.apple.security.personal-information.addressbook</key>
+  <true/>
+  <key>com.apple.security.automation.apple-events</key>
+  <true/>
 </dict>
 </plist>

@@ -38,6 +38,16 @@ defmodule SalixIM.Ports.AgentWorkspace do
   @callback read_ref_stream(agent_id :: String.t(), ref :: map(), filename :: String.t()) ::
               {:ok, Enumerable.t(), non_neg_integer(), String.t()} | {:error, term()}
 
+  @doc "As `read_ref_stream/3`, `length` bytes from `offset`; the size is still the whole body's."
+  @callback read_ref_stream(
+              agent_id :: String.t(),
+              ref :: map(),
+              filename :: String.t(),
+              range :: {non_neg_integer(), non_neg_integer()}
+            ) ::
+              {:ok, Enumerable.t(), non_neg_integer(), String.t()} | {:error, term()}
+  @optional_callbacks read_ref_stream: 4
+
   @spec read_upload(String.t() | nil, term(), term()) :: {:ok, map()} | {:error, term()}
   def read_upload(agent_id, path, title \\ "") do
     impl().read_upload(to_string(agent_id || ""), to_string(path || ""), to_string(title || ""))
@@ -99,6 +109,17 @@ defmodule SalixIM.Ports.AgentWorkspace do
     )
   end
 
+  @spec read_ref_stream(String.t() | nil, map(), term(), {non_neg_integer(), non_neg_integer()}) ::
+          {:ok, Enumerable.t(), non_neg_integer(), String.t()} | {:error, term()}
+  def read_ref_stream(agent_id, ref, filename, {_offset, _length} = range) when is_map(ref) do
+    impl().read_ref_stream(
+      to_string(agent_id || ""),
+      ref,
+      to_string(filename || ""),
+      range
+    )
+  end
+
   defp impl, do: SystemsRuntime.get_env(:salix_im, :agent_workspace_mod, __MODULE__.Unconfigured)
 
   defmodule Unconfigured do
@@ -125,6 +146,10 @@ defmodule SalixIM.Ports.AgentWorkspace do
 
     @impl true
     def read_ref_stream(_agent_id, _ref, _filename),
+      do: {:error, "agent VFS is not available"}
+
+    @impl true
+    def read_ref_stream(_agent_id, _ref, _filename, _range),
       do: {:error, "agent VFS is not available"}
   end
 end

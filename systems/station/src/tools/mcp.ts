@@ -19,6 +19,8 @@ export type Tool = {
   inputSchema: unknown;
   /// The text the agent sees; a thrown error's message comes back as a tool error.
   run(session: string, args: Record<string, unknown>): Promise<string>;
+  /// Whether it is offered to `session` (listed and run); every session's when absent.
+  offered?(session: string): boolean;
 };
 
 export type Reply = { status: number; body?: unknown };
@@ -64,11 +66,11 @@ export class McpEndpoint {
       case "ping":
         return reply({ result: {} });
       case "tools/list":
-        return reply({ result: { tools: this.tools.map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema })) } });
+        return reply({ result: { tools: this.tools.filter((t) => t.offered?.(session) ?? true).map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema })) } });
       case "tools/call": {
         const name = typeof params?.name === "string" ? params.name : "";
         const tool = this.byName.get(name);
-        if (!tool) return reply({ error: { code: -32602, message: `unknown tool ${name}` } });
+        if (!tool || !(tool.offered?.(session) ?? true)) return reply({ error: { code: -32602, message: `unknown tool ${name}` } });
         if (OUTWARD.includes(name)) {
           const why = this.gate?.();
           if (why !== undefined) {

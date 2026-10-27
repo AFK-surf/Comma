@@ -81,12 +81,58 @@ test("TestComputerUseStartSendsDaemonRequestAndReturnsHelp", macOnly, async () =
   const daemon = await fakeDaemon('{"kind":"final","response":{"ok":true,"display":{"display":1}}}');
   const c = computerUseConnector(daemon.path);
   const result = await run(c.computerUse({ action: "start", args: { apps: ["Safari"], display: 2 } }));
-  assert.deepEqual([result.ok, result.mode], [true, "foreground"]);
-  assert.match(String(result.help), /get_screenshot/);
+  assert.deepEqual([result.ok, result.mode], [true, "background"]);
+  assert.match(String(result.help), /get_app_state/);
   const request = await daemon.request;
   assertToken(request);
   assert.equal(request.display, 2);
-  assert.deepEqual(request.action.start.apps, ["Safari"]);
+  assert.deepEqual(request.action.start, { apps: ["Safari"], mode: "background" });
+});
+
+test("TestComputerUseStartForegroundOnRequest", macOnly, async () => {
+  const daemon = await fakeDaemon('{"kind":"final","response":{"ok":true}}');
+  const c = computerUseConnector(daemon.path);
+  const result = await run(c.computerUse({ action: "start", args: { mode: "foreground" } }));
+  assert.equal(result.mode, "foreground");
+  assert.match(String(result.help), /get_screenshot/);
+  assert.equal((await daemon.request).action.start.mode, "foreground");
+  const bad = await run(c.computerUse({ action: "start", args: { mode: "sideways" } }));
+  assert.equal(bad.ok, false);
+});
+
+for (const [action, args, payload] of [
+  ["get_app_state", { app: "Comma", window_title: "Settings" }, { app: "Comma", window_title: "Settings" }],
+  ["click", { snapshot_id: "s1", element_index: 7 }, { snapshot_id: "s1", element_index: 7 }],
+  ["click", { snapshot_id: "s1", x: 10, y: 20 }, { snapshot_id: "s1", x: 10, y: 20 }],
+  ["set_value", { snapshot_id: "s1", element_index: 3, value: "on" }, { snapshot_id: "s1", element_index: 3, value: "on" }],
+  ["set_value", { snapshot_id: "s1", element_index: 3, value: "" }, { snapshot_id: "s1", element_index: 3, value: "" }],
+  ["type_text", { snapshot_id: "s1", text: "  two\nlines " }, { snapshot_id: "s1", text: "  two\nlines " }],
+  ["scroll", { snapshot_id: "s1", element_index: 2, direction: "down" }, { snapshot_id: "s1", element_index: 2, direction: "down" }],
+] as const) {
+  test(`TestComputerUseBackgroundActionsAddressSnapshotElements/${action}`, macOnly, async () => {
+    const daemon = await fakeDaemon('{"kind":"final","response":{"ok":true,"text":"state"}}');
+    const c = computerUseConnector(daemon.path);
+    assert.equal((await run(c.computerUse({ action, args }))).ok, true);
+    assert.deepEqual((await daemon.request).action[action], payload);
+  });
+}
+
+test("TestComputerUseBackgroundElementActionsNeedSnapshot", async () => {
+  const result = await run(makeConnector({}).computerUse({ action: "set_value", args: { element_index: 3, value: "on" } }));
+  assert.equal(result.ok, false);
+  assert.match(String(result.error), /snapshot_id/);
+});
+
+test("TestComputerUseBackgroundStateReturnsTreeWithScreenshot", macOnly, async () => {
+  const daemon = await fakeDaemon(
+    '{"kind":"final","response":{"ok":true,"text":"Computer Use state (ComputerUseNext Snapshot: s2)\\n<app_state>tree</app_state>","imageData":"AQID","imageContentType":"image/png","imageWidth":10,"imageHeight":20}}',
+  );
+  const c = computerUseConnector(daemon.path);
+  const result = await run(c.computerUse({ action: "click", args: { snapshot_id: "s1", element_index: 7 } }));
+  assert.equal(result.ok, true);
+  assert.equal(typeof result.image_path, "string");
+  assert.match(String(result.text), /<app_state>tree<\/app_state>/);
+  await daemon.request;
 });
 
 test("TestComputerUseScreenshotConvertsImageEnvelope", macOnly, async () => {

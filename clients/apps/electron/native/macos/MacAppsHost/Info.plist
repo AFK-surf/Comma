@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>surf.comma.MacAppsHost</string>
+    <key>CFBundleName</key>
+    <string>Comma Mac Apps</string>
+    <key>CFBundleDisplayName</key>
+    <string>Comma Mac Apps</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>LSUIElement</key>
+    <true/>
+    <key>NSCalendarsFullAccessUsageDescription</key>
+    <string>When you turn on Calendar in Plugins, Comma's Agent can read and create events for you.</string>
+    <key>NSRemindersFullAccessUsageDescription</key>
+    <string>When you turn on Reminders in Plugins, Comma's Agent can read and create reminders for you.</string>
+    <key>NSContactsUsageDescription</key>
+    <string>When you turn on Contacts in Plugins, Comma's Agent can look up people's phone numbers and email addresses for you.</string>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>When you turn on Messages, Mail, Notes, Music or System Control in Plugins, Comma's Agent can use that app for you.</string>
+</dict>
+</plist>

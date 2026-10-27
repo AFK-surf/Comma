@@ -1,4 +1,11 @@
 defmodule SalixMeet.MeetingPlanTest do
+  defmodule TeamFollowups do
+    def minutes_published(_state), do: :skip
+
+    def team_section(%{"group_id" => group_id}) when is_binary(group_id),
+      do: "*上次的承诺*\n• ✅ 已完成：发报价"
+  end
+
   use SystemsClock.Case, async: false
 
   alias SalixCalendar.{Occurrences, Server}
@@ -340,6 +347,50 @@ defmodule SalixMeet.MeetingPlanTest do
              Schedules.get(invitation_only["preparation"]["schedule_ids"]["personal"])
 
     assert personal["run_at"] == invitation_only["preparation"]["card_at"]
+  end
+
+  test "a disabled channel notice keeps the plan live without a channel card or writeback",
+       ctx do
+    ensure = fn revision, personal ->
+      MeetingPlan.ensure(ctx.group_id, ctx.item, ctx.occurrence,
+        now: @start_ms - :timer.hours(2),
+        publication_target: slack_publication_target("primary"),
+        managed_calendar: true,
+        policy_revision: revision,
+        preparation_lead_minutes: 30,
+        research_enabled: true,
+        calendar_writeback: true,
+        personal_preparation: personal,
+        channel_notice: false
+      )
+    end
+
+    # Team-only: nothing is left to prepare, but the plan stays live for joining.
+    assert {:ok, team_only} = ensure.(7, false)
+    assert team_only["status"] == "planned"
+    assert team_only["calendar_writeback"] == false
+    assert team_only["preparation"]["research_decision"] == "not_required"
+
+    for kind <- ["card", "decision", "publication", "deadline_fence", "personal"] do
+      assert {:error, :not_found} = Schedules.get(team_only["preparation"]["schedule_ids"][kind])
+    end
+
+    # A card an older node scheduled anyway is settled, not sent.
+    assert {:settle, :channel_notice_off} =
+             MeetingPlan.card_action(ctx.group_id, team_only["meeting_plan_id"],
+               now: team_only["preparation"]["card_at"]
+             )
+
+    # Personal reminders still get research and their DM schedule.
+    assert {:ok, personal} = ensure.(8, true)
+    prep = personal["preparation"]
+    assert personal["status"] == "planned"
+    assert personal["calendar_writeback"] == false
+    assert prep["research_decision"] == "pending"
+    assert {:error, :not_found} = Schedules.get(prep["schedule_ids"]["card"])
+    assert {:ok, _} = Schedules.get(prep["schedule_ids"]["decision"])
+    assert {:ok, reminder} = Schedules.get(prep["schedule_ids"]["personal"])
+    assert reminder["run_at"] == prep["card_at"]
   end
 
   test "reschedule allocates replacement ids, deletes old definitions, and fences raced prompts",
@@ -806,12 +857,26 @@ defmodule SalixMeet.MeetingPlanTest do
              "reason" => ":calendar_write_permission_required"
            }
 
+    previous_followups = SystemsRuntime.get_env(:salix_meet, :followups_mod)
+    SystemsRuntime.put_env(:salix_meet, :followups_mod, __MODULE__.TeamFollowups)
+
+    on_exit(fn ->
+      if previous_followups,
+        do: SystemsRuntime.put_env(:salix_meet, :followups_mod, previous_followups),
+        else: SystemsRuntime.delete_env(:salix_meet, :followups_mod)
+    end)
+
     assert {:ok, notice} =
              MeetingPlan.card_action(group_id, plan["meeting_plan_id"],
                now: plan["preparation"]["card_at"]
              )
 
     assert notice["text"] =~ "Read the proposal"
+
+    # The product's follow-up section comes before the Worker's report.
+    {section_at, _} = :binary.match(notice["text"], "上次的承诺")
+    {report_at, _} = :binary.match(notice["text"], "Read the proposal")
+    assert section_at < report_at
 
     assert {:ok, message} =
              ConversationServer.append_group_conversation_agent_message(

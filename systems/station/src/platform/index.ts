@@ -154,6 +154,8 @@ export type Platform = {
   hasFolderPermissions: boolean;
   /// Computer Use's helper app (native/macos), which the desktop app carries on macOS only.
   hasComputerUse: boolean;
+  /// Computer Use through Cua Driver (native/windows/cua-driver.exe), which the desktop app carries on Windows.
+  hasWindowsComputerUse: boolean;
   /// Homebrew's bin directories, looked in for runtimes beside PATH (a launchd PATH has neither).
   hasHomebrew: boolean;
 };

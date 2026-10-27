@@ -141,7 +141,15 @@ export function cardEngine(env: CardEnv): CardEngine {
   };
   const isRecord = (value: unknown): value is Record<string, unknown> =>
     typeof value === "object" && value !== null && !Array.isArray(value);
+  // Text past its room ends in an ellipsis, so a cut never reads as the whole.
   const text = (value: unknown, max = 200) =>
+    typeof value === "string" && value.trim()
+      ? value.length > max
+        ? `${value.slice(0, max - 1).replace(/[\uD800-\uDBFF]$/, "")}…`
+        : value
+      : undefined;
+  // Ids and filter keys stay as written: they must match saved progress.
+  const ident = (value: unknown, max: number) =>
     typeof value === "string" && value.trim() ? value.slice(0, max) : undefined;
   const need = (value: unknown, field: string, max = 200) =>
     text(value, max) ?? fail(`Card data needs ${field}`);
@@ -258,8 +266,9 @@ export function cardEngine(env: CardEnv): CardEngine {
     updatedAt: text(data.updatedAt, 60),
     observedAt: momentText(data.observedAt),
     actions: list(data.actions, 2, (action) =>
-      isRecord(action) && text(action.label, 40) && text(action.prompt, 4000)
-        ? { label: text(action.label, 40)!, prompt: text(action.prompt, 4000)! }
+      // The prompt is sent, not shown, so a cut adds no ellipsis to it.
+      isRecord(action) && text(action.label, 40) && ident(action.prompt, 4000)
+        ? { label: text(action.label, 40)!, prompt: ident(action.prompt, 4000)! }
         : undefined
     ),
   });
@@ -509,7 +518,7 @@ export function cardEngine(env: CardEnv): CardEngine {
 
   const segmented = (
     label: string,
-    options: Array<{ key: string; label: string }>,
+    options: Array<{ key: string; label: string; count?: number | undefined }>,
     value: string,
     onChange: (key: string) => void
   ) => {
@@ -519,8 +528,16 @@ export function cardEngine(env: CardEnv): CardEngine {
     group.style.setProperty("--wc-seg-count", String(options.length));
     group.append(hidden(h("span", "wc-seg-thumb")));
     const buttons = options.map((option, index) => {
-      const button = h("button", "wc-seg-option", option.label) as HTMLButtonElement;
+      const button = h(
+        "button",
+        "wc-seg-option",
+        option.label,
+        option.count !== undefined && h("span", "wc-seg-count", String(option.count))
+      ) as HTMLButtonElement;
       button.type = "button";
+      // The count is its own span; the name keeps a space before it.
+      if (option.count !== undefined)
+        button.setAttribute("aria-label", `${option.label} ${option.count}`);
       button.addEventListener("click", (event) => {
         if (!event.isTrusted) return;
         select(index);
@@ -547,12 +564,12 @@ export function cardEngine(env: CardEnv): CardEngine {
   type FilterOption = { key: string; label: string };
   const filtersOf = (value: unknown) =>
     list(value, 4, (filter): FilterOption | undefined =>
-      isRecord(filter) && text(filter.key, 40) && text(filter.label, 20)
-        ? { key: text(filter.key, 40)!, label: text(filter.label, 20)! }
+      isRecord(filter) && ident(filter.key, 40) && text(filter.label, 20)
+        ? { key: ident(filter.key, 40)!, label: text(filter.label, 20)! }
         : undefined
     );
   const filterKeysOf = (value: unknown) =>
-    Array.isArray(value) ? list(value, 8, (key) => text(key, 40)) : undefined;
+    Array.isArray(value) ? list(value, 8, (key) => ident(key, 40)) : undefined;
   /**
    * Fills `rows` with the items a local filter shows, and returns the filter
    * control. An item without filterKeys shows under every filter. A filter
@@ -564,13 +581,19 @@ export function cardEngine(env: CardEnv): CardEngine {
     filters: FilterOption[],
     items: T[],
     rows: HTMLElement,
-    draw: (item: T) => Node
+    draw: (item: T) => Node,
+    counted = false
   ) => {
     const shows = (item: T, key: string) =>
       !key || (item.filterKeys?.includes(key) ?? true);
-    const usable = filters.filter((filter) =>
-      items.some((item) => shows(item, filter.key))
-    );
+    // Each choice can name how many items it shows, counted here from the data.
+    const usable = filters
+      .map((filter) => ({
+        ...filter,
+        count: items.filter((item) => shows(item, filter.key)).length,
+      }))
+      .filter((filter) => filter.count > 0)
+      .map((filter) => (counted ? filter : { ...filter, count: undefined }));
     const render = (key: string) =>
       rows.replaceChildren(...items.filter((item) => shows(item, key)).map(draw));
     const first = usable.length > 1 ? usable[0]!.key : "";
@@ -941,7 +964,7 @@ export function cardEngine(env: CardEnv): CardEngine {
     const items = list(data.items, 8, (item): Option | undefined =>
       isRecord(item) && text(item.primary, 80)
         ? {
-            id: text(item.id, 60) ?? text(item.primary, 80)!,
+            id: ident(item.id, 60) ?? ident(item.primary, 80)!,
             primary: text(item.primary, 80)!,
             secondary: text(item.secondary, 40),
             span: text(item.span, 40),
@@ -969,7 +992,7 @@ export function cardEngine(env: CardEnv): CardEngine {
   const priceColumn = (item: Option) =>
     h(
       "span",
-      "wc-price-col",
+      "wc-price-col wc-trail",
       item.price && h("span", "wc-sm wc-w6 wc-c1 wc-num", item.price),
       item.status && status(item.status)
     );
@@ -1081,7 +1104,7 @@ export function cardEngine(env: CardEnv): CardEngine {
                 ),
                 h(
                   "span",
-                  "wc-baseline",
+                  "wc-baseline wc-trail",
                   chosen.price && h("span", "wc-title-3 wc-w6 wc-c1", chosen.price),
                   chosen.priceNote && h("span", "wc-xs wc-c3", chosen.priceNote)
                 )
@@ -1110,7 +1133,7 @@ export function cardEngine(env: CardEnv): CardEngine {
                       ),
                       h(
                         "span",
-                        "wc-baseline",
+                        "wc-baseline wc-trail",
                         item.price && h("span", "wc-sm wc-w5 wc-c1 wc-num", item.price),
                         item.priceNote && h("span", "wc-xs wc-c3", item.priceNote)
                       )
@@ -1306,12 +1329,12 @@ export function cardEngine(env: CardEnv): CardEngine {
       value: text(data.value, 40),
       delta: deltaOf(data.delta),
       ranges: list(data.ranges, 4, (range) => {
-        if (!isRecord(range) || !text(range.key, 20) || !text(range.label, 20))
+        if (!isRecord(range) || !ident(range.key, 20) || !text(range.label, 20))
           return undefined;
         const points = numbers(range.points, 64);
         return points.length > 1
           ? {
-              key: text(range.key, 20)!,
+              key: ident(range.key, 20)!,
               label: text(range.label, 20)!,
               points,
               axis: list(range.axis, 6, (tick) => text(tick, 20)),
@@ -1607,7 +1630,7 @@ export function cardEngine(env: CardEnv): CardEngine {
   const subjectName = (subject: Subject, className: string) =>
     h(
       "span",
-      "wc-row-center wc-gap-sm",
+      "wc-row-center wc-wrap wc-gap-sm",
       subject.brand && mark(subject.brand, subject.name),
       h("span", className, subject.name),
       subject.recommended && badge(copy.recommended, "brand")
@@ -2090,7 +2113,7 @@ export function cardEngine(env: CardEnv): CardEngine {
       const items = list(group.items, budget, (item) =>
         isRecord(item) && text(item.label, 80)
           ? {
-              id: text(item.id, 60) ?? text(item.label, 80)!,
+              id: ident(item.id, 60) ?? ident(item.label, 80)!,
               label: text(item.label, 80)!,
               detail: text(item.detail, 80),
               done: item.done === true,
@@ -2367,6 +2390,7 @@ export function cardEngine(env: CardEnv): CardEngine {
   type Place = {
     name: string;
     category?: string | undefined;
+    note?: string | undefined;
     rating?: number | undefined;
     reviews?: string | undefined;
     status?: { label: string; tone: Tone } | undefined;
@@ -2377,11 +2401,12 @@ export function cardEngine(env: CardEnv): CardEngine {
   };
   type Places = { frame: Frame; places: Place[] };
   const placesOf = (data: Record<string, unknown>): Places => {
-    const places = list(data.places, 5, (item): Place | undefined =>
+    const places = list(data.places, 8, (item): Place | undefined =>
       isRecord(item) && text(item.name, 60)
         ? {
             name: text(item.name, 60)!,
             category: text(item.category, 30),
+            note: text(item.note, 120),
             rating: num(item.rating),
             reviews: text(item.reviews, 30),
             status: statusOf(item.status),
@@ -2396,15 +2421,24 @@ export function cardEngine(env: CardEnv): CardEngine {
       fail(unread(data.places, "places", "a name") ?? "Card data needs places");
     return { frame: frameOf(data), places };
   };
-  const rating = (item: Place) =>
-    item.rating === undefined
-      ? null
-      : h(
+  /** "4.6 · 2,310 条评价 · 咖啡馆": the rating stands out, the rest reads as one line. */
+  const about = (item: Place, withCategory: boolean, className?: string) => {
+    const score =
+      item.rating === undefined
+        ? null
+        : h("span", "wc-w5 wc-c1", item.rating.toFixed(1));
+    const words = [score && item.reviews, withCategory && item.category]
+      .filter(Boolean)
+      .join(" · ");
+    return score || words
+      ? h(
           "span",
-          "wc-baseline wc-gap-xs",
-          h("span", "wc-w5 wc-c1 wc-num", item.rating.toFixed(1)),
-          item.reviews && h("span", null, `· ${item.reviews}`)
-        );
+          cx("wc-num", className),
+          score,
+          score && words ? ` · ${words}` : words
+        )
+      : null;
+  };
   const placeLayouts: Array<Layout<Places>> = [
     [
       "single",
@@ -2421,14 +2455,10 @@ export function cardEngine(env: CardEnv): CardEngine {
               "div",
               "wc-col wc-gap-xs",
               h("span", "wc-md wc-w6 wc-c1", item.name),
-              h(
-                "span",
-                "wc-row-center wc-wrap wc-gap-sm wc-xs wc-c3",
-                item.category && h("span", null, item.category),
-                rating(item)
-              ),
+              about(item, true, "wc-xs wc-c3"),
               item.status && status(item.status)
             ),
+            item.note && h("p", "wc-sm wc-c2", item.note),
             item.address && h("p", "wc-sm wc-c2", item.address),
             h(
               "div",
@@ -2444,43 +2474,55 @@ export function cardEngine(env: CardEnv): CardEngine {
     [
       "nearby",
       (data) => data.places.length > 1,
-      (data) => ({
-        root: card(data.frame, [
-          h(
-            "ol",
-            "wc-list",
-            ...data.places.map((item, index) =>
-              h(
-                "li",
-                "wc-divided",
-                row(
-                  item.href,
-                  "wc-place",
-                  hidden(h("span", "wc-place-index", String(index + 1))),
-                  h(
-                    "span",
-                    "wc-col wc-gap-xxs wc-grow",
-                    h("span", "wc-sm wc-w5 wc-c1 wc-clip", item.name),
+      (data) => {
+        // A category every row shares says nothing the title does not.
+        const mixed = new Set(data.places.map((item) => item.category)).size > 1;
+        return {
+          root: card(data.frame, [
+            h(
+              "ol",
+              "wc-list",
+              ...data.places.map((item, index) => {
+                const facts = [
+                  about(item, mixed),
+                  item.status && status(item.status),
+                ].filter(Boolean);
+                return h(
+                  "li",
+                  "wc-divided",
+                  row(
+                    item.href,
+                    "wc-place",
+                    hidden(h("span", "wc-place-index", String(index + 1))),
                     h(
                       "span",
-                      "wc-row-center wc-gap-sm wc-xs wc-c3",
-                      rating(item),
-                      item.status && status(item.status)
-                    )
-                  ),
-                  h(
-                    "span",
-                    "wc-col wc-end wc-gap-xxs",
-                    h("span", "wc-sm wc-w5 wc-c1 wc-num", item.distance ?? ""),
-                    h("span", "wc-xs wc-c3", item.eta ?? "")
-                  ),
-                  item.href && icon("chevron-right", "wc-chevron")
-                )
-              )
-            )
-          ),
-        ]),
-      }),
+                      "wc-col wc-gap-xxs wc-grow",
+                      h("span", "wc-sm wc-w5 wc-c1 wc-clamp-2", item.name),
+                      facts.length > 0 &&
+                        h(
+                          "span",
+                          "wc-row-center wc-wrap wc-gap-sm wc-xs wc-c3",
+                          ...facts
+                        ),
+                      item.note && h("span", "wc-xs wc-c2 wc-clamp-2", item.note),
+                      item.address && h("span", "wc-xs wc-c3 wc-clip", item.address)
+                    ),
+                    (item.distance || item.eta) &&
+                      h(
+                        "span",
+                        "wc-col wc-end wc-gap-xxs wc-trail",
+                        item.distance &&
+                          h("span", "wc-sm wc-w5 wc-c1 wc-num", item.distance),
+                        item.eta && h("span", "wc-xs wc-c3", item.eta)
+                      ),
+                    item.href && icon("chevron-right", "wc-chevron")
+                  )
+                );
+              })
+            ),
+          ]),
+        };
+      },
     ],
   ];
 
@@ -2510,7 +2552,7 @@ export function cardEngine(env: CardEnv): CardEngine {
   const feedOf = (data: Record<string, unknown>): Feed => {
     const feed: Feed = {
       frame: frameOf(data),
-      items: list(data.items, 6, (item) =>
+      items: list(data.items, 60, (item) =>
         isRecord(item) && text(item.title, 160) && text(item.source, 40)
           ? {
               source: text(item.source, 40)!,
@@ -2546,10 +2588,13 @@ export function cardEngine(env: CardEnv): CardEngine {
       );
     return feed;
   };
+  // Past this many items a feed takes compact rows: a news row costs about
+  // twice their nodes, and the widget has 500.
+  const newsLimit = 12;
   const feedLayouts: Array<Layout<Feed>> = [
     [
       "news",
-      (data) => data.items.length > 0,
+      (data) => data.items.length > 0 && data.items.length <= newsLimit,
       (data) => {
         const rows = h("ul", "wc-list");
         const control = filtered(
@@ -2583,7 +2628,45 @@ export function cardEngine(env: CardEnv): CardEngine {
                   )
                 )
               )
-            )
+            ),
+          true
+        );
+        return { root: card(data.frame, [control, rows]) };
+      },
+    ],
+    [
+      "list",
+      // A status list such as a day's pull requests: two lines per item, the
+      // status as a colored dot and in words. Excerpts and tags stay out, so a
+      // short list with them keeps the news rows.
+      (data) =>
+        data.items.length > newsLimit ||
+        (data.items.length > 1 &&
+          data.items.every((item) => !item.excerpt && item.tags.length === 0)),
+      (data) => {
+        const dotted = data.items.some((item) => item.status);
+        const rows = h("ul", cx("wc-list", dotted && "wc-feed-dots"));
+        const control = filtered(
+          data.frame.title,
+          data.filters,
+          data.items,
+          rows,
+          (item) => {
+            const line = row(
+              item.href,
+              "wc-feed-row",
+              h("span", "wc-sm wc-w5 wc-c1 wc-clamp-2", item.title),
+              h(
+                "span",
+                "wc-xs wc-c3",
+                [item.status?.label, item.source, item.time].filter(Boolean).join(" · ")
+              )
+            );
+            // The dot is drawn by CSS, so a row costs no node for it.
+            if (item.status) line.dataset.tone = item.status.tone;
+            return h("li", "wc-divided", line);
+          },
+          true
         );
         return { root: card(data.frame, [control, rows]) };
       },

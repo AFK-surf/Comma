@@ -3,7 +3,10 @@
 # Cloudflare Container (systems/station/scripts/bundle.sh, linux-arm64, its
 # native parts built for glibc 2.28) and the locked Claude and Codex CLIs the
 # station runs Tasks with. The `station` build context is that release.
-ARG STATION_IMAGE=node:24.19.0-bookworm-slim
+ARG STATION_IMAGE=node:24.22.1-bookworm-slim
+# The Debian release of STATION_IMAGE (the coding sandbox builds this image on
+# trixie: runtime-images/coding-sandbox/build.sh).
+ARG DEBIAN_SUITE=bookworm
 
 # The locked SILK v3 decoder, for the WeChat and QQ voice messages Tasks receive
 # (ffmpeg has no SILK decoder); silk2wav wraps it.
@@ -45,6 +48,7 @@ ARG CLAUDE_INTEGRITY
 ARG CLAUDE_PLATFORM_TARBALL
 ARG CLAUDE_PLATFORM_INTEGRITY
 ARG PACKAGE_SNAPSHOT
+ARG DEBIAN_SUITE
 ENV DISABLE_AUTOUPDATER=1
 
 # The tools Tasks use to read what people send them (video, audio, PDF, archives,
@@ -61,10 +65,10 @@ RUN set -eu; \
       && openssl dgst -sha512 -binary "$1" >"$1.actual" && cmp "$1.expected" "$1.actual"; }; \
     printf '%s\n' \
       'Types: deb' "URIs: http://snapshot.debian.org/archive/debian/${PACKAGE_SNAPSHOT}" \
-      'Suites: bookworm bookworm-updates' 'Components: main' 'Check-Valid-Until: no' \
+      "Suites: ${DEBIAN_SUITE} ${DEBIAN_SUITE}-updates" 'Components: main' 'Check-Valid-Until: no' \
       'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' '' \
       'Types: deb' "URIs: http://snapshot.debian.org/archive/debian-security/${PACKAGE_SNAPSHOT}" \
-      'Suites: bookworm-security' 'Components: main' 'Check-Valid-Until: no' \
+      "Suites: ${DEBIAN_SUITE}-security" 'Components: main' 'Check-Valid-Until: no' \
       'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' \
       > /etc/apt/sources.list.d/debian.sources \
     && apt-get update \

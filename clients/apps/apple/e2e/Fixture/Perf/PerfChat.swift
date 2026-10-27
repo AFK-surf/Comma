@@ -18,6 +18,8 @@ enum PerfChat {
                 "created_at": 1_700_000_000 + index * 90,
                 "content": [["type": "text", "text": user ? question(index) : reply(index)]] + references(index),
             ]
+            // The client core pages history by seq: with it, the messages before a read are left to read later.
+            if PerfOptions().holdEarlier { object["seq"] = index + 1 }
             if user {
                 object["client_request_id"] = "request-\(index)"
                 object["user_id"] = "u"
@@ -58,9 +60,69 @@ enum PerfChat {
 
     /// The committed form of `streamedReply`, which the router chat holds once the draft completes.
     static func streamedMessage() -> String {
-        json(["message_id": "message150", "kind": "message", "actor_type": "agent",
-              "created_at": 1_700_000_000 + count * 90, "reply_to_message_id": replySource,
-              "content": [["type": "text", "text": streamedReply]]])
+        var object: [String: Any] = [
+            "message_id": "message150", "kind": "message", "actor_type": "agent",
+            "created_at": 1_700_000_000 + count * 90, "reply_to_message_id": replySource,
+            "content": [["type": "text", "text": streamedReply]],
+        ]
+        if PerfOptions().holdEarlier { object["seq"] = count + 1 }
+        return json(object)
+    }
+
+    /// `--perf-varied-chat`: 600 messages, oldest first, each with its seq (its index + 1), which the client core orders
+    /// by. They come in runs of twelve that are all one line, all short paragraphs or all long reports, so the
+    /// transcript's rows range from one line to several screens, as a long real Home conversation's do. The newest
+    /// reply answers the member's message248, far above the newest rows, and references Task 0.
+    static let variedCount = 600
+    static let variedTarget = "message248"
+
+    static func varied() -> [String] {
+        (0..<variedCount).map { index in
+            let user = isUser(index)
+            let newest = index == variedCount - 1
+            var object: [String: Any] = [
+                "message_id": "message\(index)", "kind": "message", "actor_type": user ? "user" : "agent",
+                "seq": index + 1, "created_at": 1_700_000_000 + index * 90,
+                "content": [["type": "text", "text": user ? question(index) : variedReply(index)]]
+                    + (newest ? [["type": "conversation_ref", "conversation_id": "task0", "title": "Task 0"]] : []),
+            ]
+            if user {
+                object["client_request_id"] = "request-\(index)"
+                object["user_id"] = "u"
+            } else if newest {
+                object["reply_to_message_id"] = variedTarget
+                object["thread_root_message_id"] = variedTarget
+            } else if index == 400 {
+                // Another thread between the newest reply and the message it answers: the reply quotes it.
+                object["thread_root_message_id"] = "message395"
+            } else if isUser(index - 1) {
+                object["reply_to_message_id"] = "message\(index - 1)"
+            }
+            return json(object)
+        }
+    }
+
+    private static func variedReply(_ index: Int) -> String {
+        let lead = "Note \(index). "
+        switch index / 12 % 5 {
+        case 0, 4:
+            return lead + "Done."
+        case 2:
+            return lead + reply(index)
+        default:
+            // A long report: a dozen sections of a heading, a paragraph and a list, about two screens tall.
+            return lead + "Here is the full report.\n\n" + (1...(6 + index % 7)).map { section in
+                """
+                ## Section \(section)
+
+                The **\(section)** part of the review covers the open items, the owners and the dates agreed in the thread.
+
+                - The beta build passed every check.
+                - Two crash reports mention the photo picker.
+                - The web client still needs the new copy.
+                """
+            }.joined(separator: "\n\n")
+        }
     }
 
     private static func isUser(_ index: Int) -> Bool { index % 7 == 3 }

@@ -175,6 +175,126 @@ defmodule BridgeForTeamsWeb.ProjectComputeControllerTest do
     assert revoked["desired_state"] == "revoked"
   end
 
+  test "Linux command delivery fails before occupying the Project when configuration is unavailable",
+       ctx do
+    previous = SystemsRuntime.get_env(:salix_web, :public_base_url)
+    on_exit(fn -> SystemsRuntime.put_env(:salix_web, :public_base_url, previous) end)
+    before_count = Repo.aggregate(AgentVMMInstallations.Operation, :count)
+
+    for origin <- [nil, "http://untrusted.example.test"] do
+      SystemsRuntime.put_env(:salix_web, :public_base_url, origin)
+
+      response =
+        :post
+        |> build_conn(
+          "/v1/orgs/#{ctx.org.slug}/projects/#{ctx.project.slug}/compute-nodes/agent-vmm/install-commands",
+          "{}"
+        )
+        |> put_req_header("accept", "application/json")
+        |> put_req_header("content-type", "application/json")
+        |> put_req_header("authorization", "Bearer #{ctx.token}")
+        |> put_req_header("idempotency-key", "linux-unavailable")
+        |> DashboardEndpoint.call([])
+
+      assert response.status == 503, response.resp_body
+      assert get_resp_header(response, "cache-control") == ["no-store"]
+      assert Repo.aggregate(AgentVMMInstallations.Operation, :count) == before_count
+    end
+  end
+
+  test "Linux headless delivery fixes the Project and user and cannot be collected by a Runner",
+       ctx do
+    attrs = %{"request_id" => "linux-install", "runner_id" => "foreign", "group_id" => "foreign"}
+    authorize = fn -> :ok end
+
+    assert {:ok, first} =
+             Compute.request_agent_vmm_headless_install(
+               ctx.org,
+               ctx.project,
+               ctx.user,
+               attrs,
+               authorize
+             )
+
+    operation = Repo.get!(AgentVMMInstallations.Operation, first.operation.id)
+    assert operation.group_id == ctx.project.salix_group_id
+    assert operation.delivery_target_type == "headless"
+    assert operation.delivery_target_id == ctx.user.id
+    assert operation.authorizing_subject_id == ctx.user.id
+
+    assert {:error, :no_pending_operation} =
+             AgentVMMInstallations.deliver_next("bft_runner", ctx.user.id)
+
+    assert {:ok, retry} =
+             Compute.request_agent_vmm_headless_install(
+               ctx.org,
+               ctx.project,
+               ctx.user,
+               attrs,
+               authorize
+             )
+
+    assert retry.operation.id == first.operation.id
+    assert retry.operation.environment_id == first.operation.environment_id
+
+    assert {:error, :scope_host_bound} =
+             Compute.request_agent_vmm_headless_install(
+               ctx.org,
+               ctx.project,
+               ctx.user,
+               %{"request_id" => "second"},
+               authorize
+             )
+
+    assert {:error, :authorization_changed} =
+             Compute.request_agent_vmm_headless_install(
+               ctx.org,
+               ctx.project,
+               ctx.user,
+               attrs,
+               fn -> {:error, :forbidden} end
+             )
+
+    assert Repo.get!(AgentVMMInstallations.Operation, first.operation.id).ticket_generation ==
+             retry.operation.ticket_generation
+  end
+
+  test "a lost Linux command is visible and removable through the existing Project Devices API",
+       ctx do
+    assert {:ok, descriptor} =
+             Compute.request_agent_vmm_headless_install(
+               ctx.org,
+               ctx.project,
+               ctx.user,
+               %{"request_id" => "lost-command"},
+               fn -> :ok end
+             )
+
+    path = "/dashboard/api/v1/orgs/#{ctx.org.slug}/projects/#{ctx.project.id}/devices"
+    response = ctx.conn |> log_in_user(ctx.user) |> get(path)
+    assert response.status == 200, response.resp_body
+    cloud = Jason.decode!(response.resp_body)["data"]["cloud_vm"]
+    assert cloud["runner"] == %{"name" => "Linux Compute Host", "status" => "processing"}
+    assert cloud["runner_removable"]
+    refute cloud["runner_choosable"]
+    removed = response |> recycle() |> delete(path <> "/cloud-vm/runner")
+    assert removed.status == 200, removed.resp_body
+
+    assert Repo.get!(AgentVMMInstallations.Operation, descriptor.operation.id).authorization_status ==
+             "revoked"
+
+    assert {:ok, next} =
+             Compute.request_agent_vmm_headless_install(
+               ctx.org,
+               ctx.project,
+               ctx.user,
+               %{"request_id" => "replacement-command"},
+               fn -> :ok end
+             )
+
+    refute next.operation.id == descriptor.operation.id
+  end
+
   test "Agent VMM install API binds an exact online runner and never returns its ticket secret",
        %{org: org, project: project, token: token} do
     suffix = SystemsRuntime.Proc.unique_integer([:positive])

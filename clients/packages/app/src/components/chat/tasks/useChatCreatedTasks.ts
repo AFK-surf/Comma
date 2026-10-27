@@ -1,13 +1,13 @@
 import { useTaskSummaries } from "../../tasks/useTaskArchive";
+import { useTopicSelect, type ProductInboxListResult } from "@comma/core-client";
 import {
   taskStatusBucket,
   type TaskStatusBucket,
 } from "@comma/ui/components/task-workspace";
 import { useEffect, useMemo, useRef } from "react";
-import { useProductInboxSnapshot } from "../../../product-inbox/react";
 import {
   taskReviewNeedsAttention,
-  useTaskReviewSeenMarks,
+  useTaskReviewSeenMarksOf,
 } from "../../tasks/taskReviewAttention";
 import { useDismissedPanelTasks } from "./chatTaskPanelDismissals";
 import type { ChatMessage } from "@comma/core/chat";
@@ -84,9 +84,6 @@ export function useChatCreatedTasks({
   groupId: string;
   messages: readonly ChatMessage[];
 }): readonly ChatCreatedTask[] {
-  const productInbox = useProductInboxSnapshot();
-  const seenReviewMarks = useTaskReviewSeenMarks();
-  const dismissed = useDismissedPanelTasks();
   const createdRefs = useMemo(() => {
     const seen = new Set<string>();
     const refs: CreatedTaskRef[] = [];
@@ -110,26 +107,20 @@ export function useChatCreatedTasks({
     return refs;
   }, [messages]);
 
-  // One pass over the projection per snapshot; every reference then resolves
-  // its task in constant time instead of scanning the whole Inbox.
-  const projectedItems = productInbox?.items;
-  const projectedTasks = useMemo(() => {
-    const tasks = new Map<string, NonNullable<typeof projectedItems>[number]>();
-    if (createdRefs.length === 0) return tasks;
-    for (const item of projectedItems ?? []) {
-      if (item.groupId === groupId && !tasks.has(item.conversationId)) {
-        tasks.set(item.conversationId, item);
-      }
-    }
-    return tasks;
-  }, [createdRefs, groupId, projectedItems]);
+  const createdIds = useMemo(
+    () => createdRefs.map((ref) => ref.conversationId),
+    [createdRefs]
+  );
+  // The rows and marks of the Tasks this conversation created, from the live
+  // projection and the reader's marks: a change to any other Task renders
+  // nothing here.
+  const projectedTasks = useProjectedTasks(groupId, createdIds);
+  const seenReviewMarks = useTaskReviewSeenMarksOf(createdIds);
+  const dismissed = useDismissedPanelTasks(createdIds);
 
   // The core asks the summary lane for the Tasks the list has no version of,
   // and says which facts are newer: the list's or the summary's.
-  const summaries = useTaskSummaries(
-    groupId,
-    useMemo(() => createdRefs.map((ref) => ref.conversationId), [createdRefs])
-  );
+  const summaries = useTaskSummaries(groupId, createdIds);
 
   const previousRef = useRef(NO_TASKS);
   const visible = useMemo(() => {
@@ -214,4 +205,39 @@ export function useChatCreatedTasks({
   }, [visible]);
 
   return visible;
+}
+
+type ProjectedTask = ProductInboxListResult["items"][number];
+const NO_PROJECTED_TASKS: ReadonlyMap<string, ProjectedTask> = new Map();
+
+/**
+ * The focused list's row of each of `ids` in the Group, by id. The map stays the
+ * same object until one of those rows changes (the core keeps an unchanged row's
+ * object), so the list's other changes render nothing.
+ */
+function useProjectedTasks(
+  groupId: string,
+  ids: readonly string[]
+): ReadonlyMap<string, ProjectedTask> {
+  const last = useRef(NO_PROJECTED_TASKS);
+  return useTopicSelect({ topic: "tasks", workspace: "" }, (value) => {
+    if (ids.length === 0) return NO_PROJECTED_TASKS;
+    const wanted = new Set(ids);
+    const rows = new Map<string, ProjectedTask>();
+    for (const item of value?.items ?? []) {
+      if (
+        item.groupId === groupId &&
+        wanted.has(item.conversationId) &&
+        !rows.has(item.conversationId)
+      ) {
+        rows.set(item.conversationId, item);
+      }
+    }
+    const previous = last.current;
+    const same =
+      rows.size === previous.size &&
+      [...rows].every(([id, row]) => previous.get(id) === row);
+    if (!same) last.current = rows;
+    return last.current;
+  });
 }

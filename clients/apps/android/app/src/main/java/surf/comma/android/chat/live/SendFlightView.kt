@@ -26,6 +26,7 @@ import surf.comma.android.chat.render.PreparedChatMessage
 import surf.comma.android.ui.composer.ComposerSendSnapshot
 import surf.comma.android.ui.theme.DesignMotion
 import surf.comma.android.ui.theme.DesignSpring
+import surf.comma.android.ui.widget.BackdropBlurLayout
 import kotlin.math.abs
 import kotlin.math.max
 
@@ -51,6 +52,9 @@ import kotlin.math.max
  * The text leads. A piece that lands below another (an image under its text, the next image
  * under the previous one) leaves only once the one above has passed its source, and is masked so
  * it never reaches above it: a tall image unfolds under the text instead of sweeping across it.
+ *
+ * This view floats over all of the chat's chrome. Under the top chrome's frost the pieces are drawn
+ * with the list instead ([frostUnderTop]), so the frost covers them as it covers their rows.
  */
 internal class SendFlightView(context: Context, private val timeline: ChatTimelineView) : View(context) {
     private inner class Piece(
@@ -245,6 +249,11 @@ internal class SendFlightView(context: Context, private val timeline: ChatTimeli
     private val drawRect = RectF()
     private val cropRect = RectF()
     private val chatBounds = RectF()
+    /** What the pieces draw under the top chrome's frost, for the list's backdrop to draw over its rows. */
+    private val frosted = RenderNode("send-flight-frosted")
+    private var frostedRecording: Canvas? = null
+    private var frostEnd = 0
+    private val frostedBounds = RectF()
     private val sourceImageRadius = resources.getDimension(R.dimen.radius_2xl)
     private val imageRadius = resources.getDimension(R.dimen.radius_4xl)
     private val window = IntArray(2)
@@ -271,6 +280,17 @@ internal class SendFlightView(context: Context, private val timeline: ChatTimeli
         schedule(transition, HOLD_TIMEOUT_MS) {
             if (transition in transitions && transition.stage == Stage.WAITING) finish(transition)
         }
+        invalidate()
+    }
+
+    /**
+     * The top chrome's frost reaches [endPx] down, in this view's coordinates, which [backdrop] shares. Above that
+     * line [backdrop] draws the pieces over its rows; this view draws them only below it.
+     */
+    fun frostUnderTop(backdrop: BackdropBlurLayout, endPx: Int) {
+        backdrop.overlay = frosted
+        if (endPx == frostEnd) return
+        frostEnd = endPx
         invalidate()
     }
 
@@ -481,6 +501,7 @@ internal class SendFlightView(context: Context, private val timeline: ChatTimeli
             removeCallbacks(stepper)
             stepPosted = false
             visibility = GONE
+            frosted.discardDisplayList()
         }
         invalidate()
     }
@@ -502,14 +523,28 @@ internal class SendFlightView(context: Context, private val timeline: ChatTimeli
         val originY = window[1].toFloat()
         timeline.chatBoundsInWindow(chatBounds)
         chatBounds.offset(-originX, -originY)
-        for (transition in transitions) {
-            if (!transition.animated) continue
-            when (transition.stage) {
-                // Until the composer clears it still shows the draft itself.
-                Stage.WAITING, Stage.AWAITING_TARGETS -> if (transition.accepted) drawHeld(canvas, transition.snapshot, originX, originY)
-                Stage.FLYING -> drawFlying(canvas, transition, originX, originY)
+        // Under the frost the pieces go with the rows, which also reach up behind the chrome.
+        frostedBounds.set(chatBounds.left, chatBounds.top - timeline.paddingTop, chatBounds.right, frostEnd.toFloat())
+        if (chatBounds.top < frostedBounds.bottom) chatBounds.top = frostedBounds.bottom
+        try {
+            for (transition in transitions) {
+                if (!transition.animated) continue
+                when (transition.stage) {
+                    // Until the composer clears it still shows the draft itself.
+                    Stage.WAITING, Stage.AWAITING_TARGETS -> if (transition.accepted) drawHeld(canvas, transition.snapshot, originX, originY)
+                    Stage.FLYING -> drawFlying(canvas, transition, originX, originY)
+                }
             }
+        } finally {
+            if (frostedRecording != null) frosted.endRecording() else if (frosted.hasDisplayList()) frosted.discardDisplayList()
+            frostedRecording = null
         }
+    }
+
+    /** The canvas for the pieces under the frost, begun when the first one reaches it this frame. */
+    private fun frostedCanvas(): Canvas = frostedRecording ?: run {
+        frosted.setPosition(0, 0, width, height)
+        frosted.beginRecording(width, height).also { frostedRecording = it }
     }
 
     private fun drawFlying(canvas: Canvas, transition: Transition, originX: Float, originY: Float) {
@@ -557,6 +592,15 @@ internal class SendFlightView(context: Context, private val timeline: ChatTimeli
             if (piece.maskTop.isFinite()) canvas.clipRect(0f, piece.maskTop - originY, width.toFloat(), height.toFloat())
             if (piece.spec.isText) drawText(canvas, transition.snapshot, piece) else drawImage(canvas, piece)
             canvas.restoreToCount(save)
+            if (drawRect.top < frostedBounds.bottom && !frostedBounds.isEmpty) {
+                val frosted = frostedCanvas()
+                frosted.save()
+                frosted.clipRect(frostedBounds)
+                if (piece.maskTop.isFinite()) frosted.clipRect(0f, piece.maskTop - originY, width.toFloat(), height.toFloat())
+                // The row's pixels were recorded just above, for this frame.
+                if (piece.spec.isText) drawText(frosted, transition.snapshot, piece, recordRow = false) else drawImage(frosted, piece)
+                frosted.restore()
+            }
         }
     }
 
@@ -609,7 +653,7 @@ internal class SendFlightView(context: Context, private val timeline: ChatTimeli
     }
 
     /** The text rides 1:1 inside a bubble whose colour arrives first; then the bubble's own snapshot. */
-    private fun drawText(canvas: Canvas, sent: ComposerSendSnapshot, piece: Piece) {
+    private fun drawText(canvas: Canvas, sent: ComposerSendSnapshot, piece: Piece, recordRow: Boolean = true) {
         val target = piece.target
         val radius = (target as? FlightTarget)?.flightCornerRadius ?: 0f
         val elapsed = if (piece.launched) frameTime - piece.launchedAt else 0L
@@ -638,7 +682,7 @@ internal class SendFlightView(context: Context, private val timeline: ChatTimeli
         drawSourceText(canvas, sent, piece, 1f, tint)
         canvas.restore()
         if (target != null && mix > 0f) {
-            recordTarget(piece, target)
+            if (recordRow) recordTarget(piece, target)
             addTarget(piece, mix)
             canvas.save()
             canvas.translate(drawRect.left - piece.bounds.left, drawRect.top - piece.bounds.top)

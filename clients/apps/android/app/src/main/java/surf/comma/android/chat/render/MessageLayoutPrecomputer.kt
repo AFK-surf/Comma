@@ -1499,7 +1499,7 @@ class MessageLayoutPrecomputer(
         private const val AGENT_LINE_SP = 27f
         private const val USER_LINE_SP = 22f
         private const val USER_BUBBLE_PAD_H_DP = 13f
-        private const val USER_BUBBLE_PAD_V_DP = 10f
+        private const val USER_BUBBLE_PAD_V_DP = 12f
         /** Marks the cache key of a row laid out with its tail; see [withTails]. */
         private const val TAIL_KEY = ":tail"
         private const val USER_BUBBLE_MIN_WIDTH_DP = 50f

@@ -12,7 +12,6 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.annotation.MainThread
-import androidx.core.content.FileProvider
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -176,10 +175,8 @@ class FileCardView(context: Context) : LinearLayout(context) {
          * installed app can open the type.
          */
         fun open(context: Context, file: File, attachment: MediaAttachment): Boolean {
-            val uri = try {
-                FileProvider.getUriForFile(context, MediaFileProvider.authority(context), file)
-            } catch (_: IllegalArgumentException) {
-                // Only the media cache is shared; anything else is refused, never crashes the list.
+            val uri = MediaFileProvider.uri(context, file) ?: run {
+                // Only the downloads are shared; anything else is refused, never crashes the list.
                 Toast.makeText(context, R.string.media_file_unavailable, Toast.LENGTH_SHORT).show()
                 return false
             }
@@ -194,15 +191,5 @@ class FileCardView(context: Context) : LinearLayout(context) {
                 false
             }
         }
-    }
-}
-
-/**
- * Serves only the media cache, read-only, to apps a file is opened with. Its paths come from the
- * manifest meta-data, which the static [FileProvider.getUriForFile] reads.
- */
-class MediaFileProvider : FileProvider() {
-    companion object {
-        fun authority(context: Context) = "${context.packageName}.media.files"
     }
 }

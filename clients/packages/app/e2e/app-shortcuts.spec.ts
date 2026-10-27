@@ -233,7 +233,9 @@ test("an open select list takes typed letters to pick an option, not to navigate
   await expect(page).toHaveURL(/#\/inbox$/);
 });
 
-test("Search does not offer or navigate to Settings commands", async ({ page }) => {
+test("Search offers no Appearance commands, Settings only as an app action, and typing navigates nowhere", async ({
+  page,
+}) => {
   await installSession(page);
   await page.goto("/#/inbox");
   await expect(page.getByRole("complementary", { name: "App sidebar" })).toBeVisible();
@@ -241,12 +243,12 @@ test("Search does not offer or navigate to Settings commands", async ({ page }) 
   await toggleCommandPalette(page);
   const searchInput = page.getByRole("combobox", { name: "Search Comma" });
   const loading = page.locator('[data-slot="command-palette-loading"]');
-  const settingsCommands = page.getByRole("option").filter({
+  const appearanceCommands = page.getByRole("option").filter({
     hasText:
-      /Switch Comma to the dark theme|Open Appearance settings at (?:Theme|Font size)|Go to Settings/,
+      /Switch Comma to the dark theme|Open Appearance settings at (?:Theme|Font size)/,
   });
 
-  for (const query of ["dark", "font", "settings"]) {
+  for (const query of ["dark", "font"]) {
     await searchInput.fill(query);
     await expect(loading).toBeVisible();
     await expect(
@@ -254,9 +256,15 @@ test("Search does not offer or navigate to Settings commands", async ({ page }) 
         exact: true,
       })
     ).toBeVisible();
-    await expect(settingsCommands).toHaveCount(0);
+    await expect(appearanceCommands).toHaveCount(0);
     await expect(page).toHaveURL(/#\/inbox$/);
   }
+
+  // Settings is one of the palette's app actions: the query offers it, and typing does not open it.
+  await searchInput.fill("settings");
+  await expect(page.getByRole("option", { name: /Go to Settings/ })).toBeVisible();
+  await expect(appearanceCommands).toHaveCount(0);
+  await expect(page).toHaveURL(/#\/inbox$/);
 });
 
 test("product sequences share candidates across navigation and shell owners", async ({

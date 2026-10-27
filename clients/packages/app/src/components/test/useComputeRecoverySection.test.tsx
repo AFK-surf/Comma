@@ -21,7 +21,7 @@ beforeEach(() => {
   mock.recover.mockResolvedValue(undefined);
 });
 
-it("shows a unique candidate confirmation without authorizing on discovery", async () => {
+it("selects a unique candidate for inline confirmation and recovers only on confirm", async () => {
   mock.candidates.mockResolvedValue({
     candidates: [candidate],
     confirmationId: "session-a",
@@ -33,8 +33,13 @@ it("shows a unique candidate confirmation without authorizing on discovery", asy
   expect(mock.candidates).not.toHaveBeenCalled();
   await act(() => result.current.discover());
   expect(mock.recover).not.toHaveBeenCalled();
-  expect(result.current.overlay).toBeDefined();
-  expect(recovered).not.toHaveBeenCalled();
+  expect(result.current.selected?.key).toBe(candidate.key);
+  await act(async () => result.current.confirm());
+  expect(mock.recover).toHaveBeenCalledWith({
+    key: candidate.key,
+    confirmationId: "session-a",
+  });
+  expect(recovered).toHaveBeenCalled();
 });
 
 it("does not infer uniqueness from a partial page or its final page", async () => {
@@ -56,6 +61,7 @@ it("does not infer uniqueness from a partial page or its final page", async () =
     result.current.page?.candidates.some((item) => item.key === candidate.key)
   ).toBe(true);
   await act(() => result.current.discover("page-2"));
+  expect(result.current.selected).toBeUndefined();
   expect(mock.recover).not.toHaveBeenCalled();
   expect(mock.candidates).toHaveBeenLastCalledWith({
     workspaceId: "workspace-a",

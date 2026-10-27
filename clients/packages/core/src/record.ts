@@ -22,6 +22,7 @@ import {
   type ApiResponse,
   type BearerSessionPorts,
   type ChatPickAnswer,
+  type ClientIdentity,
   type DesktopPorts,
   type Host,
   type LegacyWorkspaceTasks,
@@ -31,6 +32,9 @@ import {
   type LoopbackVisit,
   type MeetingEvent,
   type MeetingPorts,
+  type VoiceCallPorts,
+  type VoiceCallSocketEvent,
+  type VoiceCallSocketOp,
   type Pull,
   type ResetPorts,
   type SessionAuthorityResume,
@@ -90,10 +94,27 @@ export type Input =
   | { kind: "random"; bytes: string }
   | { kind: "legacy"; tasks: LegacyWorkspaceTasks[] }
   | { kind: "legacyFailure"; message: string }
-  /** What the host can do besides requests (its image capabilities, Main's meeting parts), as the core was made. */
-  | { kind: "capabilities"; preview: boolean; transcode: boolean; meeting?: boolean }
+  /**
+   * What the host can do besides requests (its image capabilities, Main's meeting parts, sending a file it holds as a
+   * request's body), as the core was made.
+   */
+  | {
+      kind: "capabilities";
+      preview: boolean;
+      transcode: boolean;
+      meeting?: boolean;
+      /** Main's voice call socket (`VoiceCallPorts`). */
+      voiceCall?: boolean;
+      localFiles?: boolean;
+      /** The app reads parts of its picks (`Host.readLocalFile`): each part read is an answer (`HOST localFile:…`). */
+      readsLocalFiles?: boolean;
+      /** The app the core's requests report (`Host.client`). */
+      client?: ClientIdentity;
+    }
   /** What Main's meeting recorder parts saw (`MeetingPorts.listen`). */
   | { kind: "meeting"; event: MeetingEvent }
+  /** What Main's voice call socket did (`VoiceCallPorts.listen`). */
+  | { kind: "voiceCall"; event: VoiceCallSocketEvent }
   /** An image capability's answer: its bytes (and name and media type for a transcode), or why it failed. */
   | {
       kind: "image";
@@ -163,7 +184,9 @@ export type Output =
   /** What the core told Main's gate (`BearerSessionPorts.gate`). */
   | { kind: "gate"; snapshot: unknown; lease: SessionLease | null }
   /** The core let go of the Web Lock it was granted (its request `LOCK <name>`). */
-  | { kind: "unlock"; request: RequestRef };
+  | { kind: "unlock"; request: RequestRef }
+  /** What the core asked of Main's voice call socket (`VoiceCallPorts.command`). */
+  | { kind: "voiceCall"; op: VoiceCallSocketOp };
 
 export type Entry<T> = T & { seq: number; at: number };
 
@@ -399,6 +422,9 @@ export class Recorder {
     };
     const recorded: Host = {
       sessionSource: host.sessionSource,
+      ...(host.deviceSetup ? { deviceSetup: host.deviceSetup } : {}),
+      ...(host.uploadsLocalFiles ? { uploadsLocalFiles: true } : {}),
+      ...(host.client ? { client: host.client } : {}),
       fetch: (request) => answered(request, host.fetch(request)),
       fetchStream: (request) => streamed(request, host.fetchStream(request)),
       // Device storage and databases are what the core finds of earlier runs: inputs too. Each storage read's value
@@ -458,7 +484,24 @@ export class Recorder {
       preview: Boolean(host.renderImagePreview),
       transcode: Boolean(host.transcodeImage),
       ...(host.meeting ? { meeting: true } : {}),
+      ...(host.voiceCall ? { voiceCall: true } : {}),
+      ...(host.uploadsLocalFiles ? { localFiles: true } : {}),
+      ...(host.readLocalFile ? { readsLocalFiles: true } : {}),
+      ...(host.client ? { client: host.client } : {}),
     });
+    const readLocal = host.readLocalFile?.bind(host);
+    if (readLocal)
+      (recorded as { readLocalFile?: Host["readLocalFile"] }).readLocalFile = (
+        ref,
+        offset,
+        length
+      ) =>
+        port(
+          "HOST",
+          `localFile:${ref}:${offset}:${length}`,
+          readLocal(ref, offset, length),
+          (bytes) => base64(bytes)
+        );
     const meeting = host.meeting;
     if (meeting)
       (recorded as { meeting?: MeetingPorts }).meeting = {
@@ -468,6 +511,19 @@ export class Recorder {
         listen: (listener) =>
           meeting.listen((event) => {
             this.input({ kind: "meeting", event: structuredClone(event) });
+            listener(event);
+          }),
+      };
+    const voiceCall = host.voiceCall;
+    if (voiceCall)
+      (recorded as { voiceCall?: VoiceCallPorts }).voiceCall = {
+        command: (op) => {
+          this.output({ kind: "voiceCall", op: structuredClone(op) });
+          voiceCall.command(op);
+        },
+        listen: (listener) =>
+          voiceCall.listen((event) => {
+            this.input({ kind: "voiceCall", event: structuredClone(event) });
             listener(event);
           }),
       };
@@ -660,6 +716,10 @@ export class Recorder {
           port("HOST", "downloads.open", downloads.open(request, path)),
         step: (id) => port("HOST", "downloads.step", downloads.step(id)),
         close: (id) => port("HOST", "downloads.close", downloads.close(id)),
+        create: (path) => port("HOST", "downloads.create", downloads.create(path)),
+        append: (id, bytes) =>
+          port("HOST", "downloads.append", downloads.append(id, bytes)),
+        finish: (id) => port("HOST", "downloads.finish", downloads.finish(id)),
         remove: (path) => port("HOST", "downloads.remove", downloads.remove(path)),
         retain: (keep) => port("HOST", "downloads.retain", downloads.retain(keep)),
       };
@@ -785,6 +845,14 @@ export class Recorder {
           port("HOST", "chatPick", desktop.pickAttachments(request), recordChatPick),
         saveDownload: (fileName, content) =>
           port("HOST", "saveDownload", desktop.saveDownload(fileName, content)),
+        saveOpen: (fileName) => port("HOST", "saveOpen", desktop.saveOpen(fileName)),
+        saveWrite: (id, bytes) =>
+          Effect.asVoid(port("HOST", "saveWrite", desktop.saveWrite(id, bytes))),
+        saveClose: (id, keep) => port("HOST", "saveClose", desktop.saveClose(id, keep)),
+        openStream: (input) => port("HOST", "openStream", desktop.openStream(input)),
+        closeStream: (url) =>
+          Effect.asVoid(port("HOST", "closeStream", desktop.closeStream(url))),
+        saveStream: (input) => port("HOST", "saveStream", desktop.saveStream(input)),
         // The port it took is noted; each visit's address too, and the page it was shown as what the core sent.
         listen: (input) => {
           let open: Loopback;

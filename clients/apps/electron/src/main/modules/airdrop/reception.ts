@@ -12,6 +12,7 @@ import type {
   NotchHostScenePayload,
 } from "@comma/native-bridge";
 import type { AirDropTransferProgress } from ".";
+import { realMainClock, type MainClock } from "../../clock";
 import { readMainLocale, type MainLocaleSource } from "../../main-locale";
 
 export type AirDropAction =
@@ -70,7 +71,7 @@ interface Entry {
     | Promise<{ files: AirDropTransfer["files"]; previews: Entry["previews"] }>
     | undefined;
   settledAt?: number | undefined;
-  timer?: ReturnType<typeof setTimeout> | undefined;
+  cancelTimer?: (() => void) | undefined;
   transfer: AirDropTransfer;
 }
 
@@ -89,6 +90,7 @@ const NOTCH_RESULT_MS = 4_000;
  * while that window is not focused, ahead of in-progress tasks.
  */
 export class AirDropReception implements AirDropReceptionProvider {
+  readonly #clock: MainClock;
   readonly #entries = new Map<string, Entry>();
   readonly #locale: MainLocaleSource;
   readonly #log: { warn(message: string): void } | undefined;
@@ -97,16 +99,19 @@ export class AirDropReception implements AirDropReceptionProvider {
   readonly #publish: (state: AirDropState) => void;
   readonly #unsubscribe: (() => void)[];
   #notchKey = "";
-  #notchTimer: ReturnType<typeof setTimeout> | undefined;
+  #cancelNotchTimer: (() => void) | undefined;
   #revision = 0;
 
   constructor(options: {
+    /** Main's clock: when a result settled, and the linger and Notch timers. */
+    clock?: MainClock | undefined;
     locale?: MainLocaleSource | undefined;
     log?: { warn(message: string): void } | undefined;
     notch: AirDropNotch;
     platform: AirDropPresentationPlatform;
     publish: (state: AirDropState) => void;
   }) {
+    this.#clock = options.clock ?? realMainClock;
     this.#locale = options.locale ?? baseLocale;
     this.#log = options.log;
     this.#notch = options.notch;
@@ -233,7 +238,7 @@ export class AirDropReception implements AirDropReceptionProvider {
     const entries = [...this.#entries.values()];
     this.#entries.clear();
     for (const entry of entries) {
-      clearTimeout(entry.timer);
+      entry.cancelTimer?.();
       entry.decide?.(false);
     }
     this.#changed();
@@ -241,7 +246,7 @@ export class AirDropReception implements AirDropReceptionProvider {
 
   close() {
     for (const unsubscribe of this.#unsubscribe) unsubscribe();
-    clearTimeout(this.#notchTimer);
+    this.#cancelNotchTimer?.();
     this.reset();
   }
 
@@ -253,7 +258,7 @@ export class AirDropReception implements AirDropReceptionProvider {
     for (const entry of this.#entries.values()) {
       if (this.#entries.size < MAX_TRANSFERS) break;
       if (entry.settledAt !== undefined) {
-        clearTimeout(entry.timer);
+        entry.cancelTimer?.();
         this.#entries.delete(entry.transfer.requestId);
       }
     }
@@ -286,7 +291,7 @@ export class AirDropReception implements AirDropReceptionProvider {
   }
 
   #settle(entry: Entry, patch: Partial<AirDropTransfer>) {
-    entry.settledAt = Date.now();
+    entry.settledAt = this.#clock.now();
     this.#change(entry, patch);
     this.#linger(entry);
   }
@@ -297,15 +302,15 @@ export class AirDropReception implements AirDropReceptionProvider {
    * looking at, such as a strip they are scrolling, waits until they look away.
    */
   #linger(entry: Entry) {
-    clearTimeout(entry.timer);
-    entry.timer =
+    entry.cancelTimer?.();
+    entry.cancelTimer =
       entry.settledAt === undefined || entry.transfer.canReveal || entry.held
         ? undefined
-        : setTimeout(
-            () => this.#remove(entry),
+        : this.#clock.setTimer(
             entry.transfer.phase === "completed"
               ? COMPLETED_LINGER_MS
-              : FAILED_LINGER_MS
+              : FAILED_LINGER_MS,
+            () => this.#remove(entry)
           );
   }
 
@@ -317,7 +322,7 @@ export class AirDropReception implements AirDropReceptionProvider {
 
   #remove(entry: Entry) {
     if (this.#entries.get(entry.transfer.requestId) !== entry) return;
-    clearTimeout(entry.timer);
+    entry.cancelTimer?.();
     this.#entries.delete(entry.transfer.requestId);
     this.#changed();
   }
@@ -360,9 +365,9 @@ export class AirDropReception implements AirDropReceptionProvider {
   }
 
   #syncNotch() {
-    clearTimeout(this.#notchTimer);
+    this.#cancelNotchTimer?.();
     const focused = this.#platform.focusedToastSurfaceId();
-    const now = Date.now();
+    const now = this.#clock.now();
     const visible = [...this.#entries.values()].filter(
       (entry) =>
         (focused === undefined || entry.transfer.surfaceId !== focused) &&
@@ -380,7 +385,9 @@ export class AirDropReception implements AirDropReceptionProvider {
       )
     );
     if (Number.isFinite(nextExpiry))
-      this.#notchTimer = setTimeout(() => this.#syncNotch(), Math.max(0, nextExpiry));
+      this.#cancelNotchTimer = this.#clock.setTimer(Math.max(0, nextExpiry), () =>
+        this.#syncNotch()
+      );
 
     const transfer = shown ? this.#notchTransfer(shown) : undefined;
     // Previews and labels change only with a transfer's phase or outcome; the

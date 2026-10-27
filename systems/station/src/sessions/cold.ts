@@ -108,18 +108,19 @@ export class ColdRooms implements ColdStorage {
       return [];
     const config = hub.config();
     const profile = config.profiles.find((p) => p.id === row.profile);
-    const runtime = runtimeNamed(row.runtime);
-    if (!profile || !runtime) return [];
+    if (!profile) return [];
     const root = realpathSync(config.dataDir);
     const files: string[] = [];
-    // With those of the runtime sessions it ran in before (sessions/afresh.ts).
+    // With those of the runtime sessions it ran in before, each where its runtime wrote it (sessions/afresh.ts).
     for (const each of hub.store.runtimeSessions(key)) {
-      const path = transcriptPath(runtime, profile.home, each);
+      const runtime = runtimeNamed(each.runtime);
+      if (!runtime) continue;
+      const path = transcriptPath(runtime, profile.home, each.id);
       if (path === null) continue;
       const parent = realpathSync(dirname(path));
       if (!within(parent, root)) continue;
       files.push(join(parent, basename(path)));
-      if (runtime === "claude") archive.jsonlFiles(join(parent, each), files);
+      if (runtime === "claude") archive.jsonlFiles(join(parent, each.id), files);
     }
     return files;
   }

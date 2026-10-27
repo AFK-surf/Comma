@@ -9,6 +9,9 @@ defmodule Comma.GroupFiles do
   @document_upload_extensions ~w(.pdf .doc .docx .xls .xlsx .ppt .pptx .svg .zip)
   @media_upload_extensions ~w(.mp3 .wav .m4a .aac .flac .ogg .mp4 .mov .m4v .webm)
   @max_upload_bytes 10_000_000
+  # A file the composer uploads as it is attached (`store_stream/4`), of any
+  # type: the local-file bound (`Salix.Bindings.LocalFileImport`) it replaces.
+  @max_stream_upload_bytes 512 * 1024 * 1024
   @max_image_read_bytes @max_upload_bytes + 1
   @max_upload_path_bytes 4_096
   @max_image_edge 4_096
@@ -32,6 +35,8 @@ defmodule Comma.GroupFiles do
 
   def max_upload_bytes, do: @max_upload_bytes
 
+  def max_stream_upload_bytes, do: @max_stream_upload_bytes
+
   def store(group_scope, filename, binary)
       when is_map(group_scope) and is_binary(binary) do
     name = filename |> filename_to_string() |> nonblank("file")
@@ -43,6 +48,71 @@ defmodule Comma.GroupFiles do
            Comma.Salix.Client.impl().write_agent_file(group_scope, path, binary) do
       {:ok, %{"path" => path, "name" => name, "size" => byte_size(binary)}}
     end
+  end
+
+  @doc """
+  Store a file of any type from `stream`, binary chunks of exactly `size`
+  bytes together, into the Router VFS without holding it whole. A body that
+  ends short of `size` or runs past it stores nothing.
+  """
+  def store_stream(group_scope, filename, size, stream)
+      when is_map(group_scope) and is_integer(size) do
+    name = filename |> filename_to_string() |> nonblank("file")
+
+    with :ok <- validate_stream_size(size),
+         path <- upload_path(name),
+         {:ok, _result} <-
+           Comma.Salix.Client.write_agent_file_stream(
+             group_scope,
+             path,
+             exact_size(stream, size)
+           ) do
+      {:ok, %{"path" => path, "name" => name, "size" => size}}
+    else
+      {:error, %ArgumentError{}} -> {:error, :upload_incomplete}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  @doc """
+  Store a conversation attachment that `Comma.ConversationAttachments.open/4`
+  gave as a Router VFS file of its own, by reference to the same blob: no bytes
+  are read or copied, so it has no size bound.
+  """
+  def store_attachment(group_scope, %{file_name: file_name, size: size, source: source})
+      when is_map(group_scope) do
+    {_scope, agent_id, blob_ref} = source
+    name = file_name |> filename_to_string() |> nonblank("file")
+    path = upload_path(name)
+
+    with {:ok, _result} <-
+           Comma.Salix.Client.link_agent_blob(group_scope, agent_id, blob_ref, path) do
+      {:ok, %{"path" => path, "name" => name, "size" => size}}
+    end
+  end
+
+  defp validate_stream_size(size) when size < 0, do: {:error, :file_required}
+
+  defp validate_stream_size(size) when size > @max_stream_upload_bytes,
+    do: {:error, :file_too_large}
+
+  defp validate_stream_size(_size), do: :ok
+
+  defp exact_size(stream, size) do
+    Stream.transform(
+      stream,
+      fn -> 0 end,
+      fn chunk, received ->
+        received = received + byte_size(chunk)
+        if received > size, do: raise(ArgumentError, "upload body exceeds its length")
+        {[chunk], received}
+      end,
+      fn received ->
+        if received != size, do: raise(ArgumentError, "upload body ended short of its length")
+        {[], received}
+      end,
+      fn _received -> :ok end
+    )
   end
 
   @doc """

@@ -125,7 +125,8 @@ class LiveChatScreen(
     private val frozenSizes = mutableMapOf<MediaSource, ImageDimensions>()
     private var geometrySession: MediaSessionId? = null
     private val preprocessor = AndroidImagePreprocessor(activity.contentResolver, File(activity.cacheDir, "outgoing-media"))
-    private val draft = ChatImageDraft(media.http, preprocessor, owner.lifecycleScope, repository) { image, local, captured ->
+    private val draft = ChatImageDraft(media.http, preprocessor, AndroidPickedFileRefs(activity.contentResolver),
+        owner.lifecycleScope, repository) { image, local, captured ->
         val images = media.images()
         if (media.http.isCurrent(captured)) {
             images.remember(image, captured)
@@ -161,9 +162,24 @@ class LiveChatScreen(
         override fun retryImage(questionMessageId: String, attachmentId: String) =
             questionImages.retry(questionMessageId, attachmentId)
     }
+    /** What the Agent's request cards do here: open the provider's page in the browser, decline through the core. */
+    private val requests = object : AgentRequestCardHost {
+        override val opened = HashSet<String>()
+
+        override fun authorize(url: String) {
+            runCatching {
+                activity.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url)))
+            }
+        }
+
+        override fun decline(requestId: String, done: (Boolean) -> Unit) {
+            owner.lifecycleScope.launch { done(repository.declineRequest(requestId)) }
+        }
+    }
     private val precomputer = MessageLayoutPrecomputer(
         cardHeights = TaskRefCardLayout(TaskTheme(activity), activity.getString(R.string.chat_task_ref), UiSansTypeface)
-            .then(QuestionCardLayout(activity, interactive = true)),
+            .then(QuestionCardLayout(activity, interactive = true))
+            .then(AgentRequestCardLayout(activity)),
         bubbles = true,
     )
     private val palette = ChatPalette.from(activity)
@@ -288,7 +304,8 @@ class LiveChatScreen(
             owner.repeatOnLifecycle(Lifecycle.State.STARTED) {
                 awaitLaidOut()
                 // A StateFlow collector that is still rendering skips to the newest state.
-                combine(repository.state, callLogVersion, questionImages.shown) { state, _, _ -> state }.collect(::render)
+                combine(repository.state, callLogVersion, questionImages.shown, repository.requests) { state, _, _, _ -> state }
+                    .collect(::render)
             }
         }
         owner.lifecycleScope.launch {
@@ -370,8 +387,11 @@ class LiveChatScreen(
         val conversationId = state.conversationId.orEmpty()
         val callRecords = if (conversationId.isEmpty()) emptyList() else callLog.records(conversationId)
         val questionShown = questionImages.shown.value
+        // Requests read for another conversation or account are not this one's.
+        val shownRequests = repository.requests.value.takeIf { it.scope === state.scope && it.conversationId == state.conversationId }
+            ?.requests.orEmpty()
         val mapped = withContext(Background.compute) {
-            mapConversation(state, labels, replyActions = true, questionImages = questionShown) { attachment ->
+            mapConversation(state, labels, replyActions = true, questionImages = questionShown, requests = shownRequests) { attachment ->
                 val source = attachment.file.source
                 if (source == null || attachment.display == AttachmentDisplay.FILE) attachment.copy(session = captured?.id) else {
                     val dimensions = frozenSizes.getOrPut(source) {
@@ -487,6 +507,7 @@ class LiveChatScreen(
             // Frosted behind the whole bar, thinning out across its bottom edge; the button and
             // the capsule sit where it thins, so they get frosted patches of their own.
             body.setTopBand(topBar.frostBottom, topBar.frostSolid)
+            flight.frostUnderTop(body, topBar.frostBottom)
             updateBottomInset()
             updateChromePatches()
         }
@@ -517,7 +538,7 @@ class LiveChatScreen(
         y >= composer.y
 
     private fun bindTimeline() {
-        scrollToLatest.bindTo(timeline) { overflow -> body.setBottomOverflow(overflow > 0) }
+        scrollToLatest.bindTo(timeline, body::setBottomOverflow)
         // Frosting only while something is scrolled up under the top chrome.
         timeline.addOnScrollListener(object : RecyclerView.OnScrollListener() {
             override fun onScrolled(recyclerView: RecyclerView, dx: Int, dy: Int) {
@@ -544,6 +565,7 @@ class LiveChatScreen(
             if (failedSends.has(rowId)) FailedSendSheet(activity) { failedSends.choose(rowId, it) }.show()
         }
         timeline.questionHost = questions
+        timeline.requestHost = requests
         // Touching the conversation puts the keyboard and the attachment panel away; a question card's field keeps it.
         timeline.addOnItemTouchListener(object : RecyclerView.SimpleOnItemTouchListener() {
             override fun onInterceptTouchEvent(rv: RecyclerView, e: MotionEvent): Boolean {
@@ -585,7 +607,7 @@ class LiveChatScreen(
         val solid = (body.height - keyboardInset - (composer.capsuleTop - body.y)).toInt().coerceAtLeast(0)
         val fade = topBar.frostBottom - topBar.frostSolid
         body.setBottomBand(solid + fade, solidPx = solid, insetPx = keyboardInset)
-        body.setBottomOverflow(timeline.bottomOverflowPx() > 0)
+        body.setBottomOverflow(timeline.bottomOverflowPx())
     }
 
     /** The list's top inset is the chrome over it, status bar included. */

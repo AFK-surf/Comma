@@ -13,6 +13,12 @@ With research off, the notice has only the title, time, event link, and Meet lin
 An existing personal-reminder rule still schedules attendee DMs without research.
 Calendar writeback and automatic joining are separate opt-in actions.
 
+The `channel_notice` setting (default on) controls the shared pre-meeting notice in the team channel.
+When it is off, the plan schedules no channel card and writes nothing back to the calendar. Saving stores `calendar_writeback` as off.
+Research runs only when personal reminders are on, because the shared report has no other audience. Personal reminders do not change.
+Automatic joining, recording, the meeting thread, and published minutes do not depend on this setting.
+Saving without the field keeps the current choice. Settings without the field post the notice.
+
 New Dashboard enrollments leave attendee DMs off. Administrators can enable them for the selected bot.
 Enabling DMs needs the OAuth scopes `users:read.email`, `im:write`, and `chat:write`. Existing enabled enrollments stay editable when scope evidence is missing.
 Changing the bot resets the toggle. Saving without the field keeps the existing rule for the same bot.
@@ -120,6 +126,15 @@ Do not reopen or resend settled rows. Queued does not prove provider delivery.
 
 ## Meeting execution and notes
 
+A Meeting owns its runtime Workload. Automatic placement tries the Group's authorized VMM environment, a connected meeting runtime, then the native runtime.
+The VMM path creates `meeting.meetnative` for that Meeting. Host enrollment prepares capacity, not a shared Meeting lifecycle.
+Comma and BFT use the same placement and dispatch rules.
+
+Each join attempt keeps its selected target before dispatch. Chat, status, and termination follow that target.
+Placement can try another target after a confirmed failure before acceptance, including a readiness deadline before dispatch.
+After a join request is sent, a timeout or unknown outcome keeps the original target.
+An accepted join cannot move to another runtime. Explicit runtime selection keeps its named source.
+
 A calendar read does not prove admission. A finished model request does not prove summary delivery.
 Use the owner status and explicit error outcome for the failed stage.
 
@@ -135,7 +150,7 @@ Worker and Task chats cannot start a join, because `meeting.join` is Router-only
 
 - The tool reads the committed message again. It must be a Comma user's message, and its own text must hold the link.
   A `meet_url` from the model must be one of those links. Two links without a `meet_url` are refused as ambiguous.
-- The bot joins as a guest on the server runtime (`runtime_policy.join_as = guest`). It does not use the sender's computer.
+- The bot joins as a guest (`runtime_policy.join_as = guest`) on the runtime selected for the Meeting attempt.
 - One message makes one join. While a Meeting of the same Meet code runs for the same chat, a later request reuses it and asks its join again: a join the runtime refused is retried, a dispatched one is left alone. After it ends, a new request makes a new Meeting.
 - The summary materials of such a Meeting carry the chat's audience, and the summary goes back to that Conversation.
 - A refusal before the join, such as no configured runtime, goes back to the Router as the tool error.

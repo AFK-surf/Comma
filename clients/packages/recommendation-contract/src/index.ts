@@ -51,6 +51,26 @@ export const recommendationSettingsSchema = z.object({
   sources: z.array(recommendationSourceSchema).max(recommendationLimits.sources),
 });
 
+// One run of a quote line: words, a Slack mention or channel, or a link. A
+// run has an href only where it may open: an http(s) URL without credentials,
+// or a Slack ID in the link's own Slack workspace. A link whose label is a
+// shortened URL keeps the full address as its title.
+export const recommendationQuoteRunSchema = z
+  .object({
+    href: z.url().optional(),
+    kind: z.enum(["text", "mention", "channel", "link"]),
+    text: z.string().max(601),
+    title: z.string().optional(),
+  })
+  .strict();
+
+export const recommendationQuoteLineSchema = z
+  .object({
+    listItem: z.literal(true).optional(),
+    runs: z.array(recommendationQuoteRunSchema).max(601),
+  })
+  .strict();
+
 export const recommendationInlineLinkSchema = z
   .object({
     href: z.url(),
@@ -58,10 +78,150 @@ export const recommendationInlineLinkSchema = z
     // Expanded prompts carry the objective and the intact source URL. The
     // bounded excerpt stays in previewText.
     taskPrompt: z.string().max(recommendationLimits.payloadBytes).optional(),
+    // Expanded prompts also carry the objective alone, which leads a member
+    // task's Routine card.
+    objective: z.string().min(1).max(100).optional(),
+    // previewText as read for display (recommendationSourceQuote). It is
+    // derived on every read, so a decoded link reads back as it is.
+    quote: z.array(recommendationQuoteLineSchema).max(601).optional(),
     label: z.string().min(1).max(120),
     sourceId: z.string().min(1).max(128).optional(),
   })
-  .strict();
+  .strict()
+  .transform(
+    ({
+      quote: _quote,
+      ...link
+    }): typeof link & { quote?: RecommendationQuoteLine[] } =>
+      link.previewText
+        ? { ...link, quote: recommendationSourceQuote(link.previewText, link.href) }
+        : link
+  );
+
+export type RecommendationQuoteRun = z.infer<typeof recommendationQuoteRunSchema>;
+export type RecommendationQuoteLine = z.infer<typeof recommendationQuoteLineSchema>;
+
+// The server renders every product's quote in one markup
+// (CommaWeb.RecommendationSourceQuote): one line per source line, "• " before
+// a list item, <https://…|label> links, Slack <@U…|name> and <#C…|name>
+// mentions, and &lt; &gt; &amp; for literal characters. Only these tokens and
+// bare http(s) URLs are read; everything else stays text. Every client shows
+// these lines as they are, so the markup is read here once.
+export function recommendationSourceQuote(
+  text: string,
+  sourceHref: string
+): RecommendationQuoteLine[] {
+  return text
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line !== "")
+    .map((line) =>
+      line.startsWith("• ")
+        ? { listItem: true as const, runs: quoteRuns(line.slice(2), sourceHref) }
+        : { runs: quoteRuns(line, sourceHref) }
+    );
+}
+
+const quoteTokens =
+  /<[@#][A-Z0-9]+(?:\|[^<>]+)?>|<https?:\/\/[^<>]+>|https?:\/\/(?:(?!&[lg]t;)[^\s<>"'])+/g;
+
+// Tokens are read before entities are decoded, so escaped text stays text.
+const decodeQuote = (text: string) =>
+  text.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+
+function quoteRuns(text: string, sourceHref: string): RecommendationQuoteRun[] {
+  const runs: RecommendationQuoteRun[] = [];
+  const words = (value: string) => {
+    if (value) runs.push({ kind: "text", text: decodeQuote(value) });
+  };
+  let cursor = 0;
+  for (const match of text.matchAll(quoteTokens)) {
+    words(text.slice(cursor, match.index));
+    const raw = match[0];
+    let trailing = "";
+    if (/^<[@#]/.test(raw)) {
+      const [id, name] = raw.slice(2, -1).split("|");
+      const source = safeHttpUrl(sourceHref);
+      const mention = raw[1] === "@";
+      runs.push({
+        kind: mention ? "mention" : "channel",
+        text: raw[1] + decodeQuote(name || id!),
+        // A Slack user/channel ID is meaningful only in its source workspace.
+        ...(source && source.hostname.endsWith(".slack.com") && id
+          ? {
+              href: new URL(mention ? `/team/${id}` : `/archives/${id}`, source.origin)
+                .href,
+            }
+          : {}),
+      });
+    } else if (raw.startsWith("<")) {
+      const [url, ...name] = raw.slice(1, -1).split("|");
+      const target = safeHttpUrl(decodeQuote(url!));
+      runs.push({
+        kind: "link",
+        ...(name.length
+          ? { text: decodeQuote(name.join("|")) }
+          : target
+            ? { text: quoteUrlLabel(target), title: target.href }
+            : { text: decodeQuote(url!) }),
+        ...(target ? { href: target.href } : {}),
+      });
+    } else {
+      // A bare URL leaves its closing punctuation, and a bracket it did not
+      // open, to the words after it.
+      let url = raw.replace(/[.,;!?。，；！？]+$/, "");
+      for (const [open, close] of [
+        ["(", ")"],
+        ["[", "]"],
+        ["{", "}"],
+      ] as const) {
+        while (
+          url.endsWith(close) &&
+          url.split(close).length > url.split(open).length
+        ) {
+          url = url.slice(0, -1);
+        }
+      }
+      trailing = raw.slice(url.length);
+      const target = safeHttpUrl(decodeQuote(url));
+      runs.push(
+        target
+          ? {
+              kind: "link",
+              text: quoteUrlLabel(target),
+              title: target.href,
+              href: target.href,
+            }
+          : { kind: "link", text: decodeQuote(url) }
+      );
+    }
+    words(trailing);
+    cursor = match.index + raw.length;
+  }
+  words(text.slice(cursor));
+  return runs;
+}
+
+// A link without a label names its host and path. A long path keeps only its
+// last segment, so an image or tracking URL does not fill the preview.
+function quoteUrlLabel(url: URL) {
+  const path = url.pathname.replace(/\/$/, "");
+  const segments = path.split("/").filter(Boolean);
+  return `${url.host}${path}`.length > 40 && segments.length > 1
+    ? `${url.host}/…/${segments.at(-1)}`
+    : `${url.host}${path}`;
+}
+
+function safeHttpUrl(value: string): URL | undefined {
+  try {
+    const url = new URL(value);
+    if (["https:", "http:"].includes(url.protocol) && !url.username && !url.password)
+      return url;
+  } catch {
+    // Invalid URLs remain inert source text.
+  }
+  return undefined;
+}
 
 export const recommendationInlineTaskSchema = z
   .object({
@@ -293,7 +453,12 @@ function expandRecommendationPrompts(
         });
         return z.NEVER;
       }
-      return { ...rest, previewText: prompt.context, taskPrompt: prompt.text };
+      return {
+        ...rest,
+        objective: prompt.objective,
+        previewText: prompt.context,
+        taskPrompt: prompt.text,
+      };
     }
     return Object.fromEntries(
       Object.entries(object).map(([key, child]) => [key, expand(child)])

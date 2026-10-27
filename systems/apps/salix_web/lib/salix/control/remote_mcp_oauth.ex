@@ -910,7 +910,7 @@ defmodule Salix.Control.RemoteMCPOAuth do
          :ok <- ensure_connection_usable(conn),
          :ok <- ensure_access_token(conn) do
       if should_refresh?(conn) do
-        refresh_remote_token(tenant_id, connection_id)
+        refresh_remote_token(tenant_id, connection_id, conn)
       else
         {:ok, conn["access_token"]}
       end
@@ -924,17 +924,17 @@ defmodule Salix.Control.RemoteMCPOAuth do
     end
   end
 
-  defp refresh_remote_token(tenant_id, connection_id) do
+  defp refresh_remote_token(tenant_id, connection_id, conn) do
     case OAuth.valid_token(
            connection_id,
            fn record -> refresh_tokens(tenant_id, record) end,
-           now: SystemsClock.system_time(:millisecond) + @refresh_leeway_ms
+           leeway_ms: @refresh_leeway_ms
          ) do
       {:ok, token} ->
         {:ok, token}
 
       {:error, :reauthorization_required} ->
-        mark_reauthorization_required(connection_id)
+        _ = OAuth.mark_reauthorization_required(connection_id, conn)
         {:error, {:reauthorization_required, "remote MCP OAuth requires reauthorization"}}
 
       {:error, reason} ->
@@ -1031,13 +1031,8 @@ defmodule Salix.Control.RemoteMCPOAuth do
   end
 
   defp mark_reauthorization_required(connection_id) do
-    case OAuth.get(connection_id) do
-      {:ok, conn} ->
-        _ = OAuth.put(connection_id, Map.put(conn, "status", "reauthorization_required"))
-
-      _ ->
-        :ok
-    end
+    _ = OAuth.mark_reauthorization_required(connection_id)
+    :ok
   end
 
   defp ensure_oauth_binding_scope(binding, tenant_id, group_id) do

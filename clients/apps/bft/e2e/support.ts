@@ -12,6 +12,7 @@ export const context = {
     triage: true,
     information_flow: true,
     meetings: true,
+    daily_brief: true,
     settings: true,
   },
   projects: [{ id: "p-1", name: "Support Desk" }],

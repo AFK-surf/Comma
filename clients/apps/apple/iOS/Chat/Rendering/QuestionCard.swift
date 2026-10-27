@@ -439,8 +439,8 @@ private struct QuestionImageTile: View {
     }
 }
 
-/// Two buttons across the card: the first a third of the width, the second the rest.
-private struct ThirdsLayout: Layout {
+/// Two buttons across a card (a question, a request): the first a third of the width, the second the rest.
+struct ThirdsLayout: Layout {
     var spacing: CGFloat
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {

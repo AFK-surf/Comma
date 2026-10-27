@@ -295,7 +295,6 @@ function failedResult(source: "error" | "unavailable"): ProductInboxListResult {
 function taskItem(id: string, updatedAt: number, status = "queued"): ProductInboxItem {
   return {
     conversationId: `conversation-${id}`,
-    freshness: "fresh",
     id,
     kind: "agent_task",
     source: "salix.conversation",

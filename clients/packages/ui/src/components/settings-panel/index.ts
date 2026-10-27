@@ -1,4 +1,8 @@
-export { SettingsPanel, SettingsSectionView } from "./SettingsPanel";
+export {
+  SettingsControlView,
+  SettingsPanel,
+  SettingsSectionView,
+} from "./SettingsPanel";
 export type {
   SettingsControl,
   SettingsPanelItem,

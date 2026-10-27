@@ -9,13 +9,30 @@ defmodule SalixStore.StationTaskSessions do
   those from before it was kept, until the Task is read for it), as a station
   keeps its `task_sessions` (`systems/station/docs/tasks.md`).
   `SalixWeb.StationTasks` gives each the Messages after `sent`.
+
+  A station expected in a Task (`expect/1`) has a row with no Session yet
+  (`session` is `awaited/0`): the Task was made while the station, the Group's
+  Cloud VM, was not connected, and it is invited with `start` when it
+  connects, its Session then taking the row's place (`rejoin/4`).
   """
+
+  @awaited ""
 
   alias SalixStore.Repo
 
   @columns "tenant_id, group_id, conversation_id, device_id, session, agent_id, sent, start, answered"
 
-  @doc "Records that `session` of `device_id` takes part in the Task; kept as it was when it did already."
+  @doc "The `session` of a station expected in a Task, not invited yet (`expect/1`)."
+  def awaited, do: @awaited
+
+  @doc "Whether the row is a station's expected in the Task, with no Session of it yet."
+  def awaited?(%{session: session}), do: session == @awaited
+
+  @doc """
+  Records that `session` of `device_id` takes part in the Task; kept as it was
+  when it did already. A row of the station expected in the Task, with no
+  Session yet, gives way to it.
+  """
   def join(
         %{
           tenant_id: tenant,
@@ -25,19 +42,67 @@ defmodule SalixStore.StationTaskSessions do
           session: session,
           agent_id: agent
         } = row
+      )
+      when is_binary(session) and session != @awaited do
+    with {:ok, _} <-
+           query(
+             """
+             INSERT INTO station_task_sessions (#{@columns}, joined_at)
+             VALUES ($1, $2, $3, $4, $5, $6, 0, $7, 0, $8)
+             ON CONFLICT (group_id, conversation_id, device_id, session) DO NOTHING
+             """,
+             [
+               tenant,
+               group,
+               conversation,
+               device,
+               session,
+               agent,
+               row[:start],
+               SystemsClock.system_time(:millisecond)
+             ]
+           ) do
+      query(
+        """
+        DELETE FROM station_task_sessions
+        WHERE group_id = $1 AND conversation_id = $2 AND device_id = $3 AND session = $4
+        """,
+        [group, conversation, device, @awaited]
+      )
+      |> ok()
+    end
+  end
+
+  @doc """
+  Records that the station `device_id` is expected in the Task: not connected
+  when the Task was made, it is invited with `start` when it connects. Nothing
+  is recorded for a station that has a row of the Task already, expected or
+  with a Session.
+  """
+  def expect(
+        %{
+          tenant_id: tenant,
+          group_id: group,
+          conversation_id: conversation,
+          device_id: device,
+          agent_id: agent
+        } = row
       ) do
     query(
       """
       INSERT INTO station_task_sessions (#{@columns}, joined_at)
-      VALUES ($1, $2, $3, $4, $5, $6, 0, $7, 0, $8)
-      ON CONFLICT (group_id, conversation_id, device_id, session) DO NOTHING
+      SELECT $1, $2, $3, $4, $5, $6, 0, $7, 0, $8
+      WHERE NOT EXISTS (
+        SELECT 1 FROM station_task_sessions
+        WHERE group_id = $2 AND conversation_id = $3 AND device_id = $4
+      )
       """,
       [
         tenant,
         group,
         conversation,
         device,
-        session,
+        @awaited,
         agent,
         row[:start],
         SystemsClock.system_time(:millisecond)
@@ -47,9 +112,10 @@ defmodule SalixStore.StationTaskSessions do
   end
 
   @doc """
-  The station lost the Task and was invited again: `session` takes the place of
-  `device`'s Sessions of it, given nothing yet, invited with `start`. What
-  those answered already (`answered`) stays.
+  The station lost the Task and was invited again, or was expected in it and
+  is now invited: `session` takes the place of `device`'s rows of it, given
+  nothing yet, invited with `start`. What its Sessions answered already
+  (`answered`) stays.
   """
   def rejoin(
         %{tenant_id: tenant, group_id: group, conversation_id: conversation, device_id: device} =

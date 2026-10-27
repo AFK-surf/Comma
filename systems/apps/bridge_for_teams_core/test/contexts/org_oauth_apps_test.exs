@@ -32,6 +32,7 @@ defmodule BridgeForTeams.OrgOAuthAppsTest do
     {:ok, org} = Orgs.create_org(%{name: "Acme", slug: "acme-oauth"})
     %{org: org}
   end
+
   defp app(apps, provider), do: Enum.find(apps, &(&1["provider"] == provider))
 
   test "saves client credentials and surfaces them as configured", %{org: org} do

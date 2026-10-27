@@ -514,7 +514,8 @@ function ConfigureDialog({
             onChange={setModelKey}
           />
           <TextAreaField
-            disabled={write.busy}
+            disabled={write.busy || !data.prompt_editable}
+            {...(data.prompt_editable ? {} : { hint: t.promptOwnerOnly })}
             label={t.promptLabel}
             onChange={setPrompt}
             rows={6}

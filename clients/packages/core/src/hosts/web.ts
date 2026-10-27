@@ -25,14 +25,17 @@ import {
   type ApiRequest,
   type ApiResponse,
   type AuthRequest,
+  type ClientIdentity,
   type HintChannel,
   type Host,
   type ImageBytes,
   type Pull,
+  type StationMeshPorts,
   type StreamResponse,
   type WebSessionPorts,
 } from "../host.ts";
 import { renderWebChatImagePreview } from "./web-image-preview.ts";
+import { webStations, type WebMesh } from "./web-mesh.ts";
 
 type WasmStmt = {
   bind(params: readonly SqlValue[]): WasmStmt;
@@ -261,6 +264,7 @@ export function workerSessionPorts(apiOrigin: string): WebSessionPorts {
 
 export class WebHost implements Host {
   readonly sessionSource = "core" as const;
+  readonly client: ClientIdentity = { kind: "web", platform: "unknown" };
   readonly #apiBase: string;
   readonly #emit: (client: ClientId, message: CoreMessage) => void;
   readonly #fetch: typeof fetch;
@@ -268,14 +272,17 @@ export class WebHost implements Host {
   readonly #device: Sql;
   readonly #open = new Map<string, Sql>();
   readonly webSession: WebSessionPorts;
+  readonly stationMesh?: StationMeshPorts;
 
   private constructor(
     apiBase: string,
     emit: (client: ClientId, message: CoreMessage) => void,
     sqlite: WasmSqlite,
     device: Sql,
-    fetchImpl: typeof fetch
+    fetchImpl: typeof fetch,
+    loadMesh: (() => Promise<WebMesh>) | undefined
   ) {
+    if (loadMesh) this.stationMesh = webStations(loadMesh);
     this.#apiBase = apiBase.replace(/\/+$/, "");
     this.#emit = emit;
     this.#sqlite = sqlite;
@@ -291,14 +298,15 @@ export class WebHost implements Host {
     emit: (client: ClientId, message: CoreMessage) => void,
     sqlite: WasmSqlite,
     // Called as a plain function: the worker's own `fetch` needs its global as `this`.
-    fetchImpl: typeof fetch = (input, init) => fetch(input, init)
+    fetchImpl: typeof fetch = (input, init) => fetch(input, init),
+    loadMesh?: () => Promise<WebMesh>
   ): Promise<WebHost> {
     await sqlite.reserve(2);
     const device = new WasmSql(sqlite.open("/device.sqlite3"));
     device.exec(
       "PRAGMA journal_mode = TRUNCATE; CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value BLOB NOT NULL)"
     );
-    return new WebHost(apiBase, emit, sqlite, device, fetchImpl);
+    return new WebHost(apiBase, emit, sqlite, device, fetchImpl, loadMesh);
   }
 
   fetch(request: ApiRequest): Effect.Effect<ApiResponse, HostError> {
@@ -471,6 +479,8 @@ export function runWebCoreWorker(options: {
   apiBase: string;
   build: number;
   loadSqlite?: () => Promise<WasmSqlite>;
+  /** iroh's browser build, loaded the first time the core reaches a station; absent, this tab reaches none. */
+  loadMesh?: () => Promise<WebMesh>;
 }): void {
   runCoreWorker({
     name: "comma-core",
@@ -480,10 +490,13 @@ export function runWebCoreWorker(options: {
         await WebHost.start(
           options.apiBase,
           emit,
-          await (options.loadSqlite ?? loadWasmSqlite)()
+          await (options.loadSqlite ?? loadWasmSqlite)(),
+          undefined,
+          options.loadMesh
         )
       ),
   });
 }
 
 export { CoreError };
+export type { WebMesh } from "./web-mesh.ts";

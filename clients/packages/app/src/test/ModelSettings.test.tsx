@@ -19,6 +19,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { Toaster } from "@comma/ui/components/toast";
 import { beforeEach, expect, it, vi } from "vitest";
+import { CommaWebClientSettingsProvider } from "../components/commaClientSettings";
 import { useModelsCategory } from "../components/models/useModelsCategory";
 import { SettingsCategory } from "./settingsHarness";
 
@@ -184,7 +185,13 @@ async function openModels(state: State, answers: Record<string, Answer> = {}) {
   });
   // On the fake clock, user-event's pause between events is a timer too.
   const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
-  render(scripted.wrap(<ModelsPage />));
+  render(
+    scripted.wrap(
+      <CommaWebClientSettingsProvider>
+        <ModelsPage />
+      </CommaWebClientSettingsProvider>
+    )
+  );
   // The core sends what it keeps as microtasks: no time passes.
   await flush();
   screen.getByRole("button", { name: "Router" });
@@ -231,6 +238,8 @@ const lastSelection = (
 
 beforeEach(() => {
   installNativeBridgeMock({ platform: "web" });
+  // Client settings are this device's: each test starts on a new one.
+  localStorage.clear();
 });
 
 /**
@@ -243,6 +252,50 @@ it("asks the core to read the page as it opens", async () => {
   // The menu-bar item can hold the topic, which then reads nothing as the page opens.
   const t = await openModels({ profiles: [structuredClone(codex)] });
   expect(t.called("models.refresh")).toEqual([{}]);
+});
+
+const ROUTER_MAY_USE = /the Router can choose its models for Tasks on its own/;
+
+it("warns that the Router may use a profile once one is turned on", async () => {
+  await openModels({ profiles: [structuredClone(codex)] });
+  // At the foot of the Profiles card, after its rows.
+  const note = screen
+    .getByText(ROUTER_MAY_USE)
+    .closest('[data-slot="settings-section-note"]');
+  expect(note?.previousElementSibling).toBe(row("profile-codex"));
+});
+
+it("gives no warning while every profile is off", async () => {
+  await openModels({ profiles: [{ ...structuredClone(codex), disabled: true }] });
+  expect(screen.queryByText(ROUTER_MAY_USE)).toBeNull();
+});
+
+/** A profile turned off. */
+const switchedOff = (profile: ModelProfile) => ({
+  ...structuredClone(profile),
+  disabled: true,
+});
+
+it("asks once before a profile is turned on, then turns others on directly", async () => {
+  const t = await openModels({
+    profiles: [switchedOff(codex), switchedOff(openrouterKey)],
+  });
+  const title = "Turn on member@example.com?";
+  await t.user.click(screen.getByLabelText("Use member@example.com"));
+  expect(panel(title).getByText(ROUTER_MAY_USE)).toBeInTheDocument();
+  await t.user.click(panel(title).getByRole("button", { name: "Not now" }));
+  expect(screen.queryByRole("dialog", { name: title })).toBeNull();
+  expect(t.called("models.updateProfile")).toEqual([]);
+
+  // Not now asks again; Continue turns it on and is not asked again.
+  await t.user.click(screen.getByLabelText("Use member@example.com"));
+  await t.user.click(panel(title).getByRole("button", { name: "Continue" }));
+  await t.user.click(screen.getByLabelText("Use Team router"));
+  expect(screen.queryByRole("dialog", { name: /^Turn on/ })).toBeNull();
+  expect(t.called("models.updateProfile")).toEqual([
+    { workspace, profile: "profile-codex", disabled: false },
+    { workspace, profile: "profile-key", disabled: false },
+  ]);
 });
 
 it("selects GPT-6.1 Sol from the released catalog with a Codex subscription", async () => {
@@ -517,6 +570,33 @@ it("connects Ollama as an endpoint whose models are listed, and says the first p
     },
   ]);
   await waitFor(() => expect(row("profile-ollama")).toBeInTheDocument());
+});
+
+it("asks after a profile is added, and Not now turns it off again", async () => {
+  const state: State = { profiles: [] };
+  const t = await openModels(state, {
+    "models.createProfile": () => {
+      state.profiles.push(structuredClone(ollama));
+      t.changed();
+      return ollama;
+    },
+  });
+  await t.user.click(screen.getByRole("button", { name: "Add profile" }));
+  await t.user.click(
+    within(screen.getByRole("region", { name: "Local & custom" })).getByRole("button", {
+      name: "Ollama",
+    })
+  );
+  const form = settingsContent();
+  await t.user.click(form.getByRole("textbox", { name: "Base URL" }));
+  await t.user.paste("https://ollama.example.com/v1");
+  await t.user.click(form.getByRole("button", { name: "Connect" }));
+  const dialog = within(await screen.findByRole("dialog", { name: "Turn on Ollama?" }));
+  expect(dialog.getByText(ROUTER_MAY_USE)).toBeInTheDocument();
+  await t.user.click(dialog.getByRole("button", { name: "Not now" }));
+  expect(t.called("models.updateProfile")).toEqual([
+    { workspace, profile: "profile-ollama", disabled: true },
+  ]);
 });
 
 it("lets Tasks run a model only a Custom endpoint lists", async () => {
@@ -809,7 +889,7 @@ it("shows a choice kept to a removed profile as it is", async () => {
   );
 });
 
-it("renames the Router from its row's actions", async () => {
+it("renames the Router from its row's rename button", async () => {
   const state = familyState();
   const t = await openModels(state, {
     "models.renameAgent": (params) => {
@@ -817,10 +897,7 @@ it("renames the Router from its row's actions", async () => {
       t.changed();
     },
   });
-  await t.user.click(
-    within(row("router")).getByRole("button", { name: "Actions for Router" })
-  );
-  await t.user.click(await screen.findByRole("menuitem", { name: "Rename" }));
+  await t.user.click(within(row("router")).getByRole("button", { name: "Rename" }));
   const rename = panel("Rename Agent");
   const nameField = rename.getByRole("textbox", { name: "Name" });
   expect(nameField).toHaveValue("Router");
@@ -836,8 +913,9 @@ it("renames the Router from its row's actions", async () => {
 
 const studio: ShownDevice = {
   device_id: "dev-studio",
-  name: "studio.local",
-  alias: "Studio Mac",
+  name: "Studio Mac",
+  // The tool-facing alias, which every computer Comma Desktop connected has as "comma".
+  alias: "comma",
   status: "connected",
   allows_operations: true,
   device_runtimes: [],

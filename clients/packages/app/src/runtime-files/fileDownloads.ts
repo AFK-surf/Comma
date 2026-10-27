@@ -25,9 +25,34 @@ import { CoreError } from "@comma/core-client";
  */
 export type ResolveFileBytes = (signal?: AbortSignal) => Promise<Blob>;
 
+/**
+ * Saves the file into Downloads as it arrives, without reading it whole (the
+ * core's `files.save`, desktop only): its handle and the name it took, or null.
+ */
+export type SaveToDownloads = () => Promise<{
+  downloadRef: string;
+  fileName: string;
+} | null>;
+
+/**
+ * A URL a browser downloads the file from itself, at any size (the server's
+ * media URL of a chat file, the core's `files.link`, which answers it as an
+ * attachment under its own name). Asked for when the person downloads.
+ */
+export type DownloadLink = () => Promise<string>;
+
 export interface FileDownloadRequest {
   fileName: string;
   resolve: ResolveFileBytes;
+  /** How the desktop saves the file instead, at any size (a chat file). */
+  save?: SaveToDownloads | undefined;
+  /** How a browser downloads the file instead, at any size (a chat file on the web). */
+  link?: DownloadLink | undefined;
+  /**
+   * How the file is read a part at a time instead, at any size, for a browser to save: one with no link to it (a
+   * Task's on a machine: `no_link`).
+   */
+  parts?: ResolveFileBytes | undefined;
 }
 
 type FileDownloadBridge = Pick<CommaNativeBridge, "files" | "os" | "platform">;
@@ -194,14 +219,13 @@ const showSavedInDownloads = ({
 
 /**
  * The browser owns its own download location and its own completion UI, so the
- * web toast reports the outcome without offering actions this runtime cannot
- * perform.
+ * web toast reports the handoff without claiming that the file was saved.
  */
-export const saveThroughBrowser = (blob: Blob, fileName: string) => {
-  const objectUrl = URL.createObjectURL(blob);
+export const saveThroughBrowser = (file: Blob | string, fileName: string) => {
+  const objectUrl = typeof file === "string" ? undefined : URL.createObjectURL(file);
   const anchor = document.createElement("a");
   anchor.download = fileName;
-  anchor.href = objectUrl;
+  anchor.href = objectUrl ?? (file as string);
   anchor.rel = "noopener";
   anchor.hidden = true;
   document.body.append(anchor);
@@ -210,14 +234,115 @@ export const saveThroughBrowser = (blob: Blob, fileName: string) => {
     anchor.click();
   } finally {
     anchor.remove();
-    uiClock.after(0, () => URL.revokeObjectURL(objectUrl));
+    if (objectUrl) uiClock.after(0, () => URL.revokeObjectURL(objectUrl));
   }
 };
 
+/** Download frames kept at once, the oldest removed first. */
+const MAX_DOWNLOAD_FRAMES = 4;
+/** The frames of recent linked downloads, oldest first. */
+let browserDownloadFrames: HTMLIFrameElement[] = [];
+
+/**
+ * Each download navigates a hidden frame of its own, so a later download never replaces one still waiting for its
+ * response headers. The browser owns a download once it starts, so removing an old frame leaves its transfer running.
+ */
+const startLinkedBrowserDownload = (url: string) => {
+  const frame = document.createElement("iframe");
+  frame.hidden = true;
+  frame.setAttribute("sandbox", "allow-downloads");
+  document.body.append(frame);
+  try {
+    frame.src = url;
+  } catch (error) {
+    frame.remove();
+    throw error;
+  }
+  browserDownloadFrames = [
+    ...browserDownloadFrames.filter((kept) => kept.isConnected),
+    frame,
+  ];
+  while (browserDownloadFrames.length > MAX_DOWNLOAD_FRAMES)
+    browserDownloadFrames.shift()!.remove();
+};
+
+const showStartedThroughBrowser = (fileName: string, locale: CommaLocale) => {
+  toast(messages.file_download_started_title(undefined, { locale }), {
+    description: messages.file_download_started_browser_description(
+      { fileName },
+      { locale }
+    ),
+    id: FILE_DOWNLOAD_TOAST_ID,
+    testId: FILE_DOWNLOAD_TOAST_ID,
+  });
+};
+
 export async function downloadFile(
-  { fileName, resolve }: FileDownloadRequest,
+  { fileName, resolve, save, link, parts }: FileDownloadRequest,
   { bridge = getNativeBridge(), locale }: FileDownloadOptions
 ): Promise<ChatPanelMediaDownloadResult> {
+  // A file with no link to it (a Task's on a machine: `no_link`) is read a part at a time, at any size, and handed to
+  // the browser.
+  let url: string | null = null;
+  if (link && bridge.platform !== "electron") {
+    try {
+      url = await link();
+    } catch (error) {
+      if (!(error instanceof CoreError && error.code === "no_link")) {
+        const failure = retrievalError(error);
+        showRetrievalFailed(fileName, locale, failure);
+        return failure;
+      }
+      if (parts) {
+        let read: Blob;
+        try {
+          read = await parts();
+        } catch (partError) {
+          const failure = retrievalError(partError);
+          showRetrievalFailed(fileName, locale, failure);
+          return failure;
+        }
+        saveThroughBrowser(read, fileName);
+        showStartedThroughBrowser(fileName, locale);
+        return { status: "started" };
+      }
+    }
+  }
+  if (url !== null) {
+    try {
+      startLinkedBrowserDownload(url);
+    } catch {
+      toast.error(messages.file_download_failed_title(undefined, { locale }), {
+        description: messages.file_download_browser_start_description(
+          { fileName },
+          { locale }
+        ),
+        id: FILE_DOWNLOAD_TOAST_ID,
+        testId: FILE_DOWNLOAD_TOAST_ID,
+      });
+      return failedDownload;
+    }
+    showStartedThroughBrowser(fileName, locale);
+    return { status: "started" };
+  }
+
+  if (save && bridge.platform === "electron") {
+    let saved: Awaited<ReturnType<SaveToDownloads>>;
+    try {
+      saved = await save();
+    } catch (error) {
+      const failure = retrievalError(error);
+      showRetrievalFailed(fileName, locale, failure);
+      return failure;
+    }
+    if (!saved) {
+      showDownloadFailed(fileName, locale);
+      return failedDownload;
+    }
+    showSavedInDownloads({ bridge, locale, saved: { ...saved, status: "saved" } });
+    return { status: "success" };
+  }
+
   let blob: Blob;
   try {
     blob = await resolve();
@@ -242,16 +367,8 @@ export async function downloadFile(
 
   if (bridge.platform !== "electron") {
     saveThroughBrowser(blob, fileName);
-    toast.success(messages.file_download_complete_title(undefined, { locale }), {
-      // The browser, not Comma, chose where this landed — say only what is true.
-      description: messages.file_download_complete_browser_description(
-        { fileName },
-        { locale }
-      ),
-      id: FILE_DOWNLOAD_TOAST_ID,
-      testId: FILE_DOWNLOAD_TOAST_ID,
-    });
-    return { status: "success" };
+    showStartedThroughBrowser(fileName, locale);
+    return { status: "started" };
   }
 
   let saved: FilesSaveDownloadResult;
@@ -327,9 +444,11 @@ export async function saveFileAndShow(
  */
 export function createFileDownloadCapability(
   resolve: ResolveFileBytes,
-  options: FileDownloadOptions
+  options: FileDownloadOptions,
+  { save, link, parts }: Pick<FileDownloadRequest, "save" | "link" | "parts"> = {}
 ): ChatPanelMediaDownloadCapability {
   return {
-    execute: ({ fileName }) => downloadFile({ fileName, resolve }, options),
+    execute: ({ fileName }) =>
+      downloadFile({ fileName, resolve, save, link, parts }, options),
   };
 }

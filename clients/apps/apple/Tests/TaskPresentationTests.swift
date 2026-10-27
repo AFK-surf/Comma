@@ -77,8 +77,6 @@ final class TaskPresentationTests: XCTestCase {
         XCTAssertNil(reason(nil))
         XCTAssertNil(reason(ArchiveAvailability(allowed: true)))
         XCTAssertEqual(reason(ArchiveAvailability(allowed: false, reason: "not_finished")), "Finish the task before archiving")
-        XCTAssertEqual(reason(ArchiveAvailability(allowed: false, reason: "schedule_bound")),
-                       "Remove the recurring schedule before archiving")
         XCTAssertEqual(reason(ArchiveAvailability(allowed: false, reason: "quota")),
                        "Task status is unavailable; refresh to try again")
         XCTAssertEqual(reason(ArchiveAvailability(allowed: false)), "Task status is unavailable; refresh to try again")

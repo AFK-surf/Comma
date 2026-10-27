@@ -33,6 +33,7 @@ describe("from-source native addons", () => {
       "--font-families-only",
       "--keychain-password-only",
       "--cable-scanner-only",
+      "--device-bluetooth-only",
     ]);
     expect(built).toEqual(missing.map((addon) => addon.buildFlag));
   });
@@ -44,12 +45,14 @@ describe("from-source native addons", () => {
       fontFamilies,
       keychainPassword,
       cableScanner,
+      deviceBluetooth,
     ] = devNativeAddons(appDir);
     mkdirSync(dirname(fileApplications!.output), { recursive: true });
     writeFileSync(fileApplications!.output, "");
     writeFileSync(fontFamilies!.output, "");
     writeFileSync(keychainPassword!.output, "");
     writeFileSync(cableScanner!.output, "");
+    writeFileSync(deviceBluetooth!.output, "");
 
     const built: string[] = [];
     ensureDevNativeAddons({ appDir, env: {}, build: (_dir, flag) => built.push(flag) });
@@ -76,6 +79,6 @@ describe("from-source native addons", () => {
         throw new Error("must not build");
       },
     });
-    expect(missing).toHaveLength(5);
+    expect(missing).toHaveLength(6);
   });
 });

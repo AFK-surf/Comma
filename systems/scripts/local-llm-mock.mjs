@@ -1247,7 +1247,8 @@ export function decide(body) {
   }
 
   // As the Router prompt asks: read the servable models, then create the Task
-  // without agent_id, so the Workspace's one Worker takes it.
+  // without agent_id, so the Workspace's one Worker takes it, where the
+  // configured defaults place it (`runs_on` is required of a Router).
   if (target === "agent.models") {
     const models = Array.isArray(result?.models) ? result.models : [];
     const model =
@@ -1256,6 +1257,7 @@ export function decide(body) {
       connect_id: "internal",
       content: "LOCAL_TASK: 完成本地 Task 链路验证，并回报 LOCAL_TASK_DONE。",
       title: "本地 Task 链路验证",
+      runs_on: { kind: "default" },
       ...(model
         ? {
             model: {

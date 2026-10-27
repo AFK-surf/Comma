@@ -56,6 +56,7 @@ import {
   computeNodeRefreshCapability,
   computeNodeRemoveCapability,
   computeNodeRepairCapability,
+  computeNodeResetLocalRecordCapability,
   computeNodeStateCapability,
   computeNodeStateChangedEvent,
   computeNodeStateLeaf,
@@ -82,6 +83,18 @@ import {
   localComputeWorkloadsCapability,
   localFilesPickCapability,
   localFilesPreviewCapability,
+  localStationAccountsCapability,
+  localStationSetAccountSourceCapability,
+  localStationSignInCapability,
+  localStationStopSignInCapability,
+  macAppsCalendarEventsCapability,
+  macAppsIconsCapability,
+  macAppsOpenItemCapability,
+  macAppsOpenPrivacySettingsCapability,
+  macAppsSetEnabledCapability,
+  macAppsStateCapability,
+  macAppsStateChangedEvent,
+  macAppsStateLeaf,
   maintainHostCapability,
   meetingPresenceIconCapability,
   meetingPresenceStateCapability,
@@ -155,6 +168,9 @@ import {
   synchronicityVersionsCapability,
   synchronicityWriteCapability,
   transportStatusCapability,
+  voiceCallAudioEvent,
+  voiceCallMicrophoneCapability,
+  voiceCallPlayedCapability,
   windowsCloseCapability,
   windowsCreateCapability,
   windowsFocusCapability,
@@ -187,6 +203,16 @@ export const generatedNativeCapabilityContracts = {
   connectorRuntimeSetScope: connectorRuntimeSetScopeCapability.contract,
   connectorRuntimeCopyConnectCommand:
     connectorRuntimeCopyConnectCommandCapability.contract,
+  localStationAccounts: localStationAccountsCapability.contract,
+  localStationSetAccountSource: localStationSetAccountSourceCapability.contract,
+  localStationSignIn: localStationSignInCapability.contract,
+  localStationStopSignIn: localStationStopSignInCapability.contract,
+  macAppsState: macAppsStateCapability.contract,
+  macAppsSetEnabled: macAppsSetEnabledCapability.contract,
+  macAppsOpenPrivacySettings: macAppsOpenPrivacySettingsCapability.contract,
+  macAppsOpenItem: macAppsOpenItemCapability.contract,
+  macAppsIcons: macAppsIconsCapability.contract,
+  macAppsCalendarEvents: macAppsCalendarEventsCapability.contract,
   appearanceSetResolvedTheme: appearanceSetResolvedThemeCapability.contract,
   appearanceFontFamilies: appearanceFontFamiliesCapability.contract,
   notchStatus: notchStatusCapability.contract,
@@ -256,8 +282,11 @@ export const generatedNativeCapabilityContracts = {
   computeNodeDrain: computeNodeDrainCapability.contract,
   computeNodeRemove: computeNodeRemoveCapability.contract,
   computeNodeAbandon: computeNodeAbandonCapability.contract,
+  computeNodeResetLocalRecord: computeNodeResetLocalRecordCapability.contract,
   chatPickAttachments: chatPickAttachmentsCapability.contract,
   audioCaptureState: audioCaptureStateCapability.contract,
+  voiceCallMicrophone: voiceCallMicrophoneCapability.contract,
+  voiceCallPlayed: voiceCallPlayedCapability.contract,
   audioCaptureSources: audioCaptureSourcesCapability.contract,
   audioCaptureMicrophones: audioCaptureMicrophonesCapability.contract,
   audioCaptureSelectMicrophone: audioCaptureSelectMicrophoneCapability.contract,
@@ -321,6 +350,16 @@ export const generatedNativeWebFallbacks = {
   connectorRuntimeSetScope: connectorRuntimeSetScopeCapability.webFallback,
   connectorRuntimeCopyConnectCommand:
     connectorRuntimeCopyConnectCommandCapability.webFallback,
+  localStationAccounts: localStationAccountsCapability.webFallback,
+  localStationSetAccountSource: localStationSetAccountSourceCapability.webFallback,
+  localStationSignIn: localStationSignInCapability.webFallback,
+  localStationStopSignIn: localStationStopSignInCapability.webFallback,
+  macAppsState: macAppsStateCapability.webFallback,
+  macAppsSetEnabled: macAppsSetEnabledCapability.webFallback,
+  macAppsOpenPrivacySettings: macAppsOpenPrivacySettingsCapability.webFallback,
+  macAppsOpenItem: macAppsOpenItemCapability.webFallback,
+  macAppsIcons: macAppsIconsCapability.webFallback,
+  macAppsCalendarEvents: macAppsCalendarEventsCapability.webFallback,
   appearanceSetResolvedTheme: appearanceSetResolvedThemeCapability.webFallback,
   appearanceFontFamilies: appearanceFontFamiliesCapability.webFallback,
   notchStatus: notchStatusCapability.webFallback,
@@ -391,8 +430,11 @@ export const generatedNativeWebFallbacks = {
   computeNodeDrain: computeNodeDrainCapability.webFallback,
   computeNodeRemove: computeNodeRemoveCapability.webFallback,
   computeNodeAbandon: computeNodeAbandonCapability.webFallback,
+  computeNodeResetLocalRecord: computeNodeResetLocalRecordCapability.webFallback,
   chatPickAttachments: chatPickAttachmentsCapability.webFallback,
   audioCaptureState: audioCaptureStateCapability.webFallback,
+  voiceCallMicrophone: voiceCallMicrophoneCapability.webFallback,
+  voiceCallPlayed: voiceCallPlayedCapability.webFallback,
   audioCaptureSources: audioCaptureSourcesCapability.webFallback,
   audioCaptureMicrophones: audioCaptureMicrophonesCapability.webFallback,
   audioCaptureSelectMicrophone: audioCaptureSelectMicrophoneCapability.webFallback,
@@ -461,6 +503,20 @@ export const generatedNativePreloadBindings = {
     scope: connectorRuntimeScopeCapability.contract,
     setScope: connectorRuntimeSetScopeCapability.contract,
     copyConnectCommand: connectorRuntimeCopyConnectCommandCapability.contract,
+  },
+  localStation: {
+    accounts: localStationAccountsCapability.contract,
+    setAccountSource: localStationSetAccountSourceCapability.contract,
+    signIn: localStationSignInCapability.contract,
+    stopSignIn: localStationStopSignInCapability.contract,
+  },
+  macApps: {
+    state: macAppsStateCapability.contract,
+    setEnabled: macAppsSetEnabledCapability.contract,
+    openPrivacySettings: macAppsOpenPrivacySettingsCapability.contract,
+    openItem: macAppsOpenItemCapability.contract,
+    icons: macAppsIconsCapability.contract,
+    calendarEvents: macAppsCalendarEventsCapability.contract,
   },
   appearance: {
     setResolvedTheme: appearanceSetResolvedThemeCapability.contract,
@@ -564,6 +620,7 @@ export const generatedNativePreloadBindings = {
     drain: computeNodeDrainCapability.contract,
     remove: computeNodeRemoveCapability.contract,
     abandon: computeNodeAbandonCapability.contract,
+    resetLocalRecord: computeNodeResetLocalRecordCapability.contract,
   },
   chat: {
     pickAttachments: chatPickAttachmentsCapability.contract,
@@ -580,6 +637,10 @@ export const generatedNativePreloadBindings = {
     pause: audioCapturePauseCapability.contract,
     resume: audioCaptureResumeCapability.contract,
     openPermissionSettings: audioCaptureOpenPermissionSettingsCapability.contract,
+  },
+  voiceCall: {
+    microphone: voiceCallMicrophoneCapability.contract,
+    played: voiceCallPlayedCapability.contract,
   },
   meetingPresence: {
     state: meetingPresenceStateCapability.contract,
@@ -634,6 +695,9 @@ export const generatedNativePreloadEventBindings = {
   connectorRuntime: {
     state: connectorRuntimeStateChangedEvent,
   },
+  macApps: {
+    state: macAppsStateChangedEvent,
+  },
   browserSidebar: {
     changed: browserSidebarChangedEvent,
     openTabRequested: browserSidebarOpenTabRequestedEvent,
@@ -663,6 +727,9 @@ export const generatedNativePreloadEventBindings = {
   audioCapture: {
     state: audioCaptureStateChangedEvent,
   },
+  voiceCall: {
+    audio: voiceCallAudioEvent,
+  },
   meetingPresence: {
     state: meetingPresenceStateChangedEvent,
   },
@@ -688,6 +755,12 @@ export const generatedNativeStateBindings = {
     state: {
       get: connectorRuntimeStateCapability.contract,
       subscribe: connectorRuntimeStateChangedEvent,
+    },
+  },
+  macApps: {
+    state: {
+      get: macAppsStateCapability.contract,
+      subscribe: macAppsStateChangedEvent,
     },
   },
   surfaces: {
@@ -866,6 +939,90 @@ export const generatedNativeMainBindingsById = {
     sessionAdmission: connectorRuntimeCopyConnectCommandCapability.sessionAdmission,
     sessionAdmissionRationale:
       connectorRuntimeCopyConnectCommandCapability.sessionAdmissionRationale,
+  },
+  "localStation.accounts": {
+    contract: localStationAccountsCapability.contract,
+    id: localStationAccountsCapability.id,
+    method: "accounts",
+    provider: "localStation",
+    sessionAdmission: localStationAccountsCapability.sessionAdmission,
+    sessionAdmissionRationale: localStationAccountsCapability.sessionAdmissionRationale,
+  },
+  "localStation.setAccountSource": {
+    contract: localStationSetAccountSourceCapability.contract,
+    id: localStationSetAccountSourceCapability.id,
+    method: "setAccountSource",
+    provider: "localStation",
+    sessionAdmission: localStationSetAccountSourceCapability.sessionAdmission,
+    sessionAdmissionRationale:
+      localStationSetAccountSourceCapability.sessionAdmissionRationale,
+  },
+  "localStation.signIn": {
+    contract: localStationSignInCapability.contract,
+    id: localStationSignInCapability.id,
+    method: "signIn",
+    provider: "localStation",
+    sessionAdmission: localStationSignInCapability.sessionAdmission,
+    sessionAdmissionRationale: localStationSignInCapability.sessionAdmissionRationale,
+  },
+  "localStation.stopSignIn": {
+    contract: localStationStopSignInCapability.contract,
+    id: localStationStopSignInCapability.id,
+    method: "stopSignIn",
+    provider: "localStation",
+    sessionAdmission: localStationStopSignInCapability.sessionAdmission,
+    sessionAdmissionRationale:
+      localStationStopSignInCapability.sessionAdmissionRationale,
+  },
+  "macApps.state": {
+    contract: macAppsStateCapability.contract,
+    id: macAppsStateCapability.id,
+    method: "state",
+    provider: "macApps",
+    sessionAdmission: macAppsStateCapability.sessionAdmission,
+    sessionAdmissionRationale: macAppsStateCapability.sessionAdmissionRationale,
+  },
+  "macApps.setEnabled": {
+    contract: macAppsSetEnabledCapability.contract,
+    id: macAppsSetEnabledCapability.id,
+    method: "setEnabled",
+    provider: "macApps",
+    sessionAdmission: macAppsSetEnabledCapability.sessionAdmission,
+    sessionAdmissionRationale: macAppsSetEnabledCapability.sessionAdmissionRationale,
+  },
+  "macApps.openPrivacySettings": {
+    contract: macAppsOpenPrivacySettingsCapability.contract,
+    id: macAppsOpenPrivacySettingsCapability.id,
+    method: "openPrivacySettings",
+    provider: "macApps",
+    sessionAdmission: macAppsOpenPrivacySettingsCapability.sessionAdmission,
+    sessionAdmissionRationale:
+      macAppsOpenPrivacySettingsCapability.sessionAdmissionRationale,
+  },
+  "macApps.openItem": {
+    contract: macAppsOpenItemCapability.contract,
+    id: macAppsOpenItemCapability.id,
+    method: "openItem",
+    provider: "macApps",
+    sessionAdmission: macAppsOpenItemCapability.sessionAdmission,
+    sessionAdmissionRationale: macAppsOpenItemCapability.sessionAdmissionRationale,
+  },
+  "macApps.icons": {
+    contract: macAppsIconsCapability.contract,
+    id: macAppsIconsCapability.id,
+    method: "icons",
+    provider: "macApps",
+    sessionAdmission: macAppsIconsCapability.sessionAdmission,
+    sessionAdmissionRationale: macAppsIconsCapability.sessionAdmissionRationale,
+  },
+  "macApps.calendarEvents": {
+    contract: macAppsCalendarEventsCapability.contract,
+    id: macAppsCalendarEventsCapability.id,
+    method: "calendarEvents",
+    provider: "macApps",
+    sessionAdmission: macAppsCalendarEventsCapability.sessionAdmission,
+    sessionAdmissionRationale:
+      macAppsCalendarEventsCapability.sessionAdmissionRationale,
   },
   "appearance.setResolvedTheme": {
     contract: appearanceSetResolvedThemeCapability.contract,
@@ -1436,6 +1593,15 @@ export const generatedNativeMainBindingsById = {
     sessionAdmission: computeNodeAbandonCapability.sessionAdmission,
     sessionAdmissionRationale: computeNodeAbandonCapability.sessionAdmissionRationale,
   },
+  "computeNode.resetLocalRecord": {
+    contract: computeNodeResetLocalRecordCapability.contract,
+    id: computeNodeResetLocalRecordCapability.id,
+    method: "resetLocalRecord",
+    provider: "computeNode",
+    sessionAdmission: computeNodeResetLocalRecordCapability.sessionAdmission,
+    sessionAdmissionRationale:
+      computeNodeResetLocalRecordCapability.sessionAdmissionRationale,
+  },
   "chat.pickAttachments": {
     contract: chatPickAttachmentsCapability.contract,
     id: chatPickAttachmentsCapability.id,
@@ -1450,6 +1616,22 @@ export const generatedNativeMainBindingsById = {
     provider: "audioCapture",
     sessionAdmission: audioCaptureStateCapability.sessionAdmission,
     sessionAdmissionRationale: audioCaptureStateCapability.sessionAdmissionRationale,
+  },
+  "voiceCall.microphone": {
+    contract: voiceCallMicrophoneCapability.contract,
+    id: voiceCallMicrophoneCapability.id,
+    method: "microphone",
+    provider: "voiceCall",
+    sessionAdmission: voiceCallMicrophoneCapability.sessionAdmission,
+    sessionAdmissionRationale: voiceCallMicrophoneCapability.sessionAdmissionRationale,
+  },
+  "voiceCall.played": {
+    contract: voiceCallPlayedCapability.contract,
+    id: voiceCallPlayedCapability.id,
+    method: "played",
+    provider: "voiceCall",
+    sessionAdmission: voiceCallPlayedCapability.sessionAdmission,
+    sessionAdmissionRationale: voiceCallPlayedCapability.sessionAdmissionRationale,
   },
   "audioCapture.sources": {
     contract: audioCaptureSourcesCapability.contract,
@@ -1943,6 +2125,110 @@ export const generatedNativeCapabilityManifest = [
     sessionAdmissionRationale:
       connectorRuntimeCopyConnectCommandCapability.sessionAdmissionRationale,
     transport: connectorRuntimeCopyConnectCommandCapability.transport,
+  },
+  {
+    bridge: localStationAccountsCapability.bridge,
+    channel: localStationAccountsCapability.channel,
+    id: localStationAccountsCapability.id,
+    payloadClass: localStationAccountsCapability.payloadClass,
+    permission: localStationAccountsCapability.permission,
+    sessionAdmission: localStationAccountsCapability.sessionAdmission,
+    sessionAdmissionRationale: localStationAccountsCapability.sessionAdmissionRationale,
+    transport: localStationAccountsCapability.transport,
+  },
+  {
+    bridge: localStationSetAccountSourceCapability.bridge,
+    channel: localStationSetAccountSourceCapability.channel,
+    id: localStationSetAccountSourceCapability.id,
+    payloadClass: localStationSetAccountSourceCapability.payloadClass,
+    permission: localStationSetAccountSourceCapability.permission,
+    sessionAdmission: localStationSetAccountSourceCapability.sessionAdmission,
+    sessionAdmissionRationale:
+      localStationSetAccountSourceCapability.sessionAdmissionRationale,
+    transport: localStationSetAccountSourceCapability.transport,
+  },
+  {
+    bridge: localStationSignInCapability.bridge,
+    channel: localStationSignInCapability.channel,
+    id: localStationSignInCapability.id,
+    payloadClass: localStationSignInCapability.payloadClass,
+    permission: localStationSignInCapability.permission,
+    sessionAdmission: localStationSignInCapability.sessionAdmission,
+    sessionAdmissionRationale: localStationSignInCapability.sessionAdmissionRationale,
+    transport: localStationSignInCapability.transport,
+  },
+  {
+    bridge: localStationStopSignInCapability.bridge,
+    channel: localStationStopSignInCapability.channel,
+    id: localStationStopSignInCapability.id,
+    payloadClass: localStationStopSignInCapability.payloadClass,
+    permission: localStationStopSignInCapability.permission,
+    sessionAdmission: localStationStopSignInCapability.sessionAdmission,
+    sessionAdmissionRationale:
+      localStationStopSignInCapability.sessionAdmissionRationale,
+    transport: localStationStopSignInCapability.transport,
+  },
+  {
+    bridge: macAppsStateCapability.bridge,
+    channel: macAppsStateCapability.channel,
+    id: macAppsStateCapability.id,
+    payloadClass: macAppsStateCapability.payloadClass,
+    permission: macAppsStateCapability.permission,
+    sessionAdmission: macAppsStateCapability.sessionAdmission,
+    sessionAdmissionRationale: macAppsStateCapability.sessionAdmissionRationale,
+    transport: macAppsStateCapability.transport,
+  },
+  {
+    bridge: macAppsSetEnabledCapability.bridge,
+    channel: macAppsSetEnabledCapability.channel,
+    id: macAppsSetEnabledCapability.id,
+    payloadClass: macAppsSetEnabledCapability.payloadClass,
+    permission: macAppsSetEnabledCapability.permission,
+    sessionAdmission: macAppsSetEnabledCapability.sessionAdmission,
+    sessionAdmissionRationale: macAppsSetEnabledCapability.sessionAdmissionRationale,
+    transport: macAppsSetEnabledCapability.transport,
+  },
+  {
+    bridge: macAppsOpenPrivacySettingsCapability.bridge,
+    channel: macAppsOpenPrivacySettingsCapability.channel,
+    id: macAppsOpenPrivacySettingsCapability.id,
+    payloadClass: macAppsOpenPrivacySettingsCapability.payloadClass,
+    permission: macAppsOpenPrivacySettingsCapability.permission,
+    sessionAdmission: macAppsOpenPrivacySettingsCapability.sessionAdmission,
+    sessionAdmissionRationale:
+      macAppsOpenPrivacySettingsCapability.sessionAdmissionRationale,
+    transport: macAppsOpenPrivacySettingsCapability.transport,
+  },
+  {
+    bridge: macAppsOpenItemCapability.bridge,
+    channel: macAppsOpenItemCapability.channel,
+    id: macAppsOpenItemCapability.id,
+    payloadClass: macAppsOpenItemCapability.payloadClass,
+    permission: macAppsOpenItemCapability.permission,
+    sessionAdmission: macAppsOpenItemCapability.sessionAdmission,
+    sessionAdmissionRationale: macAppsOpenItemCapability.sessionAdmissionRationale,
+    transport: macAppsOpenItemCapability.transport,
+  },
+  {
+    bridge: macAppsIconsCapability.bridge,
+    channel: macAppsIconsCapability.channel,
+    id: macAppsIconsCapability.id,
+    payloadClass: macAppsIconsCapability.payloadClass,
+    permission: macAppsIconsCapability.permission,
+    sessionAdmission: macAppsIconsCapability.sessionAdmission,
+    sessionAdmissionRationale: macAppsIconsCapability.sessionAdmissionRationale,
+    transport: macAppsIconsCapability.transport,
+  },
+  {
+    bridge: macAppsCalendarEventsCapability.bridge,
+    channel: macAppsCalendarEventsCapability.channel,
+    id: macAppsCalendarEventsCapability.id,
+    payloadClass: macAppsCalendarEventsCapability.payloadClass,
+    permission: macAppsCalendarEventsCapability.permission,
+    sessionAdmission: macAppsCalendarEventsCapability.sessionAdmission,
+    sessionAdmissionRationale:
+      macAppsCalendarEventsCapability.sessionAdmissionRationale,
+    transport: macAppsCalendarEventsCapability.transport,
   },
   {
     bridge: appearanceSetResolvedThemeCapability.bridge,
@@ -2652,6 +2938,17 @@ export const generatedNativeCapabilityManifest = [
     transport: computeNodeAbandonCapability.transport,
   },
   {
+    bridge: computeNodeResetLocalRecordCapability.bridge,
+    channel: computeNodeResetLocalRecordCapability.channel,
+    id: computeNodeResetLocalRecordCapability.id,
+    payloadClass: computeNodeResetLocalRecordCapability.payloadClass,
+    permission: computeNodeResetLocalRecordCapability.permission,
+    sessionAdmission: computeNodeResetLocalRecordCapability.sessionAdmission,
+    sessionAdmissionRationale:
+      computeNodeResetLocalRecordCapability.sessionAdmissionRationale,
+    transport: computeNodeResetLocalRecordCapability.transport,
+  },
+  {
     bridge: chatPickAttachmentsCapability.bridge,
     channel: chatPickAttachmentsCapability.channel,
     id: chatPickAttachmentsCapability.id,
@@ -2669,6 +2966,26 @@ export const generatedNativeCapabilityManifest = [
     sessionAdmission: audioCaptureStateCapability.sessionAdmission,
     sessionAdmissionRationale: audioCaptureStateCapability.sessionAdmissionRationale,
     transport: audioCaptureStateCapability.transport,
+  },
+  {
+    bridge: voiceCallMicrophoneCapability.bridge,
+    channel: voiceCallMicrophoneCapability.channel,
+    id: voiceCallMicrophoneCapability.id,
+    payloadClass: voiceCallMicrophoneCapability.payloadClass,
+    permission: voiceCallMicrophoneCapability.permission,
+    sessionAdmission: voiceCallMicrophoneCapability.sessionAdmission,
+    sessionAdmissionRationale: voiceCallMicrophoneCapability.sessionAdmissionRationale,
+    transport: voiceCallMicrophoneCapability.transport,
+  },
+  {
+    bridge: voiceCallPlayedCapability.bridge,
+    channel: voiceCallPlayedCapability.channel,
+    id: voiceCallPlayedCapability.id,
+    payloadClass: voiceCallPlayedCapability.payloadClass,
+    permission: voiceCallPlayedCapability.permission,
+    sessionAdmission: voiceCallPlayedCapability.sessionAdmission,
+    sessionAdmissionRationale: voiceCallPlayedCapability.sessionAdmissionRationale,
+    transport: voiceCallPlayedCapability.transport,
   },
   {
     bridge: audioCaptureSourcesCapability.bridge,
@@ -3112,6 +3429,12 @@ export const generatedNativeEventManifest = [
     target: connectorRuntimeStateChangedEvent.target,
   },
   {
+    channel: macAppsStateChangedEvent.channel,
+    id: macAppsStateChangedEvent.id,
+    permission: macAppsStateChangedEvent.permission,
+    target: macAppsStateChangedEvent.target,
+  },
+  {
     channel: browserSidebarChangedEvent.channel,
     id: browserSidebarChangedEvent.id,
     permission: browserSidebarChangedEvent.permission,
@@ -3182,6 +3505,12 @@ export const generatedNativeEventManifest = [
     id: audioCaptureStateChangedEvent.id,
     permission: audioCaptureStateChangedEvent.permission,
     target: audioCaptureStateChangedEvent.target,
+  },
+  {
+    channel: voiceCallAudioEvent.channel,
+    id: voiceCallAudioEvent.id,
+    permission: voiceCallAudioEvent.permission,
+    target: voiceCallAudioEvent.target,
   },
   {
     channel: meetingPresenceStateChangedEvent.channel,
@@ -3255,6 +3584,23 @@ export const generatedNativeStateManifest = [
       id: connectorRuntimeStateLeaf.subscribe.id,
       permission: connectorRuntimeStateLeaf.subscribe.permission,
       target: connectorRuntimeStateLeaf.subscribe.target,
+    },
+  },
+  {
+    bridge: macAppsStateLeaf.bridge,
+    get: {
+      channel: macAppsStateLeaf.get.channel,
+      id: macAppsStateLeaf.get.id,
+      permission: macAppsStateLeaf.get.permission,
+      sessionAdmission: macAppsStateLeaf.get.sessionAdmission,
+      sessionAdmissionRationale: macAppsStateLeaf.get.sessionAdmissionRationale,
+    },
+    id: macAppsStateLeaf.id,
+    subscribe: {
+      channel: macAppsStateLeaf.subscribe.channel,
+      id: macAppsStateLeaf.subscribe.id,
+      permission: macAppsStateLeaf.subscribe.permission,
+      target: macAppsStateLeaf.subscribe.target,
     },
   },
   {
@@ -3723,6 +4069,210 @@ export const generatedNativeCapabilityIndex = {
     sessionAdmissionRationale:
       connectorRuntimeCopyConnectCommandCapability.sessionAdmissionRationale,
     transport: connectorRuntimeCopyConnectCommandCapability.transport,
+  },
+  "localStation.accounts": {
+    artifacts: {
+      contract: "localStationAccountsContract",
+      handlerType: 'NativeCapabilityHandlerTypeMap["localStation.accounts"]',
+      leaf: "localStationAccountsCapability",
+      mainBinding: 'generatedNativeMainBindingsById["localStation.accounts"]',
+      mock: "localStationAccountsCapability.mock",
+      preloadBinding: "generatedNativePreloadBindings.localStation.accounts",
+      webFallback: "generatedNativeWebFallbacks.localStationAccounts",
+    },
+    bridge: localStationAccountsCapability.bridge,
+    channel: localStationAccountsCapability.channel,
+    handler: localStationAccountsCapability.handler,
+    id: localStationAccountsCapability.id,
+    payloadClass: localStationAccountsCapability.payloadClass,
+    permission: localStationAccountsCapability.permission,
+    sessionAdmission: localStationAccountsCapability.sessionAdmission,
+    sessionAdmissionRationale: localStationAccountsCapability.sessionAdmissionRationale,
+    transport: localStationAccountsCapability.transport,
+  },
+  "localStation.setAccountSource": {
+    artifacts: {
+      contract: "localStationSetAccountSourceContract",
+      handlerType: 'NativeCapabilityHandlerTypeMap["localStation.setAccountSource"]',
+      leaf: "localStationSetAccountSourceCapability",
+      mainBinding: 'generatedNativeMainBindingsById["localStation.setAccountSource"]',
+      mock: "localStationSetAccountSourceCapability.mock",
+      preloadBinding: "generatedNativePreloadBindings.localStation.setAccountSource",
+      webFallback: "generatedNativeWebFallbacks.localStationSetAccountSource",
+    },
+    bridge: localStationSetAccountSourceCapability.bridge,
+    channel: localStationSetAccountSourceCapability.channel,
+    handler: localStationSetAccountSourceCapability.handler,
+    id: localStationSetAccountSourceCapability.id,
+    payloadClass: localStationSetAccountSourceCapability.payloadClass,
+    permission: localStationSetAccountSourceCapability.permission,
+    sessionAdmission: localStationSetAccountSourceCapability.sessionAdmission,
+    sessionAdmissionRationale:
+      localStationSetAccountSourceCapability.sessionAdmissionRationale,
+    transport: localStationSetAccountSourceCapability.transport,
+  },
+  "localStation.signIn": {
+    artifacts: {
+      contract: "localStationSignInContract",
+      handlerType: 'NativeCapabilityHandlerTypeMap["localStation.signIn"]',
+      leaf: "localStationSignInCapability",
+      mainBinding: 'generatedNativeMainBindingsById["localStation.signIn"]',
+      mock: "localStationSignInCapability.mock",
+      preloadBinding: "generatedNativePreloadBindings.localStation.signIn",
+      webFallback: "generatedNativeWebFallbacks.localStationSignIn",
+    },
+    bridge: localStationSignInCapability.bridge,
+    channel: localStationSignInCapability.channel,
+    handler: localStationSignInCapability.handler,
+    id: localStationSignInCapability.id,
+    payloadClass: localStationSignInCapability.payloadClass,
+    permission: localStationSignInCapability.permission,
+    sessionAdmission: localStationSignInCapability.sessionAdmission,
+    sessionAdmissionRationale: localStationSignInCapability.sessionAdmissionRationale,
+    transport: localStationSignInCapability.transport,
+  },
+  "localStation.stopSignIn": {
+    artifacts: {
+      contract: "localStationStopSignInContract",
+      handlerType: 'NativeCapabilityHandlerTypeMap["localStation.stopSignIn"]',
+      leaf: "localStationStopSignInCapability",
+      mainBinding: 'generatedNativeMainBindingsById["localStation.stopSignIn"]',
+      mock: "localStationStopSignInCapability.mock",
+      preloadBinding: "generatedNativePreloadBindings.localStation.stopSignIn",
+      webFallback: "generatedNativeWebFallbacks.localStationStopSignIn",
+    },
+    bridge: localStationStopSignInCapability.bridge,
+    channel: localStationStopSignInCapability.channel,
+    handler: localStationStopSignInCapability.handler,
+    id: localStationStopSignInCapability.id,
+    payloadClass: localStationStopSignInCapability.payloadClass,
+    permission: localStationStopSignInCapability.permission,
+    sessionAdmission: localStationStopSignInCapability.sessionAdmission,
+    sessionAdmissionRationale:
+      localStationStopSignInCapability.sessionAdmissionRationale,
+    transport: localStationStopSignInCapability.transport,
+  },
+  "macApps.state": {
+    artifacts: {
+      contract: "macAppsStateContract",
+      handlerType: 'NativeCapabilityHandlerTypeMap["macApps.state"]',
+      leaf: "macAppsStateCapability",
+      mainBinding: 'generatedNativeMainBindingsById["macApps.state"]',
+      mock: "macAppsStateCapability.mock",
+      preloadBinding: "generatedNativePreloadBindings.macApps.state",
+      webFallback: "generatedNativeWebFallbacks.macAppsState",
+    },
+    bridge: macAppsStateCapability.bridge,
+    channel: macAppsStateCapability.channel,
+    handler: macAppsStateCapability.handler,
+    id: macAppsStateCapability.id,
+    payloadClass: macAppsStateCapability.payloadClass,
+    permission: macAppsStateCapability.permission,
+    sessionAdmission: macAppsStateCapability.sessionAdmission,
+    sessionAdmissionRationale: macAppsStateCapability.sessionAdmissionRationale,
+    transport: macAppsStateCapability.transport,
+  },
+  "macApps.setEnabled": {
+    artifacts: {
+      contract: "macAppsSetEnabledContract",
+      handlerType: 'NativeCapabilityHandlerTypeMap["macApps.setEnabled"]',
+      leaf: "macAppsSetEnabledCapability",
+      mainBinding: 'generatedNativeMainBindingsById["macApps.setEnabled"]',
+      mock: "macAppsSetEnabledCapability.mock",
+      preloadBinding: "generatedNativePreloadBindings.macApps.setEnabled",
+      webFallback: "generatedNativeWebFallbacks.macAppsSetEnabled",
+    },
+    bridge: macAppsSetEnabledCapability.bridge,
+    channel: macAppsSetEnabledCapability.channel,
+    handler: macAppsSetEnabledCapability.handler,
+    id: macAppsSetEnabledCapability.id,
+    payloadClass: macAppsSetEnabledCapability.payloadClass,
+    permission: macAppsSetEnabledCapability.permission,
+    sessionAdmission: macAppsSetEnabledCapability.sessionAdmission,
+    sessionAdmissionRationale: macAppsSetEnabledCapability.sessionAdmissionRationale,
+    transport: macAppsSetEnabledCapability.transport,
+  },
+  "macApps.openPrivacySettings": {
+    artifacts: {
+      contract: "macAppsOpenPrivacySettingsContract",
+      handlerType: 'NativeCapabilityHandlerTypeMap["macApps.openPrivacySettings"]',
+      leaf: "macAppsOpenPrivacySettingsCapability",
+      mainBinding: 'generatedNativeMainBindingsById["macApps.openPrivacySettings"]',
+      mock: "macAppsOpenPrivacySettingsCapability.mock",
+      preloadBinding: "generatedNativePreloadBindings.macApps.openPrivacySettings",
+      webFallback: "generatedNativeWebFallbacks.macAppsOpenPrivacySettings",
+    },
+    bridge: macAppsOpenPrivacySettingsCapability.bridge,
+    channel: macAppsOpenPrivacySettingsCapability.channel,
+    handler: macAppsOpenPrivacySettingsCapability.handler,
+    id: macAppsOpenPrivacySettingsCapability.id,
+    payloadClass: macAppsOpenPrivacySettingsCapability.payloadClass,
+    permission: macAppsOpenPrivacySettingsCapability.permission,
+    sessionAdmission: macAppsOpenPrivacySettingsCapability.sessionAdmission,
+    sessionAdmissionRationale:
+      macAppsOpenPrivacySettingsCapability.sessionAdmissionRationale,
+    transport: macAppsOpenPrivacySettingsCapability.transport,
+  },
+  "macApps.openItem": {
+    artifacts: {
+      contract: "macAppsOpenItemContract",
+      handlerType: 'NativeCapabilityHandlerTypeMap["macApps.openItem"]',
+      leaf: "macAppsOpenItemCapability",
+      mainBinding: 'generatedNativeMainBindingsById["macApps.openItem"]',
+      mock: "macAppsOpenItemCapability.mock",
+      preloadBinding: "generatedNativePreloadBindings.macApps.openItem",
+      webFallback: "generatedNativeWebFallbacks.macAppsOpenItem",
+    },
+    bridge: macAppsOpenItemCapability.bridge,
+    channel: macAppsOpenItemCapability.channel,
+    handler: macAppsOpenItemCapability.handler,
+    id: macAppsOpenItemCapability.id,
+    payloadClass: macAppsOpenItemCapability.payloadClass,
+    permission: macAppsOpenItemCapability.permission,
+    sessionAdmission: macAppsOpenItemCapability.sessionAdmission,
+    sessionAdmissionRationale: macAppsOpenItemCapability.sessionAdmissionRationale,
+    transport: macAppsOpenItemCapability.transport,
+  },
+  "macApps.icons": {
+    artifacts: {
+      contract: "macAppsIconsContract",
+      handlerType: 'NativeCapabilityHandlerTypeMap["macApps.icons"]',
+      leaf: "macAppsIconsCapability",
+      mainBinding: 'generatedNativeMainBindingsById["macApps.icons"]',
+      mock: "macAppsIconsCapability.mock",
+      preloadBinding: "generatedNativePreloadBindings.macApps.icons",
+      webFallback: "generatedNativeWebFallbacks.macAppsIcons",
+    },
+    bridge: macAppsIconsCapability.bridge,
+    channel: macAppsIconsCapability.channel,
+    handler: macAppsIconsCapability.handler,
+    id: macAppsIconsCapability.id,
+    payloadClass: macAppsIconsCapability.payloadClass,
+    permission: macAppsIconsCapability.permission,
+    sessionAdmission: macAppsIconsCapability.sessionAdmission,
+    sessionAdmissionRationale: macAppsIconsCapability.sessionAdmissionRationale,
+    transport: macAppsIconsCapability.transport,
+  },
+  "macApps.calendarEvents": {
+    artifacts: {
+      contract: "macAppsCalendarEventsContract",
+      handlerType: 'NativeCapabilityHandlerTypeMap["macApps.calendarEvents"]',
+      leaf: "macAppsCalendarEventsCapability",
+      mainBinding: 'generatedNativeMainBindingsById["macApps.calendarEvents"]',
+      mock: "macAppsCalendarEventsCapability.mock",
+      preloadBinding: "generatedNativePreloadBindings.macApps.calendarEvents",
+      webFallback: "generatedNativeWebFallbacks.macAppsCalendarEvents",
+    },
+    bridge: macAppsCalendarEventsCapability.bridge,
+    channel: macAppsCalendarEventsCapability.channel,
+    handler: macAppsCalendarEventsCapability.handler,
+    id: macAppsCalendarEventsCapability.id,
+    payloadClass: macAppsCalendarEventsCapability.payloadClass,
+    permission: macAppsCalendarEventsCapability.permission,
+    sessionAdmission: macAppsCalendarEventsCapability.sessionAdmission,
+    sessionAdmissionRationale:
+      macAppsCalendarEventsCapability.sessionAdmissionRationale,
+    transport: macAppsCalendarEventsCapability.transport,
   },
   "appearance.setResolvedTheme": {
     artifacts: {
@@ -5128,6 +5678,27 @@ export const generatedNativeCapabilityIndex = {
     sessionAdmissionRationale: computeNodeAbandonCapability.sessionAdmissionRationale,
     transport: computeNodeAbandonCapability.transport,
   },
+  "computeNode.resetLocalRecord": {
+    artifacts: {
+      contract: "computeNodeResetLocalRecordContract",
+      handlerType: 'NativeCapabilityHandlerTypeMap["computeNode.resetLocalRecord"]',
+      leaf: "computeNodeResetLocalRecordCapability",
+      mainBinding: 'generatedNativeMainBindingsById["computeNode.resetLocalRecord"]',
+      mock: "computeNodeResetLocalRecordCapability.mock",
+      preloadBinding: "generatedNativePreloadBindings.computeNode.resetLocalRecord",
+      webFallback: "generatedNativeWebFallbacks.computeNodeResetLocalRecord",
+    },
+    bridge: computeNodeResetLocalRecordCapability.bridge,
+    channel: computeNodeResetLocalRecordCapability.channel,
+    handler: computeNodeResetLocalRecordCapability.handler,
+    id: computeNodeResetLocalRecordCapability.id,
+    payloadClass: computeNodeResetLocalRecordCapability.payloadClass,
+    permission: computeNodeResetLocalRecordCapability.permission,
+    sessionAdmission: computeNodeResetLocalRecordCapability.sessionAdmission,
+    sessionAdmissionRationale:
+      computeNodeResetLocalRecordCapability.sessionAdmissionRationale,
+    transport: computeNodeResetLocalRecordCapability.transport,
+  },
   "chat.pickAttachments": {
     artifacts: {
       contract: "chatPickAttachmentsContract",
@@ -5166,6 +5737,46 @@ export const generatedNativeCapabilityIndex = {
     sessionAdmission: audioCaptureStateCapability.sessionAdmission,
     sessionAdmissionRationale: audioCaptureStateCapability.sessionAdmissionRationale,
     transport: audioCaptureStateCapability.transport,
+  },
+  "voiceCall.microphone": {
+    artifacts: {
+      contract: "voiceCallMicrophoneContract",
+      handlerType: 'NativeCapabilityHandlerTypeMap["voiceCall.microphone"]',
+      leaf: "voiceCallMicrophoneCapability",
+      mainBinding: 'generatedNativeMainBindingsById["voiceCall.microphone"]',
+      mock: "voiceCallMicrophoneCapability.mock",
+      preloadBinding: "generatedNativePreloadBindings.voiceCall.microphone",
+      webFallback: "generatedNativeWebFallbacks.voiceCallMicrophone",
+    },
+    bridge: voiceCallMicrophoneCapability.bridge,
+    channel: voiceCallMicrophoneCapability.channel,
+    handler: voiceCallMicrophoneCapability.handler,
+    id: voiceCallMicrophoneCapability.id,
+    payloadClass: voiceCallMicrophoneCapability.payloadClass,
+    permission: voiceCallMicrophoneCapability.permission,
+    sessionAdmission: voiceCallMicrophoneCapability.sessionAdmission,
+    sessionAdmissionRationale: voiceCallMicrophoneCapability.sessionAdmissionRationale,
+    transport: voiceCallMicrophoneCapability.transport,
+  },
+  "voiceCall.played": {
+    artifacts: {
+      contract: "voiceCallPlayedContract",
+      handlerType: 'NativeCapabilityHandlerTypeMap["voiceCall.played"]',
+      leaf: "voiceCallPlayedCapability",
+      mainBinding: 'generatedNativeMainBindingsById["voiceCall.played"]',
+      mock: "voiceCallPlayedCapability.mock",
+      preloadBinding: "generatedNativePreloadBindings.voiceCall.played",
+      webFallback: "generatedNativeWebFallbacks.voiceCallPlayed",
+    },
+    bridge: voiceCallPlayedCapability.bridge,
+    channel: voiceCallPlayedCapability.channel,
+    handler: voiceCallPlayedCapability.handler,
+    id: voiceCallPlayedCapability.id,
+    payloadClass: voiceCallPlayedCapability.payloadClass,
+    permission: voiceCallPlayedCapability.permission,
+    sessionAdmission: voiceCallPlayedCapability.sessionAdmission,
+    sessionAdmissionRationale: voiceCallPlayedCapability.sessionAdmissionRationale,
+    transport: voiceCallPlayedCapability.transport,
   },
   "audioCapture.sources": {
     artifacts: {
@@ -6027,6 +6638,16 @@ export const generatedNativeEventIndex = {
     permission: connectorRuntimeStateChangedEvent.permission,
     target: connectorRuntimeStateChangedEvent.target,
   },
+  "macApps.state.changed": {
+    artifacts: {
+      leaf: "macAppsStateChangedEvent",
+      mock: "macAppsStateChangedEvent.mock",
+    },
+    channel: macAppsStateChangedEvent.channel,
+    id: macAppsStateChangedEvent.id,
+    permission: macAppsStateChangedEvent.permission,
+    target: macAppsStateChangedEvent.target,
+  },
   "browserSidebar.changed": {
     artifacts: {
       leaf: "browserSidebarChangedEvent",
@@ -6147,6 +6768,16 @@ export const generatedNativeEventIndex = {
     permission: audioCaptureStateChangedEvent.permission,
     target: audioCaptureStateChangedEvent.target,
   },
+  "voiceCall.audio": {
+    artifacts: {
+      leaf: "voiceCallAudioEvent",
+      mock: "voiceCallAudioEvent.mock",
+    },
+    channel: voiceCallAudioEvent.channel,
+    id: voiceCallAudioEvent.id,
+    permission: voiceCallAudioEvent.permission,
+    target: voiceCallAudioEvent.target,
+  },
   "meetingPresence.state.changed": {
     artifacts: {
       leaf: "meetingPresenceStateChangedEvent",
@@ -6252,6 +6883,30 @@ export const generatedNativeStateIndex = {
       id: connectorRuntimeStateLeaf.subscribe.id,
       permission: connectorRuntimeStateLeaf.subscribe.permission,
       target: connectorRuntimeStateLeaf.subscribe.target,
+    },
+  },
+  "macApps.state": {
+    artifacts: {
+      get: "generatedNativeStateBindings.macApps.state.get",
+      leaf: "macAppsStateLeaf",
+      mock: "macAppsStateLeaf.mock",
+      subscribe: "generatedNativeStateBindings.macApps.state.subscribe",
+      webFallback: "macAppsStateLeaf.webFallback",
+    },
+    bridge: macAppsStateLeaf.bridge,
+    get: {
+      channel: macAppsStateLeaf.get.channel,
+      id: macAppsStateLeaf.get.id,
+      permission: macAppsStateLeaf.get.permission,
+      sessionAdmission: macAppsStateLeaf.get.sessionAdmission,
+      sessionAdmissionRationale: macAppsStateLeaf.get.sessionAdmissionRationale,
+    },
+    id: macAppsStateLeaf.id,
+    subscribe: {
+      channel: macAppsStateLeaf.subscribe.channel,
+      id: macAppsStateLeaf.subscribe.id,
+      permission: macAppsStateLeaf.subscribe.permission,
+      target: macAppsStateLeaf.subscribe.target,
     },
   },
   "surfaces.state": {
@@ -6501,6 +7156,24 @@ export const connectorRuntimeSetScopeContract =
   generatedNativeCapabilityContracts.connectorRuntimeSetScope;
 export const connectorRuntimeCopyConnectCommandContract =
   generatedNativeCapabilityContracts.connectorRuntimeCopyConnectCommand;
+export const localStationAccountsContract =
+  generatedNativeCapabilityContracts.localStationAccounts;
+export const localStationSetAccountSourceContract =
+  generatedNativeCapabilityContracts.localStationSetAccountSource;
+export const localStationSignInContract =
+  generatedNativeCapabilityContracts.localStationSignIn;
+export const localStationStopSignInContract =
+  generatedNativeCapabilityContracts.localStationStopSignIn;
+export const macAppsStateContract = generatedNativeCapabilityContracts.macAppsState;
+export const macAppsSetEnabledContract =
+  generatedNativeCapabilityContracts.macAppsSetEnabled;
+export const macAppsOpenPrivacySettingsContract =
+  generatedNativeCapabilityContracts.macAppsOpenPrivacySettings;
+export const macAppsOpenItemContract =
+  generatedNativeCapabilityContracts.macAppsOpenItem;
+export const macAppsIconsContract = generatedNativeCapabilityContracts.macAppsIcons;
+export const macAppsCalendarEventsContract =
+  generatedNativeCapabilityContracts.macAppsCalendarEvents;
 export const appearanceSetResolvedThemeContract =
   generatedNativeCapabilityContracts.appearanceSetResolvedTheme;
 export const appearanceFontFamiliesContract =
@@ -6619,10 +7292,16 @@ export const computeNodeRemoveContract =
   generatedNativeCapabilityContracts.computeNodeRemove;
 export const computeNodeAbandonContract =
   generatedNativeCapabilityContracts.computeNodeAbandon;
+export const computeNodeResetLocalRecordContract =
+  generatedNativeCapabilityContracts.computeNodeResetLocalRecord;
 export const chatPickAttachmentsContract =
   generatedNativeCapabilityContracts.chatPickAttachments;
 export const audioCaptureStateContract =
   generatedNativeCapabilityContracts.audioCaptureState;
+export const voiceCallMicrophoneContract =
+  generatedNativeCapabilityContracts.voiceCallMicrophone;
+export const voiceCallPlayedContract =
+  generatedNativeCapabilityContracts.voiceCallPlayed;
 export const audioCaptureSourcesContract =
   generatedNativeCapabilityContracts.audioCaptureSources;
 export const audioCaptureMicrophonesContract =
@@ -6716,6 +7395,16 @@ export type NativeCapabilityTypeMap = {
   "connectorRuntime.scope": typeof connectorRuntimeScopeCapability;
   "connectorRuntime.setScope": typeof connectorRuntimeSetScopeCapability;
   "connectorRuntime.copyConnectCommand": typeof connectorRuntimeCopyConnectCommandCapability;
+  "localStation.accounts": typeof localStationAccountsCapability;
+  "localStation.setAccountSource": typeof localStationSetAccountSourceCapability;
+  "localStation.signIn": typeof localStationSignInCapability;
+  "localStation.stopSignIn": typeof localStationStopSignInCapability;
+  "macApps.state": typeof macAppsStateCapability;
+  "macApps.setEnabled": typeof macAppsSetEnabledCapability;
+  "macApps.openPrivacySettings": typeof macAppsOpenPrivacySettingsCapability;
+  "macApps.openItem": typeof macAppsOpenItemCapability;
+  "macApps.icons": typeof macAppsIconsCapability;
+  "macApps.calendarEvents": typeof macAppsCalendarEventsCapability;
   "appearance.setResolvedTheme": typeof appearanceSetResolvedThemeCapability;
   "appearance.fontFamilies": typeof appearanceFontFamiliesCapability;
   "notch.status": typeof notchStatusCapability;
@@ -6785,8 +7474,11 @@ export type NativeCapabilityTypeMap = {
   "computeNode.drain": typeof computeNodeDrainCapability;
   "computeNode.remove": typeof computeNodeRemoveCapability;
   "computeNode.abandon": typeof computeNodeAbandonCapability;
+  "computeNode.resetLocalRecord": typeof computeNodeResetLocalRecordCapability;
   "chat.pickAttachments": typeof chatPickAttachmentsCapability;
   "audioCapture.state": typeof audioCaptureStateCapability;
+  "voiceCall.microphone": typeof voiceCallMicrophoneCapability;
+  "voiceCall.played": typeof voiceCallPlayedCapability;
   "audioCapture.sources": typeof audioCaptureSourcesCapability;
   "audioCapture.microphones": typeof audioCaptureMicrophonesCapability;
   "audioCapture.selectMicrophone": typeof audioCaptureSelectMicrophoneCapability;
@@ -6834,6 +7526,7 @@ export type NativeEventTypeMap = {
   "sitePermissionMenu.changed": typeof sitePermissionMenuChangedEvent;
   "appPreferences.state.changed": typeof appPreferencesChangedEvent;
   "connectorRuntime.state.changed": typeof connectorRuntimeStateChangedEvent;
+  "macApps.state.changed": typeof macAppsStateChangedEvent;
   "browserSidebar.changed": typeof browserSidebarChangedEvent;
   "browserSidebar.openTabRequested": typeof browserSidebarOpenTabRequestedEvent;
   "surfaces.changed": typeof surfacesChangedEvent;
@@ -6846,6 +7539,7 @@ export type NativeEventTypeMap = {
   "messageNotifications.event": typeof messageNotificationsEvent;
   "computeNode.state.changed": typeof computeNodeStateChangedEvent;
   "audioCapture.state.changed": typeof audioCaptureStateChangedEvent;
+  "voiceCall.audio": typeof voiceCallAudioEvent;
   "meetingPresence.state.changed": typeof meetingPresenceStateChangedEvent;
   "surfaces.windowResizeSettled": typeof surfacesWindowResizeSettledEvent;
   "airDrop.state.changed": typeof airDropStateChangedEvent;
@@ -6855,6 +7549,7 @@ export type NativeStateTypeMap = {
   "sitePermissionMenu.state": typeof sitePermissionMenuStateLeaf;
   "appPreferences.state": typeof appPreferencesStateLeaf;
   "connectorRuntime.state": typeof connectorRuntimeStateLeaf;
+  "macApps.state": typeof macAppsStateLeaf;
   "surfaces.state": typeof surfacesStateLeaf;
   "surfaces.windowFullScreen": typeof surfacesWindowFullScreenStateLeaf;
   "surfaces.windowMaximized": typeof surfacesWindowMaximizedStateLeaf;
@@ -6957,6 +7652,28 @@ export type GeneratedNativeBridge = {
       typeof connectorRuntimeCopyConnectCommandCapability
     >;
     state: GeneratedNativeStateBridgeMethod<typeof connectorRuntimeStateLeaf>;
+  };
+  localStation: {
+    accounts: GeneratedNativeCommandBridgeMethod<typeof localStationAccountsCapability>;
+    setAccountSource: GeneratedNativeCommandBridgeMethod<
+      typeof localStationSetAccountSourceCapability
+    >;
+    signIn: GeneratedNativeCommandBridgeMethod<typeof localStationSignInCapability>;
+    stopSignIn: GeneratedNativeCommandBridgeMethod<
+      typeof localStationStopSignInCapability
+    >;
+  };
+  macApps: {
+    setEnabled: GeneratedNativeCommandBridgeMethod<typeof macAppsSetEnabledCapability>;
+    openPrivacySettings: GeneratedNativeCommandBridgeMethod<
+      typeof macAppsOpenPrivacySettingsCapability
+    >;
+    openItem: GeneratedNativeCommandBridgeMethod<typeof macAppsOpenItemCapability>;
+    icons: GeneratedNativeCommandBridgeMethod<typeof macAppsIconsCapability>;
+    calendarEvents: GeneratedNativeCommandBridgeMethod<
+      typeof macAppsCalendarEventsCapability
+    >;
+    state: GeneratedNativeStateBridgeMethod<typeof macAppsStateLeaf>;
   };
   appearance: {
     setResolvedTheme: GeneratedNativeCommandBridgeMethod<
@@ -7123,12 +7840,22 @@ export type GeneratedNativeBridge = {
     drain: GeneratedNativeCommandBridgeMethod<typeof computeNodeDrainCapability>;
     remove: GeneratedNativeCommandBridgeMethod<typeof computeNodeRemoveCapability>;
     abandon: GeneratedNativeCommandBridgeMethod<typeof computeNodeAbandonCapability>;
+    resetLocalRecord: GeneratedNativeCommandBridgeMethod<
+      typeof computeNodeResetLocalRecordCapability
+    >;
     state: GeneratedNativeStateBridgeMethod<typeof computeNodeStateLeaf>;
   };
   chat: {
     pickAttachments: GeneratedNativeCommandBridgeMethod<
       typeof chatPickAttachmentsCapability
     >;
+  };
+  voiceCall: {
+    microphone: GeneratedNativeCommandBridgeMethod<
+      typeof voiceCallMicrophoneCapability
+    >;
+    played: GeneratedNativeCommandBridgeMethod<typeof voiceCallPlayedCapability>;
+    onAudio: GeneratedNativeEventBridgeMethod<typeof voiceCallAudioEvent>;
   };
   audioCapture: {
     sources: GeneratedNativeCommandBridgeMethod<typeof audioCaptureSourcesCapability>;
@@ -7339,6 +8066,40 @@ export function createGeneratedNativePreloadBridge(
         subscribe: connectorRuntimeStateChangedEvent,
       }),
     },
+    localStation: {
+      accounts: () =>
+        helpers.invoke(localStationAccountsCapability.contract, undefined),
+      setAccountSource: (
+        input: GeneratedNativeCommandInput<
+          typeof localStationSetAccountSourceCapability
+        >
+      ) => helpers.invoke(localStationSetAccountSourceCapability.contract, input),
+      signIn: (
+        input: GeneratedNativeCommandInput<typeof localStationSignInCapability>
+      ) => helpers.invoke(localStationSignInCapability.contract, input),
+      stopSignIn: (
+        input: GeneratedNativeCommandInput<typeof localStationStopSignInCapability>
+      ) => helpers.invoke(localStationStopSignInCapability.contract, input),
+    },
+    macApps: {
+      setEnabled: (
+        input: GeneratedNativeCommandInput<typeof macAppsSetEnabledCapability>
+      ) => helpers.invoke(macAppsSetEnabledCapability.contract, input),
+      openPrivacySettings: (
+        input: GeneratedNativeCommandInput<typeof macAppsOpenPrivacySettingsCapability>
+      ) => helpers.invoke(macAppsOpenPrivacySettingsCapability.contract, input),
+      openItem: (
+        input: GeneratedNativeCommandInput<typeof macAppsOpenItemCapability>
+      ) => helpers.invoke(macAppsOpenItemCapability.contract, input),
+      icons: () => helpers.invoke(macAppsIconsCapability.contract, undefined),
+      calendarEvents: (
+        input: GeneratedNativeCommandInput<typeof macAppsCalendarEventsCapability>
+      ) => helpers.invoke(macAppsCalendarEventsCapability.contract, input),
+      state: helpers.state({
+        get: macAppsStateCapability.contract,
+        subscribe: macAppsStateChangedEvent,
+      }),
+    },
     appearance: {
       setResolvedTheme: (
         input: GeneratedNativeCommandInput<typeof appearanceSetResolvedThemeCapability>
@@ -7547,6 +8308,8 @@ export function createGeneratedNativePreloadBridge(
       abandon: (
         input: GeneratedNativeCommandInput<typeof computeNodeAbandonCapability>
       ) => helpers.invoke(computeNodeAbandonCapability.contract, input),
+      resetLocalRecord: () =>
+        helpers.invoke(computeNodeResetLocalRecordCapability.contract, undefined),
       state: helpers.state({
         get: computeNodeStateCapability.contract,
         subscribe: computeNodeStateChangedEvent,
@@ -7557,6 +8320,14 @@ export function createGeneratedNativePreloadBridge(
         input: GeneratedNativeCommandInput<typeof chatPickAttachmentsCapability>
       ) =>
         helpers.prepareChatAttachments(chatPickAttachmentsCapability.contract, input),
+    },
+    voiceCall: {
+      microphone: (
+        input: GeneratedNativeCommandInput<typeof voiceCallMicrophoneCapability>
+      ) => helpers.invoke(voiceCallMicrophoneCapability.contract, input),
+      played: (input: GeneratedNativeCommandInput<typeof voiceCallPlayedCapability>) =>
+        helpers.invoke(voiceCallPlayedCapability.contract, input),
+      onAudio: (listener) => helpers.subscribe(voiceCallAudioEvent, listener),
     },
     audioCapture: {
       sources: () => helpers.invoke(audioCaptureSourcesCapability.contract, undefined),
@@ -7741,6 +8512,39 @@ export function createGeneratedNativeWebBridge(): GeneratedNativeBridge {
         GeneratedNativeStateSnapshot<typeof connectorRuntimeStateLeaf>,
         GeneratedNativeStateGetInput<typeof connectorRuntimeStateLeaf>
       >((_input) => connectorRuntimeStateLeaf.webFallback),
+    },
+    localStation: {
+      accounts: async () => localStationAccountsCapability.webFallback,
+      setAccountSource: async (
+        _input: GeneratedNativeCommandInput<
+          typeof localStationSetAccountSourceCapability
+        >
+      ) => localStationSetAccountSourceCapability.webFallback,
+      signIn: async (
+        _input: GeneratedNativeCommandInput<typeof localStationSignInCapability>
+      ) => localStationSignInCapability.webFallback,
+      stopSignIn: async (
+        _input: GeneratedNativeCommandInput<typeof localStationStopSignInCapability>
+      ) => localStationStopSignInCapability.webFallback,
+    },
+    macApps: {
+      setEnabled: async (
+        _input: GeneratedNativeCommandInput<typeof macAppsSetEnabledCapability>
+      ) => macAppsSetEnabledCapability.webFallback,
+      openPrivacySettings: async (
+        _input: GeneratedNativeCommandInput<typeof macAppsOpenPrivacySettingsCapability>
+      ) => macAppsOpenPrivacySettingsCapability.webFallback,
+      openItem: async (
+        _input: GeneratedNativeCommandInput<typeof macAppsOpenItemCapability>
+      ) => macAppsOpenItemCapability.webFallback,
+      icons: async () => macAppsIconsCapability.webFallback,
+      calendarEvents: async (
+        _input: GeneratedNativeCommandInput<typeof macAppsCalendarEventsCapability>
+      ) => macAppsCalendarEventsCapability.webFallback,
+      state: createGeneratedWebStateBridge<
+        GeneratedNativeStateSnapshot<typeof macAppsStateLeaf>,
+        GeneratedNativeStateGetInput<typeof macAppsStateLeaf>
+      >((_input) => macAppsStateLeaf.webFallback),
     },
     appearance: {
       setResolvedTheme: async (
@@ -7956,6 +8760,7 @@ export function createGeneratedNativeWebBridge(): GeneratedNativeBridge {
       abandon: async (
         _input: GeneratedNativeCommandInput<typeof computeNodeAbandonCapability>
       ) => computeNodeAbandonCapability.webFallback,
+      resetLocalRecord: async () => computeNodeResetLocalRecordCapability.webFallback,
       state: createGeneratedWebStateBridge<
         GeneratedNativeStateSnapshot<typeof computeNodeStateLeaf>,
         GeneratedNativeStateGetInput<typeof computeNodeStateLeaf>
@@ -7965,6 +8770,15 @@ export function createGeneratedNativeWebBridge(): GeneratedNativeBridge {
       pickAttachments: async (
         _input: GeneratedNativeCommandInput<typeof chatPickAttachmentsCapability>
       ) => chatPickAttachmentsCapability.webFallback,
+    },
+    voiceCall: {
+      microphone: async (
+        _input: GeneratedNativeCommandInput<typeof voiceCallMicrophoneCapability>
+      ) => voiceCallMicrophoneCapability.webFallback,
+      played: async (
+        _input: GeneratedNativeCommandInput<typeof voiceCallPlayedCapability>
+      ) => voiceCallPlayedCapability.webFallback,
+      onAudio: () => () => {},
     },
     audioCapture: {
       sources: async () => audioCaptureSourcesCapability.webFallback,
@@ -8171,6 +8985,54 @@ export function createGeneratedNativeBridgeMock(
       state: helpers.state(
         (_input: GeneratedNativeStateGetInput<typeof connectorRuntimeStateLeaf>) =>
           connectorRuntimeStateLeaf.mock
+      ),
+    },
+    localStation: {
+      accounts: helpers.command(async () => localStationAccountsCapability.mock),
+      setAccountSource: helpers.command(
+        async (
+          _input: GeneratedNativeCommandInput<
+            typeof localStationSetAccountSourceCapability
+          >
+        ) => localStationSetAccountSourceCapability.mock
+      ),
+      signIn: helpers.command(
+        async (
+          _input: GeneratedNativeCommandInput<typeof localStationSignInCapability>
+        ) => localStationSignInCapability.mock
+      ),
+      stopSignIn: helpers.command(
+        async (
+          _input: GeneratedNativeCommandInput<typeof localStationStopSignInCapability>
+        ) => localStationStopSignInCapability.mock
+      ),
+    },
+    macApps: {
+      setEnabled: helpers.command(
+        async (
+          _input: GeneratedNativeCommandInput<typeof macAppsSetEnabledCapability>
+        ) => macAppsSetEnabledCapability.mock
+      ),
+      openPrivacySettings: helpers.command(
+        async (
+          _input: GeneratedNativeCommandInput<
+            typeof macAppsOpenPrivacySettingsCapability
+          >
+        ) => macAppsOpenPrivacySettingsCapability.mock
+      ),
+      openItem: helpers.command(
+        async (_input: GeneratedNativeCommandInput<typeof macAppsOpenItemCapability>) =>
+          macAppsOpenItemCapability.mock
+      ),
+      icons: helpers.command(async () => macAppsIconsCapability.mock),
+      calendarEvents: helpers.command(
+        async (
+          _input: GeneratedNativeCommandInput<typeof macAppsCalendarEventsCapability>
+        ) => macAppsCalendarEventsCapability.mock
+      ),
+      state: helpers.state(
+        (_input: GeneratedNativeStateGetInput<typeof macAppsStateLeaf>) =>
+          macAppsStateLeaf.mock
       ),
     },
     appearance: {
@@ -8477,6 +9339,9 @@ export function createGeneratedNativeBridgeMock(
           _input: GeneratedNativeCommandInput<typeof computeNodeAbandonCapability>
         ) => computeNodeAbandonCapability.mock
       ),
+      resetLocalRecord: helpers.command(
+        async () => computeNodeResetLocalRecordCapability.mock
+      ),
       state: helpers.state(
         (_input: GeneratedNativeStateGetInput<typeof computeNodeStateLeaf>) =>
           computeNodeStateLeaf.mock
@@ -8488,6 +9353,18 @@ export function createGeneratedNativeBridgeMock(
           _input: GeneratedNativeCommandInput<typeof chatPickAttachmentsCapability>
         ) => chatPickAttachmentsCapability.mock
       ),
+    },
+    voiceCall: {
+      microphone: helpers.command(
+        async (
+          _input: GeneratedNativeCommandInput<typeof voiceCallMicrophoneCapability>
+        ) => voiceCallMicrophoneCapability.mock
+      ),
+      played: helpers.command(
+        async (_input: GeneratedNativeCommandInput<typeof voiceCallPlayedCapability>) =>
+          voiceCallPlayedCapability.mock
+      ),
+      onAudio: helpers.event((_listener) => () => {}),
     },
     audioCapture: {
       sources: helpers.command(async () => audioCaptureSourcesCapability.mock),
@@ -8710,6 +9587,14 @@ export function mergeGeneratedNativeBridgeOverrides(
       ...bridge.connectorRuntime,
       ...overrides.connectorRuntime,
     },
+    localStation: {
+      ...bridge.localStation,
+      ...overrides.localStation,
+    },
+    macApps: {
+      ...bridge.macApps,
+      ...overrides.macApps,
+    },
     appearance: {
       ...bridge.appearance,
       ...overrides.appearance,
@@ -8777,6 +9662,10 @@ export function mergeGeneratedNativeBridgeOverrides(
     chat: {
       ...bridge.chat,
       ...overrides.chat,
+    },
+    voiceCall: {
+      ...bridge.voiceCall,
+      ...overrides.voiceCall,
     },
     audioCapture: {
       ...bridge.audioCapture,

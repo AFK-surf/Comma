@@ -7,7 +7,9 @@
 // answers its caller, then sends what the meeting saved. Commands are serialized by construction: nothing else writes
 // the journal. A finalize that failed in a way a later try may fix is tried twice more, 5 s and 15 s after (a
 // `Schedule` on the core's Clock), for the session it failed in. Outputs of a summarized meeting are archived by their
-// own two workers (outputs.ts), which report to the lane.
+// own two workers (outputs.ts), which report to the lane. Archiving that failed (the Task ended without its outputs,
+// did not attach them in time, or Drive failed) is shown once: later tries (a launch, a new session) are quiet until
+// they save the outputs; a person's Retry shows its end again.
 //
 // Bounds: at most 32 retained meetings; one send at a time; two delayed retries of a failed finalize; a question about
 // a meeting found after a restart holds the lane until it is answered.
@@ -36,6 +38,7 @@ import { z } from "zod";
 import type { Account } from "../account.ts";
 import { route } from "../api.ts";
 import { workspaceBootstrapSchema } from "../comma/schemas.ts";
+import type { MeetingTaskReference } from "../contract.ts";
 import type { Ctx } from "../ctx.ts";
 import type {
   MeetingLocalFile,
@@ -51,6 +54,8 @@ import {
 } from "./errors.ts";
 import {
   archiveMeetingOutputs,
+  type MeetingOutputEnd,
+  meetingOutputEnd,
   meetingOutputExtensions,
   type MeetingOutputJob,
 } from "./outputs.ts";
@@ -137,6 +142,8 @@ const entrySchema = z.object({
     .strip()
     .optional(),
   outputs: z.array(z.enum(meetingOutputExtensions)).max(3).default([]),
+  /** Archiving its outputs failed, and that was shown: later tries are quiet until they save them. */
+  archiveFailureShown: z.boolean().optional(),
   version: z.number().int().nonnegative(),
   action: z.enum(["recording", "paused", "dismiss", "discard", "finalize"]).optional(),
   final: z
@@ -154,10 +161,14 @@ const journalSchema = z.array(entrySchema).max(32);
 
 /** A meeting's Task as the recorder shows it. */
 export type MeetingTaskState = {
-  task?: { groupId: string; taskId: string };
+  task?: MeetingTaskReference;
   status: "pending" | "synced" | "error";
   error?: string;
-  archive?: "done" | "error";
+  /**
+   * `missing`: the Task ended without attaching its outputs; `pending`: it did not attach them in time; `error`:
+   * reading or saving them in Drive failed.
+   */
+  archive?: "done" | "missing" | "pending" | "error";
   recording?: MeetingRecording;
 };
 
@@ -189,21 +200,32 @@ type Command =
       recording: MeetingRecording;
       sourcePath: string;
       smartSummary: boolean;
-      reply: Reply<MeetingTaskReceipt>;
+      reply: Reply<MeetingTaskReference>;
     }
   | { kind: "archiveTime"; key: string; reply: Reply<number | undefined> }
-  | { kind: "retry"; reply: Reply<void> }
+  /** `person`: a person's Retry, which shows how archiving ends again, a failure shown before included. */
+  | { kind: "retry"; person: boolean; reply: Reply<void> }
   /** A scheduled retry of a failed finalize, for the session it failed in. */
   | {
       kind: "resend";
       id: string;
       lease: SessionLease;
-      reply: Reply<MeetingTaskReceipt>;
+      reply: Reply<MeetingTaskReference>;
     }
   /** The outputs saved so far (an archive worker's checkpoint). */
   | { kind: "checkpoint"; job: MeetingOutputJob; reply: Reply<void> }
   /** An archive worker ended its job. */
-  | { kind: "archived"; job: MeetingOutputJob; done: boolean };
+  | { kind: "archived"; job: MeetingOutputJob; end: MeetingOutputEnd };
+
+/** The Task the server saved for `entry`, and the workspace that opens it. */
+function taskReference(entry: Entry): MeetingTaskReference | undefined {
+  if (!entry.receipt || !entry.workspace) return undefined;
+  return {
+    groupId: entry.receipt.group_id,
+    taskId: entry.receipt.task_id,
+    workspaceId: entry.workspace.id,
+  };
+}
 
 /** The server archives a dismissed meeting and cancels a discarded one. It rejects every newer command. */
 function closedWithoutAudio(entry: Entry): boolean {
@@ -321,7 +343,7 @@ export class MeetingTasks {
     recording: MeetingRecording,
     sourcePath: string,
     smartSummary: boolean
-  ): Effect.Effect<MeetingTaskReceipt, MeetingTaskError> {
+  ): Effect.Effect<MeetingTaskReference, MeetingTaskError> {
     return this.#ask((reply) => ({
       kind: "finalize",
       key,
@@ -337,9 +359,12 @@ export class MeetingTasks {
     return this.#ask((reply) => ({ kind: "archiveTime", key, reply }));
   }
 
-  /** Sends the account's saved commands that wait again, and archives outputs that wait. */
-  retryPending(): Effect.Effect<void, MeetingTaskError> {
-    return this.#ask((reply) => ({ kind: "retry", reply }));
+  /**
+   * Sends the account's saved commands that wait again, and archives outputs that wait. `person`: a person's Retry,
+   * which shows how archiving ends again, a failure shown before included.
+   */
+  retryPending(person = false): Effect.Effect<void, MeetingTaskError> {
+    return this.#ask((reply) => ({ kind: "retry", person, reply }));
   }
 
   close(): void {
@@ -433,7 +458,7 @@ export class MeetingTasks {
           Effect.sync(() => this.#get(command.key)?.entry.started_at)
         );
       case "retry":
-        return answer(command.reply, this.#retryPending());
+        return answer(command.reply, this.#retryPending(command.person));
       case "resend":
         return answer(
           command.reply,
@@ -460,18 +485,29 @@ export class MeetingTasks {
           })
         );
       case "archived":
-        return Effect.sync(() => {
-          const { job } = command;
+        return Effect.gen({ self: this }, function* () {
+          const { job, end } = command;
           this.#outputs?.held.delete(job.id);
           if (this.#closed || job.account !== this.account()) return;
           const entry = this.#entries.find((e) => e.entry.occurrence_id === job.id);
-          if (entry)
-            this.#publish(entry.key, {
-              status: "synced",
-              task: { groupId: job.groupId, taskId: job.taskId },
-              archive: command.done && job.completed.length === 3 ? "done" : "error",
-              recording: job.recording,
-            });
+          if (!entry) return;
+          // A failure shown once is tried again quietly (a launch, a new session) until the outputs are saved. Shown
+          // before the journal is saved, in the same turn the account was checked in, so no other account sees it.
+          const shown = entry.archiveFailureShown === true;
+          if (shown && end !== "done") return;
+          this.#publish(entry.key, {
+            status: "synced",
+            task: {
+              groupId: job.groupId,
+              taskId: job.taskId,
+              workspaceId: job.workspaceId,
+            },
+            archive: end === "settled" ? "missing" : end,
+            recording: job.recording,
+          });
+          if (shown) delete entry.archiveFailureShown;
+          else if (end !== "done") entry.archiveFailureShown = true;
+          if (shown || end !== "done") yield* Effect.ignore(this.#persist());
         });
     }
   }
@@ -628,7 +664,7 @@ export class MeetingTasks {
 
   #finalize(
     command: Extract<Command, { kind: "finalize" }>
-  ): Effect.Effect<MeetingTaskReceipt, MeetingTaskError> {
+  ): Effect.Effect<MeetingTaskReference, MeetingTaskError> {
     return Effect.gen({ self: this }, function* () {
       const entry = this.#get(command.key);
       if (!entry)
@@ -657,7 +693,7 @@ export class MeetingTasks {
     });
   }
 
-  #retryPending(): Effect.Effect<void> {
+  #retryPending(person: boolean): Effect.Effect<void> {
     return Effect.gen({ self: this }, function* () {
       if (this.#loadError || this.#closed) return;
       const account = this.account();
@@ -666,6 +702,11 @@ export class MeetingTasks {
         this.#ctx.runner.close(this.#outputs.scope);
         this.#outputs = null;
       }
+      const shown = person
+        ? this.#entries.filter((e) => e.account === account && e.archiveFailureShown)
+        : [];
+      for (const entry of shown) delete entry.archiveFailureShown;
+      if (shown.length > 0) yield* Effect.ignore(this.#persist());
       for (const entry of this.#entries)
         if (entry.account === account) this.#watchOutputs(entry);
       const pending = this.#entries.filter(
@@ -715,11 +756,10 @@ export class MeetingTasks {
       entry.action === "discard" ||
       closedWithoutAudio(entry);
     if (owner ? owner !== entry.entry.occurrence_id : closed) return;
+    const task = taskReference(entry);
     this.#publish(entry.key, {
       status,
-      ...(entry.receipt
-        ? { task: { groupId: entry.receipt.group_id, taskId: entry.receipt.task_id } }
-        : {}),
+      ...(task ? { task } : {}),
       ...(error ? { error } : {}),
     });
   }
@@ -738,6 +778,7 @@ export class MeetingTasks {
     if (
       !entry.final?.smartSummary ||
       !entry.receipt ||
+      !entry.workspace ||
       entry.receipt.meeting.phase !== "processing" ||
       entry.outputs.length === 3 ||
       entry.account !== this.account()
@@ -749,6 +790,7 @@ export class MeetingTasks {
     Queue.offerUnsafe(outputs.jobs, {
       id: entry.entry.occurrence_id,
       account: entry.account,
+      workspaceId: entry.workspace.id,
       groupId: entry.receipt.group_id,
       taskId: entry.receipt.task_id,
       title: entry.entry.name,
@@ -775,7 +817,7 @@ export class MeetingTasks {
                 Queue.offerUnsafe(this.#commands, {
                   kind: "archived",
                   job,
-                  done: Exit.isSuccess(exit),
+                  end: meetingOutputEnd(exit),
                 })
               )
             ),
@@ -800,7 +842,7 @@ export class MeetingTasks {
   #sync(
     entry: Entry,
     options: { schedule?: boolean; lease?: SessionLease }
-  ): Effect.Effect<MeetingTaskReceipt, MeetingTaskError> {
+  ): Effect.Effect<MeetingTaskReference, MeetingTaskError> {
     const ctx = this.#ctx;
     const id = entry.entry.occurrence_id;
     if (options.schedule) {
@@ -914,7 +956,11 @@ export class MeetingTasks {
       }
       this.#show(entry, "synced");
       this.#watchOutputs(entry);
-      return entry.receipt;
+      return {
+        groupId: entry.receipt.group_id,
+        taskId: entry.receipt.task_id,
+        workspaceId: workspace.id,
+      };
     });
     return send.pipe(
       Effect.catch((error: unknown) =>
@@ -942,7 +988,7 @@ export class MeetingTasks {
         first = false;
         return Effect.fail(failure);
       }
-      return this.#ask<MeetingTaskReceipt>((reply) => ({
+      return this.#ask<MeetingTaskReference>((reply) => ({
         kind: "resend",
         id,
         lease,

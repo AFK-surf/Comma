@@ -2,7 +2,10 @@ import { describe, expect, it, vi } from "vitest";
 import { getNativeBridge } from "@comma/native-bridge";
 import { installNativeBridgeMock } from "@comma/test-utils/native-bridge";
 import type { CallFn } from "@comma/core-client";
-import { createFileOpenInAction } from "../runtime-files/fileOpenActions";
+import {
+  createFileOpenInAction,
+  createResolvedFileOpenInAction,
+} from "../runtime-files/fileOpenActions";
 import type { ConversationFileSource } from "../runtime-files/fileSources";
 
 const applicationId = `fap1_${"b".repeat(43)}`;
@@ -14,13 +17,11 @@ const source: ConversationFileSource = {
   fileName: "report.pdf",
 };
 const saved = {
-  status: "saved" as const,
   fileName: "report.pdf",
   downloadRef: `dnl1_${"a".repeat(43)}`,
 };
-const pdf = { bytes: new TextEncoder().encode("pdf bytes"), type: "application/pdf" };
-type Read = (name: string, params: unknown, signal?: AbortSignal) => Promise<unknown>;
-const callWith = (read: Read = vi.fn(async () => pdf)) => read as unknown as CallFn;
+type Save = (name: string, params: unknown) => Promise<unknown>;
+const callWith = (save: Save = vi.fn(async () => saved)) => save as unknown as CallFn;
 const attempt =
   (controller = new AbortController()) =>
   () => ({
@@ -37,7 +38,7 @@ const deferred = <T>() => {
 };
 
 function setup(call = callWith(), file = source, beginAttempt = attempt()) {
-  const saveDownload = vi.fn(async () => saved);
+  const saveDownload = vi.fn(async () => ({ status: "saved" as const, ...saved }));
   const openDownload = vi.fn(async () => ({ status: "opened" as const }));
   const revealDownload = vi.fn(async () => ({ status: "revealed" as const }));
   const listOpenApplications = vi.fn(async () => ({
@@ -70,13 +71,25 @@ function setup(call = callWith(), file = source, beginAttempt = attempt()) {
 }
 
 describe("file open actions", () => {
-  it("discovers applications without retrieving bytes and reuses a completed save for open and reveal", async () => {
+  it("discovers applications without saving, and reuses the file the core saved for open and reveal", async () => {
     const { action, call, saveDownload, openDownload, revealDownload } = setup();
     expect(await action.listApplications()).toHaveLength(1);
     expect(call).not.toHaveBeenCalled();
     await action.openApplication(applicationId);
     await action.reveal!.run();
-    expect(saveDownload).toHaveBeenCalledTimes(1);
+    expect(call).toHaveBeenCalledTimes(1);
+    expect(call).toHaveBeenCalledWith("files.save", {
+      source: {
+        source: "attachment",
+        group: "group",
+        conversation: "conversation",
+        message: "message",
+        index: 0,
+      },
+      name: "report.pdf",
+    });
+    // Main writes the file as it arrives: no bytes cross into the window.
+    expect(saveDownload).not.toHaveBeenCalled();
     expect(openDownload).toHaveBeenCalledWith({
       downloadRef: saved.downloadRef,
       applicationId: applicationId,
@@ -85,7 +98,7 @@ describe("file open actions", () => {
   });
 
   it("never reuses a same-name receipt across source addresses or Sessions", async () => {
-    const { action, beginAttempt, call, bridge, saveDownload } = setup();
+    const { action, beginAttempt, call, bridge } = setup();
     await action.openApplication(applicationId);
     await createFileOpenInAction({
       call,
@@ -102,48 +115,23 @@ describe("file open actions", () => {
       locale: "en",
       beginAttempt: attempt(),
     })!.openApplication(applicationId);
-    expect(saveDownload).toHaveBeenCalledTimes(3);
+    expect(call).toHaveBeenCalledTimes(3);
   });
 
-  it("lets the core's read go and does not save or open late bytes after cancellation", async () => {
-    const bytes = deferred<typeof pdf>();
-    const read = vi.fn(
-      (_name: string, _params: unknown, _signal?: AbortSignal) => bytes.promise
-    );
-    const { action, saveDownload, openDownload } = setup(callWith(read));
-    const cancelled = new AbortController();
-    const result = action.openApplication(applicationId, cancelled.signal);
-    const failure = expect(result).rejects.toMatchObject({ name: "AbortError" });
-    cancelled.abort();
-    expect(read.mock.calls[0]![0]).toBe("files.read");
-    expect(read.mock.calls[0]![1]).toEqual({
-      source: "attachment",
-      group: "group",
-      conversation: "conversation",
-      message: "message",
-      index: 0,
-    });
-    expect(read.mock.calls[0]![2]!.aborted).toBe(true);
-    bytes.resolve(pdf);
-    await failure;
-    expect(saveDownload).not.toHaveBeenCalled();
-    expect(openDownload).not.toHaveBeenCalled();
-  });
-
-  it("does not dispatch open when an already dispatched save finishes after cancellation", async () => {
+  it("does not open a file saved after cancellation, and reuses it on the next action", async () => {
     const save = deferred<typeof saved>();
-    const { action, saveDownload, openDownload } = setup();
-    saveDownload.mockReturnValueOnce(save.promise);
+    const call = vi.fn<Save>(() => save.promise);
+    const { action, openDownload } = setup(callWith(call));
     const cancelled = new AbortController();
     const result = action.openApplication(applicationId, cancelled.signal);
     const failure = expect(result).rejects.toMatchObject({ name: "AbortError" });
-    await vi.waitFor(() => expect(saveDownload).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(call).toHaveBeenCalledTimes(1));
     cancelled.abort();
     save.resolve(saved);
     await failure;
     expect(openDownload).not.toHaveBeenCalled();
     await action.openApplication(applicationId);
-    expect(saveDownload).toHaveBeenCalledTimes(1);
+    expect(call).toHaveBeenCalledTimes(1);
     expect(openDownload).toHaveBeenCalledTimes(1);
   });
 
@@ -158,14 +146,13 @@ describe("file open actions", () => {
     expect(openDownload).toHaveBeenCalledTimes(1);
   });
 
-  it("does not open a file after retrieval or native save failure", async () => {
-    const read = vi.fn<Read>(async () => pdf);
-    const { action, saveDownload, openDownload } = setup(callWith(read));
-    read.mockRejectedValueOnce(new Error("404"));
+  it("does not open a file the core could not save", async () => {
+    const call = vi.fn<Save>(async () => saved);
+    const { action, openDownload } = setup(callWith(call));
+    call.mockRejectedValueOnce(new Error("404"));
     await expect(action.openApplication(applicationId)).rejects.toThrow("404");
-    expect(saveDownload).not.toHaveBeenCalled();
-    saveDownload.mockRejectedValueOnce(new Error("disk full"));
-    await expect(action.openApplication(applicationId)).rejects.toThrow("disk full");
+    call.mockResolvedValueOnce(null);
+    await expect(action.openApplication(applicationId)).rejects.toThrow();
     expect(openDownload).not.toHaveBeenCalled();
   });
 
@@ -191,19 +178,20 @@ describe("file open actions", () => {
     ).toBeUndefined();
   });
 
-  it("retires an unavailable saved file and re-saves only after the next user action", async () => {
-    const { action, saveDownload, openDownload } = setup();
+  it("retires an unavailable saved file and saves again only after the next user action", async () => {
+    const { action, call, openDownload } = setup();
     await action.openApplication(applicationId);
     openDownload.mockResolvedValueOnce({ status: "unavailable" } as never);
     await expect(action.openApplication(applicationId)).rejects.toThrow();
     expect(openDownload).toHaveBeenCalledTimes(2);
-    expect(saveDownload).toHaveBeenCalledTimes(1);
+    expect(call).toHaveBeenCalledTimes(1);
     await action.openApplication(applicationId);
-    expect(saveDownload).toHaveBeenCalledTimes(2);
+    expect(call).toHaveBeenCalledTimes(2);
     expect(openDownload).toHaveBeenCalledTimes(3);
   });
-  it("bounds completed receipts and rejects files above the existing byte limit before saving", async () => {
-    const { action, beginAttempt, call, bridge, saveDownload } = setup();
+
+  it("bounds completed receipts", async () => {
+    const { action, beginAttempt, call, bridge } = setup();
     await action.openApplication(applicationId);
     for (let index = 0; index < 32; index += 1) {
       await createFileOpenInAction({
@@ -215,11 +203,21 @@ describe("file open actions", () => {
       })!.openApplication(applicationId);
     }
     await action.openApplication(applicationId);
-    expect(saveDownload).toHaveBeenCalledTimes(34);
-    const large = setup(
-      callWith(vi.fn(async () => ({ bytes: new Uint8Array(10_000_001), type: "" })))
-    );
-    await expect(large.action.openApplication(applicationId)).rejects.toThrow();
-    expect(large.saveDownload).not.toHaveBeenCalled();
+    expect(call).toHaveBeenCalledTimes(34);
+  });
+
+  it("rejects bytes an adapter read above the native save's bound before saving", async () => {
+    const { bridge, saveDownload } = setup();
+    const action = createResolvedFileOpenInAction({
+      owner: {},
+      sourceKey: "drive-file",
+      fileName: "big.bin",
+      resolveBytes: async () => new Blob([new Uint8Array(10_000_001)]),
+      bridge,
+      locale: "en",
+      beginAttempt: attempt(),
+    })!;
+    await expect(action.openApplication(applicationId)).rejects.toThrow();
+    expect(saveDownload).not.toHaveBeenCalled();
   });
 });

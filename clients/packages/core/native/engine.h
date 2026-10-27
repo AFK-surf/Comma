@@ -14,7 +14,8 @@ namespace comma {
 
 /**
  * What a running core asks of the app, called on the core's own thread (the one in `Engine::run`). `call` returns at
- * once and is answered later through `Engine::complete`; `callSync` answers before it returns.
+ * once and is answered later through `Engine::complete`; `callSync` answers before it returns. Built with COMMA_MESH
+ * (the phones' iroh linked in), the engine answers the core's `mesh.*` operations itself: the app never gets them.
  */
 class EngineHost {
  public:

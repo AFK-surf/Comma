@@ -1,0 +1,36 @@
+// Outbound Worker of the Mini App dispatch namespace. Every fetch from an app
+// script goes through it. It has no route of its own.
+// EGRESS_LIMITER: at most 600 outbound requests per app per 60 s, counted per
+// Cloudflare location (the Rate Limiting binding is not global).
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "miniapp-outbound",
+  "main": "../src/outbound.ts",
+  "compatibility_date": "2026-06-30",
+  "workers_dev": false,
+  "observability": { "enabled": true, "head_sampling_rate": 1 },
+  "vars": { "MINIAPP_BLOCKED_HOSTS": "" },
+  "ratelimits": [
+    { "name": "EGRESS_LIMITER", "namespace_id": "40700", "simple": { "limit": 600, "period": 60 } },
+  ],
+  "env": {
+    "staging": {
+      "name": "miniapp-outbound-staging",
+      "workers_dev": false,
+      "observability": { "enabled": true, "head_sampling_rate": 1 },
+      "vars": { "MINIAPP_BLOCKED_HOSTS": "" },
+      "ratelimits": [
+        { "name": "EGRESS_LIMITER", "namespace_id": "40701", "simple": { "limit": 600, "period": 60 } },
+      ],
+    },
+    "stable": {
+      "name": "miniapp-outbound-stable",
+      "workers_dev": false,
+      "observability": { "enabled": true, "head_sampling_rate": 1 },
+      "vars": { "MINIAPP_BLOCKED_HOSTS": "" },
+      "ratelimits": [
+        { "name": "EGRESS_LIMITER", "namespace_id": "40702", "simple": { "limit": 600, "period": 60 } },
+      ],
+    },
+  },
+}

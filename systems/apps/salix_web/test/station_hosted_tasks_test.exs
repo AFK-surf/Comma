@@ -33,13 +33,22 @@ defmodule SalixWeb.StationHostedTasksTest do
                  "author" => "ann@x",
                  "text" => "fix it",
                  "at" => 1
+               },
+               # Milestones its agent recorded alone: no text.
+               %{
+                 "seq" => 2,
+                 "author_kind" => "agent",
+                 "author" => "ember:c-1",
+                 "text" => "",
+                 "at" => 2,
+                 "milestones" => ["Found the failing test"]
                }
              ],
-             "through" => 1
+             "through" => 2
            }}
 
         "task.say" ->
-          {:ok, %{"seq" => 2}}
+          {:ok, %{"seq" => 3}}
       end
     end
   end
@@ -119,12 +128,19 @@ defmodule SalixWeb.StationHostedTasksTest do
 
     run_id = connect!(context.view)
 
-    assert {:ok, %{"messages" => [%{"text" => "fix it"}], "through_seq" => 1}} =
+    assert {:ok,
+            %{
+              "messages" => [
+                %{"text" => "fix it"},
+                %{"text" => "", "milestones" => ["Found the failing test"]}
+              ],
+              "through_seq" => 2
+            }} =
              router_call(context.router, "internal.read_conversation", %{"conversation_id" => ref})
 
     assert_received {:asked, ^run_id, "task.read", %{"task" => "EMBER/1792.000100", "after" => 0}}
 
-    assert {:ok, %{"seq" => 2, "conversation_id" => ^ref}} =
+    assert {:ok, %{"seq" => 3, "conversation_id" => ^ref}} =
              router_call(context.router, "internal.send_message", %{
                "conversation_id" => ref,
                "content" => "run the tests too",

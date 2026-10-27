@@ -13,7 +13,6 @@ function task(
 ): TaskSummaryViewModel {
   return {
     activityStatus: statusBucket === "in_progress" ? "working" : "idle",
-    freshness: "fresh",
     id: `task-${statusBucket}`,
     statusBucket,
     title: "Generate the quarterly launch brief",
@@ -101,16 +100,6 @@ describe("Task card progress line", () => {
       "In progress"
     );
   });
-
-  it("keeps a stale projection on the running line", () => {
-    const { container } = render(
-      <TaskSummaryCard task={task("in_progress", { freshness: "stale" })} />
-    );
-
-    expect(container.querySelector(".comma-shiny-text")).toHaveTextContent(
-      "Stale · Working"
-    );
-  });
 });
 
 function source(initial: Record<string, string>) {
@@ -135,12 +124,8 @@ describe("Task card live progress", () => {
     const steps = source({ "task-a": "Read SKILL.md" });
     const { container } = render(
       <TaskProgressContext.Provider value={steps.value}>
-        <TaskSummaryCard
-          task={task("in_progress", { freshness: "stale", id: "task-a" })}
-        />
-        <TaskSummaryCard
-          task={task("in_progress", { freshness: "stale", id: "task-b" })}
-        />
+        <TaskSummaryCard task={task("in_progress", { id: "task-a" })} />
+        <TaskSummaryCard task={task("in_progress", { id: "task-b" })} />
       </TaskProgressContext.Provider>
     );
     const lines = () =>
@@ -148,7 +133,7 @@ describe("Task card live progress", () => {
         (line) => line.textContent
       );
 
-    expect(lines()).toEqual(["Read SKILL.md", "Stale · Working"]);
+    expect(lines()).toEqual(["Read SKILL.md", "Working"]);
     act(() => steps.publish({ "task-a": "Ran the tests", "task-b": "Thinking" }));
     expect(lines()).toEqual(["Ran the tests", "Thinking"]);
   });
@@ -176,21 +161,17 @@ describe("Inline Task hover card", () => {
     expect(baseElement.querySelector(".comma-shiny-text")).toHaveTextContent("Working");
   });
 
-  it("shows progress on a running task whose freshness is still unknown", () => {
-    // The app defaults an inline Task to freshness "unknown" until its preview
-    // loads (MessageInlineElements.taskSummary). That used to replace the
-    // progress text outright, so the hover card only ever said "Status
-    // unknown" while the task was plainly running.
+  it("shows progress on a running task whose preview has not loaded yet", () => {
     const { baseElement } = render(
       <InlineTask
         defaultOpen
         link={link}
-        task={task("in_progress", { activityStatus: "idle", freshness: "unknown" })}
+        task={task("in_progress", { activityStatus: "idle" })}
       />
     );
 
     expect(baseElement.querySelector(".comma-shiny-text")).toHaveTextContent(
-      "Status unknown · In progress"
+      "In progress"
     );
   });
 

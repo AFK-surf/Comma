@@ -32,6 +32,7 @@ import {
   SubmenuTrigger as AriaSubmenuTrigger,
   Popover as AriaPopover,
   Separator as AriaSeparator,
+  Text as AriaText,
 } from "react-aria-components";
 import { uiClock, type CancelUiTimer } from "../../clock";
 import { borderWidth, motionDuration, spacing, typeScale } from "../../tokens";
@@ -82,6 +83,12 @@ export interface MenuItemProps<T extends object = object> extends Omit<
   icon?: ReactNode;
   gutter?: "default" | "none";
   layout?: "row" | "tile";
+  /**
+   * A short note after the label on the same line, such as "Offline" or the
+   * account that serves a model. Assistive tech reads it as the row's
+   * description, not as part of its name.
+   */
+  note?: ReactNode;
   /**
    * How a selectable row shows its state: a checkbox for multi-select filters,
    * or a plain checkmark (Central checkmark-1) for single-select pickers, where
@@ -157,6 +164,7 @@ export const MenuItem = <T extends object = object>({
   gutter = "default",
   icon,
   layout = "row",
+  note,
   selectionIndicator,
   shortcut,
   textValue,
@@ -264,15 +272,37 @@ export const MenuItem = <T extends object = object>({
                   {icon}
                 </span>
               )}
-              <span
-                className={cx(
-                  layout === "row" ? menuItemClasses.label : menuItemClasses.labelTile
-                )}
-                data-slot="menu-item-label"
-              >
-                {children}
-              </span>
+              {note ? (
+                // With a note, the label alone names the row.
+                <AriaText
+                  className={
+                    layout === "row" ? menuItemClasses.label : menuItemClasses.labelTile
+                  }
+                  data-slot="menu-item-label"
+                  slot="label"
+                >
+                  {children}
+                </AriaText>
+              ) : (
+                <span
+                  className={cx(
+                    layout === "row" ? menuItemClasses.label : menuItemClasses.labelTile
+                  )}
+                  data-slot="menu-item-label"
+                >
+                  {children}
+                </span>
+              )}
             </span>
+            {note ? (
+              <AriaText
+                className={menuItemClasses.shortcut}
+                data-slot="menu-item-note"
+                slot="description"
+              >
+                {note}
+              </AriaText>
+            ) : null}
             {shortcut && (
               <span
                 aria-hidden
@@ -495,6 +525,79 @@ function useCloseSubmenusOnPointerLeave(isEnabled: boolean, group: MenuPopoverGr
   }, [group, isEnabled, isRootMenuOpen]);
 }
 
+/**
+ * A MenuTrigger opens its menu as the mouse button goes down, and React Aria
+ * chooses the row the button is released over, so one press can drag to a
+ * choice. A menu that lies over its trigger (a selection-aligned one, or one
+ * too tall for the room around it) is under the pointer when a plain click
+ * releases, and the click would choose that row and close the menu. Released
+ * over the trigger, the press that opened the menu only opens it, as a macOS
+ * pop-up button's does; dragged off the trigger onto a row, it chooses that row.
+ *
+ * This relies on how react-aria's `useMenuItem` chooses on release: its
+ * `onPressUp` calls `click()` on a row that a mouse button is released over
+ * when the press did not start on that row, and the row's `onClick` performs
+ * the action and closes the menu. That synthetic click is what is stopped
+ * here. The "a click opens a menu over its button" browser test in
+ * `menu-interactions.chromium.test.tsx` fails if a React Aria upgrade changes it.
+ */
+function useOpeningClickKeepsMenuOpen(
+  isOpen: boolean,
+  popoverRef: RefObject<HTMLElement | null>,
+  triggerRef: RefObject<Element | null> | null | undefined
+) {
+  useEffect(() => {
+    const popover = popoverRef.current;
+    const trigger = triggerRef?.current;
+    if (!isOpen || !popover || !trigger) return;
+    const document = popover.ownerDocument;
+    const window = document.defaultView;
+    // The first release after the menu opens ends the press that opened it,
+    // unless another press starts first (the menu opened from the keyboard).
+    let opening = true;
+    let releasingOverTrigger = false;
+    const press = () => {
+      opening = false;
+      releasingOverTrigger = false;
+    };
+    const release = (event: PointerEvent) => {
+      if (!opening) return;
+      opening = false;
+      const rect = trigger.getBoundingClientRect();
+      releasingOverTrigger =
+        event.button === 0 &&
+        event.clientX >= rect.left &&
+        event.clientX <= rect.right &&
+        event.clientY >= rect.top &&
+        event.clientY <= rect.bottom;
+    };
+    // React Aria clicks the row under the pointer while the release dispatches.
+    const keepOpen = (event: MouseEvent) => {
+      if (
+        releasingOverTrigger &&
+        event.target instanceof Node &&
+        popover.contains(event.target)
+      ) {
+        releasingOverTrigger = false;
+        event.stopPropagation();
+      }
+    };
+    const released = () => {
+      releasingOverTrigger = false;
+    };
+    document.addEventListener("pointerdown", press, true);
+    document.addEventListener("pointerup", release, true);
+    document.addEventListener("click", keepOpen, true);
+    window?.addEventListener("pointerup", released);
+    return () => {
+      document.removeEventListener("pointerdown", press, true);
+      document.removeEventListener("pointerup", release, true);
+      document.removeEventListener("click", keepOpen, true);
+      window?.removeEventListener("pointerup", released);
+    };
+  }, [isOpen, popoverRef, triggerRef]);
+}
+
 const menuAnimationClasses = (
   animation: "anchor" | "fade" | "in-place" | "none",
   state: { isEntering: boolean; isExiting: boolean }
@@ -547,15 +650,21 @@ const SelectionAlignedMenuPopover = forwardRef<
   const resolvedAnimation = animation === "auto" ? "anchor" : animation;
   const size = selectionAlign.size ?? "sm";
   const aligned = useSelectionAlignedPopover({
+    // A menu row's check and icon lie before its text, so the menu moves
+    // sideways to open the checked row's text over the trigger's.
+    checkedLabelSelector:
+      '[data-slot="menu-item"][aria-checked="true"] [data-slot="menu-item-label"]',
     chromeBorderWidth: borderWidth["0-5"],
     isOpen,
     items: selectionAlign.items,
     offset: typeof offset === "number" ? offset : undefined,
+    popoverRef: popoverElementRef,
     rowHeight: selectionAlign.rowHeight ?? menuSelectionRowHeight,
     selectedIndex: selectionAlign.selectedIndex,
     size,
     triggerRef: selectionAlign.triggerRef,
   });
+  useOpeningClickKeepsMenuOpen(isOpen, popoverElementRef, selectionAlign.triggerRef);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -685,6 +794,12 @@ const AnchorMenuPopover = forwardRef<HTMLDivElement, MenuPopoverProps>(
       onInteractOutside: () => props.onOpenChange?.(false),
       ref: interactionRef,
     });
+    const overlayState = useContext(OverlayTriggerStateContext);
+    useOpeningClickKeepsMenuOpen(
+      props.isOpen ?? overlayState?.isOpen ?? false,
+      interactionRef,
+      props.triggerRef ?? popoverContext?.triggerRef
+    );
     useCloseSubmenusOnPointerLeave(closeSubmenusOnPointerLeave, ownedGroup);
 
     const popover = (

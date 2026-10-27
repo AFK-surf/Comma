@@ -17,7 +17,7 @@ defmodule BridgeForTeamsWeb.DashboardSwarmAgents do
   """
   use Gettext, backend: BridgeForTeamsWeb.Gettext
 
-  alias BridgeForTeams.{Agents, Models}
+  alias BridgeForTeams.{Agents, Memberships, Models}
   alias BridgeForTeams.Salix.Client
   alias BridgeForTeams.Schema.Agent
   alias BridgeForTeamsWeb.Dashboard.CoreComponents
@@ -70,7 +70,7 @@ defmodule BridgeForTeamsWeb.DashboardSwarmAgents do
              "created_at" => agent.created_at,
              "runtime_id" => agent.salix_agent_id,
              "model" => model(agent, org),
-             "system_prompt" => text(agent.salix["system_prompt"]),
+             "system_prompt" => Agent.instructions(agent),
              "read_only" => agent.role != "router"
            }),
          "router_session" => router_session(project, agent),
@@ -83,9 +83,11 @@ defmodule BridgeForTeamsWeb.DashboardSwarmAgents do
   The Configure form: the model choices this org's admins can give (the
   allowed list, or the catalog when the list is empty), the platform model the
   agent follows when it has no choice (key `""`), and a current choice the org
-  no longer offers, kept visible but not selectable.
+  no longer offers, kept visible but not selectable. The Router's instructions
+  show to every swarm admin; only an org owner may change them
+  (`prompt_editable`).
   """
-  def config(org, project, role, agent_id) do
+  def config(org, user, project, role, agent_id) do
     with :ok <- admin(role),
          {:ok, agent} <- project_agent(project, agent_id),
          :ok <- router_only(agent) do
@@ -95,7 +97,8 @@ defmodule BridgeForTeamsWeb.DashboardSwarmAgents do
       {:ok,
        %{
          "agent" => %{"id" => agent.id, "name" => agent.salix["name"], "role" => agent.role},
-         "system_prompt" => agent.salix["system_prompt"] || "",
+         "system_prompt" => Agent.instructions(agent) || "",
+         "prompt_editable" => org_owner?(org, user),
          "model_key" => if(current, do: Models.key(current), else: ""),
          "available" => offered != [],
          "models" => model_options(agent, offered, current)
@@ -158,16 +161,18 @@ defmodule BridgeForTeamsWeb.DashboardSwarmAgents do
   end
 
   @doc """
-  Save the model and system prompt. A missing `model` keeps the model; any
-  other value must be `null` (follow the platform model of the role) or a
-  model choice the org offers now. An untouched empty prompt is not a request
-  to clear it.
+  Save the model and the Router's instructions. A missing `model` keeps the
+  model; any other value must be `null` (follow the platform model of the
+  role) or a model choice the org offers now. `system_prompt` is saved as the
+  Router's own `router_system_prompt`; a prompt equal to the current
+  instructions is no change, and only an org owner may change them.
   """
   def configure(org, user, project, role, agent_id, params) do
     with :ok <- authorize(role, project, user, "agent.config_updated"),
          {:ok, agent} <- project_agent(project, agent_id),
          :ok <- router_only(agent),
-         {:ok, attrs} <- model_config_attrs(org, agent, params) do
+         {:ok, attrs} <- model_config_attrs(org, agent, params),
+         :ok <- prompt_owner(org, user, project, attrs) do
       case Agents.update_agent(agent, attrs, audit_opts(user)) do
         {:ok, _updated} ->
           notice(show(org, project, role, agent.id), gettext("Agent configuration saved."))
@@ -175,31 +180,59 @@ defmodule BridgeForTeamsWeb.DashboardSwarmAgents do
         {:error, %Ecto.Changeset{} = changeset} ->
           invalid(changeset, gettext("Could not save the configuration."))
 
-        {:error, {:bad_request, "system_prompt cannot be cleared"}} ->
-          message = gettext("An existing system prompt cannot be cleared.")
-
-          {:error, 422, "invalid_agent", message, %{"fields" => %{"system_prompt" => [message]}}}
-
         {:error, _reason} ->
           write_failed(gettext("Could not save the configuration."))
       end
     end
   end
 
+  # Without its own instructions the Router runs with the shared
+  # `system_prompt`, so clearing them while that one is set would only bring
+  # it back.
   defp prompt_attrs(agent, params) do
-    attrs =
-      params
-      |> Map.take(["system_prompt"])
-      |> Map.filter(fn {_key, value} -> is_binary(value) end)
+    current = Agent.instructions(agent) || ""
 
-    if attrs["system_prompt"] == "" and agent.salix["system_prompt"] in [nil, ""],
-      do: Map.delete(attrs, "system_prompt"),
-      else: attrs
+    case params["system_prompt"] do
+      prompt when not is_binary(prompt) or prompt == current ->
+        {:ok, %{}}
+
+      prompt ->
+        if String.trim(prompt) == "" and agent.salix["system_prompt"] not in [nil, ""] do
+          message = gettext("An existing system prompt cannot be cleared.")
+          {:error, 422, "invalid_agent", message, %{"fields" => %{"system_prompt" => [message]}}}
+        else
+          {:ok, %{"router_system_prompt" => prompt}}
+        end
+    end
   end
 
-  defp model_config_attrs(org, agent, params) do
-    attrs = prompt_attrs(agent, params)
+  defp prompt_owner(org, user, project, attrs) do
+    if Map.has_key?(attrs, "router_system_prompt") and not org_owner?(org, user) do
+      _ =
+        Agents.record_agent_write_attempt(
+          project,
+          "agent.config_updated",
+          "denied",
+          :forbidden,
+          audit_opts(user)
+        )
 
+      {:error, 403, "forbidden",
+       gettext("Only organization owners can change the system prompt."), %{}}
+    else
+      :ok
+    end
+  end
+
+  defp org_owner?(org, user), do: Memberships.org_role(org.id, user.id) == {:ok, "owner"}
+
+  defp model_config_attrs(org, agent, params) do
+    with {:ok, attrs} <- prompt_attrs(agent, params) do
+      model_attrs(org, attrs, params)
+    end
+  end
+
+  defp model_attrs(org, attrs, params) do
     case Map.fetch(params, "model") do
       :error ->
         {:ok, attrs}

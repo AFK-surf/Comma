@@ -1,4 +1,8 @@
-export { CommandPalette, CommandPaletteHighlight } from "./CommandPalette";
+export {
+  CommandPalette,
+  CommandPaletteHighlight,
+  CommandPaletteKeycaps,
+} from "./CommandPalette";
 export type {
   CommandPaletteActiveChangeSource,
   CommandPaletteFooterHint,

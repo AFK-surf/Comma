@@ -12,10 +12,7 @@ defmodule CommaWeb.ProactiveRoutine do
 
   def read(args, ctx) do
     with true <- valid_args?(args),
-         {:ok, workspace, owner} <- CommaWeb.Proactive.scope(ctx),
-         true <- workspace["router_agent_id"] == ctx[:agent_id],
-         {:ok, agent} <- SalixAgent.Control.get(ctx[:agent_id]),
-         true <- agent["router_session_id"] == ctx[:session_id],
+         {:ok, workspace, owner} <- router_scope(ctx),
          {:ok, envelope} <-
            Comma.Recommendations.read_existing(%{"id" => owner}, %{}, workspace["id"]) do
       case select(args, if(args == %{}, do: project(envelope, workspace), else: envelope)) do
@@ -26,6 +23,33 @@ defmodule CommaWeb.ProactiveRoutine do
         result ->
           result
       end
+    else
+      false -> {:error, :comma_home_router_required}
+      error -> error
+    end
+  end
+
+  @doc """
+  The owner's Router dismisses one Routine matter, named by an attention item's
+  source and URL.
+  """
+  def dismiss(%{"source_id" => source_id, "source_url" => url} = args, ctx)
+      when map_size(args) == 2 do
+    with {:ok, workspace, owner} <- router_scope(ctx),
+         {:ok, _envelope} <-
+           Comma.Recommendations.dismiss(%{"id" => owner}, %{}, workspace["id"], source_id, url) do
+      {:ok, %{"dismissed" => true}}
+    end
+  end
+
+  def dismiss(_args, _ctx), do: {:error, :invalid_recommendation_dismissal}
+
+  defp router_scope(ctx) do
+    with {:ok, workspace, owner} <- CommaWeb.Proactive.scope(ctx),
+         true <- workspace["router_agent_id"] == ctx[:agent_id],
+         {:ok, agent} <- SalixAgent.Control.get(ctx[:agent_id]),
+         true <- agent["router_session_id"] == ctx[:session_id] do
+      {:ok, workspace, owner}
     else
       false -> {:error, :comma_home_router_required}
       error -> error
@@ -327,76 +351,14 @@ defmodule CommaWeb.ProactiveRoutine do
 
       if MapSet.size(stopped) == 0,
         do: envelope,
-        else: Map.put(envelope, "snapshot", hide(snapshot, stopped))
+        else:
+          Map.put(
+            envelope,
+            "snapshot",
+            Comma.Recommendations.hide_items(snapshot, &MapSet.member?(stopped, {&1, &2}))
+          )
     else
       _ -> envelope
     end
   end
-
-  defp hide(snapshot, stopped) do
-    hidden_tasks =
-      (snapshot["attentionItems"] || [])
-      |> Enum.filter(&MapSet.member?(stopped, {&1["sourceId"], &1["sourceUrl"]}))
-      |> Enum.map(& &1["taskId"])
-      |> Enum.reject(&is_nil/1)
-      |> MapSet.new()
-
-    cards =
-      Enum.flat_map(snapshot["cards"], fn card ->
-        rows =
-          Enum.reject(card["items"], fn row ->
-            Enum.any?(row["parts"] || [], fn
-              %{"kind" => "inline-link", "link" => link} ->
-                MapSet.member?(stopped, {link["sourceId"], link["href"]})
-
-              %{"kind" => "inline-task", "task" => task} ->
-                MapSet.member?(hidden_tasks, task["conversationId"])
-
-              _ ->
-                false
-            end)
-          end)
-
-        if rows == [], do: [], else: [Map.put(card, "items", rows)]
-      end)
-
-    # Summary prose can refer to removed rows without a link. Keep its greeting
-    # instead of claiming that handled work still needs attention.
-    snapshot =
-      snapshot
-      |> Map.put("cards", cards)
-      |> Map.put("summary", greeting(snapshot["summary"]))
-      |> Map.update(
-        "attentionItems",
-        [],
-        &Enum.reject(&1, fn item ->
-          MapSet.member?(stopped, {item["sourceId"], item["sourceUrl"]})
-        end)
-      )
-
-    referenced = prompt_ids(Map.delete(snapshot, "prompts"))
-    Map.update(snapshot, "prompts", %{}, &Map.take(&1, referenced))
-  end
-
-  defp greeting([%{"kind" => "markdown", "text" => text} | _]) do
-    # Compiled summaries merge the greeting and the first paragraph in one part.
-    # Without that separator, no prose can safely be attributed to a greeting.
-    first =
-      case String.split(text, "\n\n", parts: 2) do
-        [title, _body] -> title
-        _ -> ""
-      end
-
-    [%{"kind" => "markdown", "text" => first}]
-  end
-
-  defp greeting(_), do: [%{"kind" => "markdown", "text" => ""}]
-
-  defp prompt_ids(map) when is_map(map),
-    do:
-      List.wrap(map["promptId"]) ++
-        Enum.flat_map(Map.values(Map.delete(map, "promptId")), &prompt_ids/1)
-
-  defp prompt_ids(list) when is_list(list), do: Enum.flat_map(list, &prompt_ids/1)
-  defp prompt_ids(_), do: []
 end

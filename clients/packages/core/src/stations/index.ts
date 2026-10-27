@@ -39,7 +39,7 @@ import type {
   StationToolsAccess,
 } from "../contract.ts";
 import type { Ctx } from "../ctx.ts";
-import { stationRefused, type Pull, type StationLinks } from "../host.ts";
+import { header, stationRefused, type Pull, type StationLinks } from "../host.ts";
 import { readEvents } from "../sse.ts";
 import {
   credentialPath,
@@ -70,6 +70,8 @@ const STATION_TIMEOUT_MS = 30_000;
 const CREDENTIAL_MARGIN_MS = 60_000;
 /** The most of a station's answer read. */
 const MAX_ANSWER_BYTES = 4 * 1024 * 1024;
+/** A file the station gives (`file`) may take this long: it is bounded by size, not by the link's speed. */
+const FILE_TIMEOUT_MS = 600_000;
 /** A relay socket open this long was carrying: the next opens after the shortest pause. */
 const RELAY_LASTED_MS = 60_000;
 /** Where this device's endpoint key is kept (device storage: the same device whoever is signed in). */
@@ -841,26 +843,11 @@ export class Stations {
       return yield* Effect.scoped(
         Effect.gen(function* () {
           const response = yield* answered;
-          const parts: Uint8Array[] = [];
-          let size = 0;
-          for (;;) {
-            const piece = yield* response.body.take.pipe(
-              Effect.mapError((e) => new CoreError("unreachable", e.message))
-            );
-            if (piece === null) break;
-            size += piece.length;
-            if (size > MAX_ANSWER_BYTES)
-              return yield* Effect.fail(
-                new CoreError("bad_response", "The station's answer is too large.")
-              );
-            parts.push(piece);
-          }
-          const bytes = new Uint8Array(size);
-          let at = 0;
-          for (const part of parts) {
-            bytes.set(part, at);
-            at += part.length;
-          }
+          const bytes = yield* collect(
+            response.body,
+            MAX_ANSWER_BYTES,
+            () => new CoreError("bad_response", "The station's answer is too large.")
+          );
           const text = new TextDecoder().decode(bytes);
           const value =
             text === ""
@@ -899,6 +886,58 @@ export class Stations {
     return [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
   }
 
+  /**
+   * A file the station serves (`GET path`): its bytes, their type, and for a part of a file the whole file's size (its
+   * `stillfail-total`). Fails `not_found` when the station has none there, and `too_large` past `max` bytes (what came
+   * stops there).
+   */
+  file(
+    workspace: string,
+    station: string,
+    path: string,
+    max: number
+  ): Effect.Effect<
+    { bytes: Uint8Array; type: string; total: number | null },
+    CoreError
+  > {
+    return Effect.gen({ self: this }, function* () {
+      if (!this.#workspaceOf.has(station)) this.#workspaceOf.set(station, workspace);
+      const answered = this.#admitted(station, (links) =>
+        links.request(station, { method: "GET", path, headers: [], body: null })
+      );
+      return yield* Effect.scoped(
+        Effect.gen(function* () {
+          const response = yield* answered;
+          if (response.status !== 200)
+            return yield* Effect.fail(
+              new CoreError(
+                response.status === 404 ? "not_found" : `http_${response.status}`,
+                `The station answered ${response.status}.`,
+                response.status
+              )
+            );
+          const bytes = yield* collect(
+            response.body,
+            max,
+            () => new CoreError("too_large", "The file is larger than the app reads.")
+          );
+          const total = Number(header(response, "stillfail-total") ?? Number.NaN);
+          return {
+            bytes,
+            type: header(response, "content-type") ?? "",
+            total: Number.isSafeInteger(total) && total >= 0 ? total : null,
+          };
+        })
+      );
+    }).pipe(
+      Effect.timeoutOrElse({
+        duration: FILE_TIMEOUT_MS,
+        orElse: () =>
+          Effect.fail(new CoreError("timeout", "The station did not give the file.")),
+      })
+    );
+  }
+
   /** A station's event stream (`GET path`): its body as it arrives, open while the scope is. */
   stream(
     workspace: string,
@@ -932,6 +971,34 @@ export class Stations {
   ): Effect.Effect<A, CoreError> {
     return this.#ctx.session.account().pipe(Effect.flatMap(run));
   }
+}
+
+/** A body whole, failing with `tooLarge` past `max` bytes. */
+function collect(
+  body: Pull<Uint8Array>,
+  max: number,
+  tooLarge: () => CoreError
+): Effect.Effect<Uint8Array, CoreError> {
+  return Effect.gen(function* () {
+    const parts: Uint8Array[] = [];
+    let size = 0;
+    for (;;) {
+      const piece = yield* body.take.pipe(
+        Effect.mapError((e) => new CoreError("unreachable", e.message))
+      );
+      if (piece === null) break;
+      size += piece.length;
+      if (size > max) return yield* Effect.fail(tooLarge());
+      parts.push(piece);
+    }
+    const bytes = new Uint8Array(size);
+    let at = 0;
+    for (const part of parts) {
+      bytes.set(part, at);
+      at += part.length;
+    }
+    return bytes;
+  });
 }
 
 function parsed<S extends z.ZodType>(

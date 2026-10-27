@@ -497,6 +497,58 @@ defmodule Comma.RecommendationsTest do
     assert Repo.get!(RecommendationProfile, profile.id).published_metrics == expected
   end
 
+  test "a hidden row that the member summary does not cite leaves the summary whole" do
+    link = fn id ->
+      %{
+        "kind" => "inline-link",
+        "link" => %{
+          "href" => "https://linear.app/team/issue/#{id}",
+          "label" => id,
+          "promptId" => id,
+          "sourceId" => "linear"
+        }
+      }
+    end
+
+    ids = ~w(p1 p2 p3 p4)
+
+    # The member summary cites the first three of its four rows.
+    summary = [
+      %{
+        "kind" => "markdown",
+        "text" => "Your briefing\n\nHere is what I suggest you focus on: Review p1 "
+      },
+      link.("p1"),
+      %{"kind" => "markdown", "text" => "; Review p2 "},
+      link.("p2"),
+      %{"kind" => "markdown", "text" => "; Review p3 "},
+      link.("p3"),
+      %{"kind" => "markdown", "text" => "."}
+    ]
+
+    snapshot = %{
+      "summary" => summary,
+      "cards" => [
+        %{
+          "id" => "linear",
+          "items" =>
+            Enum.map(ids, fn id ->
+              %{"id" => id, "parts" => [link.(id)], "action" => %{"promptId" => id}}
+            end)
+        }
+      ],
+      "prompts" => Map.new(ids, &{&1, %{"objective" => "Review #{&1}"}})
+    }
+
+    hidden =
+      Recommendations.hide_items(snapshot, fn _source, url -> String.ends_with?(url, "p4") end)
+
+    assert hidden["summary"] == summary
+    assert [%{"items" => rows}] = hidden["cards"]
+    assert Enum.map(rows, & &1["id"]) == ~w(p1 p2 p3)
+    assert hidden["prompts"] |> Map.keys() |> Enum.sort() == ~w(p1 p2 p3)
+  end
+
   defp profile_fixture! do
     {:ok, user} =
       Comma.Accounts.create_user(%{

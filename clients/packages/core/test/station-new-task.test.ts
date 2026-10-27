@@ -1,6 +1,6 @@
 import { CoreClient, topicKey, type Topic } from "@comma/core-kernel/client";
 import { describe, expect, it } from "vitest";
-import type { StationChatValue } from "../src/contract.ts";
+import type { ChatViewValue } from "../src/contract.ts";
 import {
   FakeHost,
   FakeStations,
@@ -25,6 +25,9 @@ function setup(listed = ["st_a"]) {
       workspaces: [{ id: WS, name: "Main", role: "owner" }],
       relay_urls: [],
     })
+    .on("GET", "/v1/comma/workspaces", {
+      data: [{ id: WS, group_id: "grp_1", name: "Main", status: "ready" }],
+    })
     .on("GET", `/v1/comma/workspaces/${WS}/stations`, {
       stations: listed.map((id) => ({ id, name: id, version: "1", online: true })),
     })
@@ -42,7 +45,7 @@ function setup(listed = ["st_a"]) {
     );
   const a = stations.station("st_a", WS);
   const core = startTestCore(host);
-  const client = new CoreClient(inProcessOpener(core, host), {
+  const client = new CoreClient(inProcessOpener(core, host, "win_main"), {
     schedule: () => undefined,
   });
   const values = new Map<string, unknown>();
@@ -88,7 +91,7 @@ describe("Tasks made on a station from here", () => {
     ]);
   });
 
-  it("makes a Task with its first message once per key, and a person marks it done", async () => {
+  it("makes a Task with its first message once per key, which opens as any Task", async () => {
     const t = setup();
     await t.time.pass(100);
     const asked = {
@@ -102,7 +105,13 @@ describe("Tasks made on a station from here", () => {
       text: "fix the build",
     };
     const made = await t.client.call("stations.newTask", asked);
-    expect(made).toEqual({ session: "s_codex_100", thread: 100 });
+    // Named as any Task is, it opens as one.
+    expect(made).toEqual({
+      session: "s_codex_100",
+      thread: 100,
+      groupId: "grp_1",
+      conversationId: "station:st_a:100",
+    });
     expect(t.a.sessions).toEqual([
       {
         runtime: "codex",
@@ -113,14 +122,15 @@ describe("Tasks made on a station from here", () => {
       },
     ]);
     await t.time.pass(100);
-    const chat = t.watch<StationChatValue>({
-      topic: "stationChat",
+    const chat = t.watch<ChatViewValue>({
+      topic: "chatView",
       workspace: WS,
-      station: "st_a",
-      thread: "100",
+      group: "grp_1",
+      conversation: "station:st_a:100",
+      surface: "win_main",
     });
     await t.time.pass(100);
-    expect(chat()?.messages.map((m) => m.text)).toEqual(["fix the build"]);
+    expect(chat()?.state?.serverMessages.map((m) => m.text)).toEqual(["fix the build"]);
 
     // Made again with the same key (an answer that did not come back): the same Task, its message not sent twice.
     expect(await t.client.call("stations.newTask", asked)).toEqual(made);
@@ -129,34 +139,32 @@ describe("Tasks made on a station from here", () => {
     expect(t.a.writes.filter((w) => w.path === "/threads/100/messages")).toHaveLength(
       1
     );
+  });
 
-    expect(
-      await t.client.call("stations.setStatus", {
-        workspace: WS,
-        station: "st_a",
-        thread: 100,
-        status: "done",
-      })
-    ).toEqual({ status: "done" });
-    expect(t.a.writes.at(-1)).toMatchObject({
-      method: "PUT",
-      path: "/threads/100/status",
-      body: { status: "done" },
+  it("makes a Task whose first message is the files put on its station, with no words", async () => {
+    const t = setup();
+    await t.time.pass(100);
+    const spec = await t.client.call("stations.upload", {
+      workspace: WS,
+      station: "st_a",
+      name: "spec.pdf",
+      bytes: "AQID",
     });
-
-    // Its labels are the station's: set there, answered as the station keeps them.
+    expect(spec).toEqual({ name: "spec.pdf", path: "/uploads/spec.pdf", size: 3 });
     expect(
-      await t.client.call("stations.setLabels", {
+      await t.client.call("stations.newTask", {
         workspace: WS,
         station: "st_a",
-        thread: 100,
-        labels: ["lbl_b", "lbl_a"],
+        key: "task-files",
+        runtime: "codex",
+        text: "",
+        attachments: [spec],
       })
-    ).toEqual({ labels: ["lbl_a", "lbl_b"] });
-    expect(t.a.writes.at(-1)).toMatchObject({
-      method: "PUT",
-      path: "/threads/100/labels",
-      body: { labels: ["lbl_b", "lbl_a"] },
+    ).toMatchObject({ session: "s_codex_100", thread: 100 });
+    await t.time.pass(100);
+    expect(t.a.writes.find((w) => w.path === "/threads/100/messages")?.body).toEqual({
+      text: "",
+      attachments: [spec],
     });
   });
 

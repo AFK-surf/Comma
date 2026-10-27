@@ -23,6 +23,7 @@ import {
   type ChatRegistry,
   useChatRegistry,
 } from "../components/chat/ChatProvider";
+import { InboxFiltersProvider } from "../components/inbox/filters/InboxFiltersState";
 import { InboxRoute } from "../components/inbox/InboxRoute";
 import {
   createProductInboxProjectionHarness,
@@ -95,7 +96,7 @@ describe("InboxRoute (product inbox tracer bullet)", () => {
     expect(projection.refresh).toHaveBeenCalledTimes(refreshCount);
   });
 
-  it("shows a loaded page the core kept stale when it read the first page again", async () => {
+  it("keeps showing a loaded page when the core reads the first page again", async () => {
     const firstPage: ProductInboxListResult = {
       activeWorkspaceId: "w1",
       hasMore: true,
@@ -125,22 +126,19 @@ describe("InboxRoute (product inbox tracer bullet)", () => {
     // visible), so the next page loads without a request from the reader.
     await screen.findByText("Loaded second page");
 
-    // The core reads the first page again and keeps the loaded tail, stale.
+    // The core reads the first page again and keeps the loaded tail.
     projection.emit({
       activeWorkspaceId: "w1",
       hasMore: false,
       items: [
         productInboxItem("c1", "Refreshed first page"),
-        { ...productInboxItem("c2", "Loaded second page"), freshness: "stale" },
+        productInboxItem("c2", "Loaded second page"),
       ],
       source: "live-sync",
     });
 
     await screen.findByText("Refreshed first page");
     expect(screen.getByText("Loaded second page")).toBeInTheDocument();
-    expect(
-      screen.getByRole("link", { name: /Loaded second page.*Stale/i })
-    ).toHaveAttribute("data-freshness", "stale");
     // The refreshed first page does not bring back a page past the last one.
     expect(listLoadTrigger()).toBeNull();
   });
@@ -252,6 +250,74 @@ describe("InboxRoute (product inbox tracer bullet)", () => {
       expect.objectContaining({ workspaceId: "ws-other" })
     );
   }, 20_000);
+
+  it("drops the trigger rule of the old workspace when the reader switches workspace", async () => {
+    const loopItem = (workspaceId: string, name: string, events: string) => ({
+      ...productInboxItem(`${workspaceId}-loop`, name),
+      groupId: `grp-${workspaceId}`,
+      id: `${workspaceId}:${workspaceId}-loop`,
+      kind: "agent_task" as const,
+      loop: {
+        cadence: { events },
+        startedAt: 1,
+        state: "active" as const,
+        wakeCount: 0,
+      },
+      workspaceId,
+    });
+    const workspaces = [
+      { group_id: "grp-ws-web", id: "ws-web", name: "Web Workspace" },
+      { group_id: "grp-ws-other", id: "ws-other", name: "Other Workspace" },
+    ];
+    const initial = {
+      activeWorkspaceId: "ws-web",
+      items: [loopItem("ws-web", "Web watch", "PR #1 updated")],
+      source: "live-sync",
+      workspaces,
+    } satisfies ProductInboxListResult;
+    const projection = createProductInboxProjectionHarness({
+      initial,
+      refresh: (input) =>
+        input.workspaceId === "ws-other"
+          ? {
+              activeWorkspaceId: "ws-other",
+              items: [loopItem("ws-other", "Other watch", "Deploy finished")],
+              source: "live-sync",
+              workspaces,
+            }
+          : initial,
+    });
+    installNativeBridgeMock({ platform: "web" });
+
+    renderInboxRoute(projection.controller);
+    await screen.findByText("Web watch");
+    await userEvent.click(screen.getByTestId("inbox-filter-trigger"));
+    await userEvent.click(
+      await screen.findByRole("menuitem", { name: /Trigger rule/ })
+    );
+    await userEvent.click(
+      await screen.findByRole("menuitemradio", { name: /PR #1 updated/ })
+    );
+    expect(screen.getByTestId("inbox-filter-trigger")).toHaveAttribute(
+      "data-filtered",
+      "true"
+    );
+
+    // The menu is still open; go back to the top level.
+    await userEvent.keyboard("{ArrowLeft}");
+    await userEvent.click(await screen.findByRole("menuitem", { name: /Workspace/ }));
+    await userEvent.click(
+      await screen.findByRole("menuitemradio", { name: "Other Workspace" })
+    );
+
+    expect(
+      await screen.findByText("Other watch", undefined, { timeout: 5_000 })
+    ).toBeInTheDocument();
+    expect(screen.getByTestId("inbox-filter-trigger")).toHaveAttribute(
+      "data-filtered",
+      "false"
+    );
+  }, 20_000);
 });
 
 function renderInboxRoute(
@@ -295,10 +361,10 @@ function renderInboxRoute(
   });
 
   render(
-    <>
+    <InboxFiltersProvider>
       <RouterProvider router={router} />
       <Toaster />
-    </>
+    </InboxFiltersProvider>
   );
   return router;
 }

@@ -1,14 +1,9 @@
-// A compute node's install operation and its recovery, as desktop Main asks for them: authorize an install (its
-// one-time descriptor), read, retry, enable, disable, revoke, initialize the workload once the node is ready, and the
-// recovery reads and transfers. Main keeps the machine's side (the install, its intent file, the Host). Every call but
-// `initializeWorkload` names the session lease Main acts for; the core refuses it (`session_changed`) when its own
-// session is another, so one account's registration is never touched for another. Only Main's own channel may make
-// these calls (`hostOnlyCalls` in core.ts): their answers carry one-time install secrets.
-//
-// Bounds: one request per call, each given up after 10 s on the Clock; `initializeWorkload` reads once a second, at
-// most 31 times over 30 s, then initializes once.
+// Compute installation and recovery calls share the server Operation owner.
+// Main-only descriptor calls require its exact session lease. Main owns local installation and recovery.
+// The Linux command call uses the current member session and returns an authorized shell command.
+// Salix creates the initial Shell after readiness commits. Requests have a 10-second Clock bound.
 import { CoreError } from "@comma/core-kernel";
-import { Duration, Effect } from "effect";
+import { Effect } from "effect";
 import { z } from "zod";
 import type { Account } from "./account.ts";
 import { route, type Method } from "./api.ts";
@@ -28,8 +23,6 @@ import type { Ctx } from "./ctx.ts";
 import { accountForLease, hostLeaseSchema } from "./host-lease.ts";
 import type { SessionLease } from "./host.ts";
 
-export const INITIALIZATION_WAIT_MS = 30_000;
-const INITIALIZATION_READ_EVERY_MS = 1_000;
 export const COMPUTE_NODE_TIMEOUT_MS = 10_000;
 
 /** The calls only the host's own client (desktop Main) may make: they carry one-time install secrets. */
@@ -68,6 +61,12 @@ const operationSchema = z
         ]),
         work_activity: z.enum(["idle", "active", "unknown"]).default("unknown"),
         error_code: z.string().min(1).max(128).nullable().optional(),
+        // An unknown future reason reads as no reason: Main then takes no automatic action.
+        registration_revocation_reason: z
+          .enum(["authorization_expired", "revoked"])
+          .nullable()
+          .optional()
+          .catch(null),
         shell_phase: z
           .enum([
             "not_initialized",
@@ -97,7 +96,7 @@ const parse = <S extends z.ZodType>(schema: S, raw: unknown): z.output<S> => {
   return out.data;
 };
 
-type Action = "enable" | "disable" | "revoke" | "initialize-workload";
+type Action = "enable" | "disable" | "revoke";
 
 export class ComputeNodeOperations {
   readonly #ctx: Ctx;
@@ -106,8 +105,29 @@ export class ComputeNodeOperations {
     this.#ctx = ctx;
     const op = (raw: unknown) => parse(operationInput, raw);
     ctx.kernel.calls({
-      "computeNode.initializeWorkload": {
-        run: (p) => Effect.suspend(() => this.#initialize(target(p), waitMs(p))),
+      "computeNode.installCommand": {
+        doing: true,
+        run: (p) =>
+          Effect.suspend(() => {
+            const input = parse(z.object({ workspaceId: id, requestId: id }), p);
+            return ctx.session.account().pipe(
+              Effect.flatMap((account) =>
+                ctx.api.request(
+                  account,
+                  "POST",
+                  route`/v1/comma/workspaces/${input.workspaceId}/compute-nodes/agent-vmm/install-commands`,
+                  z.object({ command: z.string(), expires_at: z.string().datetime() }),
+                  {},
+                  COMPUTE_NODE_TIMEOUT_MS,
+                  [["idempotency-key", input.requestId]]
+                )
+              ),
+              Effect.map((answer) => ({
+                command: answer.command,
+                expiresAt: answer.expires_at,
+              }))
+            );
+          }),
       },
       "computeNode.authorize": {
         run: (p) =>
@@ -192,8 +212,9 @@ export class ComputeNodeOperations {
               input.lease,
               "GET",
               route`/v1/comma/workspaces/${input.workspaceId}/compute-nodes/agent-vmm/install-operations/requests/${input.requestId}`,
-              z.strictObject({
-                operation: z.strictObject({
+              z.object({
+                // Unknown fields (such as registration_revocation_reason) are ignored.
+                operation: z.object({
                   id,
                   registration_id: id,
                   scope_key: z.literal(input.workspaceId),
@@ -310,18 +331,10 @@ export class ComputeNodeOperations {
             );
             const path = `${operationPath(input)}/recovery/${input.consume ? "consume" : "preview"}`;
             const schema = z.object({ operation: computeRecoveredBindingSchema });
+            // Main compares the consumed binding with the previewed one before it saves it.
             return this.#json(input.lease, "POST", path, schema, {
               proof: input.proof,
-            }).pipe(
-              Effect.flatMap(({ operation }) =>
-                operation.id === input.operationId &&
-                operation.scope_key === input.workspaceId
-                  ? Effect.succeed(operation)
-                  : Effect.fail(
-                      new CoreError("bad_response", "Recovery binding changed.")
-                    )
-              )
-            );
+            }).pipe(Effect.map(({ operation }) => operation));
           }),
       },
     });
@@ -381,41 +394,6 @@ export class ComputeNodeOperations {
     );
   }
 
-  /** Reads until the node is ready, then initializes its workload once; gives up on action required, removal or the wait. */
-  #initialize(
-    operation: Target,
-    waitMs: number
-  ): Effect.Effect<ComputeNodeOperationValue, CoreError> {
-    return Effect.gen({ self: this }, function* () {
-      const reads = Math.floor(waitMs / INITIALIZATION_READ_EVERY_MS) + 1;
-      const account = this.#ctx.session.account();
-      for (let read = 1; ; read++) {
-        const observed = yield* this.#operation(account, operation, "GET");
-        if (observed.status === "ready") {
-          return yield* this.#operation(
-            account,
-            operation,
-            "POST",
-            "initialize-workload"
-          );
-        }
-        if (
-          observed.status === "action_required" ||
-          observed.status === "removed" ||
-          read >= reads
-        ) {
-          return yield* Effect.fail(
-            new CoreError(
-              "initialization_incomplete",
-              "Compute node workload initialization could not complete. Check the node connection, then select Continue / Retry."
-            )
-          );
-        }
-        yield* Effect.sleep(Duration.millis(INITIALIZATION_READ_EVERY_MS));
-      }
-    });
-  }
-
   #operation(
     account: Effect.Effect<Account, CoreError>,
     operation: Target,
@@ -439,6 +417,9 @@ export class ComputeNodeOperations {
         workActivity: o.work_activity,
         ...(o.shell_phase ? { shellPhase: o.shell_phase } : {}),
         ...(o.error_code ? { errorCode: o.error_code } : {}),
+        ...(o.registration_revocation_reason
+          ? { registrationRevocationReason: o.registration_revocation_reason }
+          : {}),
       };
     });
   }
@@ -454,18 +435,3 @@ const agentVmmPath = (workspaceId: string, rest: string) =>
 
 const identityChanged = () =>
   new CoreError("bad_response", "Compute node authorization identity mismatch.");
-
-const target = (p: unknown): Target => {
-  const out = parse(z.object({ workspaceId: id, operationId: id }), p);
-  return { workspaceId: out.workspaceId, operationId: out.operationId };
-};
-
-const waitMs = (p: unknown): number => {
-  const v = (p as { waitMs?: unknown } | null)?.waitMs;
-  if (v === undefined) return INITIALIZATION_WAIT_MS;
-  if (typeof v !== "number" || !Number.isInteger(v) || v < 0 || v > 120_000)
-    throw CoreError.invalid(
-      "waitMs must be a whole number of milliseconds up to 120000"
-    );
-  return v;
-};

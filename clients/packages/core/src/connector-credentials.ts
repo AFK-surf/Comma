@@ -85,7 +85,7 @@ const voiceKeysPath = (workspaceId: string) =>
 const tokenPath = (workspaceId: string) =>
   route`/v1/comma/workspaces/${workspaceId}/connector-token`;
 
-export function registerConnectorCredentials(ctx: Ctx): void {
+export function registerConnectorCredentials(ctx: Ctx) {
   const accountFor = (lease: SessionLease) => accountForLease(ctx, lease);
   /** Deletes a voice key; one already gone is no failure. */
   const deleteVoiceKey = (account: Account, workspaceId: string, keyId: string) =>
@@ -104,9 +104,9 @@ export function registerConnectorCredentials(ctx: Ctx): void {
         Effect.asVoid
       );
 
-  ctx.kernel.calls({
+  const calls = {
     "connector.createToken": {
-      run: (p) =>
+      run: (p: unknown) =>
         Effect.suspend(() => {
           const input = parse(
             z.object({
@@ -153,7 +153,7 @@ export function registerConnectorCredentials(ctx: Ctx): void {
         }),
     },
     "connector.revokeToken": {
-      run: (p) =>
+      run: (p: unknown) =>
         Effect.suspend(() => {
           const input = parse(
             z.object({
@@ -190,7 +190,7 @@ export function registerConnectorCredentials(ctx: Ctx): void {
      * `offer`: the setup offer it answers, told the device once there is one (`offerUpdated` whether that worked).
      */
     "connector.provisionDevice": {
-      run: (p) =>
+      run: (p: unknown) =>
         Effect.suspend(() => {
           const input = parse(
             z.object({
@@ -294,7 +294,7 @@ export function registerConnectorCredentials(ctx: Ctx): void {
      * without one, by its name. Each is tried; the first failure is answered once both were.
      */
     "connector.unprovisionDevice": {
-      run: (p) =>
+      run: (p: unknown) =>
         Effect.suspend(() => {
           const input = parse(
             z.object({
@@ -360,7 +360,7 @@ export function registerConnectorCredentials(ctx: Ctx): void {
         }),
     },
     "connector.deviceInstall": {
-      run: (p) =>
+      run: (p: unknown) =>
         Effect.suspend(() => {
           const input = parse(
             z.object({
@@ -385,5 +385,10 @@ export function registerConnectorCredentials(ctx: Ctx): void {
           );
         }),
     },
-  });
+  };
+  ctx.kernel.calls(calls);
+  return {
+    provision: calls["connector.provisionDevice"].run,
+    unprovision: calls["connector.unprovisionDevice"].run,
+  };
 }

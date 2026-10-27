@@ -343,6 +343,24 @@ defmodule SalixStore.S3.AWS do
   end
 
   @impl true
+  def presign_get(key, opts) do
+    cfg = SalixStore.Config.get()
+
+    query =
+      []
+      |> maybe_kv("response-content-type", opts[:content_type])
+      |> maybe_kv("response-content-disposition", opts[:content_disposition])
+
+    url =
+      case query do
+        [] -> url(cfg, key)
+        query -> url(cfg, key) <> "?" <> URI.encode_query(query, :rfc3986)
+      end
+
+    {:ok, SalixStore.SigV4.presign("GET", url, cfg, Keyword.get(opts, :expires_in, 3600))}
+  end
+
+  @impl true
   def stream(key, opts) do
     cfg = SalixStore.Config.get()
 

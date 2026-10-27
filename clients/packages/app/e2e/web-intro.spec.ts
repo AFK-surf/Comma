@@ -61,7 +61,7 @@ test("a first sign-in on the web shows the intro card, not the onboarding, until
     // pointer.
     expect((await card.boundingBox())!.y).toBe(top);
     await card.getByRole("button", { name: "Next" }).click();
-    await expect(heading).toHaveText("More in the Mac app");
+    await expect(heading).toHaveText("More in the desktop app");
     // Each scene plays and then rests: nothing in the card animates forever.
     expect(
       await card.evaluate((element) =>

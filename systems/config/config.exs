@@ -239,12 +239,14 @@ config :comma_core, Oban,
      crontab: [
        {"*/5 * * * *", Comma.Workers.ProfileAvatarCleanup},
        {"17 * * * *", Comma.Workers.MemberSourceItemRetention},
+       {"41 * * * *", Comma.Workers.MiniAppCleanup},
        {"* * * * *", Comma.Analytics.ProfileSweep}
      ]}
   ],
   shutdown_grace_period: 30_000
 
 config :comma_core, :start_oban, true
+config :comma_core, :chat_suggestions, true
 config :comma_core, :operation_claim_timeout_ms, operation_claim_timeout_ms
 config :comma_core, :profile_avatar, adapter: Comma.ProfileAvatar.Storage.GCS, bucket: nil
 

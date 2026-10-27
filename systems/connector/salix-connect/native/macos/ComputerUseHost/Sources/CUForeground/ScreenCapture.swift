@@ -4,19 +4,6 @@ import CUShared
 import Foundation
 import ScreenCaptureKit
 
-/// Anthropic computer-use vision-API limits that the agent's screenshots
-/// must fit inside: long edge ≤ 1568 px, total area ≤ 0.6 megapixels.
-/// Slim port keeps these as public constants so tests + other tools can
-/// reason about the shape. Numeric values mirror legacy ComputerUse's
-/// `MAX_LONG_EDGE` / `MAX_PIXELS` exactly — the 0.6 MP budget is measured
-/// against 0.6 × 1024² (629_145.6), NOT a flat 600_000; the Anthropic
-/// spec is written in binary megapixels and using the decimal value
-/// would quietly downscale edge cases that legacy kept at native size.
-public enum AnthropicImageLimits {
-    public static let maxLongEdgePixels: Int = 1568
-    public static let maxPixelArea: Int = 629_145
-}
-
 /// Screenshot + zoom helpers for foreground mode. Uses ScreenCaptureKit
 /// (via `DisplayCaptureProvider`) so the daemon's own overlay windows
 /// (colorful border, dim mask, cursor sprite) are excluded from the
@@ -161,19 +148,9 @@ public enum ScreenCapture {
     /// (b) total pixel area fits `maxPixelArea`, whichever is tighter.
     /// Returns the original image if it already fits.
     private static func scaleToAnthropicLimits(_ image: CGImage) -> CGImage {
-        let srcW = image.width
-        let srcH = image.height
-        let longEdge = max(srcW, srcH)
-        let area = srcW * srcH
-
-        let longEdgeScale = CGFloat(AnthropicImageLimits.maxLongEdgePixels) / CGFloat(longEdge)
-        let areaScale = sqrt(CGFloat(AnthropicImageLimits.maxPixelArea) / CGFloat(max(area, 1)))
-        let scale = min(1.0, min(longEdgeScale, areaScale))
-        if scale >= 1.0 { return image }
-
-        let dstW = max(1, Int((CGFloat(srcW) * scale).rounded()))
-        let dstH = max(1, Int((CGFloat(srcH) * scale).rounded()))
-        return redraw(image, width: dstW, height: dstH) ?? image
+        let fitted = AnthropicImageLimits.fittedSize(width: image.width, height: image.height)
+        if fitted.width == image.width, fitted.height == image.height { return image }
+        return redraw(image, width: fitted.width, height: fitted.height) ?? image
     }
 
     private static func cropToPixelRect(_ image: CGImage, region: CGRect) -> CGImage? {

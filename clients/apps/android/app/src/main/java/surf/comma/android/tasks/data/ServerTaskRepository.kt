@@ -29,6 +29,7 @@ import surf.comma.android.conversation.ChatView
 import surf.comma.android.core.CoreApi
 import surf.comma.android.core.CoreError
 import surf.comma.android.core.TopicValue
+import surf.comma.android.tasks.TaskHost
 import surf.comma.android.tasks.TaskLabel
 import surf.comma.android.tasks.TaskRepository
 import surf.comma.android.tasks.TaskSection
@@ -146,7 +147,10 @@ class ServerTaskRepository internal constructor(
         val group = current.groupId
         shown = root.launch {
             launch {
-                running.subscribe(JSONObject().put("topic", "tasks").put("workspace", current.workspaceId)) { readList(it, group) }
+                // With the Tasks the workspace's stations host among them.
+                running.subscribe(JSONObject().put("topic", "tasks").put("workspace", current.workspaceId).put("hosted", "1")) {
+                    readList(it, group)
+                }
                     .collect { value -> if (value is TopicValue.Value) update(current) { listed = value.value } }
             }
             launch {
@@ -253,8 +257,9 @@ class ServerTaskRepository internal constructor(
                 origin = item.optString("origin").takeIf(String::isNotEmpty),
                 clientPlatform = item.optString("clientPlatform").takeIf(String::isNotEmpty),
                 scheduled = item.optBoolean("scheduled"),
-                freshness = item.optString("freshness").takeIf(String::isNotEmpty),
-                changedAt = wireMillis(item.optLong("updatedAt")))
+                changedAt = wireMillis(item.optLong("updatedAt")),
+                host = item.optJSONObject("host")?.let { readHost(it, item.optString("workspaceId")) },
+                unsupported = wireStrings(item.optJSONArray("unsupported")).toSet())
         }
         val workspaces = json.optJSONArray("workspaces")?.let { array ->
             (0 until array.length()).mapNotNull { index ->
@@ -265,6 +270,15 @@ class ServerTaskRepository internal constructor(
         }.orEmpty()
         return Listed(tasks, json.optBoolean("hasMore"), workspaces, json.optString("source"), json.optLong("lastSyncedAt"),
             json.optString("errorCode").takeIf { it.isNotEmpty() })
+    }
+
+    /** A station-hosted Task's chat and machine; null when it names no chat this app can open. */
+    private fun readHost(json: JSONObject, workspace: String): TaskHost? {
+        val station = json.optString("station").takeIf(String::isNotEmpty) ?: return null
+        val thread = json.optString("thread").toLongOrNull() ?: return null
+        val machine = json.optJSONObject("machine")
+        return TaskHost(workspace, station, thread, machine?.optString("name")?.takeIf(String::isNotEmpty),
+            machine?.optBoolean("online"))
     }
 
     private fun readLabels(value: Any?): List<TaskLabel> {

@@ -10,7 +10,8 @@ defmodule SalixWeb.ComputeProviders.AgentVMMCloudVM do
   starting it again (`waking`, then `ready`). Before the stop, the station
   confirms it is quiet and stays parked (`cloud_runtime_quiesce`, then
   `cloud_runtime_release`), as before a Cloudflare archive. A station that is
-  busy or not connected keeps the VM ready.
+  busy or not connected keeps the VM ready; a busy one makes the next try wait
+  longer (`SalixWeb.ComputeProviders.Cloudflare.refused_idle_archive/2`).
 
   `opts` may name the container provider (`:vmm`, default
   `SalixEnv.ComputeProviders.AgentVMM`) and the station's connection
@@ -50,7 +51,9 @@ defmodule SalixWeb.ComputeProviders.AgentVMMCloudVM do
       rec["status"] == "archived" and is_integer(rec["wake_requested_at"]) ->
         with {:ok, _} <- start_waking(group), do: run(group, allocation, workload, opts)
 
-      rec["status"] in ["creating", "waking"] ->
+      # `pending`: the Host saw the ready VM's container stop (a VM restart).
+      # The Workload follows the container facts again: run and verify it.
+      rec["status"] in ["creating", "waking", "pending"] ->
         run(group, allocation, workload, opts)
 
       rec["status"] == "archiving" ->
@@ -65,13 +68,15 @@ defmodule SalixWeb.ComputeProviders.AgentVMMCloudVM do
   end
 
   # The container runs: created, started, or left running. The VM is ready
-  # once the Host runs it; its station then connects by itself.
+  # once the Host runs it; its station then connects by itself. The record's
+  # status is the Workload's observed state, so this write settles it.
   defp run(group, allocation, workload, opts) do
     case vmm(opts).reconcile(allocation, workload, opts) do
       {:ok, %{outcome: :succeeded}} ->
-        with {:ok, _} <-
-               update(group, fn
-                 %{"status" => status} = current when status in ["creating", "waking"] ->
+        with {:ok, ready, previous} <-
+               update_with_previous(group, fn
+                 %{"status" => status} = current
+                 when status in ["creating", "waking", "pending"] ->
                    current
                    |> Map.put("status", "ready")
                    |> Map.put("ready_at", now_ms())
@@ -79,8 +84,11 @@ defmodule SalixWeb.ComputeProviders.AgentVMMCloudVM do
 
                  current ->
                    current
-               end),
-             do: {:ok, %{outcome: :group_reconciled}}
+               end) do
+          emit_wake_end(previous, ready)
+          SalixWeb.StationTasks.vm_ready(previous, ready)
+          {:ok, %{outcome: :group_reconciled}}
+        end
 
       other ->
         other
@@ -159,7 +167,8 @@ defmodule SalixWeb.ComputeProviders.AgentVMMCloudVM do
            end) do
       stop(committing, allocation, workload, opts)
     else
-      _not_quiet_or_unreachable -> resume(station, rec, operation)
+      :not_quiet -> resume(station, rec, operation, :not_quiet, opts)
+      _unreachable -> resume(station, rec, operation, :unreachable, opts)
     end
   end
 
@@ -170,8 +179,19 @@ defmodule SalixWeb.ComputeProviders.AgentVMMCloudVM do
            %{"token" => operation, "timeout_ms" => @quiesce_ms},
            @quiesce_ms
          ) do
-      {:ok, %{"quiet" => true}} -> :quiet
-      _ -> :not_quiet
+      {:ok, %{"quiet" => true}} ->
+        :quiet
+
+      {:ok, %{"quiet" => false}} ->
+        :not_quiet
+
+      # The station's connector answers with the method first.
+      {:error, why}
+      when why in ["runtime is not quiet", "cloud_runtime_quiesce: runtime is not quiet"] ->
+        :not_quiet
+
+      _ ->
+        :unreachable
     end
   end
 
@@ -179,8 +199,8 @@ defmodule SalixWeb.ComputeProviders.AgentVMMCloudVM do
     operation = rec["archive_operation_id"]
 
     with {:ok, :stopped} <- vmm(opts).stop_container(allocation, workload, operation),
-         {:ok, _} <-
-           update(rec["group_id"], fn current ->
+         {:ok, archived, previous} <-
+           update_with_previous(rec["group_id"], fn current ->
              if current["status"] == "archiving" and current["archive_operation_id"] == operation do
                current
                |> Map.put("status", "archived")
@@ -191,33 +211,85 @@ defmodule SalixWeb.ComputeProviders.AgentVMMCloudVM do
                })
                |> Map.delete("archive_operation_id")
                |> Map.delete("archive_reason")
+               |> Map.delete("archive_refusals")
              else
                {:error, :sleep_superseded}
              end
            end) do
+      emit_archive_end(previous, archived["archived_at"], "ok")
       {:ok, %{outcome: :group_reconciled}}
     end
   end
 
   # A busy or unreachable station keeps its VM: it leaves the parked state and
-  # the VM is ready again.
-  defp resume(station, rec, operation) do
+  # the VM is ready again. Nothing of the sleep began, so the archive counts as
+  # refused. A busy station waits a growing idle period before the next try;
+  # one that is away is asked again in a minute.
+  defp resume(station, rec, operation, why, opts) do
     _ = station.request(rec, "cloud_runtime_resume", %{"token" => operation}, @release_ms)
 
-    with {:ok, _} <-
-           update(rec["group_id"], fn current ->
+    with {:ok, resumed, previous} <-
+           update_with_previous(rec["group_id"], fn current ->
              if current["status"] == "archiving" and current["archive_operation_id"] == operation do
                current
                |> Map.put("status", "ready")
                |> Map.delete("archive_operation_id")
                |> Map.delete("archive_reason")
-               |> Map.put("archive_retry_at", now_ms() + 60_000)
+               |> wait_before_next_sleep(why, opts)
              else
                current
              end
-           end),
-         do: {:ok, %{outcome: :group_reconciled}}
+           end) do
+      if previous["status"] == "archiving" and resumed["status"] == "ready",
+        do: emit_archive_end(previous, now_ms(), "refused")
+
+      SalixWeb.StationTasks.vm_ready(previous, resumed)
+      {:ok, %{outcome: :group_reconciled}}
+    end
   end
+
+  defp wait_before_next_sleep(current, :not_quiet, opts),
+    do: Cloudflare.refused_idle_archive(current, opts)
+
+  defp wait_before_next_sleep(current, :unreachable, _opts),
+    do: Map.put(current, "archive_retry_at", now_ms() + 60_000)
+
+  # ---- lifecycle metrics (Salix.Telemetry, salix.vm.*) ----
+
+  defp metric_metadata(rec) do
+    %{
+      provider: "agent_vmm",
+      profile: get_in(rec, ["provider_spec", "profile_key"]) || "unknown"
+    }
+  end
+
+  # The write that made a waking record ready ends its wake.
+  defp emit_wake_end(
+         %{"status" => "waking", "last_wake_at" => last_wake_at},
+         %{
+           "status" => "ready",
+           "ready_at" => ready_at
+         } = ready
+       )
+       when is_integer(last_wake_at) and is_integer(ready_at) do
+    Salix.Telemetry.emit_vm_wake(
+      Map.put(metric_metadata(ready), :outcome, "ok"),
+      ready_at - last_wake_at
+    )
+  end
+
+  defp emit_wake_end(_previous, _ready), do: :ok
+
+  # The write that ends a sleep: stopped (ok) or kept ready (cancelled).
+  defp emit_archive_end(%{"archive_started_at" => started_at} = previous, ended_at, outcome)
+       when is_integer(started_at) and is_integer(ended_at) do
+    Salix.Telemetry.emit_vm_archive(
+      previous |> metric_metadata() |> Map.merge(%{reason: "idle", outcome: outcome}),
+      ended_at - started_at
+    )
+  end
+
+  defp emit_archive_end(_previous, _ended_at, _outcome), do: :ok
 
   @doc "Whether the station of this Cloud VM's container is connected now."
   def station_connected?(rec), do: __MODULE__.Station.connected?(rec)
@@ -226,8 +298,12 @@ defmodule SalixWeb.ComputeProviders.AgentVMMCloudVM do
   defp station(opts), do: Keyword.get(opts, :station, __MODULE__.Station)
 
   defp update(group, fun) do
+    with {:ok, current, _previous} <- update_with_previous(group, fun), do: {:ok, current}
+  end
+
+  defp update_with_previous(group, fun) do
     case GroupCompute.update_group_workload(group, fun) do
-      {:ok, current, _previous} -> {:ok, current}
+      {:ok, current, previous} -> {:ok, current, previous}
       {:error, _} = error -> error
     end
   end

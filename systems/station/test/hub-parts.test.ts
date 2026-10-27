@@ -141,7 +141,7 @@ test("a watcher gets what it lacks, the steps in flight, then new entries as the
   const path = join(dir, "t.jsonl");
   writeFileSync(path, line("one", "m1") + line("two", "m2"));
   const time = testClock();
-  const hub = new LiveHub(() => ({ runtime: "claude", paths: [path] }), time.clock);
+  const hub = new LiveHub(() => ({ paths: [{ runtime: "claude", path }] }), time.clock);
   hub.event("s", { kind: "start", id: "x", step: "text" });
   hub.event("s", { kind: "delta", id: "x", field: "text", text: "wri" });
   const got: LiveMessage[] = [];
@@ -174,7 +174,7 @@ test("a watcher can take only the latest entries, and ask for those before", () 
   const dir = temp();
   const path = join(dir, "t.jsonl");
   writeFileSync(path, line("one", "m1") + line("two", "m2") + line("three", "m3"));
-  const hub = new LiveHub(() => ({ runtime: "claude", paths: [path] }));
+  const hub = new LiveHub(() => ({ paths: [{ runtime: "claude", path }] }));
   const texts = (r: [number, { text: string }[]] | null) => r && [r[0], r[1].map((e) => e.text)];
   // Not watched yet: read for the asking.
   assert.deepEqual(texts(hub.before("s", 2, 1)), [1, ["two"]]);
@@ -193,10 +193,10 @@ test("a session gone on in a new runtime session: its history reads on from the 
   const left = join(dir, "a.jsonl");
   const now = join(dir, "b.jsonl");
   writeFileSync(left, line("one", "m1"));
-  let paths = [left];
+  let paths = [{ runtime: "claude" as const, path: left }];
   const time = testClock();
   let current = true;
-  const hub = new LiveHub(() => ({ runtime: "claude", paths, current }), time.clock);
+  const hub = new LiveHub(() => ({ paths, current }), time.clock);
   const got: LiveMessage[] = [];
   hub.subscribe("s", 0, null, (m) => void got.push(m));
   // The one left gets its last words, then the session moves on: its new transcript is written only once the
@@ -205,7 +205,7 @@ test("a session gone on in a new runtime session: its history reads on from the 
   current = false;
   hub.moved("s");
   writeFileSync(now, line("three", "m3"));
-  paths = [left, now];
+  paths = [...paths, { runtime: "claude", path: now }];
   current = true;
   watched(hub, "s");
   await settle();
@@ -232,9 +232,13 @@ test("a session's transcripts are found in the home of whichever account wrote t
   mkdirSync(join(b, "projects", "w"), { recursive: true });
   writeFileSync(join(a, "projects", "w", "one.jsonl"), line("one", "m1"));
   writeFileSync(join(b, "projects", "w", "two.jsonl"), line("two", "m2"));
-  assert.deepEqual(transcriptPaths("claude", [b, a], ["one", "two", "three"]), { paths: [join(a, "projects", "w", "one.jsonl"), join(b, "projects", "w", "two.jsonl")], current: false });
+  const ran = ["one", "two", "three"].map((id) => ({ id, runtime: "claude" }));
+  assert.deepEqual(transcriptPaths([b, a], ran), {
+    paths: [{ runtime: "claude", path: join(a, "projects", "w", "one.jsonl") }, { runtime: "claude", path: join(b, "projects", "w", "two.jsonl") }],
+    current: false,
+  });
   writeFileSync(join(b, "projects", "w", "three.jsonl"), line("three", "m3"));
-  assert.equal(transcriptPaths("claude", [b, a], ["one", "two", "three"]).current, true);
+  assert.equal(transcriptPaths([b, a], ran).current, true);
   rmSync(dir, { recursive: true, force: true });
 });
 

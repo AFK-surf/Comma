@@ -1,12 +1,15 @@
 import type { TaskStatusBucket } from "@comma/ui/components/task-workspace";
 import { useCommaMessages } from "@comma/i18n/react";
-import type { TaskLoop } from "@comma/core-client";
+import type { ProductInboxItem, TaskLoop } from "@comma/core-client";
 import type { TaskFilterOption } from "@comma/ui/components/task-workspace";
 import {
   CalendarIcon,
   EyeIcon,
   InfinityIcon,
   MacbookIcon,
+  MergedIcon,
+  PullRequestClosedIcon,
+  PullRequestIcon,
 } from "@comma/ui/components/icons";
 import { useNavigate } from "@tanstack/react-router";
 import { useCallback, type MouseEvent, type ReactElement, type ReactNode } from "react";
@@ -65,7 +68,7 @@ function Chip({
 }: {
   children: ReactNode;
   className: string;
-  kind: "label" | "platform" | "schedule";
+  kind: "label" | "platform" | "pull-request" | "schedule";
   nested?: boolean | undefined;
   onOpen?: (() => void) | undefined;
   size?: "md" | "sm" | undefined;
@@ -164,6 +167,57 @@ export function TaskLabelChip({
     >
       <LabelDot color={color} />
       <span className="comma-task-label-chip-text">{name}</span>
+    </Chip>
+  );
+}
+
+/** A coding Task's pull request, as its card shows it. */
+export type TaskPullRequest = NonNullable<ProductInboxItem["pullRequest"]>;
+
+const pullRequestStateIcons = {
+  closed: PullRequestClosedIcon,
+  draft: PullRequestIcon,
+  merged: MergedIcon,
+  open: PullRequestIcon,
+} as const satisfies Record<TaskPullRequest["state"], typeof PullRequestIcon>;
+
+/**
+ * The Task's pull request: its number, with its state as the mark and, for assistive technology, in words after the
+ * number. With `onOpen` (a card) it opens the pull request on click, like the other chips; without (a hover
+ * card) it only shows.
+ */
+export function TaskPullRequestChip({
+  nested,
+  onOpen,
+  pullRequest,
+}: {
+  nested?: boolean;
+  onOpen?: (() => void) | undefined;
+  pullRequest: TaskPullRequest;
+}) {
+  const messages = useCommaMessages();
+  const Icon = pullRequestStateIcons[pullRequest.state];
+  const name = messages.coding_pr_link({ number: String(pullRequest.number) });
+  const state = {
+    closed: messages.recommendations_pr_state_closed(),
+    draft: messages.recommendations_pr_state_draft(),
+    merged: messages.recommendations_pr_state_merged(),
+    open: messages.recommendations_pr_state_open(),
+  }[pullRequest.state];
+  return (
+    <Chip
+      className="comma-task-label-chip comma-task-pull-request-chip"
+      kind="pull-request"
+      nested={nested}
+      onOpen={onOpen}
+      testId="task-card-pull-request"
+    >
+      <span aria-hidden data-state={pullRequest.state} title={state}>
+        <Icon />
+      </span>
+      <span className="comma-task-label-chip-text">{name}</span>
+      {/* A chip inside a card is a plain span, which carries no aria-label: the state is words in its text. */}
+      <span className="app-sr-only">{`, ${state}`}</span>
     </Chip>
   );
 }

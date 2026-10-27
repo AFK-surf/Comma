@@ -146,6 +146,71 @@ defmodule SalixWeb.AgentVMMInstallationControllerTest do
     end
   end
 
+  test "public bootstrap script is served without credentials and rejects a malformed token" do
+    previous = SystemsRuntime.get_env(:salix_web, :public_base_url)
+    on_exit(fn -> SystemsRuntime.put_env(:salix_web, :public_base_url, previous) end)
+    SystemsRuntime.put_env(:salix_web, :public_base_url, "https://api.example.test")
+
+    response =
+      conn(:get, "/v1/compute/agent-vmm/install.sh")
+      |> SalixWeb.Router.call(SalixWeb.Router.init([]))
+
+    assert response.status == 200
+    assert get_resp_header(response, "content-type") == ["text/x-shellscript; charset=utf-8"]
+    assert get_resp_header(response, "cache-control") == ["no-store"]
+    assert get_resp_header(response, "x-content-type-options") == ["nosniff"]
+
+    assert response.resp_body =~
+             "'https://api.example.test/v1/compute/agent-vmm/install-operations/install.sh'"
+
+    # A malformed token exits before any request is made.
+    for args <- [[], ["no-dot"], ["a.b.c"], ["a.b", "extra"]] do
+      assert {output, 2} =
+               System.cmd("sh", ["-c", response.resp_body, "sh" | args], stderr_to_stdout: true)
+
+      assert output =~ "install token"
+    end
+  end
+
+  test "public script requests are bounded, secret-free on failure, and do not consume a ticket",
+       ctx do
+    path = "/v1/compute/agent-vmm/install-operations/install.sh"
+
+    assert {:ok, descriptor} =
+             AgentVMMInstallations.request(%{
+               request_attrs()
+               | client_request_id: "headless",
+                 delivery_target_type: "headless"
+             })
+
+    original = Repo.get!(AgentVMMInstallations.Operation, descriptor.operation.id)
+
+    for {id, secret} <- [
+          {ctx.descriptor.operation.id, ctx.descriptor.one_time_secret},
+          {descriptor.operation.id, "wrong"},
+          {descriptor.operation.id, descriptor.one_time_secret}
+        ] do
+      response =
+        conn(:post, path, Jason.encode!(%{operation_id: id, one_time_secret: secret}))
+        |> put_req_header("content-type", "application/json")
+        |> SalixWeb.Router.call(SalixWeb.Router.init([]))
+
+      # Missing local release bytes fail as an executable error script without leaking its capability.
+      assert response.status == 200
+      assert get_resp_header(response, "cache-control") == ["no-store"]
+      assert get_resp_header(response, "x-content-type-options") == ["nosniff"]
+      refute response.resp_body =~ secret
+      assert {_, 1} = System.cmd("sh", ["-c", response.resp_body], stderr_to_stdout: true)
+      assert Repo.get!(AgentVMMInstallations.Operation, descriptor.operation.id) == original
+    end
+
+    assert_raise Plug.Parsers.RequestTooLargeError, fn ->
+      conn(:post, path, Jason.encode!(%{padding: String.duplicate("x", 20_000)}))
+      |> put_req_header("content-type", "application/json")
+      |> SalixWeb.Router.call(SalixWeb.Router.init([]))
+    end
+  end
+
   test "fresh operation converges through handoff, managed enrollment, and current admission",
        ctx do
     exchanged = exchange(ctx.descriptor)

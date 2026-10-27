@@ -68,6 +68,12 @@ defmodule SalixIM.StationTaskWatchTest do
     def appended(_group_id, _conversation_id), do: :ok
 
     @impl true
+    def sandbox(_reservation), do: {:error, :no_sandboxes}
+
+    @impl true
+    def task_status(_group_id, _conversation_id, _status), do: :ok
+
+    @impl true
     def standing(_group_id, _conversation_id) do
       case SystemsRuntime.Agent.get_and_update(
              __MODULE__,
@@ -178,7 +184,8 @@ defmodule SalixIM.StationTaskWatchTest do
     assert %{pending: %{epoch: 1, reported: [], timer: timer}} = :sys.get_state(watch, :infinity)
     assert is_reference(timer)
 
-    # The Group's Cloud VM has not come back for the delegation.
+    # The Group's Cloud VM has not come back for the delegation: the Router
+    # is told once, nothing else says so.
     Stations.answer({:ok, %{place: :cloud_vm, connected?: false, sent: 0, vm_status: "waking"}})
     log = capture_log(fn -> settle_after(1_000) end)
 
@@ -191,11 +198,20 @@ defmodule SalixIM.StationTaskWatchTest do
                      %{phase: :vm_not_ready, kind: :cloud_vm, canary: false}}
 
     assert %{pending: %{epoch: 1, reported: [:vm_not_ready]}} = :sys.get_state(watch, :infinity)
+    router_pid = router_participant(ctx, conversation_id)
+    assert [{@notify, [^router_pid], told}] = watch_messages(ctx, conversation_id)
+    assert told["reason"] == "vm_not_ready"
+    assert told["vm_status"] == "waking"
+    assert {:ok, [message]} = messages_of_type(ctx, conversation_id, @notify)
+
+    assert text(message["content"]) =~
+             "the VM has not come up for it (vm_not_ready: its status is waking)"
 
     # The same stage again says nothing more.
     log = capture_log(fn -> settle_after(1_000) end)
     refute log =~ "station Task delegation unanswered"
     refute_received {:telemetry, @stalled, _, _}
+    assert length(watch_messages(ctx, conversation_id)) == 1
 
     # The VM came up, but the station is not connected: a new stage.
     Stations.answer({:ok, %{place: :cloud_vm, connected?: false, sent: 0, vm_status: "ready"}})
@@ -243,13 +259,9 @@ defmodule SalixIM.StationTaskWatchTest do
 
     assert waited >= 10_000
 
-    # Nothing of the watch's went into the Task.
-    assert {:ok, messages} =
-             Conversations.list_group_conversation_messages(ctx.group_id, conversation_id,
-               limit: 20
-             )
-
-    assert Enum.map(messages, & &1["actor_type"]) == ["agent", "agent"]
+    # Nothing more of the watch's went into the Task: the Router was told once.
+    assert [{@notify, _, %{"reason" => "vm_not_ready"}}, "agent"] =
+             watch_messages(ctx, conversation_id, true)
 
     settle_after(2_000)
     refute_received {:telemetry, @stalled, _, _}
@@ -551,6 +563,28 @@ defmodule SalixIM.StationTaskWatchTest do
     refute_received {:telemetry, @stalled, _, _}
   end
 
+  test "milestones alone from the Worker answer no delegation; its reply does", ctx do
+    {conversation_id, watch, worker_pid} = start_task(ctx, "milestone-task")
+    Stations.answer({:ok, %{place: :device, connected?: true, sent: 1, vm_status: nil}})
+
+    assert {:ok, _milestones} =
+             station_post(
+               ctx,
+               conversation_id,
+               worker_pid,
+               [%{"type" => "milestone", "title" => "Found the failing test"}],
+               nil
+             )
+
+    settle_after(500)
+    assert %{pending: %{epoch: 1}} = :sys.get_state(watch, :infinity)
+    refute_received {:telemetry, @answered, _, _}
+
+    assert {:ok, _reply} = station_post(ctx, conversation_id, worker_pid, "fixed it", nil)
+    settle_until(fn -> :sys.get_state(watch, :infinity).pending == nil end)
+    assert_received {:telemetry, @answered, _, %{kind: :device}}
+  end
+
   test "a new delegation is a new epoch, and a Task that leaves active is not watched", ctx do
     {conversation_id, watch, worker_pid} = start_task(ctx, "epoch-task")
     Stations.answer({:ok, %{place: :device, connected?: true, sent: 1, vm_status: nil}})
@@ -591,13 +625,66 @@ defmodule SalixIM.StationTaskWatchTest do
     refute_received {:telemetry, _, _, _}
   end
 
-  test "a station no longer taking part ends the watch without a report", ctx do
-    {_conversation_id, watch, _worker_pid} = start_task(ctx, "left-task")
-    Stations.answer(:not_station)
-    settle_after(1_000)
-    assert :sys.get_state(watch, :infinity).pending == nil
+  test "a station that left its Task is told to the Router once, and the wait ends", ctx do
+    # Where the Task runs is on its record: no standing was read, and the
+    # Group's Cloud VM left (its Sessions of the Task ended, it answered
+    # `gone` to what it was given) before the watch ever saw it there.
+    vm = SalixStore.RuntimeIds.cloud_vm_device_id(ctx.group_id)
+    {conversation_id, watch, _worker_pid} = start_task(%{ctx | device_id: vm}, "left-task")
+    assert Stations.asked() == 0
+    assert :sys.get_state(watch, :infinity).place == :cloud_vm
+
+    log = capture_log(fn -> settle_after(1_000) end)
+
+    assert log =~
+             "station Task delegation unanswered: stage=station_left place=cloud_vm vm_status=- epoch=1"
+
+    assert_received {:telemetry, @stalled, %{count: 1},
+                     %{phase: :station_left, kind: :cloud_vm, canary: false}}
+
+    router_pid = router_participant(ctx, conversation_id)
+    assert [{@notify, [^router_pid], told}] = watch_messages(ctx, conversation_id)
+    assert told["reason"] == "station_left"
+    assert told["epoch_seq"] == 1
+    assert told["issue"] == nil
+
+    # Nothing to check on: no timer, no more reads, nothing twice.
+    assert %{pending: nil, place: :cloud_vm} = :sys.get_state(watch, :infinity)
     assert Stations.asked() == 1
+    settle_after(3_000)
+    assert Stations.asked() == 1
+    assert length(watch_messages(ctx, conversation_id)) == 1
     refute_received {:telemetry, _, _, _}
+  end
+
+  test "a station that leaves after the Router was told is not told again", ctx do
+    {conversation_id, watch, worker_pid} = start_task(ctx, "left-after-told-task")
+    Stations.answer(@given)
+    Stations.session({:ok, %{state: :idle, pending: 0, for_ms: 5_000, last_failure: nil}})
+
+    # Reminded at 1 s, told at 2 s: the epoch's one notification is in the Task.
+    settle_until(fn -> length(watch_messages(ctx, conversation_id)) == 2 end)
+    router_pid = router_participant(ctx, conversation_id)
+
+    assert [
+             {@nudge, [^worker_pid], _},
+             {@notify, [^router_pid], %{"reason" => "stopped_after_reminder"}}
+           ] =
+             watch_messages(ctx, conversation_id)
+
+    assert_received {:telemetry, @stalled, _, %{phase: :idle_no_reply}}
+
+    # The reminder reached a station whose Sessions of the Task ended: `gone`, and it left.
+    Stations.answer(:not_station)
+
+    log =
+      capture_log(fn ->
+        settle_until(fn -> :sys.get_state(watch, :infinity).pending == nil end)
+      end)
+
+    refute log =~ "stage=station_left"
+    assert length(watch_messages(ctx, conversation_id)) == 2
+    refute_received {:telemetry, @stalled, _, _}
   end
 
   test "a delegation older than stale_ms when the watch finds it is not reported", ctx do
@@ -758,7 +845,7 @@ defmodule SalixIM.StationTaskWatchTest do
     assert stalled.tag_values.(%{phase: :vm_not_ready, kind: :cloud_vm, canary: true}) ==
              %{phase: "vm_not_ready", kind: "cloud_vm", canary: "true"}
 
-    for phase <- [:idle_no_reply, :cannot_start, :given_no_reply] do
+    for phase <- [:idle_no_reply, :cannot_start, :station_left, :given_no_reply] do
       assert stalled.tag_values.(%{phase: phase, kind: :device}).phase == Atom.to_string(phase)
     end
 
@@ -914,7 +1001,7 @@ defmodule SalixIM.StationTaskWatchTest do
         "agent_id" => ctx.worker_id,
         "participant_id" => worker_pid,
         "content" => text,
-        "client_request_id" => "station-task:#{conversation_id}:#{text}",
+        "client_request_id" => "station-task:#{conversation_id}:#{inspect(text)}",
         "metadata" => metadata
       }
     )

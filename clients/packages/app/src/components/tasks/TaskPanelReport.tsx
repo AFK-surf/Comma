@@ -21,10 +21,10 @@ import {
   imagePreviewRefKey,
   agentBlobImagePreviewRef,
 } from "../chat/thread/attachments/images/imagePreviewRefs";
+import { MessageMiniAppCards } from "../apps/MiniAppMessageCard";
 import { MessageBlockExtras } from "../chat/thread/rows/MessageBlockExtras";
 import { useCompiledMessageMarkdown } from "../chat/thread/rows/assistant/useCompiledMessageMarkdown";
 import { ThreadFileSourceContext } from "../chat/thread/threadContexts";
-import { useCommaUiThemeName } from "../commaUiTheme";
 import { useTaskConversation } from "../search/taskConversationPreviewLoader";
 import { useTimeLabel } from "./useTimeLabel";
 
@@ -302,7 +302,6 @@ function MessageContent({
   groupId: string;
   workspaceId: string;
 }) {
-  const isDark = useCommaUiThemeName() === "Dark mode";
   // The panel uses message snapshots, without live Task subscriptions or actions.
   // The core's parse is of the whole message: a reply shown after its lead is drawn from its text.
   const compiled = useCompiledMessageMarkdown(
@@ -350,7 +349,6 @@ function MessageContent({
           ? { inlineElements: compiled.inlineElements, nodes: compiled.nodes }
           : {})}
         final
-        isDark={isDark}
         showCodeBlockHeader={false}
       />
       <MessageBlockExtras
@@ -359,6 +357,12 @@ function MessageContent({
         workspaceId={workspaceId}
         referenceMode="static"
         onPreviewLocalFile={previewImage}
+      />
+      <MessageMiniAppCards
+        groupId={groupId}
+        live={false}
+        message={message}
+        workspaceId={workspaceId}
       />
     </>
   );

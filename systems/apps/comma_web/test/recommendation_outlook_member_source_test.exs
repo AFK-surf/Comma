@@ -2,7 +2,10 @@ defmodule CommaWeb.RecommendationOutlookMemberSourceTest do
   use SystemsClock.Case, async: true
   alias CommaWeb.RecommendationOutlookMemberSource, as: Source
 
-  defp read(mail, events, profile \\ {:ok, %{"id" => "user-1", "mail" => "me@example.com"}}) do
+  defp read(mail, events, answers \\ []) do
+    profile =
+      Keyword.get(answers, :profile, {:ok, %{"id" => "user-1", "mail" => "me@example.com"}})
+
     request = fn "GET", url, opts ->
       uri = URI.parse(url)
       query = URI.decode_query(uri.query || "")
@@ -27,6 +30,10 @@ defmodule CommaWeb.RecommendationOutlookMemberSourceTest do
         "/v1.0/me/calendarView" ->
           assert query["$top"] == "40"
           events
+
+        "/v1.0/me/mailFolders/junkemail/messages" ->
+          assert query["$filter"] =~ "receivedDateTime ge"
+          Keyword.get(answers, :junk, {:ok, %{"value" => []}})
       end
     end
 
@@ -152,6 +159,58 @@ defmodule CommaWeb.RecommendationOutlookMemberSourceTest do
              "Sign in within the next 3 days, or your account and vault are permanently deleted."
   end
 
+  test "recent junk mail joins the inbox mail, marked as junk" do
+    mail = fn id, minute ->
+      %{
+        "id" => id,
+        "conversationId" => "t-" <> id,
+        "webLink" => "https://outlook.office.com/mail/#{id}",
+        "subject" => id,
+        "receivedDateTime" => "2026-10-03T11:#{String.pad_leading("#{minute}", 2, "0")}:00Z",
+        "from" => %{"emailAddress" => %{"address" => "someone@example.com"}},
+        "bodyPreview" => "Text of " <> id
+      }
+    end
+
+    junk = for n <- 1..12, do: mail.("junk#{n}", n)
+    # The same conversation in the inbox stays inbox mail.
+    moved = Map.put(mail.("moved", 30), "conversationId", "t-inbox")
+
+    assert {:ok, %{"messages" => messages}, _} =
+             read(
+               {:ok, %{"value" => [mail.("inbox", 0)]}},
+               {:ok, %{"value" => []}},
+               junk: {:ok, %{"value" => [moved | junk]}}
+             )
+
+    assert [%{"messageId" => "inbox"} = inbox | junk] = messages
+    refute inbox["memberRelation"]
+    assert Enum.map(junk, & &1["messageId"]) == for(n <- 12..3//-1, do: "junk#{n}")
+    assert Enum.all?(junk, &(&1["memberRelation"] == "in_your_junk_folder"))
+  end
+
+  test "a failed junk read leaves the inbox mail without a warning" do
+    assert {:ok, %{"messages" => [%{"messageId" => "m1"}]} = data, _} =
+             read(
+               {:ok,
+                %{
+                  "value" => [
+                    %{
+                      "id" => "m1",
+                      "conversationId" => "t1",
+                      "webLink" => "https://outlook.office.com/mail/m1",
+                      "receivedDateTime" => "2026-10-03T11:00:00Z",
+                      "bodyPreview" => "Hello"
+                    }
+                  ]
+                }},
+               {:ok, %{"value" => []}},
+               junk: {:error, {:member_provider_http, 403}}
+             )
+
+    refute Map.has_key?(data, :source_warnings)
+  end
+
   test "one unreadable relationship is warned; neither readable is not empty success" do
     assert {:ok, data, _} = read({:error, {:member_provider_http, 403}}, {:ok, %{"value" => []}})
     assert data[:source_warnings] == [{:member_provider_http, 403}]
@@ -175,7 +234,7 @@ defmodule CommaWeb.RecommendationOutlookMemberSourceTest do
              read(
                {:ok, %{"value" => []}},
                {:ok, %{"value" => []}},
-               {:ok, %{"mail" => "me@example.com"}}
+               profile: {:ok, %{"mail" => "me@example.com"}}
              )
   end
 end

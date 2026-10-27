@@ -1,8 +1,11 @@
 // The client core and its Kotlin API. The core is the TypeScript one (clients/packages/core), run by Hermes
 // (clients/packages/core/native/engine.cpp, which the iOS app shares, through src/main/cpp/jni.cpp); what it needs of
-// the platform (requests, the credential store, SQLite) is in Kotlin.
+// the platform (requests, the credential store, SQLite) is in Kotlin; its iroh, which reaches stations, is in Rust
+// (clients/packages/mesh/native), linked into the engine.
 // `bundleCore` compiles the core's script to Hermes bytecode with the repository's Node tools, so `pnpm install`
 // must have run at the repository root.
+import java.io.ByteArrayOutputStream
+
 plugins {
     alias(libs.plugins.android.library)
 }
@@ -36,7 +39,64 @@ abstract class BundleCore @Inject constructor(private val exec: ExecOperations) 
     }
 }
 
+/**
+ * The phones' iroh as a static library for the engine (systems/station/scripts/native.ts, part client-mesh): prebuilt,
+ * or, outside CI, built here when it is not and this machine has Rust. Without it the engine is built without the
+ * mesh, and the app reaches no station. `linked` says which ("linked" or "none"), and is written only when that
+ * changes: CMake reads it, and configures the engine again when it does.
+ */
+abstract class MeshNative @Inject constructor(private val exec: ExecOperations) : DefaultTask() {
+    @get:Internal
+    abstract val repository: DirectoryProperty
+
+    @get:OutputFile
+    abstract val library: RegularFileProperty
+
+    @get:OutputFile
+    abstract val linked: RegularFileProperty
+
+    @TaskAction
+    fun get() {
+        val said = ByteArrayOutputStream()
+        // A machine without Node (a build without the client core) gets none either.
+        val got = runCatching {
+            exec.exec {
+                workingDir = repository.get().asFile
+                commandLine(
+                    "node", "systems/station/scripts/native.ts",
+                    if (System.getenv("CI").isNullOrEmpty()) "path" else "fetch", "client-mesh", "android-arm64",
+                )
+                standardOutput = said
+                isIgnoreExitValue = true
+            }.exitValue == 0
+        }.getOrDefault(false)
+        val out = library.get().asFile
+        out.parentFile.mkdirs()
+        val now = if (got) "linked" else "none"
+        if (got) {
+            File(said.toString().trim(), "libcomma_mesh.a").copyTo(out, overwrite = true)
+        } else {
+            out.delete()
+            logger.warn("The phones' iroh (client-mesh) is not prebuilt for this source: this build reaches no station.")
+        }
+        val kept = linked.get().asFile
+        if (!kept.exists() || kept.readText() != now) kept.writeText(now)
+    }
+}
+
 val repositoryRoot = rootProject.layout.projectDirectory.dir("../../..")
+
+val meshNative = tasks.register<MeshNative>("meshNative") {
+    description = "Gets the phones' iroh for the core's engine."
+    repository.set(repositoryRoot)
+    library.set(layout.buildDirectory.file("intermediates/comma-mesh/arm64-v8a/libcomma_mesh.a"))
+    linked.set(layout.buildDirectory.file("intermediates/comma-mesh/arm64-v8a/state"))
+    // Whether it is current is native.ts's to say (the key of its sources): asked every build, answered from its cache.
+    outputs.upToDateWhen { false }
+}
+tasks.configureEach {
+    if (name.startsWith("configureCMake") || name.startsWith("buildCMake")) dependsOn(meshNative)
+}
 
 val bundleCore = tasks.register<BundleCore>("bundleCore") {
     description = "Compiles the client core to Hermes bytecode."
@@ -64,7 +124,14 @@ android {
     defaultConfig {
         minSdk = 35
         ndk { abiFilters += "arm64-v8a" }
-        externalNativeBuild { cmake { arguments += listOf("-DANDROID_STL=c++_shared") } }
+        externalNativeBuild {
+            cmake {
+                arguments += listOf(
+                    "-DANDROID_STL=c++_shared",
+                    "-DCOMMA_MESH_DIR=" + layout.buildDirectory.dir("intermediates/comma-mesh/arm64-v8a").get().asFile.path,
+                )
+            }
+        }
         consumerProguardFiles("proguard-rules.pro")
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

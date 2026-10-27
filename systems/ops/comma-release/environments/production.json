@@ -13,5 +13,9 @@
   },
   "publicHosts": ["salix.comma.surf", "teams.bridge.surf"],
   "agentVmmGatewayEnabled": true,
-  "computeRuntimeBaseURL": "https://salix.comma.surf"
+  "computeRuntimeBaseURL": "https://salix.comma.surf",
+  "l4es": {
+    "url": "https://l4es.afk.surf",
+    "maxSandboxes": 5
+  }
 }

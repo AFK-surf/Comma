@@ -1,16 +1,17 @@
 import "@comma/ui/styles.css";
 import "@comma/app/styles.css";
 
-import type { RecommendationEnvelope } from "@comma/recommendation-contract";
+import {
+  recommendationInlineLinkSchema,
+  type RecommendationEnvelope,
+} from "@comma/recommendation-contract";
 import { cleanup, render } from "@comma/test-utils/render";
-import { setInteractionModality } from "react-aria/private/interactions/useFocusVisible";
 import { afterEach, expect, it } from "vitest";
-import { page, userEvent } from "vitest/browser";
+import { page } from "vitest/browser";
 import { RailStoryCore } from "../RailStoryCore";
 import { RecommendationRail } from "../RecommendationRail";
 
-// Unmount on the test clock: the rail's resize observers and the card's hover
-// timers stop with it.
+// Unmount on the test clock: the rail's resize observers stop with it.
 afterEach(() => {
   cleanup();
   document.body.replaceChildren();
@@ -53,15 +54,16 @@ const envelope = {
             parts: [
               {
                 kind: "inline-link",
-                link: {
+                link: recommendationInlineLinkSchema.parse({
                   href: mail,
                   label: task,
+                  objective: `${task}.`,
                   // Outlook text mail shows an image as its URL in brackets.
                   previewText:
                     "Find My has been disabled on pengx17\nFind My: [https://statici.icloud.com/fmipmobile/deviceImages-4.0/iPhone/iPhone18,2-1-9-0/online-nolocation_iphone__2x.png]\nWith Find My disabled, these devices can no longer be located.",
                   sourceId: "outlook",
                   taskPrompt: `${task}.\n\n${mail}`,
-                },
+                }),
               },
             ],
           },
@@ -84,7 +86,7 @@ const envelope = {
 
 const sameLine = (a: DOMRect, b: DOMRect) => a.top < b.bottom && b.top < a.bottom;
 
-it("keeps a row's source context inside the rail and runs a long link in its line", async () => {
+it("shows a row's source context on its card inside the rail and runs a long link in its line", async () => {
   await page.viewport(1024, 720);
   render(
     <RailStoryCore envelope={envelope}>
@@ -101,16 +103,17 @@ it("keeps a row's source context inside the rail and runs a long link in its lin
       </div>
     </RailStoryCore>
   );
-  setInteractionModality("pointer");
-  // The row is its source link; the link takes the pointer over the row.
-  await userEvent.hover(page.getByRole("button", { name: task }).last());
-  const card = page.getByRole("tooltip");
-  await expect.element(card).toBeVisible();
+  // The row's card shows its quoted source words without a hover.
+  const context = page.getByLabelText("Original context");
+  await expect.element(context).toBeVisible();
 
   const rail = document
     .querySelector(".comma-recommendations")!
     .getBoundingClientRect();
-  const box = card.element().getBoundingClientRect();
+  const box = context
+    .element()
+    .closest(".comma-recommendation-task-card")!
+    .getBoundingClientRect();
   expect(box.left).toBeGreaterThanOrEqual(rail.left);
   expect(box.right).toBeLessThanOrEqual(rail.right);
 

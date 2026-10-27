@@ -384,9 +384,6 @@ export class LocalFilePickerService implements LocalFilePickerProvider {
   }
 
   async pickForChat(input: ChatAttachmentPickInput): Promise<ChatAttachmentPickResult> {
-    // Start the workspace connector while the user is still inside the native
-    // dialog so regular-file registration rarely waits for the initial connect.
-    this.#registrar.prewarm?.(input.workspaceId);
     const selected = input.sources
       ? { canceled: false, filePaths: [] }
       : await this.#openDialog(
@@ -528,39 +525,10 @@ export class LocalFilePickerService implements LocalFilePickerProvider {
       candidates.push({ file: snapshot, kind: "local_file" });
     }
 
-    const items: ChatAttachmentPickItem[] = [];
-    for (const candidate of candidates) {
-      if (candidate.kind === "upload") {
-        items.push(candidate);
-        continue;
-      }
-      try {
-        await input.refreshLocalFileRegistration?.();
-        input.assertLocalFileRegistrationAllowed();
-        await this.#registrar.register(
-          input.workspaceId,
-          candidate.file,
-          input.assertLocalFileRegistrationAllowed,
-          input.localFileIntakeId
-        );
-        items.push(candidate);
-      } catch (error) {
-        if (
-          !(error instanceof LocalFileRouteRegistrationError) ||
-          error.outcome === "rejected"
-        ) {
-          await this.#store
-            .releaseDraft(candidate.file.localFileRef)
-            .catch(() => false);
-        }
-        pushChatPickError(
-          errors,
-          namedChatPickError(error, candidate.file.name, false)
-        );
-      }
-    }
-
-    return { cancelled: false, errors, items };
+    // A regular file stays a draft snapshot here: the client core uploads it from Main as soon as it reaches the
+    // draft (`fetch` with its `localFileRef`), so no route for the server to read it from this device is made. The
+    // draft snapshot goes with the 24-hour draft cleanup.
+    return { cancelled: false, errors, items: candidates };
   }
 }
 

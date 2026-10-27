@@ -37,10 +37,13 @@ defmodule SalixIM.StationTaskWatch do
       (`SalixIM.TaskWorkerWatch` keys its decisions the same way): addressed
       to the Worker, not authored by it, not a watch Message. Its `seq` is the
       epoch. It is answered once a Worker-authored Message has a `seq` above
-      it; the first such Message is the reply the wait is measured to.
+      it; the first such Message is the reply the wait is measured to. A
+      Message of milestones alone (`SalixIM.ConversationMilestone`) answers
+      nothing.
     * A Task is watched only while it is `active` and its Worker is a
       station's (`SalixIM.TaskConversationInput.station_worker?/1`). The port's
-      `standing/2` confirms at every check; `:not_station` ends the watch, and
+      `standing/2` confirms at every check; `:not_station` ends the watch
+      (telling the Router first when a delegation is unanswered, below), and
       a standing that cannot be read is asked again, never taken for a stage.
     * The only state outside the Task is the timer of the unanswered
       delegation and the stages reported for it. A restarted actor rebuilds
@@ -53,8 +56,8 @@ defmodule SalixIM.StationTaskWatch do
       #{@messages_window} Messages) and at each timer firing (the same, plus
       the station's standing and, once it has the delegation, one
       `task.status` request), every `recheck_ms` until the delegation is
-      answered or the Task leaves `active`. One timer per active station Task
-      with an unanswered delegation. No scan over Tasks, no poll of the
+      answered or the Task leaves `active`. One timer per active station
+      Task with an unanswered delegation. No scan over Tasks, no poll of the
       station. A delegation older than the Message window is still waited
       for: a Worker Message in the window answers it.
     * Stages, from the standing: `vm_not_ready` (the Group's Cloud VM is not
@@ -72,7 +75,17 @@ defmodule SalixIM.StationTaskWatch do
       Messages pending (held, not handed to its Session). Each stage has a
       threshold (`:station_task_watch` config), measured from the delegation.
       A waiting stage is reported once per delegation, when the delegation
-      is at least that old.
+      is at least that old. `vm_not_ready` of the Group's Cloud VM also tells
+      the Router then (`task_worker_stopped`, reason `vm_not_ready`): a Task
+      made or given a Message while the VM slept is kept for it and the VM
+      woken (`SalixWeb.StationTasks`), and nothing else says when the VM did
+      not come up in its wake budget; a coding sandbox says so itself.
+      `station_left` has no threshold: the port's
+      `standing/2` finds no station in the Task any more (it answered `gone`
+      to what it was given, its Sessions of the Task ended; or it never
+      joined). Nothing will answer the delegation. Where the Task runs is on
+      its record (`runs_on`), so a station that left is still reported under
+      its place.
     * Per epoch: at most one reminder (`task_worker_nudge`, to the Worker,
       so the station's Session runs a turn on it), then at most one Router
       notification (`task_worker_stopped`). Both are appended with the same
@@ -87,13 +100,19 @@ defmodule SalixIM.StationTaskWatch do
       Session that `cannot_start` is not reminded (it would only add to what
       is pending): the Router is told once the stage is `cannot_start_ms`
       old, or at once when the last failure reads as a sign-in, quota or
-      billing problem. `idle_no_reply` and `cannot_start` are reported as
-      stalls when the Router is told, not when the reminder goes: a reminder
-      that works is no incident; with no Router participant to tell, the
-      stall is reported all the same. A stage is not done until its Message is
-      durably appended: a failed append is retried on a short timer, at most
-      `@max_attempts` times, then checked again after `recheck_ms`. Never
-      reminded: a Session that is `running`.
+      billing problem. A station that left while the delegation is
+      unanswered is told to the Router at once (`station_left`), unless a
+      notification for the epoch was sent already (its Session was reported
+      idle before it left, or this actor restarted after telling), and this
+      wait ends with it (a later delegation is waited for again); a Task
+      whose delegation was answered, or that had none, ends quietly as it
+      always did. `idle_no_reply`, `cannot_start`
+      and `station_left` are reported as stalls when the Router is told, not
+      when the reminder goes: a reminder that works is no incident; with no
+      Router participant to tell, the stall is reported all the same. A stage
+      is not done until its Message is durably appended: a failed append is
+      retried on a short timer, at most `@max_attempts` times, then checked
+      again after `recheck_ms`. Never reminded: a Session that is `running`.
     * A failure inside this actor is logged and the check is made again; it
       never stops the Task's owner.
   """
@@ -157,6 +176,11 @@ defmodule SalixIM.StationTaskWatch do
             worker_agent_id: nil,
             worker_participant_id: nil,
             delegator_agent_id: nil,
+            # Where the Task runs (`:cloud_vm` or `:device`): from the Task
+            # record's `runs_on`, or, for a Task from before it was kept
+            # there, from the last standing read or Worker reply. What a
+            # station that left is reported under.
+            place: nil,
             # The latest delegation without a Worker reply: its `epoch` (seq),
             # `at` (ms), the stages `reported` for it with the `place` and
             # `vm_status` of the last report, its `timer` and `token`, failed
@@ -298,7 +322,9 @@ defmodule SalixIM.StationTaskWatch do
         state
         | worker_agent_id: worker_agent_id,
           worker_participant_id: worker["participant_id"],
-          delegator_agent_id: conversation["created_by_agent_id"]
+          delegator_agent_id: conversation["created_by_agent_id"],
+          place:
+            device_place(get_in(conversation, ["runs_on", "device_id"]), state) || state.place
       }
       |> observe()
     else
@@ -312,8 +338,19 @@ defmodule SalixIM.StationTaskWatch do
       | worker_agent_id: nil,
         worker_participant_id: nil,
         delegator_agent_id: nil,
+        place: nil,
         pending: nil
     }
+
+  defp device_place(device, state) when is_binary(device) and device != "" do
+    cond do
+      device == SalixStore.RuntimeIds.cloud_vm_device_id(state.group_id) -> :cloud_vm
+      SalixStore.CodingSandboxes.device?(device) -> :sandbox
+      true -> :device
+    end
+  end
+
+  defp device_place(_device, _state), do: nil
 
   # -- messages ----------------------------------------------------------------
 
@@ -321,7 +358,7 @@ defmodule SalixIM.StationTaskWatch do
   # waited for; a Message given to the Worker is a newer delegation.
   defp apply_message(state, %{"seq" => seq} = message) when is_integer(seq) do
     cond do
-      by_worker?(message, state) ->
+      worker_reply?(message, state) ->
         case state.pending do
           %{epoch: epoch, at: at} when seq > epoch -> answered(state, epoch, at, message)
           _ -> state
@@ -408,11 +445,17 @@ defmodule SalixIM.StationTaskWatch do
 
   defp first_worker_reply(messages, epoch, state) do
     messages
-    |> Enum.filter(&(seq(&1) > epoch and by_worker?(&1, state)))
+    |> Enum.filter(&(seq(&1) > epoch and worker_reply?(&1, state)))
     |> Enum.min_by(&seq/1, fn -> nil end)
   end
 
   defp seq(message), do: if(is_integer(message["seq"]), do: message["seq"], else: 0)
+
+  # Milestones alone show the Worker at work, not a reply: they answer no one.
+  defp worker_reply?(message, state),
+    do:
+      by_worker?(message, state) and
+        not SalixIM.ConversationMilestone.only_milestones?(message["content"])
 
   defp by_worker?(message, %{worker_participant_id: pid, worker_agent_id: agent}) do
     (pid != nil and message["participant_id"] == pid) or
@@ -478,24 +521,17 @@ defmodule SalixIM.StationTaskWatch do
         :ok
     end
 
-    %{cancel(state) | pending: nil}
+    %{cancel(state) | pending: nil, place: place}
   end
 
   defp answered(state, _epoch, _at, _reply), do: %{cancel(state) | pending: nil}
 
   # The station that posted the reply says where the Task runs; a reply
   # without one (none a station posts) keeps the place last reported.
-  defp reply_place(state, reply) do
-    case get_in(reply, ["metadata", "device_id"]) do
-      device when is_binary(device) and device != "" ->
-        if device == SalixStore.RuntimeIds.cloud_vm_device_id(state.group_id),
-          do: :cloud_vm,
-          else: :device
-
-      _none ->
-        state.pending.place || :other
-    end
-  end
+  defp reply_place(state, reply),
+    do:
+      device_place(get_in(reply, ["metadata", "device_id"]), state) || state.pending.place ||
+        state.place || :other
 
   defp ensure_pending(%{pending: %{epoch: epoch, timer: timer}} = state, epoch, _at)
        when is_reference(timer),
@@ -633,10 +669,10 @@ defmodule SalixIM.StationTaskWatch do
   defp assess(%{pending: pending} = state, at, messages) do
     case TaskStations.standing(state.group_id, state.conversation_id) do
       :not_station ->
-        # No station takes part: nothing of this actor's to wait for.
-        %{state | pending: nil}
+        left(state, messages, max(now() - at, 0))
 
       {:ok, standing} ->
+        state = %{state | place: standing.place}
         {stage, session} = stage(state, standing, pending.epoch)
         act(state, stage, standing, session, messages, max(now() - at, 0))
 
@@ -663,8 +699,9 @@ defmodule SalixIM.StationTaskWatch do
     end
   end
 
-  defp given_stage(%{place: :cloud_vm, vm_status: status}, _epoch) when status != "ready",
-    do: :vm_not_ready
+  defp given_stage(%{place: place, vm_status: status}, _epoch)
+       when place in [:cloud_vm, :sandbox] and status != "ready",
+       do: :vm_not_ready
 
   defp given_stage(%{connected?: false}, _epoch), do: :station_offline
 
@@ -686,6 +723,24 @@ defmodule SalixIM.StationTaskWatch do
     do: :idle_no_reply
 
   defp session_stage(%{state: :cannot_start}), do: :cannot_start
+
+  # The Group's Cloud VM has not come up: the wake asked for when the Task
+  # was made or given the delegation did not bring it within the threshold.
+  # The Router is told once, and the delegation checked on: the VM may still
+  # come up, and its station answer. A coding sandbox that is not ready is
+  # waited out below: its own notices say what became of it.
+  defp act(state, :vm_not_ready, %{place: :cloud_vm} = standing, session, messages, age) do
+    cond do
+      sent?(messages, state.pending.epoch, TaskWorkerWatch.notify_type()) ->
+        state |> report_once(:vm_not_ready, standing, session, age) |> recheck()
+
+      age >= threshold(:vm_not_ready) ->
+        tell(state, :vm_not_ready, "vm_not_ready", standing, session, age)
+
+      true ->
+        recheck(state)
+    end
+  end
 
   # A stage that is waited out, and a turn that runs: reported once past the
   # threshold, nothing written.
@@ -711,7 +766,7 @@ defmodule SalixIM.StationTaskWatch do
         recheck(state)
 
       sent?(messages, epoch, TaskWorkerWatch.nudge_type()) ->
-        notify(state, :idle_no_reply, "stopped_after_reminder", standing, session, age)
+        tell(state, :idle_no_reply, "stopped_after_reminder", standing, session, age)
 
       true ->
         nudge(state, session)
@@ -727,7 +782,7 @@ defmodule SalixIM.StationTaskWatch do
         state |> report_once(:cannot_start, standing, session, age) |> recheck()
 
       blocking_failure?(session.last_failure) or age >= threshold(:cannot_start) ->
-        notify(state, :cannot_start, "cannot_start", standing, session, age)
+        tell(state, :cannot_start, "cannot_start", standing, session, age)
 
       true ->
         recheck(state)
@@ -778,36 +833,66 @@ defmodule SalixIM.StationTaskWatch do
     end
   end
 
-  defp notify(%{pending: pending} = state, stage, reason, standing, session, age) do
+  # No station takes part in the Task any more: the one that did answered
+  # `gone` to what it was given (its Sessions of the Task ended) and left, or
+  # none ever joined. Nothing will answer the delegation, so the Router is
+  # told now, under the epoch's one notification key: one sent already (the Session was reported
+  # idle before the station left, or this actor restarted after telling) is
+  # not repeated. The stall is logged with the telling (or with nobody to
+  # tell), under the place last known, and this wait ends: there is no
+  # station to check on.
+  defp left(%{pending: pending} = state, messages, age) do
+    if sent?(messages, pending.epoch, TaskWorkerWatch.notify_type()) do
+      %{state | pending: nil}
+    else
+      standing = %{place: state.place || :other, vm_status: nil}
+
+      case notify(state, "station_left", nil) do
+        :error -> retry_later(state)
+        _told_or_nobody -> %{report(state, :station_left, standing, nil, age) | pending: nil}
+      end
+    end
+  end
+
+  # The Router is told, the stall reported with it, and the delegation is
+  # checked on: it may still be answered.
+  defp tell(%{pending: pending} = state, stage, reason, standing, session, age) do
+    case notify(state, reason, session, standing[:vm_status]) do
+      :ok ->
+        %{state | pending: %{pending | attempts: 0}}
+        |> report(stage, standing, session, age)
+        |> recheck()
+
+      :error ->
+        retry_later(state)
+
+      :none ->
+        state |> report_once(stage, standing, session, age) |> recheck()
+    end
+  end
+
+  # `:ok`, `:error` (the append failed, to be retried) or `:none` (no Router
+  # participant to tell, logged: the stall is reported all the same).
+  defp notify(%{pending: pending} = state, reason, session, vm_status \\ nil) do
     epoch = pending.epoch
 
     with delegator when is_binary(delegator) and delegator != "" <- state.delegator_agent_id,
          {:ok, router} <- ConversationActor.get_agent_participant(state.owner, delegator) do
-      result =
-        TaskWorkerWatch.send_watch_message(
-          state,
-          router["participant_id"],
-          "task-worker-watch:notify:#{epoch}",
-          TaskWorkerWatch.notify_type(),
-          notify_content(reason, session),
-          %{
-            "epoch_seq" => epoch,
-            "issue" => if(reason == "cannot_start", do: reason),
-            "reason" => reason,
-            "station_state" => Atom.to_string(session.state),
-            "last_failure" => session.last_failure
-          }
-        )
-
-      case result do
-        :ok ->
-          %{state | pending: %{pending | attempts: 0}}
-          |> report(stage, standing, session, age)
-          |> recheck()
-
-        :error ->
-          retry_later(state)
-      end
+      TaskWorkerWatch.send_watch_message(
+        state,
+        router["participant_id"],
+        "task-worker-watch:notify:#{epoch}",
+        TaskWorkerWatch.notify_type(),
+        notify_content(reason, session, vm_status),
+        %{
+          "epoch_seq" => epoch,
+          "issue" => if(reason == "cannot_start", do: reason),
+          "reason" => reason,
+          "station_state" => if(session, do: Atom.to_string(session.state)),
+          "last_failure" => if(session, do: session.last_failure),
+          "vm_status" => vm_status
+        }
+      )
     else
       other ->
         # Nobody to tell: the stall is at least logged and counted, once.
@@ -815,9 +900,27 @@ defmodule SalixIM.StationTaskWatch do
           "station task watch #{state.conversation_id}: no Router participant to notify: #{inspect(other)}"
         )
 
-        state |> report_once(stage, standing, session, age) |> recheck()
+        :none
     end
   end
+
+  defp notify_content("vm_not_ready", _session, vm_status) do
+    status =
+      case vm_status do
+        text when is_binary(text) and text != "" -> text
+        _none -> "none"
+      end
+
+    "The Worker for this Task runs on the Workspace's Cloud VM, and the VM has not come up " <>
+      "for it (vm_not_ready: its status is #{status}). Salix asked for the VM when the Task " <>
+      "was given to it; it did not come up in time, and what the Task was given stays " <>
+      "with it until the VM does. Call cloud_vm.start once to see what the VM does, and " <>
+      "tell the requester what it answers; if it fails, mark the Task failed with " <>
+      "im_api.internal.update_conversation or create a new Task at another place. " <>
+      "The Task has not completed. Do not wait_for it again until the VM is up."
+  end
+
+  defp notify_content(reason, session, _vm_status), do: notify_content(reason, session)
 
   defp notify_content("cannot_start", session) do
     why =
@@ -833,6 +936,16 @@ defmodule SalixIM.StationTaskWatch do
       "Do not wait_for it again until that changes. The Task has not completed; use " <>
       "im_api.internal.update_conversation to mark it failed, or send the Worker new " <>
       "instructions once the station runs again."
+  end
+
+  defp notify_content("station_left", _session) do
+    "The Worker for this Task runs on a station, and that station no longer takes part in " <>
+      "the Task (station_left): it has no Session of the Task any more, no result was " <>
+      "published, and it is given nothing more here, so new instructions in this Task do " <>
+      "not reach it. " <>
+      "The Task has not completed. You are the Task creator and must decide: mark it failed " <>
+      "or cancelled with im_api.internal.update_conversation, or create a new Task for the " <>
+      "work that is left. Do not wait_for it again."
   end
 
   defp notify_content(reason, _session), do: TaskWorkerWatch.notify_content(reason, %{})

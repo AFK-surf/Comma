@@ -27,8 +27,10 @@ import {
   textAttachmentsToPills,
 } from "./user/messageTextAttachments";
 import { UserMessageBubble } from "./user/UserMessageBubble";
-import { MessagePlatformBadge, QuickChatBadge } from "../../MessagePlatformBadge";
+import { MessagePlatformBadge, otherClientSource } from "../../MessagePlatformBadge";
 import { MessageTaskCards } from "../../tasks/MessageTaskCards";
+import { TaskRunBlockedCard } from "../../tasks/TaskRunBlockedCard";
+import { TASK_RUN_BLOCKED } from "../../tasks/taskRunSwitch";
 
 /** The row a message renders as: every role but "assistant" draws the user row. */
 export function messageRowRole(message: Pick<ChatMessage, "role">) {
@@ -80,6 +82,8 @@ export const MessageRow = memo(function MessageRow({
   const parsed = message.display ?? { body: message.text, quotes: [], files: [] };
   const displayBody = parsed.command ? `/${parsed.command}` : parsed.body;
   const defaultActorRole = useContext(ThreadDefaultActorRoleContext);
+  // A chat platform, or another Comma app the person sent it from.
+  const sourceBadge = message.platformSource ?? otherClientSource(message.clientSource);
   const renderUserContent = useCallback(
     (body: string) =>
       message.platformSource
@@ -101,6 +105,19 @@ export const MessageRow = memo(function MessageRow({
       ? { ...message, attachments: mergedAttachments }
       : message;
   const quickChat = message.messageType === QUICK_CHAT_MESSAGE_TYPE;
+
+  // A Task's model that could not start: one card with why and, while it stands, the model to switch to.
+  if (message.messageType === TASK_RUN_BLOCKED)
+    return (
+      <article
+        ref={articleRef}
+        className="comma-task-run-blocked-row"
+        data-message-id={message.messageId}
+        data-source={message.source}
+      >
+        <TaskRunBlockedCard message={message} />
+      </article>
+    );
 
   if (messageRowRole(message) === "assistant") {
     return (
@@ -176,15 +193,13 @@ export const MessageRow = memo(function MessageRow({
               ariaLabel={messagesApi.chat_copy_message()}
               copyText={parsed.body}
               messageId={message.messageId}
-              platform={message.platformSource}
-              quickChat={quickChat}
+              platform={sourceBadge}
             />
-          ) : message.platformSource || quickChat ? (
+          ) : sourceBadge ? (
             // Read-only surfaces (previews, shares) drop Copy but
             // still name where the message came from.
             <div className="comma-chat-message-actions">
-              <MessagePlatformBadge platform={message.platformSource} />
-              {quickChat ? <QuickChatBadge /> : null}
+              <MessagePlatformBadge platform={sourceBadge} />
             </div>
           ) : null}
         </div>

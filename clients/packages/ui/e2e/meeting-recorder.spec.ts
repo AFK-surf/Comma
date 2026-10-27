@@ -1,4 +1,16 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Locator } from "@playwright/test";
+
+/** The shine loops running in a title. */
+const shines = (title: Locator) =>
+  title.evaluate(
+    (element) =>
+      element
+        .getAnimations({ subtree: true })
+        .filter(
+          (animation) =>
+            (animation as CSSAnimation).animationName === "comma-shiny-text-shine"
+        ).length
+  );
 
 for (const immediate of [false, true]) {
   test(`recorder animates real card height through ${immediate ? "immediate" : "starting"} capture and saving`, async ({
@@ -255,11 +267,12 @@ test("recorder logos stay static and recording shares the saving shimmer", async
   const saving = page.locator(
     '[data-phase="saving"] [data-slot="meeting-recorder-title"]'
   );
-  await expect(recording).toHaveCSS("animation-name", "comma-shiny-text-shine");
-  await expect(saving).toHaveCSS("animation-name", "comma-shiny-text-shine");
+  // The title shines while the recorder works, and holds still under reduced motion.
+  expect(await shines(recording)).toBe(1);
+  expect(await shines(saving)).toBe(1);
   await page.emulateMedia({ reducedMotion: "reduce" });
-  await expect(recording).toHaveCSS("animation-name", "none");
-  await expect(saving).toHaveCSS("animation-name", "none");
+  expect(await shines(recording)).toBe(0);
+  expect(await shines(saving)).toBe(0);
 });
 
 test("unhovered recording matches 227 × 42 and reverses expansion from its current size", async ({

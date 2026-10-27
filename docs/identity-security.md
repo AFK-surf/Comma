@@ -24,8 +24,9 @@ Names and emails cannot replace stable provider subjects.
 Provider connections, product logins and Agent runtime bindings differ.
 
 Telegram Mini App login verifies the `initData` HMAC and a 120-second `auth_date` against the active Comma connection.
-It issues a 24-hour, Group-scoped, read-only `SameSite=None; Secure; Partitioned` Cookie.
-Valid `Lax` logins take priority. Panel exchanges clear stale Comma Cookies. Another valid account gets 409. Bearer requests and writes fail.
+It issues a 24-hour, Group-scoped `SameSite=None; Secure; Partitioned` Cookie.
+The Cookie reads the Group's Tasks. It also runs the Workspace's Comma apps: an app, its Version files, and its runtime routes with `x-comma-app-via: workspace/<the Cookie's Workspace>` (the app writes its own storage and Drive files, and calls AI). Share links and app management fail.
+Valid `Lax` logins take priority. Panel exchanges clear stale Comma Cookies. Another valid account gets 409. Bearer requests and other writes fail.
 
 A backend change atomically removes foreign credentials and pending revocations before Electron login.
 Keep current-origin records and unrelated profile data. Never contact the old origin or send its bearer to the new origin.
@@ -129,6 +130,17 @@ Formal coverage: [current roster](../tla/README.md).
 
 A Task Share token alone authorizes public reads of one Task. Reads enforce fail-closed rate limits.
 See [Task Share](architecture/DOMAIN_CONCEPTS.md#task-share).
+
+## Attachment media URLs
+
+A media element, and a browser download, send no session headers, so they cannot present the cookie transport header.
+A Session asks for a media URL for one attachment that it can read now: `POST …/attachments/:index/media`.
+[`Comma.ConversationAttachments.presign/2`](../systems/apps/comma_core/lib/comma/conversation_attachments.ex) answers the blob store's signed URL for that attachment's blob. It is valid for one hour.
+The URL reads that one blob, in any byte ranges, with no other credential. The attachment's bytes do not pass through Comma.
+The blob store checks no Session. Sign-out, revocation, Session expiry and lost membership stop the minting of new URLs, but a URL that was minted before reads its blob until it expires.
+A Telegram Task-panel Session may also ask for one, for an attachment of its Task, while the panel's Telegram link is active.
+A leaked URL reads that one attachment until it expires.
+The blob store serves the URL from its own origin, as a download under the attachment's file name. Its bucket allows cross-origin `GET` with `Range` and exposes `Content-Range`, `Accept-Ranges` and `Content-Length`, so a web page's media element can read frames from it.
 
 ## BFT sign-in
 
@@ -245,6 +257,7 @@ The host checks them around reads and before Router admission.
 Composio pins allowed reads and nested event arguments. Internal reads bound one Conversation.
 Sources cannot choose tools or recipients.
 `recommendation.read` neither fetches sources nor starts runs. Missing profiles create no state.
+`recommendation.dismiss` is a Router write under the same owner check. It records one source item on the owner's Profile and grants nothing.
 
 `proactive.state`, `.watch`, `.present` and `.act` require current owner authority.
 Handled and replacement snoozes fence stale appends. Clarify ambiguous replies. Actions grant no external-write authority.

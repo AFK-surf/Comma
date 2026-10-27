@@ -6,6 +6,7 @@ import { useWeChatIntegration } from "./useWeChatIntegration";
 import { useModelsCategory } from "./models/useModelsCategory";
 import { useArchivedTasksCategory } from "./tasks/useArchivedTasksCategory";
 import { useSharedTasksCategory } from "./tasks/useSharedTasksCategory";
+import { useMiniAppsSettingsCategory } from "./apps/useMiniAppsSettingsCategory";
 import { useDeviceSettingsCategory } from "./devices/useDeviceSettingsCategory";
 import { useTaskLabelsCategory } from "./tasks/useTaskLabelsCategory";
 import { useCondensedWorkspaceCategory } from "./condensed-workspace/useCondensedWorkspaceCategory";
@@ -39,7 +40,10 @@ import { fontFamily as fontFamilyTokens } from "@comma/ui/tokens";
 import { TelegramProviderLogo } from "@comma/ui/components/provider-brand-logos";
 import { toast } from "@comma/ui/components/toast";
 import { Tooltip } from "@comma/ui/components/tooltip";
-import { type AppKeybinding } from "@comma/ui/components/settings-shortcut";
+import {
+  type AppKeybinding,
+  detectAppKeybindingPlatform,
+} from "@comma/ui/components/settings-shortcut";
 import { type DropdownItem } from "@comma/ui/components/dropdown";
 import {
   type SettingsControl,
@@ -62,6 +66,8 @@ import {
   isReplyStyle,
   useRouterReplyStyle,
 } from "./router-identity/useRouterReplyStyle";
+import { RouterInstructionsDialog } from "./router-identity/RouterInstructionsDialog";
+import { useRouterInstructions } from "./router-identity/useRouterInstructions";
 import {
   useCommaClientSettings,
   useCommaClientSettingsPending,
@@ -69,6 +75,7 @@ import {
 import { playNotificationSound } from "./notifications/notificationSound";
 import { ShellIconButtonControl } from "./ShellIconButton";
 import { useCommaAuth } from "./auth-context";
+import { useAppShortcutCopy } from "./shortcuts/appShortcutCopy";
 import { UserAvatar } from "./UserAvatar";
 import { LinkProviderIcon } from "./links/linkPreviewCards";
 import { useProfileAvatarUrl } from "./useProfileAvatarUrl";
@@ -128,6 +135,7 @@ const guestSettingsCategoryIds = new Set([
 const guestHiddenSettingsSectionIds = new Set([
   "general.permissions",
   "general.tone",
+  "general.system-prompt",
   "general.airdrop",
   // A guest Session has no onboarding to replay.
   "general.onboarding",
@@ -251,26 +259,35 @@ export function AppSettingsRoute({
       openLinkedProfile.current(linkedProfileId);
     }
   }, [linkedCategoryId, linkedProfileId]);
-  const devicesCategory = useDeviceSettingsCategory(activeCategoryId === "devices");
+  const devicesCategory = useDeviceSettingsCategory(
+    activeCategoryId === "devices",
+    setActiveCategoryId
+  );
   const archivedTasksCategory = useArchivedTasksCategory(
     activeCategoryId === "archived-tasks"
   );
   const sharedTasksCategory = useSharedTasksCategory(
     activeCategoryId === "shared-tasks"
   );
+  const miniAppsCategory = useMiniAppsSettingsCategory(activeCategoryId === "apps");
   const { category: taskLabelsCategory, approvalPolicy: labelProposalPolicy } =
     useTaskLabelsCategory(
       activeCategoryId === "labels",
       activeCategoryId === "general" && !guest
     );
   const replyStyle = useRouterReplyStyle(activeCategoryId === "general" && !guest);
+  const instructions = useRouterInstructions(activeCategoryId === "general" && !guest);
+  const [instructionsOpen, setInstructionsOpen] = useState(false);
   const condensedWorkspaceCategory = useCondensedWorkspaceCategory(
     activeCategoryId === "condensed-workspace"
   );
   const routerApiKeysCategory = useRouterApiKeysCategory(
     activeCategoryId === "inbound-api"
   );
-  const voiceCategory = useVoiceSettingsCategory(activeCategoryId === "voice");
+  const voiceCategory = useVoiceSettingsCategory(
+    activeCategoryId === "voice",
+    clientSettings.settings.voiceLabsEnabled
+  );
   const usageBillingCategory = useUsageBillingCategory(
     activeCategoryId === "usage-billing"
   );
@@ -412,6 +429,8 @@ export function AppSettingsRoute({
     Partial<Record<AppShortcutId, true>>
   >({});
   const electronRuntime = getNativeBridge().platform === "electron";
+  // Quick Chat starts with a double tap of ⌘ on macOS and of Ctrl on Windows.
+  const quickChatOnWindows = detectAppKeybindingPlatform() === "windows";
   const [openCommaShortcutError, setOpenCommaShortcutError] = useState<
     "conflict" | "registration"
   >();
@@ -449,55 +468,7 @@ export function AppSettingsRoute({
   const settingsShortcutDefinitions = appShortcutDefinitions.filter(
     (definition) => !(guest && guestHiddenShortcutIds.has(definition.id))
   );
-  const generalShortcutCopy: Record<
-    AppShortcutId,
-    { title: string; description: string }
-  > = {
-    "go-settings": {
-      title: m.settings_go_settings(),
-      description: m.settings_go_settings_description(),
-    },
-    "go-comma-assistant": {
-      title: m.settings_go_comma_assistant(),
-      description: m.settings_go_comma_assistant_description(),
-    },
-    "go-search": {
-      title: m.settings_go_search(),
-      description: m.settings_go_search_description(),
-    },
-    "go-inbox": {
-      title: m.settings_go_inbox(),
-      description: m.settings_go_inbox_description(),
-    },
-    "go-drive": {
-      title: m.settings_go_drive(),
-      description: m.settings_go_drive_description(),
-    },
-    "go-tasks": {
-      title: m.settings_go_tasks(),
-      description: m.settings_go_tasks_description(),
-    },
-    "go-plugins": {
-      title: m.settings_go_plugins(),
-      description: m.settings_go_plugins_description(),
-    },
-    "toggle-left-sidebar": {
-      title: m.settings_toggle_left_sidebar(),
-      description: m.settings_toggle_left_sidebar_description(),
-    },
-    "history-back": {
-      title: m.settings_history_back(),
-      description: m.settings_history_back_description(),
-    },
-    "history-forward": {
-      title: m.settings_history_forward(),
-      description: m.settings_history_forward_description(),
-    },
-    "toggle-right-sidebar": {
-      title: m.settings_toggle_right_sidebar(),
-      description: m.settings_toggle_right_sidebar_description(),
-    },
-  };
+  const generalShortcutCopy = useAppShortcutCopy();
   // `pending` covers a native write in flight from *any* Main window, which is
   // how concurrent preference updates are serialised — so it has to gate these
   // toggles. It used to flash them at 50% opacity on every click; that is fixed
@@ -1019,6 +990,37 @@ export function AppSettingsRoute({
                 ],
               },
               {
+                id: "general.system-prompt",
+                title: m.settings_system_prompt(),
+                items: [
+                  {
+                    id: "router.instructions",
+                    title: m.settings_system_prompt_custom(),
+                    description:
+                      instructions.failure === "load"
+                        ? m.settings_system_prompt_load_failed()
+                        : instructions.content
+                          ? m.settings_system_prompt_set()
+                          : m.settings_system_prompt_description(),
+                    keywords: [
+                      "system prompt",
+                      "instructions",
+                      "custom",
+                      "系统提示词",
+                      "指令",
+                      "自定义",
+                    ],
+                    control: {
+                      type: "button",
+                      label: m.settings_system_prompt_edit(),
+                      // Only the owner's Router instructions can be read.
+                      disabled: instructions.content === undefined || instructions.busy,
+                      onPress: () => setInstructionsOpen(true),
+                    },
+                  },
+                ],
+              },
+              {
                 id: "general.application",
                 title: m.settings_general(),
                 items: [
@@ -1116,14 +1118,16 @@ export function AppSettingsRoute({
                         },
                       ]
                     : []),
-                  // Where this Mac can run Quick Chat (macOS 26): off, its
-                  // helper stops and takes neither ⌘ nor the microphone.
+                  // Where this machine can run Quick Chat (macOS 26, Windows): off,
+                  // its helper stops and takes neither the key nor the microphone.
                   ...(appPreferences?.quickChatSupported
                     ? [
                         {
                           id: "app.quick-chat",
                           title: m.settings_quick_chat(),
-                          description: m.settings_quick_chat_enabled_description(),
+                          description: quickChatOnWindows
+                            ? m.settings_quick_chat_enabled_description_windows()
+                            : m.settings_quick_chat_enabled_description(),
                           keywords: ["quick chat", "voice", "dictation", "语音"],
                           control: {
                             type: "toggle" as const,
@@ -1641,15 +1645,17 @@ export function AppSettingsRoute({
                         }
                       : {}),
                   },
-                  // Where Quick Chat is on (macOS 26): ⌘ held alone, which no
-                  // setting changes; the App settings turn it off.
+                  // Where Quick Chat is on: a double tap of ⌘ (Ctrl on Windows),
+                  // which no setting changes; the App settings turn it off.
                   ...(appPreferences?.quickChatSupported &&
                   appPreferences.quickChatEnabled
                     ? [
                         {
                           id: "keyboard.quick-chat",
                           title: m.settings_quick_chat(),
-                          description: m.settings_quick_chat_description(),
+                          description: quickChatOnWindows
+                            ? m.settings_quick_chat_description_windows()
+                            : m.settings_quick_chat_description(),
                           keywords: [
                             "voice",
                             "dictation",
@@ -1658,7 +1664,10 @@ export function AppSettingsRoute({
                             "语音",
                             "快捷键",
                           ],
-                          control: { type: "keycaps" as const, keys: ["⌘"] },
+                          control: {
+                            type: "keycaps" as const,
+                            keys: [quickChatOnWindows ? "Ctrl" : "⌘"],
+                          },
                         },
                       ]
                     : []),
@@ -2000,14 +2009,30 @@ export function AppSettingsRoute({
         id: "system",
         label: m.settings_group_system(),
         categories: [
-          routerApiKeysCategory,
           voiceCategory,
-          devicesCategory,
-          tailscaleCategory,
           // Computer Use is the macOS app's (its helper): a desktop app
           // elsewhere (Windows) has nothing to grant; the web offers the app.
           ...(desktopOnly || computerUse.available ? [computerUseCategory] : []),
-
+          ...additionalSystemCategories.filter((category) => category.id !== "debug"),
+        ],
+      },
+      {
+        id: "archive",
+        label: m.settings_archived(),
+        categories: [archivedTasksCategory],
+      },
+      {
+        id: "shared",
+        label: m.settings_shared(),
+        categories: [sharedTasksCategory, miniAppsCategory],
+      },
+      {
+        id: "advanced",
+        label: m.settings_group_advanced(),
+        categories: [
+          routerApiKeysCategory,
+          devicesCategory,
+          tailscaleCategory,
           {
             id: "debug",
             icon: "debug",
@@ -2074,23 +2099,32 @@ export function AppSettingsRoute({
                   },
                 ],
               },
+              {
+                id: "debug.voice-labs",
+                title: m.settings_debug_voice_labs_title(),
+                items: [
+                  {
+                    id: "debug.voice-labs.enabled",
+                    title: m.settings_debug_voice_labs(),
+                    description: m.settings_debug_voice_labs_description(),
+                    control: {
+                      type: "toggle",
+                      checked: clientSettings.settings.voiceLabsEnabled,
+                      disabled: clientSettingsPending,
+                      onChange: (event) =>
+                        void clientSettings.update({
+                          voiceLabsEnabled: event.target.checked,
+                        }),
+                    },
+                  },
+                ],
+              },
               ...additionalSystemCategories
                 .filter((category) => category.id === "debug")
                 .flatMap((category) => category.sections),
             ],
           },
-          ...additionalSystemCategories.filter((category) => category.id !== "debug"),
         ],
-      },
-      {
-        id: "archive",
-        label: m.settings_archived(),
-        categories: [archivedTasksCategory],
-      },
-      {
-        id: "shared",
-        label: m.settings_shared(),
-        categories: [sharedTasksCategory],
       },
     ],
   });
@@ -2260,6 +2294,12 @@ export function AppSettingsRoute({
           file={avatarCropFile}
           onCancel={() => setAvatarCropFile(undefined)}
           onConfirm={uploadAvatar}
+        />
+      ) : null}
+      {instructionsOpen ? (
+        <RouterInstructionsDialog
+          instructions={instructions}
+          onClose={() => setInstructionsOpen(false)}
         />
       ) : null}
       {nameDialogOpen ? (

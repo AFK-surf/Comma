@@ -14,6 +14,12 @@ import { toast } from "@comma/ui/components/toast";
 import { useNavigate } from "@tanstack/react-router";
 import { useCall, useTopic, type Plugin } from "@comma/core-client";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
+import {
+  MacAppsDetail,
+  MAC_APPS_PLUGIN_ID,
+  macAppsPlugin,
+  useMacApps,
+} from "./MacApps";
 import { PluginBrandArtwork } from "./PluginBrandArtwork";
 import { usePluginInstall } from "./pluginInstall";
 import { PluginPersonalSources, withMcpGrants } from "./PluginPersonalSources";
@@ -91,7 +97,19 @@ export function PluginsRoute() {
       : undefined;
   const personalSources = usePluginPersonalSources({
     workspaceId,
-    pluginId: selectedPlugin?.installed ? selectedPlugin.id : undefined,
+    pluginId:
+      selectedPlugin?.installed && selectedPlugin.id !== MAC_APPS_PLUGIN_ID
+        ? selectedPlugin.id
+        : undefined,
+  });
+
+  const macAppsRow =
+    state.status === "ready"
+      ? state.plugins.find((plugin) => plugin.id === MAC_APPS_PLUGIN_ID)
+      : undefined;
+  const macApps = useMacApps({
+    workspaceId,
+    installed: macAppsRow?.installed === true,
   });
 
   const skillCatalog = useWorkspaceSkillsState(workspaceId ?? "");
@@ -99,6 +117,10 @@ export function PluginsRoute() {
 
   const mutatePlugin = (pluginId: string, installed: boolean) => {
     if (!workspaceId) return;
+    if (pluginId === MAC_APPS_PLUGIN_ID) {
+      void (installed ? macApps.install() : macApps.uninstall());
+      return;
+    }
     if (installed) {
       void installation.install({ pluginId, workspaceId });
       return;
@@ -168,6 +190,26 @@ export function PluginsRoute() {
   const definitionById = new Map(
     pluginDefinitions.map((plugin) => [plugin.id, plugin])
   );
+
+  // Only Comma on a Mac lists the Mac apps; the core keeps them off every list.
+  const macPlugin =
+    macApps.available && macAppsRow
+      ? macAppsPlugin(messages, macApps.icons)
+      : undefined;
+
+  if (macPlugin && macAppsRow && selectedPluginId === MAC_APPS_PLUGIN_ID) {
+    return (
+      <MacAppsDetail
+        copy={detailCopy}
+        installed={macAppsRow.installed}
+        installPending={pendingIds.has(MAC_APPS_PLUGIN_ID)}
+        macApps={macApps}
+        onBack={() => setSelectedPluginId(undefined)}
+        onTryInChat={() => void navigate({ to: "/" })}
+        uninstallPending={macAppsRow.activity === "uninstalling"}
+      />
+    );
+  }
 
   if (selectedPlugin) {
     const reauthorizingConnectionId = selectedPlugin.reauthorizing;
@@ -266,6 +308,13 @@ export function PluginsRoute() {
     name: category.name ?? messages.plugins_category_integrations(),
     plugins: category.plugins.map((id) => definitionById.get(id)!),
   }));
+  if (macPlugin && macAppsRow?.installed) installedPlugins.push(macPlugin);
+  else if (macPlugin)
+    categories.unshift({
+      id: "mac",
+      name: messages.plugins_mac(),
+      plugins: [macPlugin],
+    });
 
   return (
     <PluginCatalog

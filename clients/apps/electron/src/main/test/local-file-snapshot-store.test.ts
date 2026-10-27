@@ -34,11 +34,15 @@ import {
   LocalFileRouteRegistrationService,
   LocalFileSnapshotStore,
 } from "../modules/local-files";
-import { sanitizeLocalFileDisplayName } from "../modules/local-files/snapshot-store";
+import {
+  sanitizeLocalFileDisplayName,
+  throughMacosPrivateAlias,
+} from "../modules/local-files/snapshot-store";
 import {
   MainNativeSessionAdmissionGuard,
   MainCredentialGate,
 } from "../modules/session";
+import { realMainClock } from "../clock";
 import { acceptVerified, beginInvalidation } from "../../test-support/session-gate";
 
 const TEST_OWNER_USER_ID = "user-preview";
@@ -57,7 +61,7 @@ afterEach(() => {
 });
 
 describe("LocalFilePickerService", () => {
-  it("registers a dropped ordinary file above the upload limit without opening a dialog", async () => {
+  it("takes a dropped ordinary file above the upload limit as a draft snapshot without a route or dialog", async () => {
     const root = tempDirectory();
     const sourcePath = join(root, "report.pdf");
     const file = await open(sourcePath, "w");
@@ -83,8 +87,38 @@ describe("LocalFilePickerService", () => {
         file: { name: "report.pdf", size: chatAttachmentUploadMaxBytes + 1 },
       },
     ]);
-    expect(registrar.register).toHaveBeenCalledOnce();
+    // The core uploads it from Main: the server is given no route to read it from this device.
+    expect(registrar.register).not.toHaveBeenCalled();
     expect(JSON.stringify(result)).not.toContain(sourcePath);
+  });
+
+  it("takes a dropped screenshot from the system temporary folder, under macOS's /var link", async () => {
+    // Not realpath'd: on macOS tmpdir() is /var/folders/…, where screenshot thumbnails and capture tools drag from.
+    const root = mkdtempSync(join(tmpdir(), "comma-dropped-screenshot-"));
+    temporaryDirectories.push(root);
+    const sourcePath = join(root, "截屏2026-10-27 10.00.00.png");
+    await writeFile(sourcePath, tinyPng());
+    const store = await LocalFileSnapshotStore.open({
+      rootDir: join(tempDirectory(), "index"),
+    });
+    const picker = new LocalFilePickerService({
+      registrar: { register: vi.fn(async () => undefined) },
+      store,
+    });
+
+    const result = await createAdmittedPicker(picker).pickForChat({
+      assertLocalFileRegistrationAllowed: () => {},
+      maxFiles: 50,
+      maxTotalSize: 1024 * 1024 * 1024,
+      maxUploadFiles: 8,
+      workspaceId: "workspace-1",
+      sources: [{ kind: "path", sourcePath }],
+    });
+
+    expect(result.errors).toEqual([]);
+    expect(result.items).toMatchObject([
+      { kind: "upload", name: "截屏2026-10-27 10.00.00.png" },
+    ]);
   });
 
   it("returns a bounded Main-generated PNG preview without exposing a host path", async () => {
@@ -555,7 +589,7 @@ describe("LocalFilePickerService", () => {
     expect(snapshot).toHaveBeenCalledOnce();
   });
 
-  it("keeps mixed image uploads in Main while registering regular files in selection order", async () => {
+  it("keeps mixed image uploads in Main and regular files as draft snapshots in selection order", async () => {
     const root = tempDirectory();
     const png = join(root, "first.png");
     const text = join(root, "second.txt");
@@ -597,13 +631,7 @@ describe("LocalFilePickerService", () => {
       { kind: "local_file", name: "second.txt" },
       { bytes: "webp upload bytes", kind: "upload", name: "third.webp" },
     ]);
-    expect(registrar.register).toHaveBeenCalledOnce();
-    expect(registrar.register).toHaveBeenCalledWith(
-      "workspace-1",
-      expect.objectContaining({ name: "second.txt" }),
-      expect.any(Function),
-      undefined
-    );
+    expect(registrar.register).not.toHaveBeenCalled();
     expect(snapshot).toHaveBeenCalledOnce();
     expect(snapshot).toHaveBeenCalledWith(text, TEST_OWNER_USER_ID);
     expect(releaseDraft).not.toHaveBeenCalled();
@@ -699,226 +727,7 @@ describe("LocalFilePickerService", () => {
     await expect(readDirectory(join(indexRoot, "tmp"))).resolves.toEqual([]);
   });
 
-  it("rechecks the retained Chat fence before every regular-file registration", async () => {
-    const root = tempDirectory();
-    const source = join(root, "stale-picker.txt");
-    await writeFile(source, "private bytes");
-    const store = await LocalFileSnapshotStore.open({ rootDir: join(root, "index") });
-    const registrar = { register: vi.fn(async () => undefined) };
-    const assertLocalFileRegistrationAllowed = vi.fn(() => {
-      throw new Error("The stale chat lease is no longer current.");
-    });
-    const picker = new LocalFilePickerService({
-      openDialog: async () => ({ canceled: false, filePaths: [source] }),
-      registrar,
-      store,
-    });
-
-    const result = await createAdmittedPicker(picker).pickForChat({
-      assertLocalFileRegistrationAllowed,
-      maxFiles: 50,
-      maxTotalSize: 1024 * 1024 * 1024,
-      maxUploadFiles: 8,
-      workspaceId: "workspace-1",
-    });
-
-    expect(assertLocalFileRegistrationAllowed).toHaveBeenCalledOnce();
-    expect(registrar.register).not.toHaveBeenCalled();
-    expect(result.items).toEqual([]);
-    expect(result.errors).toMatchObject([
-      {
-        errorClass: "local_file_unavailable",
-        isImage: false,
-        name: "stale-picker.txt",
-      },
-    ]);
-  });
-
-  it("does not dispatch after the Chat fence closes during Connector target resolution", async () => {
-    const root = tempDirectory();
-    const source = join(root, "target-resolution-race.txt");
-    const indexRoot = join(root, "index");
-    await writeFile(source, "private bytes");
-    const store = await LocalFileSnapshotStore.open({ rootDir: indexRoot });
-    const target = deferred<{
-      connectorRunId: string;
-      deviceId: string;
-      localFileIndexVersion: 2;
-    }>();
-    const targetRequested = deferred<void>();
-    const resolveTarget = vi.fn(() => {
-      targetRequested.resolve();
-      return target.promise;
-    });
-    const call = vi.fn(async () => null);
-    const registrar = new LocalFileRouteRegistrationService({
-      call,
-      resolveTarget,
-      store,
-    });
-    const picker = new LocalFilePickerService({
-      openDialog: async () => ({ canceled: false, filePaths: [source] }),
-      registrar,
-      store,
-    });
-    let allowed = true;
-    const assertLocalFileRegistrationAllowed = vi.fn(() => {
-      if (!allowed) throw new Error("The retained Chat lease was released.");
-    });
-
-    const picking = createAdmittedPicker(picker).pickForChat({
-      assertLocalFileRegistrationAllowed,
-      maxFiles: 50,
-      maxTotalSize: 1024 * 1024 * 1024,
-      maxUploadFiles: 8,
-      workspaceId: "workspace-1",
-    });
-    await targetRequested.promise;
-    expect(resolveTarget).toHaveBeenCalledOnce();
-    allowed = false;
-    target.resolve({
-      connectorRunId: "run_delayed_target",
-      deviceId: "dev_delayed_target",
-      localFileIndexVersion: 2,
-    });
-
-    const result = await picking;
-    expect(assertLocalFileRegistrationAllowed).toHaveBeenCalledTimes(2);
-    expect(call).not.toHaveBeenCalled();
-    expect(result.items).toEqual([]);
-    expect(result.errors).toMatchObject([
-      {
-        errorClass: "local_file_unavailable",
-        isImage: false,
-        name: "target-resolution-race.txt",
-      },
-    ]);
-    await expect(readDirectory(join(indexRoot, "entries"))).resolves.toEqual([]);
-    await expect(readDirectory(join(indexRoot, "objects"))).resolves.toEqual([]);
-  });
-
-  it("keeps the bytes when the core cannot rule out that a route was made", async () => {
-    const root = tempDirectory();
-    const source = join(root, "retry-race.txt");
-    await writeFile(source, "private bytes");
-    const store = await LocalFileSnapshotStore.open({ rootDir: join(root, "index") });
-    let dispatchedRef = "";
-    const call = vi.fn(async (_name: string, params: unknown) => {
-      dispatchedRef = (params as { localFileRef: string }).localFileRef;
-      throw Object.assign(new Error("The selected file could not be registered."), {
-        code: "local_file_unavailable",
-        detail: { outcome: "ambiguous", retryable: true },
-      });
-    });
-    const registrar = new LocalFileRouteRegistrationService({
-      call,
-      resolveTarget: v2RegistrationTarget("dev_retry_race"),
-      store,
-    });
-    const picker = new LocalFilePickerService({
-      openDialog: async () => ({ canceled: false, filePaths: [source] }),
-      registrar,
-      store,
-    });
-
-    const result = await createAdmittedPicker(picker).pickForChat({
-      assertLocalFileRegistrationAllowed: () => {},
-      localFileIntakeId: "intake-1",
-      maxFiles: 50,
-      maxTotalSize: 1024 * 1024 * 1024,
-      maxUploadFiles: 8,
-      workspaceId: "workspace-1",
-    });
-
-    // The core checks the chat intake before each of its requests.
-    expect(call).toHaveBeenCalledWith(
-      "localFiles.register",
-      expect.objectContaining({ intakeId: "intake-1" })
-    );
-    expect(result.items).toEqual([]);
-    expect(result.errors).toMatchObject([
-      {
-        errorClass: "local_file_unavailable",
-        isImage: false,
-        name: "retry-race.txt",
-      },
-    ]);
-    expect((await store.readSnapshot(dispatchedRef)).toString()).toBe("private bytes");
-  });
-
-  it("prewarms the workspace connector before opening the native dialog", async () => {
-    const root = tempDirectory();
-    const source = join(root, "workspace-scoped.txt");
-    await writeFile(source, "private bytes");
-    const store = await LocalFileSnapshotStore.open({ rootDir: join(root, "index") });
-    const events: string[] = [];
-    const picker = new LocalFilePickerService({
-      openDialog: async () => {
-        events.push("dialog");
-        return { canceled: false, filePaths: [source] };
-      },
-      registrar: {
-        prewarm: (workspaceId) => {
-          events.push(`prewarm:${workspaceId}`);
-        },
-        register: async () => {
-          events.push("register");
-        },
-      },
-      store,
-    });
-
-    const result = await createAdmittedPicker(picker).pickForChat({
-      assertLocalFileRegistrationAllowed: () => {},
-      maxFiles: 50,
-      maxTotalSize: 1024 * 1024 * 1024,
-      maxUploadFiles: 8,
-      workspaceId: "workspace-1",
-    });
-
-    expect(events).toEqual(["prewarm:workspace-1", "dialog", "register"]);
-    expect(result.errors).toEqual([]);
-    expect(result.items).toMatchObject([{ kind: "local_file" }]);
-  });
-
-  it("threads the workspace and Session abort signal into target resolution", async () => {
-    const root = tempDirectory();
-    const source = join(root, "workspace-threading.txt");
-    await writeFile(source, "private bytes");
-    const store = await LocalFileSnapshotStore.open({ rootDir: join(root, "index") });
-    const resolveTarget = vi.fn(async () => ({
-      connectorRunId: "run_scoped",
-      deviceId: "dev_scoped",
-      localFileIndexVersion: 2 as const,
-    }));
-    const registrar = new LocalFileRouteRegistrationService({
-      call: async () => null,
-      resolveTarget,
-      store,
-    });
-    const picker = new LocalFilePickerService({
-      openDialog: async () => ({ canceled: false, filePaths: [source] }),
-      registrar,
-      store,
-    });
-
-    const result = await createAdmittedPicker(picker).pickForChat({
-      assertLocalFileRegistrationAllowed: () => {},
-      maxFiles: 50,
-      maxTotalSize: 1024 * 1024 * 1024,
-      maxUploadFiles: 8,
-      workspaceId: "workspace-1",
-    });
-
-    expect(resolveTarget).toHaveBeenCalledWith(
-      "workspace-1",
-      expect.objectContaining({ signal: expect.any(AbortSignal) })
-    );
-    expect(result.errors).toEqual([]);
-    expect(result.items).toMatchObject([{ kind: "local_file" }]);
-  });
-
-  it("uploads an image without a Connector and names the regular-file failure", async () => {
+  it("attaches an image and a regular file without a ready Connector", async () => {
     const root = tempDirectory();
     const image = join(root, "ready.jpg");
     const text = join(root, "needs-connector.txt");
@@ -944,20 +753,10 @@ describe("LocalFilePickerService", () => {
       workspaceId: "workspace-1",
     });
 
-    expect(result.items).toHaveLength(1);
-    expect(result.items[0]).toMatchObject({
-      kind: "upload",
-      name: "ready.jpg",
-    });
-    expect(result.errors).toEqual([
-      {
-        errorClass: "local_file_unavailable",
-        isImage: false,
-        message:
-          "This workspace's Comma Connector is not ready yet. Select the file again to retry.",
-        name: "needs-connector.txt",
-        retryable: true,
-      },
+    expect(result.errors).toEqual([]);
+    expect(result.items).toMatchObject([
+      { kind: "upload", name: "ready.jpg" },
+      { kind: "local_file", file: { name: "needs-connector.txt" } },
     ]);
   });
 
@@ -967,7 +766,7 @@ describe("LocalFilePickerService", () => {
     const source = join(root, "private-source.txt");
     await writeFile(source, "private bytes");
     const store = await LocalFileSnapshotStore.open({
-      now: () => now,
+      clock: { ...realMainClock, now: () => now },
       rootDir: join(root, "index"),
     });
     const snapshot = await store.snapshot(source, TEST_OWNER_USER_ID);
@@ -1298,7 +1097,7 @@ describe("LocalFileSnapshotStore", () => {
     const source = join(root, "lifecycle-photo.png");
     await writeFile(source, tinyPng());
     const store = await LocalFileSnapshotStore.open({
-      now: () => now,
+      clock: { ...realMainClock, now: () => now },
       rootDir: indexRoot,
     });
     const draft = await store.snapshot(source, "user-owner");
@@ -1521,13 +1320,90 @@ describe("LocalFileSnapshotStore", () => {
     });
   });
 
+  // Only `/var` and `/tmp` are read through their `/private` target; macOS's `/etc` link is refused like any other.
+  it.runIf(process.platform === "darwin")(
+    "rejects a source below macOS's /etc link",
+    async () => {
+      const root = tempDirectory();
+      const store = await LocalFileSnapshotStore.open({ rootDir: join(root, "index") });
+
+      await expect(
+        store.snapshot("/etc/hosts", TEST_OWNER_USER_ID)
+      ).rejects.toMatchObject({
+        errorClass: "local_file_unsupported",
+      });
+    }
+  );
+
+  // CI runs these tests on Linux, where `/var` and `/tmp` are no links: the rewrite itself is checked by platform here.
+  it("reads only macOS's /var and /tmp links through /private", () => {
+    expect(throughMacosPrivateAlias("/var/folders/ab/T/shot.png", "darwin")).toBe(
+      "/private/var/folders/ab/T/shot.png"
+    );
+    expect(throughMacosPrivateAlias("/tmp/shot.png", "darwin")).toBe(
+      "/private/tmp/shot.png"
+    );
+    expect(throughMacosPrivateAlias("/etc/hosts", "darwin")).toBe("/etc/hosts");
+    expect(throughMacosPrivateAlias("/variable/shot.png", "darwin")).toBe(
+      "/variable/shot.png"
+    );
+    expect(throughMacosPrivateAlias("/var/../etc/hosts", "darwin")).toBe("/etc/hosts");
+    expect(throughMacosPrivateAlias("/var/folders/shot.png", "linux")).toBe(
+      "/var/folders/shot.png"
+    );
+  });
+
+  it("streams a snapshot for upload and fails a changed object", async () => {
+    const root = tempDirectory();
+    const source = join(root, "upload.bin");
+    const bytes = Buffer.alloc(3 * LOCAL_FILE_CHUNK_BYTES + 7, 9);
+    await writeFile(source, bytes);
+    const store = await LocalFileSnapshotStore.open({ rootDir: join(root, "index") });
+    const snapshot = await store.snapshot(source, TEST_OWNER_USER_ID);
+
+    const upload = await store.openUploadSource(snapshot.localFileRef);
+    expect(upload.size).toBe(bytes.byteLength);
+    const read = Buffer.from(await new Response(upload.stream).arrayBuffer());
+    expect(read.equals(bytes)).toBe(true);
+
+    const [object] = await readDirectory(join(root, "index", "objects"));
+    await writeFile(
+      join(root, "index", "objects", object!),
+      Buffer.alloc(bytes.byteLength, 1)
+    );
+    const changed = await store.openUploadSource(snapshot.localFileRef);
+    await expect(new Response(changed.stream).arrayBuffer()).rejects.toThrow(
+      "Local snapshot is corrupt."
+    );
+  });
+
+  it("reads a part of a snapshot from where it is asked, up to where it ends", async () => {
+    const root = tempDirectory();
+    const source = join(root, "part.bin");
+    const bytes = Buffer.from(
+      Array.from({ length: 300_000 }, (_, i) => (i * 7) & 0xff)
+    );
+    await writeFile(source, bytes);
+    const store = await LocalFileSnapshotStore.open({ rootDir: join(root, "index") });
+    const snapshot = await store.snapshot(source, TEST_OWNER_USER_ID);
+
+    const middle = await store.readPart(snapshot.localFileRef, 100_000, 100_000);
+    expect(Buffer.from(middle).equals(bytes.subarray(100_000, 200_000))).toBe(true);
+    const last = await store.readPart(snapshot.localFileRef, 250_000, 100_000);
+    expect(Buffer.from(last).equals(bytes.subarray(250_000))).toBe(true);
+    // Past its end there is no part.
+    await expect(
+      store.readPart(snapshot.localFileRef, 300_001, 1)
+    ).rejects.toMatchObject({ errorClass: "local_file_unavailable" });
+  });
+
   it("releases and expires only draft snapshots with a bounded scan", async () => {
     let now = 1_000;
     const root = tempDirectory();
     const source = join(root, "source.txt");
     await writeFile(source, "draft");
     const store = await LocalFileSnapshotStore.open({
-      now: () => now,
+      clock: { ...realMainClock, now: () => now },
       rootDir: join(root, "index"),
     });
     const first = await store.snapshot(source, TEST_OWNER_USER_ID);
@@ -1551,7 +1427,7 @@ describe("LocalFileSnapshotStore", () => {
     const source = join(root, "source.txt");
     await writeFile(source, "retained");
     const store = await LocalFileSnapshotStore.open({
-      now: () => now,
+      clock: { ...realMainClock, now: () => now },
       rootDir: join(root, "index"),
     });
     const registered = await store.snapshot(source, TEST_OWNER_USER_ID);
@@ -1597,7 +1473,7 @@ describe("LocalFileSnapshotStore", () => {
     const source = join(root, "source.txt");
     await writeFile(source, "retained");
     const store = await LocalFileSnapshotStore.open({
-      now: () => now,
+      clock: { ...realMainClock, now: () => now },
       rootDir: join(root, "index"),
     });
     const observed = await store.snapshot(source, TEST_OWNER_USER_ID);
@@ -1662,7 +1538,7 @@ describe("LocalFileSnapshotStore", () => {
     const source = join(root, "source.txt");
     await writeFile(source, "retained");
     const store = await LocalFileSnapshotStore.open({
-      now: () => now,
+      clock: { ...realMainClock, now: () => now },
       rootDir: join(root, "index"),
     });
     const snapshot = await store.snapshot(source, TEST_OWNER_USER_ID);
@@ -1700,7 +1576,7 @@ describe("LocalFileSnapshotStore", () => {
     const source = join(root, "source.txt");
     await writeFile(source, "ambiguous");
     const store = await LocalFileSnapshotStore.open({
-      now: () => now,
+      clock: { ...realMainClock, now: () => now },
       rootDir: join(root, "index"),
     });
     const snapshot = await store.snapshot(source, TEST_OWNER_USER_ID);
@@ -1733,7 +1609,7 @@ describe("LocalFileSnapshotStore", () => {
       const source = join(root, "source.txt");
       await writeFile(source, "retained");
       const store = await LocalFileSnapshotStore.open({
-        now: () => now,
+        clock: { ...realMainClock, now: () => now },
         rootDir: indexRoot,
       });
       const snapshot = await store.snapshot(source, TEST_OWNER_USER_ID);
@@ -1806,7 +1682,7 @@ describe("LocalFileSnapshotStore", () => {
     const source = join(root, "source.txt");
     await writeFile(source, "retained");
     const store = await LocalFileSnapshotStore.open({
-      now: () => now,
+      clock: { ...realMainClock, now: () => now },
       rootDir: indexRoot,
     });
     const snapshots = await Promise.all(
@@ -1877,7 +1753,7 @@ describe("LocalFileSnapshotStore", () => {
     const source = join(root, "source.txt");
     await writeFile(source, "retained");
     const store = await LocalFileSnapshotStore.open({
-      now: () => testEpoch,
+      clock: { ...realMainClock, now: () => testEpoch },
       rootDir: indexRoot,
     });
     const retained = await store.snapshot(source, TEST_OWNER_USER_ID);
@@ -1925,7 +1801,7 @@ describe("LocalFileSnapshotStore", () => {
     });
     let blockedFirstCandidate = false;
     const store = await LocalFileSnapshotStore.open({
-      now: () => testEpoch,
+      clock: { ...realMainClock, now: () => testEpoch },
       rootDir: indexRoot,
       startupCleanupFileOperations: {
         lstat: async (path) => {
@@ -1992,7 +1868,7 @@ describe("LocalFileSnapshotStore", () => {
     const source = join(root, "source.txt");
     await writeFile(source, "expired draft");
     const store = await LocalFileSnapshotStore.open({
-      now: () => now,
+      clock: { ...realMainClock, now: () => now },
       rootDir: indexRoot,
     });
     const snapshot = await store.snapshot(source, TEST_OWNER_USER_ID);
@@ -2057,7 +1933,7 @@ describe("LocalFileSnapshotStore", () => {
     const root = tempDirectory();
     const indexRoot = join(root, "index");
     const store = await LocalFileSnapshotStore.open({
-      now: () => testEpoch,
+      clock: { ...realMainClock, now: () => testEpoch },
       rootDir: indexRoot,
     });
     const temporaryNames = [
@@ -2252,7 +2128,7 @@ describe("LocalFileSnapshotStore", () => {
     let failEntryProbeLstat = true;
     let failObjectRemove = true;
     const store = await LocalFileSnapshotStore.open({
-      now: () => testEpoch,
+      clock: { ...realMainClock, now: () => testEpoch },
       rootDir: indexRoot,
       startupCleanupFileOperations: {
         lstat: async (path) => {
@@ -2334,7 +2210,7 @@ describe("LocalFileSnapshotStore", () => {
     const temporaryPath = join(indexRoot, "tmp", `${"P".repeat(43)}.1.1.entry.tmp`);
     let lstatAttempts = 0;
     const store = await LocalFileSnapshotStore.open({
-      now: () => testEpoch,
+      clock: { ...realMainClock, now: () => testEpoch },
       rootDir: indexRoot,
       startupCleanupFileOperations: {
         lstat: async (path) => {
@@ -2399,7 +2275,7 @@ describe("LocalFileSnapshotStore", () => {
     });
     const failedPaths = new Set<string>();
     const store = await LocalFileSnapshotStore.open({
-      now: () => testEpoch,
+      clock: { ...realMainClock, now: () => testEpoch },
       rootDir: indexRoot,
       startupCleanupFileOperations: {
         lstat: async (path) => {
@@ -2473,7 +2349,7 @@ describe("LocalFileSnapshotStore", () => {
     );
     let busyPath: string | undefined;
     const store = await LocalFileSnapshotStore.open({
-      now: () => testEpoch,
+      clock: { ...realMainClock, now: () => testEpoch },
       rootDir: indexRoot,
       startupCleanupFileOperations: {
         lstat: async (path) => {

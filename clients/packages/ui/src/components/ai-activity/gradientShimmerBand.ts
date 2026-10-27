@@ -56,7 +56,10 @@ export function measureShimmerBand(element: HTMLElement): ShimmerBand {
   };
 }
 
-/** Sizes the gradient and switches the text to it (`data-shimmer-ready`). */
+/**
+ * Sizes the band's layer (the element's `::after`, ai-activity.css), places it
+ * at the start of the sweep and switches the text to it (`data-shimmer-ready`).
+ */
 export function applyShimmerBand(element: HTMLElement, band: ShimmerBand) {
   const { style } = element;
   style.setProperty("--ai-activity-shimmer-spread", `${band.spreadPx}px`);
@@ -67,8 +70,8 @@ export function applyShimmerBand(element: HTMLElement, band: ShimmerBand) {
     "--ai-activity-shimmer-angle",
     `${gradientShimmerMotion.angleDegrees}deg`
   );
-  style.backgroundSize = `${band.layerWidth}px 100%`;
-  style.backgroundPosition = `${band.startPositionPx}px center`;
+  style.setProperty("--ai-activity-shimmer-layer-width", `${band.layerWidth}px`);
+  style.setProperty("--ai-activity-shimmer-start", `${band.startPositionPx}px`);
   element.dataset.shimmerReady = "true";
 }
 
@@ -80,8 +83,8 @@ export function clearShimmerBand(element: HTMLElement) {
     "--ai-activity-shimmer-spread-core",
     "--ai-activity-shimmer-spread-inner",
     "--ai-activity-shimmer-angle",
-    "background-position",
-    "background-size",
+    "--ai-activity-shimmer-layer-width",
+    "--ai-activity-shimmer-start",
   ]) {
     element.style.removeProperty(property);
   }

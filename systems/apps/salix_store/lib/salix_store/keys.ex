@@ -465,6 +465,13 @@ defmodule SalixStore.Keys do
 
   def ctl_capability_requests_prefix(group_id), do: "ctl/capability_requests/#{group_id}/"
 
+  # The Conversation a request is shown in indexes it, so its cards read only that Conversation's requests.
+  def ctl_capability_request_surface(group_id, conversation_id, request_id),
+    do: ctl_capability_request_surface_prefix(group_id, conversation_id) <> "#{request_id}.json"
+
+  def ctl_capability_request_surface_prefix(group_id, conversation_id),
+    do: "ctl/capability_request_surfaces/#{group_id}/#{Crypto.hex(conversation_id)}/"
+
   def ctl_im_connect(group_id, connect_id),
     do: "ctl/im_connects/#{group_id}/#{connect_id}.json"
 

@@ -10,23 +10,27 @@ defmodule CommaWeb.RecommendationGoogleMemberSource do
   @drive "https://www.googleapis.com/drive/v3"
   @week 7 * 86_400
   @awaiting "in:inbox to:me -category:promotions newer_than:7d"
+  @spam "in:spam to:me newer_than:7d"
   @window 15
+  @junk 10
 
   # Recent inbox mail to the member, read or not. Provider importance and social
   # categories do not decide whether a matter needs the member. As before,
   # the thread's latest message is not one the member sent. One item per thread.
   # Important mail keeps its own read window and precedes ordinary mail within
   # the byte budget. Important threads alone can still exceed that budget.
+  # The most recent spam follows it, marked as junk.
   def read("gmail", request, _now) do
-    [profile, important, recent] =
+    [profile, important, recent, spam] =
       RecommendationMemberRead.map(
         [
           @gmail <> "/profile",
           threads_url("is:important " <> @awaiting),
-          threads_url(@awaiting)
+          threads_url(@awaiting),
+          threads_url(@spam, @junk)
         ],
         &request.("GET", &1, []),
-        3
+        4
       )
 
     with {:ok, %{"emailAddress" => email}} when is_binary(email) and email != "" <- profile,
@@ -50,7 +54,10 @@ defmodule CommaWeb.RecommendationGoogleMemberSource do
 
       # Keep readable mail, but never report an unreadable mailbox as caught up.
       if readable != [] or missing == 0 do
-        data = %{"messages" => readable, "memberRelation" => "awaiting_your_reply"}
+        data = %{
+          "messages" => readable ++ spam_items(spam, request, readable, email),
+          "memberRelation" => "awaiting_your_reply"
+        }
 
         data =
           if missing == 0,
@@ -196,8 +203,39 @@ defmodule CommaWeb.RecommendationGoogleMemberSource do
     end
   end
 
-  defp threads_url(query),
-    do: @gmail <> "/threads?" <> URI.encode_query(%{"q" => query, "maxResults" => @window})
+  # A spam read that fails only leaves spam out; the inbox decides readability.
+  defp spam_items({:ok, %{"threads" => threads}}, request, inbox, email) when is_list(threads) do
+    seen = MapSet.new(inbox, & &1["threadId"])
+
+    threads
+    |> Enum.filter(&(is_map(&1) and valid_id?(&1["id"]) and not MapSet.member?(seen, &1["id"])))
+    |> Enum.uniq_by(& &1["id"])
+    |> RecommendationMemberRead.map(
+      &request.("GET", @gmail <> "/threads/" <> &1["id"] <> "?format=full", []),
+      8
+    )
+    |> Enum.flat_map(fn
+      {:ok, %{"id" => thread, "messages" => [_ | _] = messages}} when is_binary(thread) ->
+        latest = Enum.max_by(messages, &internal_ms/1)
+        labels = if is_map(latest), do: latest["labelIds"], else: nil
+
+        with true <- is_list(labels) and valid_id?(latest["id"]),
+             true <- "SPAM" in labels and "SENT" not in labels,
+             {:ok, item} <- mail_item(latest, thread, email, "spam") do
+          [Map.put(item, "memberRelation", "in_your_junk_folder")]
+        else
+          _ -> []
+        end
+
+      _unreadable ->
+        []
+    end)
+  end
+
+  defp spam_items(_spam, _request, _inbox, _email), do: []
+
+  defp threads_url(query, limit \\ @window),
+    do: @gmail <> "/threads?" <> URI.encode_query(%{"q" => query, "maxResults" => limit})
 
   defp drive_files({:ok, %{"files" => files}}) when is_list(files), do: {files, []}
   defp drive_files({:error, reason}), do: {[], [reason]}
@@ -219,13 +257,13 @@ defmodule CommaWeb.RecommendationGoogleMemberSource do
         :closed
 
       true ->
-        mail_item(latest, thread, email)
+        mail_item(latest, thread, email, "inbox")
     end
   end
 
   defp awaiting(_thread, _email), do: :missing
 
-  defp mail_item(message, thread, email) do
+  defp mail_item(message, thread, email, folder) do
     headers =
       Map.new(
         List.wrap(get_in(message, ["payload", "headers"])),
@@ -259,7 +297,7 @@ defmodule CommaWeb.RecommendationGoogleMemberSource do
        |> Map.put(
          "webUrl",
          "https://mail.google.com/mail/?authuser=" <>
-           URI.encode_www_form(email) <> "#inbox/" <> message["id"]
+           URI.encode_www_form(email) <> "#" <> folder <> "/" <> message["id"]
        )
        |> RecommendationSourceQuote.put(
          title: item["subject"],

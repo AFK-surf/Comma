@@ -17,6 +17,10 @@ defmodule CommaWeb.TelegramTaskCards do
 
   @attention ~w(ready_for_review escalated failed)
   @endings ~w(completed cancelled archived)
+  # Settled statuses, as the chat Task panel's Dismiss reads them.
+  @settled ~w(ready_for_review escalated failed completed cancelled)
+  # Cards in these statuses offer Clear.
+  @clearable ~w(failed completed cancelled)
   @card_ttl 14 * 24 * 60 * 60
   @prompt_ttl 24 * 60 * 60
   @record_bytes 8_192
@@ -81,6 +85,9 @@ defmodule CommaWeb.TelegramTaskCards do
 
         action == "r" ->
           prompt_changes(card, language)
+
+        action == "d" ->
+          clear(user, card, language)
 
         true ->
           :ok
@@ -203,7 +210,7 @@ defmodule CommaWeb.TelegramTaskCards do
     with {:ok, latest} <- read_record(key),
          {:ok, card} <- read_card(latest["card_id"]) do
       language = card["language"] || language
-      rows = if status in @endings, do: [], else: [open_row(card, language)]
+      rows = if status in @endings, do: end_rows(card, status), else: [open_row(card, language)]
 
       # Editing a known message is safe to retry. Keep its target until both
       # the edit and pointer update succeed. The Participant owns the budget.
@@ -259,7 +266,7 @@ defmodule CommaWeb.TelegramTaskCards do
 
     case current_task(card) do
       {:ok, %{"status" => status}} when status in @endings ->
-        edit(card, card_text(card, status, language), [])
+        edit(card, card_text(card, status, language), end_rows(card, status))
 
       {:ok, %{"status" => "ready_for_review", "updated_at" => ^reviewed}} ->
         # The review is unchanged, so the failed attempt can be retried.
@@ -285,6 +292,24 @@ defmodule CommaWeb.TelegramTaskCards do
 
       _ ->
         :ok
+    end
+  end
+
+  # Clear is the chat Task panel's Dismiss: it records the run the owner
+  # saw, so /tasks and every device's panel hide the Task until it runs again.
+  defp clear(user, card, language) do
+    with {:ok, %{"status" => status} = task} when status in @settled <- current_task(card),
+         {:ok, _} <-
+           Comma.TaskPanelDismissals.dismiss(user["id"], [
+             %{"task_id" => card["conversation_id"], "revision" => task["run_started_at"] || 0}
+           ]) do
+      edit(card, card_text(card, status, language) <> cleared(language), [])
+    else
+      {:ok, _running} ->
+        edit(card, card_text(card, :updated, language), [open_row(card, language)])
+
+      _ ->
+        notify(card["chat_id"], :retry, language)
     end
   end
 
@@ -321,12 +346,20 @@ defmodule CommaWeb.TelegramTaskCards do
         "escalated" ->
           [button(card, "r", label(:reply, language))]
 
+        "failed" ->
+          [button(card, "d", label(:clear, language))]
+
         _ ->
           []
       end
 
     Enum.reject([actions, open_row(card, language)], &(&1 == []))
   end
+
+  defp end_rows(card, status) when status in @clearable,
+    do: [[button(card, "d", label(:clear, card["language"]))]]
+
+  defp end_rows(_card, _status), do: []
 
   defp button(card, action, text),
     do: %{"text" => text, "callback_data" => "tr:" <> card["id"] <> ":" <> action}
@@ -401,6 +434,11 @@ defmodule CommaWeb.TelegramTaskCards do
   defp label(:reply, _), do: "Reply"
   defp label(:open, "zh"), do: "打开"
   defp label(:open, _), do: "Open"
+  defp label(:clear, "zh"), do: "清除"
+  defp label(:clear, _), do: "Clear"
+
+  defp cleared("zh"), do: " · 已从任务列表清除"
+  defp cleared(_language), do: " · Cleared from your Task list"
 
   defp notify(chat_id, kind, "zh"), do: best_effort(chat_id, notice_zh(kind))
   defp notify(chat_id, kind, _language), do: best_effort(chat_id, notice_en(kind))

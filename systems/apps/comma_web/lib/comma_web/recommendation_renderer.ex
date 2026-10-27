@@ -166,7 +166,9 @@ defmodule CommaWeb.RecommendationRenderer do
   cost: what the member loses, or who stays blocked or waiting on the member,
   if the member does nothing. Mail, messages and notices addressed to the
   member are about the member unless the evidence shows otherwise, also when
-  they arrive as automated notices. Leave cost empty when doing nothing
+  they arrive as automated notices. A report that a product or system the
+  member maintains fails for its users is a cost: they stay affected until
+  the member acts. Leave cost empty when doing nothing
   changes nothing for the member: the item asks nothing of them, another
   person owns it, it is resolved (a report that something passed or was fixed
   is resolved unless it asks the member for something), the conversation
@@ -204,6 +206,11 @@ defmodule CommaWeb.RecommendationRenderer do
   is a cost, for example because the text breaks off, answer unclear for that
   candidate instead of guessing a level; Comma looks at it again later. Never
   add costs, deadlines or urgency absent from the evidence.
+  relationship in_your_junk_folder means the mail provider filed the item as
+  junk, and its sender is not verified. Its own claims of a cost, a deadline
+  or urgency count only when other evidence supports them: it concerns the
+  member's own products, repositories or ongoing work, or it matches other
+  candidates or matters. Otherwise rate it normal or low.
   Write the message as Comma speaking to the member in chat. In one or two short
   sentences, say what happens if the member does nothing and by when. Then end
   with one short question that offers the concrete next step Comma can take,

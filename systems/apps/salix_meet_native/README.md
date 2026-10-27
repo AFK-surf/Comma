@@ -53,7 +53,6 @@ inside the Meeting directory. The `Runtime` deletes the directory after delivery
 ```json
 "meetings": {
   "driver": "connector",
-  "runtime_source": "native_runtime",
   "master_token_factory": {
     "base_url": "https://<master-token-factory>",
     "secret": "<secret>",
@@ -68,6 +67,9 @@ inside the Meeting directory. The `Runtime` deletes the directory after delivery
 
 The Workers deploy from `systems/cloudflare/meet-token-factory`. `guest_factory.url`
 must end with `/v1/handoff`.
+
+Automatic Meeting placement uses this native runtime after the Group's VMM and connected meeting runtimes cannot accept the join.
+An explicitly selected native Meeting uses this runtime directly.
 
 Do not set `meetings.runtime_url`. It overrides `meetings.driver`.
 

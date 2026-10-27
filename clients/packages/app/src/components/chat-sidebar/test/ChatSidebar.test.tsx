@@ -90,6 +90,8 @@ const { nativeBridge, noop, sendMessage } = vi.hoisted(() => ({
         visible: true,
       })),
     },
+    // No Mini App runs in a window of its own.
+    surfaces: { state: { subscribe: vi.fn(() => () => {}) } },
     platform: "web",
   },
   noop: () => {},

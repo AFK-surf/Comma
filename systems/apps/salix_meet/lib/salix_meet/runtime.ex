@@ -151,8 +151,7 @@ defmodule SalixMeet.Runtime do
   @doc """
   Command the joined bot to post `text` into the live meeting chat (downlink).
 
-  Resolves the meeting's group from stored state and dispatches
-  "meeting_send_chat" over the connector bridge to the meetnative session.
+  Reads the Meeting's persisted target and sends through its selected carrier.
   """
   @spec send_chat(String.t(), String.t()) :: {:ok, map()} | :ok | {:error, term()}
   def send_chat(meeting_id, text) when is_binary(meeting_id) and is_binary(text) do
@@ -185,6 +184,7 @@ defmodule SalixMeet.Runtime do
       "group_id" => to_string(state["group_id"] || ""),
       "runtime_source" => state["runtime_source"],
       "runtime_policy" => state["runtime_policy"],
+      "runtime_target" => state["runtime_target"],
       "compute_environment_id" => state["compute_environment_id"],
       "workload_id" => state["workload_id"],
       "attempt" => state["attempt"],

@@ -8,7 +8,6 @@ import Testing
 private final class PendingSpeech: TranscriptSource {
     var onText: ((String) -> Void)?
     var onLevel: ((CGFloat) -> Void)?
-    var onPreparing: ((Bool) -> Void)?
     var onFailure: ((SpeechFailure) -> Void)?
     let text = "The local words"
     let draft = ""

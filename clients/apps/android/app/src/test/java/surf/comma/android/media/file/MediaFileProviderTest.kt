@@ -1,38 +1,48 @@
 package surf.comma.android.media.file
 
+import android.content.Intent
 import android.content.pm.PackageManager
-import androidx.core.content.FileProvider
+import androidx.activity.ComponentActivity
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
-import org.robolectric.RuntimeEnvironment
+import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
+import surf.comma.android.core.CoreGraph
 import surf.comma.android.media.MediaAttachment
 import java.io.File
+import java.io.FileNotFoundException
 
-/** Uses the merged manifest, so a missing FILE_PROVIDER_PATHS entry fails here, not on a device. */
+/** Uses the merged manifest, so a provider the manifest does not register fails here, not on a device. */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35])
 class MediaFileProviderTest {
-    private val context = RuntimeEnvironment.getApplication()
-
-    @Test fun downloadsInTheMediaCacheGetAContentUriAndNothingElseDoes() {
+    @Test fun theCoreDownloadsOpenReadOnlyInAnotherAppAndNothingElseDoes() = Robolectric.buildActivity(ComponentActivity::class.java).use {
+        val context = it.setup().get()
         val info = context.packageManager.resolveContentProvider(MediaFileProvider.authority(context), PackageManager.GET_META_DATA)
         assertNotNull("provider registered", info)
         assertFalse(info!!.exported)
         assertTrue(info.grantUriPermissions)
-        val file = File(context.cacheDir, "media-accounts/abc/files/key/data/report.pdf").apply { parentFile!!.mkdirs(); writeText("%PDF") }
-        val uri = FileProvider.getUriForFile(context, MediaFileProvider.authority(context), file)
+
+        val file = File(CoreGraph.downloads(context), "account/key/report.pdf").apply { parentFile!!.mkdirs(); writeText("%PDF") }
+        assertTrue("a core download opens", FileCardView.open(context, file, MediaAttachment("report.pdf", "application/pdf", 4, null)))
+        val opened = shadowOf(context).nextStartedActivity
+        val uri = opened.data!!
         assertEquals("content", uri.scheme)
         assertEquals(MediaFileProvider.authority(context), uri.authority)
-        assertTrue(uri.path!!.endsWith("/report.pdf"))
+        assertEquals(Intent.FLAG_GRANT_READ_URI_PERMISSION, opened.flags and Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        assertEquals("%PDF", context.contentResolver.openInputStream(uri)!!.use { stream -> stream.reader().readText() })
+
         val outside = File(context.filesDir, "secret.txt").apply { writeText("x") }
-        assertTrue(runCatching { FileProvider.getUriForFile(context, MediaFileProvider.authority(context), outside) }.isFailure)
-        // The card turns that refusal into a message instead of a crash.
+        // The card turns the refusal into a message instead of a crash.
         assertFalse(FileCardView.open(context, outside, MediaAttachment("secret.txt", "text/plain", 1, null)))
+        File(context.noBackupFilesDir, "credentials.bin").writeText("x")
+        val climbing = uri.buildUpon().path(null).appendPath(uri.pathSegments.first()).appendPath("../credentials.bin").build()
+        assertTrue(runCatching { context.contentResolver.openInputStream(climbing) }.exceptionOrNull() is FileNotFoundException)
     }
 }

@@ -276,10 +276,7 @@ describe("authenticated session layout", () => {
       "aria-busy",
       "true"
     );
-    await user().click(
-      screen.getAllByRole("button", { name: "Permissions & details" })[0]!
-    );
-    expect(screen.getByRole("radio", { name: /^Full/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /This device Access/ })).toBeDisabled();
   });
 
   it.each([

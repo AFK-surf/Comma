@@ -10,12 +10,14 @@ import java.util.concurrent.atomic.AtomicLong
 
 /**
  * The client core's downloads (`DownloadPorts` in the core's Android host): files of any size written from the network
- * straight to [root], each under the path the core names. A file takes its place only once its body is whole; until
- * then it is a partial file beside it, removed when the download is given up. The core decides what is downloaded,
- * kept and removed; this class moves the bytes.
+ * straight to [root], or from the parts the core reads itself (a file of a Task a station hosts), each under the path
+ * the core names. A file takes its place only once its body is whole; until then it is a partial file beside it,
+ * removed when the download is given up. The core decides what is downloaded, kept and removed; this class moves the
+ * bytes.
  */
 class HostDownloads(val root: File) {
-    private class Download(val response: Response, val target: File, val partial: File, val out: OutputStream) {
+    /** A file being written: from a [response], or from the core's parts when it has none. */
+    private class Download(val response: Response?, val target: File, val partial: File, val out: OutputStream) {
         val digest: MessageDigest = MessageDigest.getInstance("SHA-256")
         var received = 0L
     }
@@ -31,13 +33,38 @@ class HostDownloads(val root: File) {
     }
 
     /** A 200 [response] begins writing to [path]: its id. */
-    fun begin(response: Response, path: String): Long {
+    fun begin(response: Response, path: String): Long = start(response, path)
+
+    /** Begins writing a file the core reads itself a part at a time to [path]: its id. */
+    fun create(path: String): Long = start(null, path)
+
+    private fun start(response: Response?, path: String): Long {
         val target = file(path) ?: throw IOException("The path leaves the download directory.")
         check(target.parentFile!!.isDirectory || target.parentFile!!.mkdirs()) { "Cannot make the download directory." }
         val id = next.getAndIncrement()
         val partial = File(target.parentFile, ".${target.name}.partial-$id")
         open[id] = Download(response, target, partial, partial.outputStream())
         return id
+    }
+
+    /** Writes the core's next part of the file [id]: how much is written so far. */
+    fun append(id: Long, bytes: ByteArray): Map<String, Any> {
+        val download = open[id] ?: throw IOException("No such download.")
+        try {
+            download.out.write(bytes)
+            download.digest.update(bytes)
+            download.received += bytes.size
+            return mapOf("received" to download.received)
+        } catch (e: Exception) {
+            close(id)
+            throw e
+        }
+    }
+
+    /** The core's file [id] is whole: in place, with its size and SHA-256. */
+    fun finish(id: Long): Map<String, Any> {
+        val download = open[id] ?: throw IOException("No such download.")
+        return finish(id, download)
     }
 
     /**
@@ -47,7 +74,7 @@ class HostDownloads(val root: File) {
     fun step(id: Long, current: () -> Boolean): Map<String, Any> {
         val download = open[id] ?: throw IOException("No such download.")
         try {
-            val source = download.response.body?.source() ?: throw IOException("The answer has no body.")
+            val source = download.response?.body?.source() ?: throw IOException("The answer has no body.")
             val buffer = ByteArray(CHUNK.toInt())
             var read = 0L
             while (read < CHUNK) {
@@ -69,8 +96,8 @@ class HostDownloads(val root: File) {
     private fun finish(id: Long, download: Download): Map<String, Any> {
         open.remove(id)
         download.out.close()
-        download.response.close()
-        val declared = download.response.body?.contentLength()?.takeIf { it >= 0 }
+        download.response?.close()
+        val declared = download.response?.body?.contentLength()?.takeIf { it >= 0 }
         if (declared != null && declared != download.received) {
             download.partial.delete()
             throw IOException("The answer broke off.")
@@ -90,7 +117,7 @@ class HostDownloads(val root: File) {
     fun close(id: Long) {
         val download = open.remove(id) ?: return
         runCatching { download.out.close() }
-        download.response.close()
+        download.response?.close()
         download.partial.delete()
     }
 

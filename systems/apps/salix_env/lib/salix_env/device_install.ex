@@ -6,6 +6,10 @@ defmodule SalixEnv.DeviceInstall do
   (`config :salix_env, :station_install, Module`, see `c:station_command/4`).
   When it answers `{:ok, install}`, no Connector credential is created and the
   result has `"kind" => "station"` with the station enrollment `"command"`.
+
+  A Connector command belongs to the member who asked for it: the device it
+  installs is theirs (`meta.owner_user_id`), so they find it in Settings >
+  Devices and set its access there.
   """
 
   alias SalixEnv.ConnectorTokens
@@ -19,17 +23,21 @@ defmodule SalixEnv.DeviceInstall do
   keeps the Connector installer. `requester` names the member who asked:
   `%{user_id: id}` from a signed-in surface, the tool ctx subset
   (`tenant_id`, `group_id`, `trusted_origin`) from the Router's tool, or nil.
+  `{:connector, user_id}` keeps the Connector installer and names the member
+  who asked, who owns the device it installs.
   """
   @callback station_command(
               tenant_id :: String.t(),
               group_id :: String.t(),
               name :: String.t() | nil,
               requester :: map() | nil
-            ) :: {:ok, map()} | :connector | {:error, term()}
+            ) :: {:ok, map()} | :connector | {:connector, String.t()} | {:error, term()}
 
   def create_command(tenant_id, group_id, name, opts \\ []) do
     case station_command(tenant_id, group_id, name, opts[:requester]) do
-      :connector ->
+      {:connector, owner_user_id} ->
+        opts = Keyword.put(opts, :token_attrs, owner_attrs(owner_user_id))
+
         with {:ok, install, _credential} <- create_install(tenant_id, group_id, name, opts),
              do: {:ok, install}
 
@@ -48,7 +56,7 @@ defmodule SalixEnv.DeviceInstall do
     # The name here is the Connector's credential name; a station gets the
     # default station name, which members can rename.
     case station_command(tenant_id, group_id, nil, requester) do
-      :connector ->
+      {:connector, _owner_user_id} ->
         with {:ok, install, credential} <-
                create_install(tenant_id, group_id, attrs["name"], token_attrs: attrs),
              do: {:ok, Map.put(credential, "install_command", install["command"])}
@@ -64,12 +72,23 @@ defmodule SalixEnv.DeviceInstall do
     end
   end
 
+  # The installer's answer, with `:connector` as `{:connector, owner}` (nil when no member is known).
   defp station_command(tenant_id, group_id, name, requester) do
-    case SystemsRuntime.get_env(:salix_env, :station_install) do
-      nil -> :connector
-      module -> module.station_command(tenant_id, group_id, name, requester)
+    module = SystemsRuntime.get_env(:salix_env, :station_install)
+
+    case module && module.station_command(tenant_id, group_id, name, requester) do
+      answer when answer in [nil, :connector] -> {:connector, requester_user(requester)}
+      answer -> answer
     end
   end
+
+  defp requester_user(%{user_id: user_id}) when is_binary(user_id) and user_id != "", do: user_id
+  defp requester_user(_requester), do: nil
+
+  defp owner_attrs(owner_user_id) when is_binary(owner_user_id),
+    do: %{"meta" => %{"owner_user_id" => owner_user_id}}
+
+  defp owner_attrs(nil), do: %{}
 
   defp create_install(tenant_id, group_id, name, opts) do
     with true <- is_binary(name) and String.trim(name) != "",
@@ -100,7 +119,7 @@ defmodule SalixEnv.DeviceInstall do
          "verification_path" => "connection-check.txt",
          "verification_content" => "COMMA_CONNECTOR_READ_OK",
          "instructions" =>
-           "Give command unchanged to the user to run on the target computer. The script asks for local consent before installing and registering. Retain device_id. Use device.get and its exact environment_id, then copy verification_path through Connector to vfs and compare verification_content with fs.read_file. Online status alone does not pass verification. Reuse this command after an uncertain result. First registration must occur before registration_expires_at. After registration, that deadline does not disconnect the device. Explain in the user's language that Connector starts read-only, survives closing this terminal, and runs until reboot. No SSH or Drive setup is required."
+           "Give command unchanged to the user to run on the target computer. The script asks for local consent before installing and registering. Retain device_id. Use device.get and its exact environment_id, then copy verification_path through Connector to vfs and compare verification_content with fs.read_file. Online status alone does not pass verification. Reuse this command after an uncertain result. First registration must occur before registration_expires_at. After registration, that deadline does not disconnect the device. Explain in the user's language that Connector starts read-only, survives closing this terminal, and runs until reboot. The computer belongs to the Workspace member who asked for this command: they allow operations on it in Comma Settings > Devices, from any of their clients. No SSH or Drive setup is required."
        }, credential}
     end
   end

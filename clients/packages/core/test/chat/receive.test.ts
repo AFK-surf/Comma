@@ -36,13 +36,18 @@ const lease = (conversationId: string, leaseId: string) => ({
 
 function setup() {
   const host = new FakeHost();
-  for (const id of ["cnv_1", "cnv_2"]) {
+  // Home chat as the server stores it, a second chat, and a Task.
+  for (const [id, kind, title] of [
+    ["cnv_1", "user_chat", "Bridge chat"],
+    ["cnv_2", "user_chat", "Other"],
+    ["cnv_3", "agent_task", "Plan the offsite"],
+  ]) {
     host.api.onStream(`${group}/${id}/events`);
     host.api.on("GET", `${group}/${id}`, {
       group_id: "grp_1",
       id,
-      kind: "user_chat",
-      title: id === "cnv_1" ? "Thread" : "Other",
+      kind,
+      title,
       status: "completed",
       messages: [],
     });
@@ -53,7 +58,7 @@ function setup() {
     group_id: "grp_1",
     id: "cnv_1",
     kind: "user_chat",
-    title: "Thread",
+    title: "Bridge chat",
     status: "active",
     messages: [],
   });
@@ -140,7 +145,7 @@ describe("files received for a window's chat", () => {
 
     const received = await t.receive();
     expect(received).toEqual({
-      value: { intakeId: expect.any(String), title: "Thread", workspaceId: "wsp_1" },
+      value: { intakeId: expect.any(String), title: "Comma", workspaceId: "wsp_1" },
     });
     const intakeId = (received as { value: { intakeId: string } }).value.intakeId;
     expect(t.draft()?.attachmentIntakeInFlight).toBe(true);
@@ -251,9 +256,26 @@ describe("files received for a window's chat", () => {
 
     await t.ask(t.window, "chat.retain", t.first);
     expect(await t.receive([file("report.pdf"), file("Folder", true)])).toEqual({
-      value: { refused: "directory", title: "Thread" },
+      value: { refused: "directory", title: "Comma" },
     });
     expect(t.draft()?.attachmentIntakeInFlight).toBeUndefined();
+  });
+
+  it("name Home chat Comma, not its stored server title, and a Task by its own title", async () => {
+    const t = setup();
+    await t.start();
+    expect(await t.receive()).toMatchObject({ value: { title: "Comma" } });
+
+    const task = setup();
+    task.core.observeSession(signedIn());
+    await task.ask(
+      task.window,
+      "chat.retain",
+      lease("cnv_3", "00000000-0000-4000-8000-000000000003")
+    );
+    expect(await task.receive()).toMatchObject({
+      value: { title: "Plan the offsite" },
+    });
   });
 
   it("get the room the draft has when they arrive", async () => {

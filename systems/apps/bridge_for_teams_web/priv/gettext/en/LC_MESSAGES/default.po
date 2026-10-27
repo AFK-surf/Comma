@@ -1634,6 +1634,10 @@ msgid "An existing system prompt cannot be cleared."
 msgstr ""
 
 #: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
+msgid "Only organization owners can change the system prompt."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
 msgid "Agent runtime rebound."
 msgstr ""
 
@@ -1828,7 +1832,7 @@ msgid "Could not list the runtime's models. Try again shortly."
 msgstr ""
 
 #: lib/bridge_for_teams_web/controllers/dashboard_swarm_devices.ex
-msgid "The runner was asked to get ready for the Cloud VM."
+msgid "The runner was asked to prepare the VMM Station."
 msgstr ""
 
 #: lib/bridge_for_teams_web/controllers/dashboard_swarm_devices.ex
@@ -1837,10 +1841,6 @@ msgstr ""
 
 #: lib/bridge_for_teams_web/controllers/dashboard_swarm_devices.ex
 msgid "This Agent Swarm already has a runner. Remove it before you choose another runner."
-msgstr ""
-
-#: lib/bridge_for_teams_web/controllers/dashboard_swarm_devices.ex
-msgid "The Cloud VM already exists. The runner choice applies only when the Cloud VM is first created."
 msgstr ""
 
 #: lib/bridge_for_teams_web/controllers/dashboard_swarm_devices.ex

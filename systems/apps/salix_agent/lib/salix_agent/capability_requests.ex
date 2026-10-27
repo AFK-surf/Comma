@@ -9,6 +9,8 @@ defmodule SalixAgent.CapabilityRequests do
 
   @behaviour SalixAgent.CapabilityRequestStore
 
+  require Logger
+
   alias SalixAgent.{Control, GroupContext}
   alias SalixStore.{Ids, Keys, S3}
 
@@ -72,27 +74,25 @@ defmodule SalixAgent.CapabilityRequests do
           "completed_at" => attrs["completed_at"]
         }
 
-      case upsert_record(
-             Keys.ctl_capability_request(scope.group_id, request_id),
-             record,
-             fn current ->
-               if terminal?(current) do
-                 current
-               else
-                 current
-                 |> Map.merge(Map.drop(record, ["created_at", "expires_at"]))
-                 |> Map.put("created_at", current["created_at"] || record["created_at"])
+      # The index comes first: a request its Conversation cannot find would wait unseen.
+      with :ok <- index_surface(record),
+           {:ok, request} <-
+             upsert_record(
+               Keys.ctl_capability_request(scope.group_id, request_id),
+               record,
+               fn current ->
+                 if terminal?(current) do
+                   current
+                 else
+                   current
+                   |> Map.merge(Map.drop(record, ["created_at", "expires_at"]))
+                   |> Map.put("created_at", current["created_at"] || record["created_at"])
+                 end
                end
-             end
-           ) do
-        {:ok, request} ->
-          with :ok <- register_location_timeout(request) do
-            notify(request)
-            {:ok, request}
-          end
-
-        {:error, _reason} = err ->
-          err
+             ),
+           :ok <- register_location_timeout(request) do
+        notify(request)
+        {:ok, request}
       end
     else
       false -> {:error, {:bad_request, "source_session_id is invalid"}}
@@ -211,6 +211,74 @@ defmodule SalixAgent.CapabilityRequests do
 
   def get(group_id, request_id, tenant_id), do: find(group_id, request_id, tenant_id)
 
+  @doc """
+  The requests an Agent raised in one Conversation (`surface_kind` `conversation`), newest first: every pending one,
+  then the newest finished ones up to `limit` in all (default 100). Reads only that Conversation's index, and fails
+  when the store does rather than answering with fewer requests.
+  """
+  @spec list_conversation(String.t(), String.t(), String.t(), keyword()) ::
+          {:ok, [map()]} | {:error, term()}
+  def list_conversation(group_id, tenant_id, conversation_id, opts \\ [])
+      when is_binary(conversation_id) and conversation_id != "" do
+    with {:ok, _group} <- GroupContext.get(group_id, tenant_id),
+         {:ok, limit} <- request_limit(Keyword.get(opts, :limit)),
+         {:ok, entries} <-
+           S3.list_all(Keys.ctl_capability_request_surface_prefix(group_id, conversation_id)),
+         {:ok, records} <- read_indexed(group_id, entries) do
+      {pending, finished} =
+        records
+        |> Enum.filter(
+          &(&1["tenant_id"] == tenant_id and &1["group_id"] == group_id and
+              get_in(&1, ["surface_ref", "conversation_id"]) == conversation_id)
+        )
+        |> Enum.sort_by(&{&1["updated_at"] || 0, &1["created_at"] || 0, &1["request_id"]}, :desc)
+        |> Enum.split_with(&visible_for_status?(&1, "pending"))
+
+      {:ok, pending ++ Enum.take(finished, max(limit - length(pending), 0))}
+    end
+  end
+
+  defp index_surface(%{
+         "surface_kind" => "conversation",
+         "surface_ref" => %{"conversation_id" => conversation_id},
+         "group_id" => group_id,
+         "request_id" => request_id
+       })
+       when is_binary(conversation_id) and conversation_id != "" do
+    case S3.put(
+           Keys.ctl_capability_request_surface(group_id, conversation_id, request_id),
+           "{}"
+         ) do
+      {:ok, _} -> :ok
+      {:error, _} = err -> err
+    end
+  end
+
+  defp index_surface(_record), do: :ok
+
+  # An index entry whose record was never written (its create failed after it) is skipped; any other read error fails.
+  defp read_indexed(group_id, entries) do
+    context = SystemsObservability.Context.capture()
+
+    entries
+    |> SystemsClock.async_stream(
+      fn %{key: key} ->
+        SystemsObservability.Context.run(context, fn ->
+          request_id = key |> Path.basename() |> Path.rootname()
+          get_record(Keys.ctl_capability_request(group_id, request_id))
+        end)
+      end,
+      max_concurrency: @list_read_concurrency,
+      ordered: true,
+      timeout: :infinity
+    )
+    |> Enum.reduce_while({:ok, []}, fn
+      {:ok, {:ok, record}}, {:ok, acc} -> {:cont, {:ok, [record | acc]}}
+      {:ok, {:error, :not_found}}, acc -> {:cont, acc}
+      {:ok, {:error, _} = err}, _acc -> {:halt, err}
+    end)
+  end
+
   def share_location(group_id, request_id, attrs, tenant_id) do
     with {:ok, request} <- find(group_id, request_id, tenant_id),
          :ok <- require_type(request, "location"),
@@ -315,6 +383,97 @@ defmodule SalixAgent.CapabilityRequests do
              )
            ),
          :ok <- deliver_stored_result(completed) do
+      {:ok, completed}
+    end
+  end
+
+  @doc """
+  Ends the pending OAuth authorization requests a finished browser flow
+  answers: the one that started it (`state`), and any other that asks for the
+  same account (`provider` and `alias`), however the person connected it. The
+  verified callback, not a client, is the success authority. Each waiting
+  `oauth.request_authorization` call returns the binding. A flow that no
+  pending request in the Group asks for ends nothing.
+  """
+  @spec complete_oauth_authorization(String.t(), String.t(), map()) ::
+          {:ok, [map()]} | {:error, term()}
+  def complete_oauth_authorization(group_id, tenant_id, flow) when is_map(flow) do
+    with {:ok, pending} <- list_group(group_id, tenant_id, status: "pending") do
+      answered = Enum.filter(pending, &answers_oauth_flow?(&1, flow))
+      account = nonblank(flow["provider_account_name"])
+
+      # Each ending is stored before its Agent is told, and telling replays it: one Agent
+      # that cannot be told now leaves no other request pending.
+      ended =
+        for request <- answered,
+            {:ok, completed} <- [
+              complete(request, connected_response(account), connected_result(request, account))
+            ] do
+          deliver_logged(completed)
+          completed
+        end
+
+      {:ok, ended}
+    end
+  end
+
+  defp deliver_logged(request) do
+    case deliver_stored_result(request) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning(
+          "capability request result not delivered: #{inspect(reason) |> String.slice(0, 200)}"
+        )
+    end
+  end
+
+  defp connected_response(account),
+    do: put_optional(%{"status" => "connected"}, "provider_account_name", account)
+
+  defp connected_result(request, account) do
+    oauth = get_in(request, ["request_payload", "oauth_authorization"]) || %{}
+
+    %{
+      "status" => "completed",
+      "provider" => oauth["provider"],
+      "alias" => oauth["alias"],
+      "message" => "the user connected the account"
+    }
+    |> put_optional("provider_account_name", account)
+    |> completed_result()
+  end
+
+  defp answers_oauth_flow?(%{"request_type" => "oauth_authorization"} = request, flow) do
+    oauth = get_in(request, ["request_payload", "oauth_authorization"]) || %{}
+
+    (is_binary(flow["state"]) and oauth["state"] == flow["state"]) or
+      (is_binary(flow["provider"]) and oauth["provider"] == flow["provider"] and
+         oauth["alias"] == flow["alias"])
+  end
+
+  defp answers_oauth_flow?(_request, _flow), do: false
+
+  @doc "A person declines an OAuth authorization request: the Agent's waiting call returns that they declined."
+  @spec decline_oauth_authorization(String.t(), String.t(), String.t()) ::
+          {:ok, map()} | {:error, term()}
+  def decline_oauth_authorization(group_id, request_id, tenant_id) do
+    with {:ok, request} <- find(group_id, request_id, tenant_id),
+         :ok <- require_type(request, "oauth_authorization"),
+         {:ok, completed} <-
+           complete(
+             request,
+             %{"status" => "declined"},
+             failed_result(
+               "permission_denied",
+               "the user declined to connect the account",
+               %{"status" => "declined"},
+               "The user declined to connect the account."
+             )
+           ) do
+      # The stored ending is the answer; telling the Agent replays it if it cannot be told now.
+      deliver_logged(completed)
       {:ok, completed}
     end
   end

@@ -35,8 +35,25 @@ defmodule SalixIM.TelegramRenderingTest do
     end
   end
 
+  defmodule Apps do
+    @moduledoc "The Mini App owner: one app of group `g1`, whose Comma URL a message may give."
+    def telegram_buttons("g1", text) do
+      if text =~ "https://app.comma.test/#/apps/ws-1/a1/run",
+        do: [
+          %{
+            "text" => "▶️ Habits",
+            "web_app" => %{"url" => "https://app.comma.test/task-panel.html?app_id=a1"}
+          }
+        ],
+        else: []
+    end
+
+    def telegram_buttons(_group_id, _text), do: []
+  end
+
   setup do
     keys = [
+      :mini_apps,
       :telegram_api_base_url,
       :telegram_rendering_test_pid,
       :telegram_rendering_test_failure
@@ -136,6 +153,40 @@ defmodule SalixIM.TelegramRenderingTest do
        }}
     )
 
+    settle_refute_receive({:sent, _, _}, 20)
+  end
+
+  test "an app's Comma URL in a Comma-managed chat gets a button that opens the app in Telegram",
+       %{
+         connect: connect
+       } do
+    SystemsRuntime.put_env(:salix_im, :mini_apps, Apps)
+    connect = Map.put(connect, "group_id", "g1")
+    text = "Your app: https://app.comma.test/#/apps/ws-1/a1/run"
+
+    assert {:ok, _} = send_text(connect, text)
+    settle_receive({:sent, "sendMessage", body})
+
+    assert body["reply_markup"] == %{
+             "inline_keyboard" => [
+               [
+                 %{
+                   "text" => "▶️ Habits",
+                   "web_app" => %{"url" => "https://app.comma.test/task-panel.html?app_id=a1"}
+                 }
+               ]
+             ]
+           }
+
+    # A message without one, and a bot that Comma does not manage, keep no keyboard.
+    assert {:ok, _} = send_text(connect, "No app here.")
+    settle_receive({:sent, "sendMessage", plain})
+    refute Map.has_key?(plain, "reply_markup")
+
+    own_bot = connect |> Map.delete("managed_by") |> Map.delete("managed_peer_id")
+    assert {:ok, _} = send_text(own_bot, text)
+    settle_receive({:sent, "sendMessage", unmanaged})
+    refute Map.has_key?(unmanaged, "reply_markup")
     settle_refute_receive({:sent, _, _}, 20)
   end
 

@@ -2,7 +2,7 @@ defmodule SalixIM.Ports.LarkUserAccounts do
   @moduledoc """
   Outbound port for the Lark people who signed in for a Group: the Group's
   OAuth Bindings of provider `lark` (`SalixStore.OAuth.Adapters.Lark`). A
-  Lark connect's bot reads as one of them what Lark shows only to people
+  Lark connect's bot finds and reads as one of them what that person may see
   (`SalixIM.Provider.Lark.Meetings`).
   """
 

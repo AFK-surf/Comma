@@ -92,7 +92,7 @@ export function WindowBar() {
 // Only the macOS Electron window paints traffic lights into the row
 // (window-options.ts), and macOS hides them while the window is full screen;
 // without them history leads at the trailing flank's inset.
-function useHasTrafficLights() {
+export function useHasTrafficLights() {
   const bridge = getNativeBridge();
   const macWindow = bridge.platform === "electron" && bridge.os === "macos";
   const [fullScreen, setFullScreen] = useState(false);
@@ -112,7 +112,7 @@ function useHasTrafficLights() {
  * window, drawn as the bar's other icon buttons after a divider. Hidden in full
  * screen, which has no window buttons.
  */
-function WindowButtons() {
+export function WindowButtons() {
   const messages = useCommaMessages();
   const bridge = getNativeBridge();
   const [maximized, setMaximized] = useState(false);

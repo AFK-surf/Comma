@@ -12,6 +12,7 @@ export const ARTIFACT_TARGETS = Object.freeze([
   { component: "salix-connect", platform: "darwin-amd64", artifact: "salix-connect" },
   { component: "salix-connect", platform: "darwin-arm64", artifact: "salix-connect" },
   { component: "agent-vmm-host", platform: "darwin-arm64", artifact: "Agent-VMM-Host.zip" },
+  { component: "agent-vmm-host", platform: "linux-arm64", artifact: "Agent-VMM-Host.tar.gz" },
   { component: "computer-use-helper", platform: "darwin-amd64", artifact: "comma-computer-use.tar.gz" },
   { component: "computer-use-helper", platform: "darwin-arm64", artifact: "comma-computer-use.tar.gz" },
 ]);
@@ -32,12 +33,13 @@ const ENTRY_FIELDS = new Set([
 const SHA256 = /^[0-9a-f]{64}$/;
 const BUILD_ID = /^[0-9a-f]{40}$/;
 const RELEASE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
-const PRIMARY_ARTIFACT = Object.freeze({
-  runner: "mac-mini-provisioner",
-  "salix-connect": "salix-connect",
-  "agent-vmm-host": "Agent-VMM-Host.zip",
-  "computer-use-helper": "comma-computer-use.tar.gz",
-});
+const PRIMARY_ARTIFACT = new Map(
+  ARTIFACT_TARGETS.map(({ component, platform, artifact }) => [`${component}:${platform}`, artifact]),
+);
+// Missing Linux delivery must not disable an existing Mac installation surface.
+const REQUIRED_TARGETS = ARTIFACT_TARGETS.filter(
+  ({ component, platform }) => component !== "agent-vmm-host" || platform !== "linux-arm64",
+).map(({ component, platform, artifact }) => `${component}:${platform}:${artifact}`);
 
 const assertObject = (value, label) => {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
@@ -121,8 +123,8 @@ export function validateDescriptor(descriptor) {
       throw new Error(`${key} has invalid size`);
     }
   }
-  if (seen.size !== TARGET_BY_KEY.size) {
-    const missing = [...TARGET_BY_KEY.keys()].filter((key) => !seen.has(key));
+  const missing = REQUIRED_TARGETS.filter((key) => !seen.has(key));
+  if (missing.length) {
     throw new Error(`release descriptor is missing targets: ${missing.join(", ")}`);
   }
   return descriptor;
@@ -149,7 +151,7 @@ export function verifyBundledArtifacts(root, descriptor) {
   return descriptor;
 }
 
-export function selectArtifact(descriptor, component, platform, artifact = PRIMARY_ARTIFACT[component]) {
+export function selectArtifact(descriptor, component, platform, artifact = PRIMARY_ARTIFACT.get(`${component}:${platform}`)) {
   validateDescriptor(descriptor);
   return Object.freeze({ ...findEntry(descriptor, component, platform, artifact) });
 }
@@ -178,6 +180,7 @@ export function generateDescriptor({
   root,
   serverBuildId,
   agentVMMReleaseId,
+  agentVMMLinuxReleaseId,
   darwinSalixConnectReleaseId = serverBuildId,
   computerUseHelperReleaseId = serverBuildId,
   baseUrl,
@@ -188,6 +191,9 @@ export function generateDescriptor({
   if (!RELEASE_ID.test(agentVMMReleaseId ?? "")) {
     throw new Error("Agent VMM release id must be a stable identifier");
   }
+  if (!RELEASE_ID.test(agentVMMLinuxReleaseId ?? "")) {
+    throw new Error("Linux Agent VMM release id must be a stable identifier");
+  }
   if (!RELEASE_ID.test(darwinSalixConnectReleaseId ?? "")) {
     throw new Error("darwin salix-connect release id must be a stable identifier");
   }
@@ -195,7 +201,9 @@ export function generateDescriptor({
     throw new Error("Computer Use helper release id must be a stable identifier");
   }
   const releaseId = (target) => {
-    if (target.component === "agent-vmm-host") return agentVMMReleaseId;
+    if (target.component === "agent-vmm-host") {
+      return target.platform === "linux-arm64" ? agentVMMLinuxReleaseId : agentVMMReleaseId;
+    }
     if (target.component === "salix-connect" && target.platform.startsWith("darwin-")) return darwinSalixConnectReleaseId;
     if (target.component === "computer-use-helper") return computerUseHelperReleaseId;
     return serverBuildId;

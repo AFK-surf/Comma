@@ -1301,12 +1301,17 @@ defmodule SalixAgent.AccountPool do
         with :ok <- connection(tenant),
              {:ok, attempts} <- catalog_attempts(tenant, base, model, config) do
           Log.emit("catalog_candidates", candidate_count: length(attempts))
-          # Output started, or a pool worker already received response bytes:
-          # either way no other Profile may take the request over.
-          received = SystemsRuntime.Atomics.new(1, [])
-          on_received = fn -> SystemsRuntime.Atomics.put(received, 1, 1) end
-          started? = fn -> started?.() or SystemsRuntime.Atomics.get(received, 1) == 1 end
-          run_attempts(attempts, {call, on_received}, started?, identity, unavailable(model))
+
+          if attempts == [] do
+            not_served(tenant, model, config["profile_id"])
+          else
+            # Output started, or a pool worker already received response bytes:
+            # either way no other Profile may take the request over.
+            received = SystemsRuntime.Atomics.new(1, [])
+            on_received = fn -> SystemsRuntime.Atomics.put(received, 1, 1) end
+            started? = fn -> started?.() or SystemsRuntime.Atomics.get(received, 1) == 1 end
+            run_attempts(attempts, {call, on_received}, started?, identity, unavailable(model))
+          end
         else
           {:error, :not_configured} ->
             SalixAgent.LLM.Error.http("catalog", 400, error_message(:not_configured))
@@ -1326,7 +1331,9 @@ defmodule SalixAgent.AccountPool do
       {:ok, %{"credential" => "subscription", "source" => provider} = record}
       when provider in @pool_sources ->
         {:ok,
-         for {:ok, route} <- [plan_route(model, provider)], not excluded?(record, model) do
+         for {:ok, route} <- [plan_route(model, provider)],
+             not excluded?(record, model),
+             {:ok, [_ | _]} <- [Store.candidates(tenant, provider, route["model"], id, [], model)] do
            {{:subscription, model}, funding(provider, nil),
             fn ->
               base |> pool_opts(tenant, provider, route["model"]) |> Map.put("account_pin", id)
@@ -1588,6 +1595,67 @@ defmodule SalixAgent.AccountPool do
 
   defp unavailable(model),
     do: SalixAgent.LLM.Error.http("catalog", 503, "no enabled profile serves #{model}")
+
+  # No Profile of the Tenant may serve the model at all: the choice needs a
+  # Profile, pay-per-use or another model, and a retry fails the same way. It
+  # stops the input as `model_unavailable`, which tells the member to change
+  # the model choice.
+  defp not_served(model) do
+    case unavailable(model) do
+      {:error, %{} = meta} ->
+        {:error,
+         Map.merge(meta, %{
+           "error_class" => "billing_unavailable",
+           "reason" => "model_unavailable",
+           "retryable" => false
+         })}
+
+      other ->
+        other
+    end
+  end
+
+  # Nothing may take the request. When the member's own subscriptions serve
+  # the model but their used-up windows hold them back, the input stops as
+  # `quota_exhausted`, naming the one that refills first and when, so the
+  # member waits for it or chooses another model. Otherwise no Profile serves
+  # the model at all. `pin`: the Profile the Agent kept to, if any.
+  defp not_served(tenant, model, pin) do
+    held =
+      for source <- @pool_sources,
+          {:ok, route} <- [plan_route(model, source)],
+          {:ok, records} <- [Store.held_back(tenant, source, route["model"], pin, model)],
+          record <- records,
+          do: {source, record, SalixAgent.Profiles.refills_at(record, route["model"])}
+
+    case held do
+      [] -> not_served(model)
+      held -> held |> Enum.min_by(fn {_, _, at} -> at || :never end) |> usage_limit(model)
+    end
+  end
+
+  defp usage_limit({source, record, refills_at}, model) do
+    {:error, meta} =
+      SalixAgent.LLM.Error.http(
+        "catalog",
+        503,
+        "subscriptions serving #{model} reached their usage limit"
+      )
+
+    funding =
+      source
+      |> funding(record)
+      |> Map.put("reset_at", if(is_integer(refills_at), do: div(refills_at, 1000)))
+      |> compact_funding()
+
+    {:error,
+     Map.merge(meta, %{
+       "error_class" => "billing_unavailable",
+       "reason" => "quota_exhausted",
+       "retryable" => false,
+       "funding" => funding
+     })}
+  end
 
   # Only plans with a usable account: an empty pool is not an attempt, so its
   # "unavailable" never hides the answer of a Profile that could have served.
@@ -2198,12 +2266,16 @@ defmodule SalixAgent.AccountPool do
 
   def validate_config(config, tenant) do
     case config do
+      # The model is checked when it is chosen (`SalixAgent.ModelChoice.choose/2`).
+      # A stored choice whose Custom endpoint was removed later still resolves:
+      # no Profile serves it at dispatch, and the input stops as
+      # `model_unavailable`.
       %{"catalog_model" => model} when is_binary(tenant) ->
         if is_boolean(config["allow_paid"]) and
              (is_nil(config["profile_id"]) or is_binary(config["profile_id"])) and
-             known_model?(tenant, model),
+             is_binary(model) and model != "",
            do: :ok,
-           else: {:error, {:bad_request, "catalog models require a known model and allow_paid"}}
+           else: {:error, {:bad_request, "catalog models require a model and allow_paid"}}
 
       %{"catalog_model" => _} ->
         {:error, {:bad_request, "catalog models require a tenant"}}
@@ -2217,12 +2289,6 @@ defmodule SalixAgent.AccountPool do
       _ ->
         :ok
     end
-  end
-
-  # A catalog model, or a model id that one of the tenant's Custom endpoints
-  # listed (an Ollama `llama3.2:3b` is in no catalog).
-  defp known_model?(tenant, model) do
-    match?({:ok, _}, SalixAgent.Models.get(model)) or Store.custom_model?(tenant, model)
   end
 
   @doc "A model a Custom endpoint serves, shaped like a catalog entry."

@@ -544,6 +544,7 @@ function SettingsForm({
     writeback: saved.calendar_writeback === true,
     autojoin: saved.mode === "join",
     personal: Boolean(saved.connect_id) && saved.personal_preparation !== false,
+    channelNotice: saved.channel_notice !== false,
   }));
   const set = (patch: Partial<typeof draft>) =>
     setDraft((value) => ({ ...value, ...patch }));
@@ -682,9 +683,10 @@ function SettingsForm({
           calendar_selections: selections,
           preparation_lead_minutes: Number(draft.lead),
           research_enabled: draft.research,
-          calendar_writeback: draft.writeback,
+          calendar_writeback: draft.writeback && draft.channelNotice,
           autojoin: draft.autojoin,
           personal_preparation: draft.personal,
+          channel_notice: draft.channelNotice,
           series: draft.scope === "series" ? series : [],
         }),
       done
@@ -898,6 +900,14 @@ function SettingsForm({
             </button>
           ) : null}
           <Checkbox
+            checked={draft.channelNotice}
+            disabled={busy}
+            hint={t.channelNoticeHint}
+            label={t.channelNotice}
+            onChange={(event) => set({ channelNotice: event.target.checked })}
+            size="sm"
+          />
+          <Checkbox
             checked={draft.personal}
             disabled={busy || (!scopesReady && !draft.personal)}
             hint={
@@ -924,8 +934,9 @@ function SettingsForm({
         </FormSection>
         <FormSection title={t.moreTitle}>
           <Checkbox
-            checked={draft.writeback}
-            disabled={busy}
+            checked={draft.writeback && draft.channelNotice}
+            disabled={busy || !draft.channelNotice}
+            {...(draft.channelNotice ? {} : { hint: t.writebackNeedsNotice })}
             label={t.writeback}
             onChange={(event) => set({ writeback: event.target.checked })}
             size="sm"

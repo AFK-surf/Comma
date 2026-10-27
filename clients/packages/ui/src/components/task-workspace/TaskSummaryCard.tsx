@@ -1,5 +1,4 @@
 import {
-  contentFreshnessLabel,
   formatDate,
   messages,
   taskActivityLabel,
@@ -44,7 +43,6 @@ export type TaskSummaryViewModel = {
   archiveVersion?: number | undefined;
   archiveAction?: import("./TaskArchiveMenu").TaskArchiveAction | undefined;
   activityStatus: string;
-  freshness: "fresh" | "stale" | "unknown";
   id: string;
   lastMessage?: TaskWorkspaceMessage | undefined;
   /** Where the Task was asked for: a chat provider key, or `comma` for the client. */
@@ -93,6 +91,7 @@ export function TaskSummaryCard({
       icon={taskStatusIcon(task.statusBucket)}
       meta={taskMeta(task, locale, progress ?? followed)}
       title={task.title}
+      titleIdentity={task.id}
       {...props}
     />
   );
@@ -123,19 +122,14 @@ export function taskProgressLabel(
   locale: CommaLocale
 ): string | undefined {
   if (task.statusBucket !== "in_progress") return undefined;
-  const freshnessLabel = taskFreshnessLabel(task.freshness, locale);
   // An idle activity still means running — the worker just has nothing new to
   // report this second — so the line falls back to the status instead of
   // vanishing and making a live task look inert.
-  const content =
+  return (
     task.lastMessage?.content ||
     taskActivityLabel(task.activityStatus, locale) ||
-    taskStatusLabel(task.statusBucket, locale);
-  // A freshness caveat prefixes the progress rather than replacing it: an
-  // unknown projection usually just means the preview has not loaded yet
-  // (inline Task cards default to it), and swallowing the progress there left
-  // a running task saying only "Status unknown".
-  return [freshnessLabel, content].filter(Boolean).join(" · ");
+    taskStatusLabel(task.statusBucket, locale)
+  );
 }
 
 function taskMeta(
@@ -145,33 +139,13 @@ function taskMeta(
 ) {
   const label = taskProgressLabel(task, locale);
   if (!label) return undefined;
-  // A Worker's step comes live from its own Session, so the list's freshness
-  // caveat does not apply to it; the card's name still carries the caveat.
+  // A Worker's step comes live from its own Session.
   const progress = override || label;
   return (
     <TaskCardMeta>
       <TaskProgressText className="comma-shiny-text">{progress}</TaskProgressText>
     </TaskCardMeta>
   );
-}
-
-export function taskFreshnessLabel(
-  freshness: TaskSummaryViewModel["freshness"],
-  locale: CommaLocale
-): string | undefined {
-  return contentFreshnessLabel(freshness, locale);
-}
-
-/**
- * Accessible name for a Task card's click target, shared by every surface that
- * wraps one in a button: the card's own text now runs past the title (progress
- * line, "Updated …" footer), so the label states the task, plus the freshness
- * caveat when the projection has one.
- */
-export function taskAriaLabel(task: TaskSummaryViewModel, locale: CommaLocale): string {
-  return [task.title, taskFreshnessLabel(task.freshness, locale)]
-    .filter(Boolean)
-    .join(", ");
 }
 
 export function taskStatusLabel(bucket: TaskStatusBucket, locale: CommaLocale): string {

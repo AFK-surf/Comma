@@ -32,6 +32,7 @@ export type TaskPanelTarget = {
   groupId: string;
   conversationId: string;
   workspaceId: string;
+  appId?: string | undefined;
 };
 
 export function renderTaskPanel(

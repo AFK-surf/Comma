@@ -13,6 +13,7 @@ import { UserWorkspaceBillingPanel } from "../src/UserWorkspaceBillingPanel";
 import { mountModel, ok, refuse, review, settle, onTestClock } from "./support";
 
 const noSignalNumber = { override: null, platform: null, effective: null };
+const defaultSandboxLimit = { override: null, default: 5, effective: 5 };
 
 async function mountPanel(api: Partial<AdminApiShape>, user: AdminUser) {
   const view = mountModel(makeUserWorkspaceBillingModel(user), { api });
@@ -57,6 +58,7 @@ describe("UserWorkspaceBillingPanel", () => {
     const updatedModels = workspaceAgentModelsFixture();
     const api = {
       getUserWorkspaceSignalNumber: vi.fn().mockReturnValue(ok(noSignalNumber)),
+      getUserWorkspaceSandboxLimit: vi.fn().mockReturnValue(ok(defaultSandboxLimit)),
       getUserWorkspaceAgentModels: vi
         .fn()
         .mockReturnValueOnce(ok(firstModels))
@@ -122,6 +124,7 @@ describe("UserWorkspaceBillingPanel", () => {
   it("shows the Tenant and Agent group ids that the Workspace references", async () => {
     const api = {
       getUserWorkspaceSignalNumber: vi.fn().mockReturnValue(ok(noSignalNumber)),
+      getUserWorkspaceSandboxLimit: vi.fn().mockReturnValue(ok(defaultSandboxLimit)),
       getUserWorkspaceAgentModels: vi
         .fn()
         .mockReturnValue(ok(workspaceAgentModelsFixture())),
@@ -164,6 +167,7 @@ describe("UserWorkspaceBillingPanel", () => {
   it("keeps Billing visible when the agent-model projection fails and retries it independently", async () => {
     const api = {
       getUserWorkspaceSignalNumber: vi.fn().mockReturnValue(ok(noSignalNumber)),
+      getUserWorkspaceSandboxLimit: vi.fn().mockReturnValue(ok(defaultSandboxLimit)),
       getUserWorkspaceAgentModels: vi
         .fn()
         .mockReturnValueOnce(refuse(503, "salix_unavailable", "Salix unavailable"))
@@ -212,6 +216,7 @@ describe("UserWorkspaceBillingPanel", () => {
   it("keeps redeem-code application disabled for a mismatched Billing owner", async () => {
     const api = {
       getUserWorkspaceSignalNumber: vi.fn().mockReturnValue(ok(noSignalNumber)),
+      getUserWorkspaceSandboxLimit: vi.fn().mockReturnValue(ok(defaultSandboxLimit)),
       getUserWorkspaceAgentModels: vi
         .fn()
         .mockReturnValue(ok(workspaceAgentModelsFixture())),
@@ -286,6 +291,7 @@ describe("UserWorkspaceBillingPanel", () => {
     };
     const api = {
       getUserWorkspaceSignalNumber: vi.fn().mockReturnValue(ok(noSignalNumber)),
+      getUserWorkspaceSandboxLimit: vi.fn().mockReturnValue(ok(defaultSandboxLimit)),
       getUserWorkspaceAgentModels: vi
         .fn()
         .mockReturnValue(ok(workspaceAgentModelsFixture())),

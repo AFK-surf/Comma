@@ -303,11 +303,6 @@ describe("RightSidebar", () => {
         onTabChange={vi.fn()}
         onWidthChange={vi.fn()}
         open={open}
-        style={{
-          transitionDelay: "0ms",
-          transitionDuration: "150ms",
-          transitionProperty: "width",
-        }}
         tabs={tabs}
         width={RIGHT_SIDEBAR_DEFAULT_WIDTH}
       >
@@ -323,7 +318,13 @@ describe("RightSidebar", () => {
     expect(sidebarElement).toHaveAttribute("data-open", "false");
     expect(screen.getByText("Retained while closing")).toBeInTheDocument();
 
+    // The exit is the surface sliding out, not the aside's width.
     fireEvent.transitionEnd(sidebarElement, { propertyName: "width" });
+    expect(handleExitComplete).not.toHaveBeenCalled();
+    fireEvent.transitionEnd(
+      sidebarElement.querySelector(".comma-chat-sidebar-surface")!,
+      { propertyName: "transform" }
+    );
     expect(handleExitComplete).toHaveBeenCalledOnce();
   });
 
@@ -549,26 +550,25 @@ describe("RightSidebar", () => {
         onTabChange={vi.fn()}
         onWidthChange={vi.fn()}
         open={open}
-        style={{
-          transitionDelay: "0ms",
-          transitionDuration: "150ms",
-          transitionProperty: "width",
-        }}
         tabs={tabs}
         width={RIGHT_SIDEBAR_DEFAULT_WIDTH}
       />
     );
 
     const view = render(sidebar(true));
+    const surface = screen
+      .getByTestId("right-sidebar")
+      .querySelector<HTMLElement>(".comma-chat-sidebar-surface")!;
+    surface.style.transitionProperty = "transform";
+    surface.style.transitionDuration = "150ms";
+    surface.style.transitionDelay = "0ms";
     view.rerender(sidebar(false));
     act(() => vi.advanceTimersByTime(179));
     expect(handleExitComplete).not.toHaveBeenCalled();
     act(() => vi.advanceTimersByTime(1));
     expect(handleExitComplete).toHaveBeenCalledOnce();
 
-    fireEvent.transitionEnd(screen.getByTestId("right-sidebar"), {
-      propertyName: "width",
-    });
+    fireEvent.transitionEnd(surface, { propertyName: "transform" });
     expect(handleExitComplete).toHaveBeenCalledOnce();
   });
 });

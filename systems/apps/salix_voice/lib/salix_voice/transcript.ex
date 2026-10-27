@@ -87,6 +87,24 @@ defmodule SalixVoice.Transcript do
   @doc "Entries oldest first."
   def entries(%__MODULE__{} = ledger), do: Enum.reverse(ledger.entries)
 
+  @doc """
+  The call as turns, oldest first: `{:caller | :agent, text}` with each run of
+  one side's fragments joined. Keeps the newest turns that fit `max_bytes`.
+  """
+  def turns(%__MODULE__{} = ledger, max_bytes) do
+    ledger
+    |> entries()
+    |> Enum.chunk_by(& &1.role)
+    |> Enum.map(fn [%{role: role} | _] = run -> {role, run |> Enum.map(& &1.text) |> join()} end)
+    |> Enum.reject(fn {_role, text} -> text == "" end)
+    |> Enum.reverse()
+    |> Enum.reduce_while({[], 0}, fn {_role, text} = turn, {kept, size} ->
+      size = size + byte_size(text)
+      if size > max_bytes, do: {:halt, {kept, size}}, else: {:cont, {[turn | kept], size}}
+    end)
+    |> elem(0)
+  end
+
   @doc "Join fragments, adding a space only where neither side has one."
   def join(fragments) do
     Enum.reduce(fragments, "", fn fragment, acc ->

@@ -1,10 +1,10 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import { useCommaMessages } from "@comma/i18n/react";
 import { Button } from "@comma/ui/components/Button";
 import { Dialog } from "@comma/ui/components/dialog";
 import { InputField } from "@comma/ui/components/input";
 import { Menu, MenuItem, MenuPopover, MenuTrigger } from "@comma/ui/components/menu";
-import { MoreHorizontalIcon } from "@comma/ui/components/icons";
+import { CubeIcon, MoreHorizontalIcon } from "@comma/ui/components/icons";
 import {
   DeviceSettingsSection as Section,
   DeviceSettingsRow as Row,
@@ -23,6 +23,7 @@ import {
 import type { useComputeSettingsController } from "./useComputeSettingsController";
 import type { ComputeWorkload as CommaComputeWorkload } from "@comma/core/contract";
 import { needsDesktopApp, requestDesktopApp } from "./DesktopAppPrompt";
+import { maintenanceFailureReason } from "./computeNodeCard";
 
 type Controller = ReturnType<typeof useComputeSettingsController>;
 
@@ -56,16 +57,13 @@ const act = (
 const workTone = (item: CommaComputeWorkload) =>
   item.phase === "ready" && !item.deletion && item.desired_state !== "draining"
     ? "good"
-    : item.phase === "action_required" ||
-        item.phase === "waiting_connection" ||
-        item.observed_state === "failed"
-      ? "warning"
-      : "neutral";
-
-const historical = (item: CommaComputeWorkload) =>
-  item.phase === "deleted" ||
-  item.phase === "cloud_retired" ||
-  item.deletion?.phase === "complete";
+    : item.deletion
+      ? "neutral"
+      : item.phase === "action_required" ||
+          item.phase === "waiting_connection" ||
+          item.observed_state === "failed"
+        ? "warning"
+        : "neutral";
 
 export interface ComputeHomeContent {
   localNode: ReactNode;
@@ -110,10 +108,6 @@ export function ComputeSettingsView({
           : phase === "unknown"
             ? m.compute_ui_maintenance_unknown()
             : m.compute_ui_setup_wait();
-  const live =
-    !c.workspaceUnconfirmed &&
-    s?.facets.connection === "connected" &&
-    s.observationFresh;
   const kindLabel = (kind: string) =>
     kind === "shell"
       ? "Shell"
@@ -122,43 +116,26 @@ export function ComputeSettingsView({
         : kind === "service"
           ? m.compute_use_service()
           : kind;
-  const primaryLabel =
-    c.maintenanceActive || s?.status === "processing"
-      ? m.compute_ui_view_progress()
-      : c.canFinishRemove
-        ? m.compute_finish_remove()
-        : c.recoveryNeeded
-          ? m.compute_ui_authorize()
-          : s?.issue === "capability_missing"
-            ? m.compute_maintenance_update()
-            : s?.issue === "shell_initialization_pending"
-              ? m.compute_continue_shell()
-              : c.canEnable
-                ? s?.desiredEnabled
-                  ? m.compute_continue_enable()
-                  : m.compute_enable()
-                : m.compute_check_status();
-  const primary = () =>
-    act(
-      primaryLabel,
-      c.primary,
-      c.busy && !c.maintenanceActive && s?.status !== "processing",
-      "primary"
-    );
-  const nodeStatus = live
-    ? m.compute_ui_connected()
-    : s?.issue === "connection"
-      ? m.compute_ui_not_connected()
-      : c.recoveryNeeded
-        ? m.compute_ui_authorize()
-        : c.status;
-  const connectionNote =
-    c.problem ?? (s?.issue === "connection" ? m.compute_ui_not_current() : c.reason);
-  // Node actions follow the workspace's management permission; a reader sees why there is no action.
-  const readOnly = !!w.projection && !w.canManage;
+  const card = c.card;
+  const cardActions = (actions = card.actions) =>
+    actions.map((action, index) => (
+      <Fragment key={action.id}>
+        {act(
+          action.label,
+          () => c.run(action.id),
+          !c.canRun(action.id),
+          index === 0
+            ? "primary"
+            : action.id === "reinstall_reset"
+              ? "destructive"
+              : "secondary-gray"
+        )}
+      </Fragment>
+    ));
+  const available = card.kind === "available";
   const abandon = () =>
     c.canAbandon &&
-    w.canManage &&
+    c.canManage &&
     act(m.compute_close_request(), () => c.openConfirm("abandon"), c.busy, "link-gray");
   const workloadStatus = (item: CommaComputeWorkload) =>
     item.phase === "cloud_retired"
@@ -281,20 +258,16 @@ export function ComputeSettingsView({
           : screen === "erase"
             ? m.compute_clear_all_data()
             : screen === "authorization"
-              ? m.compute_ui_authorize()
-              : screen === "setup"
-                ? m.compute_setup_title()
-                : screen === "maintenance"
-                  ? m.compute_maintenance_title()
-                  : screen === "create"
-                    ? m.compute_new_shell()
-                    : screen === "owner"
-                      ? (w.selectedUse?.label ?? m.compute_usage())
-                      : screen === "diagnostics"
-                        ? m.compute_diagnostics()
-                        : w.current
-                          ? w.workloadLabel(w.current)
-                          : m.compute_details();
+              ? m.compute_recovery_title()
+              : screen === "maintenance"
+                ? m.compute_maintenance_title()
+                : screen === "create"
+                  ? m.compute_new_shell()
+                  : screen === "owner"
+                    ? (w.selectedUse?.label ?? m.compute_usage())
+                    : w.current
+                      ? w.workloadLabel(w.current)
+                      : m.compute_details();
   const disk = l.data?.disk;
   const diskSummary = disk
     ? m.compute_disk_summary({
@@ -333,81 +306,114 @@ export function ComputeSettingsView({
           ],
         ]}
       />
-      {c.problemDetail && <p>{c.problemDetail}</p>}
-      {c.reasonDetail && <p>{c.reasonDetail}</p>}
+      {s?.setup && (
+        <Steps
+          steps={[
+            {
+              label: m.compute_setup_components(),
+              phase: s.setup.components,
+              status: phaseLabel(s.setup.components),
+            },
+            {
+              label: m.compute_setup_connection(),
+              phase: s.setup.connection,
+              status: phaseLabel(s.setup.connection),
+            },
+            {
+              label: m.compute_setup_shell(),
+              phase: s.setup.shell,
+              status: phaseLabel(s.setup.shell),
+            },
+          ]}
+        />
+      )}
+      {s?.problemDetail && <p>{s.problemDetail}</p>}
+      {s?.preparation?.error && <p>{s.preparation.error}</p>}
       {h.state?.operation?.problem && <p>{h.state.operation.problem}</p>}
       {act(m.compute_check_status(), c.checkWorkspace)}
     </details>
   );
   // In the desktop app on a computer that cannot host one (Windows, an Intel Mac) there is nothing to show of it:
   // a person who never heard of compute environments is not told about one they cannot have.
+  // On the computer's card the sandbox is one row like an agent's: its name, the card's reason while it is not
+  // available (its progress while preparing), and the card's actions. Stopping, disconnecting and its settings are
+  // in the computer's menu.
+  const unavailable = !c.node.available || !c.eligible;
   const localNode =
-    !needsDesktopApp() && (!c.node.available || !c.eligible) ? null : (
+    !needsDesktopApp() && unavailable ? null : (
       <section
         className="compute-node-summary"
         aria-label={m.compute_capability_title()}
+        data-ready={!unavailable && available}
       >
-        <div className="compute-section-heading">
-          <h2>{m.compute_capability_title()}</h2>
-          <Status
-            tone={live && !s?.issue ? "good" : s?.issue ? "warning" : "neutral"}
-            pending={s?.status === "processing"}
-          >
-            {c.maintenanceActive ? h.title : nodeStatus}
-          </Status>
-        </div>
-        {!c.node.available || !c.eligible ? (
-          <div className="compute-row">
-            <p className="compute-muted">{m.compute_ui_desktop_help()}</p>
-            {act(m.compute_ui_desktop(), () => requestDesktopApp("compute-node"))}
-          </div>
-        ) : (
-          <>
-            <div className="compute-row">
-              <div>
-                <p className="compute-node-name">
-                  {c.workspaceLabel(c.binding ?? c.workspaceId)}
-                </p>
-                <p className="compute-muted">
-                  {c.maintenanceActive
-                    ? h.failed
-                      ? `${h.title} ${m.compute_ui_repair_note()}`
-                      : m.compute_maintenance_shared_scope()
-                    : live && !s?.issue
-                      ? m.compute_ui_ready_note()
-                      : connectionNote}
-                </p>
-                {s?.issue === "connection" && s.observedAt && (
-                  <p className="compute-muted">
-                    {m.compute_confirmed_at({
-                      time: new Date(s.observedAt).toLocaleString(),
-                    })}
-                  </p>
-                )}
-              </div>
-              {(c.maintenanceActive || (w.canManage && (!live || s?.issue))) &&
-                primary()}
-            </div>
-            {readOnly && !c.maintenanceActive && (
-              <p className="compute-muted">{m.compute_ui_readonly()}</p>
-            )}
-            <div className="compute-summary-actions">
-              <span className="compute-muted">
-                {c.maintenanceActive
-                  ? m.compute_ui_back_progress()
-                  : h.needsInstall && l.data?.disk
-                    ? m.compute_ui_retained()
-                    : h.title}
+        <div className="comma-device__agent">
+          <span className="comma-device__agent-mark" aria-hidden="true">
+            <CubeIcon className="size-4" />
+          </span>
+          <span className="comma-device__agent-identity">
+            <span className="comma-device__agent-name">
+              {m.compute_capability_title()}
+            </span>
+            {unavailable ? (
+              <span className="comma-device__agent-status">
+                {m.compute_ui_desktop_help()}
               </span>
-              {abandon()}
-              {act(
-                m.compute_local_settings(),
-                () => go("settings"),
-                false,
+            ) : card.kind === "preparing" ? (
+              <Status pending>{card.reason}</Status>
+            ) : card.kind === "attention" ||
+              (card.kind === "not_enabled" && card.actions.length === 0) ? (
+              <span className="comma-device__agent-status" data-attention="true">
+                {card.reason}
+              </span>
+            ) : null}
+            {!unavailable && card.notice && (
+              <span className="comma-device__agent-status">{card.notice}</span>
+            )}
+            {c.node.error && (
+              <span
+                role="alert"
+                className="comma-device__agent-status"
+                data-attention="true"
+              >
+                {c.node.error}
+              </span>
+            )}
+          </span>
+          <div className="compute-actions">
+            {unavailable ? (
+              act(m.compute_ui_desktop(), () => requestDesktopApp("compute-node"))
+            ) : (
+              <>
+                {renderHome && abandon()}
+                {cardActions()}
+              </>
+            )}
+          </div>
+        </div>
+        {/* On a computer's card these are in its menu; on the page alone they follow the row. */}
+        {!unavailable && !renderHome && (
+          <div className="compute-summary-actions">
+            {abandon()}
+            {available &&
+              c.canManage &&
+              act(
+                m.compute_ui_stop(),
+                () => c.openConfirm("drain"),
+                c.busy,
                 "link-gray"
               )}
-            </div>
-          </>
+            {c.binding &&
+              c.canManage &&
+              !card.actions.some((action) => action.id === "remove") &&
+              (available || card.kind === "attention") &&
+              act(
+                m.compute_ui_disconnect(),
+                () => c.openConfirm("remove"),
+                c.busy,
+                "link-gray"
+              )}
+            {act(m.compute_local_settings(), () => go("settings"), false, "link-gray")}
+          </div>
         )}
       </section>
     );
@@ -417,7 +423,14 @@ export function ComputeSettingsView({
       name={w.workloadLabel(item)}
       description={`${kindLabel(item.kind)} · ${w.location(item)}`}
       onOpen={() => w.openWorkload(item)}
-      actions={menu(item)}
+      actions={
+        <>
+          {w.needsRetry(item) &&
+            act(m.compute_retry(), () => void w.retry(item), w.pending, "link-gray")}
+          {menu(item)}
+        </>
+      }
+      statusNote={w.problemReason(item)}
       status={
         <Status
           tone={workTone(item)}
@@ -447,15 +460,7 @@ export function ComputeSettingsView({
             <p className="compute-muted">{m.compute_ui_empty_help()}</p>
           </div>
         ) : (
-          <>
-            {w.rows.filter((item) => !historical(item)).map(resource)}
-            {w.rows.some(historical) && (
-              <details className="compute-history">
-                <summary>{m.compute_workload_history()}</summary>
-                {w.rows.filter(historical).map(resource)}
-              </details>
-            )}
-          </>
+          w.rows.map(resource)
         )}
       </div>
       {w.creation && (
@@ -478,10 +483,12 @@ export function ComputeSettingsView({
         <p className="compute-muted">{m.compute_ui_refresh_note()}</p>
         {act(m.compute_workloads_refresh(), w.refresh)}
       </div>
-      <div className="compute-actions">
-        {w.hasPreviousPage && act(m.compute_first_page(), w.firstPage)}
-        {w.projection?.next_workload_cursor && act(m.compute_next_page(), w.nextPage)}
-      </div>
+      {(w.hasPreviousPage || w.projection?.next_workload_cursor) && (
+        <div className="compute-actions">
+          {w.hasPreviousPage && act(m.compute_first_page(), w.firstPage)}
+          {w.projection?.next_workload_cursor && act(m.compute_next_page(), w.nextPage)}
+        </div>
+      )}
     </Section>
   );
   let body: ReactNode;
@@ -495,29 +502,6 @@ export function ComputeSettingsView({
   else if (screen === "settings")
     body = (
       <>
-        {!c.localOnly && (
-          <Section title={m.compute_ui_connection()}>
-            <div className="compute-panel">
-              <Row
-                title={c.workspaceLabel(c.binding ?? c.workspaceId)}
-                description={nodeStatus}
-                action={
-                  live
-                    ? w.canManage &&
-                      act(m.compute_ui_stop(), () => c.openConfirm("drain"), c.busy)
-                    : (c.maintenanceActive || w.canManage) && primary()
-                }
-              >
-                {readOnly && <p className="compute-muted">{m.compute_ui_readonly()}</p>}
-                {(c.node.error || c.problem) && (
-                  <p role="alert" className="compute-error">
-                    {c.node.error || c.problem}
-                  </p>
-                )}
-              </Row>
-            </div>
-          </Section>
-        )}
         <Section title={m.compute_ui_components()}>
           <div className="compute-panel">
             <Row
@@ -530,13 +514,13 @@ export function ComputeSettingsView({
               action={
                 h.unfinished
                   ? act(m.compute_ui_view_progress(), () => go("maintenance"))
-                  : act(
-                      h.needsInstall
-                        ? m.compute_maintenance_install()
-                        : m.compute_maintenance_update(),
-                      () => maintenance(h.needsInstall ? "reinstall" : "update"),
-                      h.blocked || (!h.needsInstall && !h.needsUpdate)
-                    )
+                  : h.needsUpdate && !h.needsInstall
+                    ? act(
+                        m.compute_maintenance_update(),
+                        () => maintenance("update"),
+                        h.blocked
+                      )
+                    : undefined
               }
             />
             {!h.needsInstall && !h.unfinished && (
@@ -561,34 +545,22 @@ export function ComputeSettingsView({
             />
           </div>
         </Section>
-        <Section title={m.compute_ui_removal()}>
-          <div className="compute-panel">
-            {!c.localOnly && w.canManage && c.binding && (
-              <Row
-                title={m.compute_ui_disconnect_title()}
-                description={m.compute_ui_disconnect_note()}
-                action={act(
-                  m.compute_ui_disconnect(),
-                  () => c.openConfirm("remove"),
-                  c.busy,
-                  "destructive"
-                )}
-              />
-            )}{" "}
-            {!h.needsInstall && (
+        {!h.needsInstall && (
+          <Section title={m.compute_ui_removal()}>
+            <div className="compute-panel">
               <Row
                 title={m.compute_ui_uninstall_title()}
                 description={m.compute_ui_uninstall_note()}
                 action={act(
                   m.compute_maintenance_uninstall(),
                   () => maintenance("uninstall"),
-                  h.blocked,
+                  h.uninstallBlocked,
                   "destructive"
                 )}
               />
-            )}
-          </div>
-        </Section>
+            </div>
+          </Section>
+        )}
         {diagnostics}
       </>
     );
@@ -674,11 +646,25 @@ export function ComputeSettingsView({
                 />
                 {l.selected === row.key && (
                   <div className="compute-inset">
-                    {l.cloudWorkloads?.workloads.map((work) => (
-                      <p key={work.label}>
-                        {work.label} · {work.state}
-                      </p>
-                    ))}
+                    {l.cloudWorkloads?.workloads.map((work) => {
+                      // Main keeps the cloud workload's id; its retry is on the workspace's list.
+                      const workload = {
+                        problem: work.problem ?? null,
+                        location: {
+                          provider: "agent_vmm",
+                          ...(work.deviceId ? { device_id: work.deviceId } : {}),
+                        },
+                      };
+                      const reason = w.problemReason(workload);
+                      return (
+                        <div key={work.label}>
+                          <p>
+                            {work.label} · {work.state} · {w.location(workload)}
+                          </p>
+                          {reason && <p className="compute-muted">{reason}</p>}
+                        </div>
+                      );
+                    })}
                     {l.cloudWorkloads?.nextCursor &&
                       act(
                         m.compute_local_next(),
@@ -698,7 +684,6 @@ export function ComputeSettingsView({
           <div className="compute-actions compute-note">
             {l.hasPreviousPage && act(m.compute_local_previous(), l.firstPage)}
             {l.overview?.nextCursor && act(m.compute_local_next(), l.nextPage)}
-            {act(m.compute_check_status(), () => void l.refresh())}
           </div>
         </Section>
         {l.disposal && !["completed", "superseded"].includes(l.disposal.outcome) && (
@@ -755,115 +740,95 @@ export function ComputeSettingsView({
         </div>
       </>
     );
-  else if (screen === "setup" || screen === "authorization")
+  else if (screen === "authorization") {
+    const r = c.recovery;
+    const candidates = r.page?.candidates ?? [];
     body = (
       <>
-        {screen === "setup" && (
-          <Steps
-            steps={[
-              {
-                label: m.compute_setup_components(),
-                phase: s?.setup?.components,
-                status: phaseLabel(s?.setup?.components),
-              },
-              {
-                label: m.compute_setup_connection(),
-                phase: s?.setup?.connection,
-                status: phaseLabel(s?.setup?.connection),
-              },
-              {
-                label: m.compute_setup_shell(),
-                phase: s?.setup?.shell,
-                status: phaseLabel(s?.setup?.shell),
-              },
-            ]}
-          />
-        )}
-        {(s?.issue || c.node.error) && (
-          <div className="compute-notice">
-            <p>
-              {c.problem && !s?.recoveryActions?.includes("continue_enable")
-                ? c.problem
-                : (c.node.error ?? c.problem ?? c.reason)}
-            </p>
-            <div className="compute-actions">
-              {!c.recoveryNeeded && primary()}
-              {abandon()}
+        <p className="compute-muted">{m.compute_recovery_explanation()}</p>
+        {r.pending && <output>{m.compute_loading()}</output>}
+        {r.error && <p role="alert">{r.error}</p>}
+        {r.selected ? (
+          <Section title="">
+            <div className="compute-panel compute-inset">
+              <Facts
+                rows={[
+                  [m.compute_ui_account(), r.account ?? m.compute_ui_account_unknown()],
+                  [m.compute_ui_device(), r.selected.machine ?? r.selected.label],
+                  [m.compute_ui_workspace(), c.workspaceLabel(r.selected.workspaceId)],
+                  [
+                    m.compute_ui_service(),
+                    r.selected.endpoint ?? m.compute_activity_unknown(),
+                  ],
+                ]}
+              />
             </div>
-          </div>
-        )}
-        {c.recoveryNeeded && (
-          <Section title={m.compute_recovery_title()}>
-            <div className="compute-recovery-content">
-              <p className="compute-muted">{m.compute_recovery_explanation()}</p>
-              {c.recovery.pending && <output>{m.compute_loading()}</output>}
-              {c.recovery.error && <p role="alert">{c.recovery.error}</p>}
-              {c.recovery.page?.candidates.map((row) => (
-                <div className="compute-panel" key={row.key}>
-                  <Row
-                    title={
-                      row.machine ?? m.compute_recovery_candidate({ id: row.label })
-                    }
-                    description={[c.workspaceLabel(row.workspaceId), row.endpoint]
-                      .filter(Boolean)
-                      .join(" · ")}
-                    action={act(
-                      m.compute_recovery_title(),
-                      () => c.recovery.select(row.key),
-                      c.recovery.pending
-                    )}
-                  />
-                </div>
-              ))}
-              {!c.recovery.pending &&
-                c.recovery.page &&
-                !c.recovery.page.candidates.length && (
-                  <output>{m.compute_recovery_none()}</output>
-                )}
-              <div className="compute-actions">
-                {!c.recovery.pending &&
-                  !c.recovery.page?.candidates.length &&
-                  act(m.compute_ui_authorize(), () => void c.recovery.discover())}
-                {c.recovery.page?.nextCursor &&
-                  act(
-                    m.compute_recovery_next(),
-                    () => void c.recovery.discover(c.recovery.page?.nextCursor)
-                  )}
-              </div>
+            <div className="compute-actions compute-note">
+              {candidates.length > 1 && act(m.settings_profile_cancel(), r.cancel)}
+              {act(m.compute_recovery_title(), r.confirm, r.pending, "primary")}
             </div>
           </Section>
+        ) : (
+          candidates.map((row) => (
+            <div className="compute-panel" key={row.key}>
+              <Row
+                title={row.machine ?? m.compute_recovery_candidate({ id: row.label })}
+                description={[c.workspaceLabel(row.workspaceId), row.endpoint]
+                  .filter(Boolean)
+                  .join(" · ")}
+                action={act(
+                  m.compute_recovery_select(),
+                  () => r.select(row.key),
+                  r.pending
+                )}
+              />
+            </div>
+          ))
         )}
-        <p className="compute-muted compute-note">{m.compute_ui_back_progress()}</p>
-        {diagnostics}
+        {!r.pending && r.page && !candidates.length && (
+          <output>{m.compute_recovery_none()}</output>
+        )}
+        <div className="compute-actions compute-recovery-actions">
+          {!r.pending &&
+            !candidates.length &&
+            act(m.compute_retry(), () => void r.discover())}
+          {r.page?.nextCursor &&
+            act(m.compute_recovery_next(), () => void r.discover(r.page?.nextCursor))}
+        </div>
       </>
     );
-  else if (screen === "maintenance") {
+  } else if (screen === "maintenance") {
     const operation = h.state?.operation;
-    const order = [
-      "preparing",
-      "stopping",
-      operation?.action === "uninstall" ? "removing" : "installing",
-      "checking",
-      "completed",
-    ];
-    const index = order.indexOf(operation?.phase ?? "preparing");
+    const failed = operation?.outcome === "failed";
+    // A failed request names the step where it stopped: the earlier steps are done, the later ones did not start.
+    const phase = failed
+      ? (operation.failedPhase ?? "preparing")
+      : (operation?.phase ?? "preparing");
+    const index =
+      phase === "preparing"
+        ? 0
+        : phase === "stopping"
+          ? 1
+          : phase === "installing" || phase === "removing"
+            ? 2
+            : phase === "checking"
+              ? 3
+              : 4;
     const step = (at: number) =>
       operation?.outcome === "succeeded" || index > at
         ? "ready"
-        : operation?.outcome === "failed"
-          ? index === at
+        : index === at
+          ? failed
             ? "failed"
-            : "not_started"
-          : index === at
-            ? "preparing"
-            : "not_started";
+            : "preparing"
+          : "not_started";
     body = (
       <>
         <div className="compute-notice">
           <output>{h.title}</output>
           <p className="compute-muted">
-            {operation?.dataPolicy === "reset"
-              ? m.compute_clear_all_data_warning()
+            {failed
+              ? maintenanceFailureReason(operation, m)
               : m.compute_maintenance_shared_scope()}
           </p>
         </div>
@@ -894,19 +859,31 @@ export function ComputeSettingsView({
             },
           ]}
         />
+        {h.retryFailed && (
+          <p role="alert" className="compute-error">
+            {m.compute_maintenance_retry_failed()}
+          </p>
+        )}
         {h.error && (
           <p role="alert" className="compute-error">
             {h.error}
           </p>
         )}
         {h.unfinished &&
-          act(
-            h.readingError
-              ? m.compute_check_status()
-              : m.compute_maintenance_continue(),
-            h.resume,
-            h.pending
-          )}
+          (operation?.failureCode === "host_start_failed" && !h.readingError
+            ? act(
+                m.compute_maintenance_action_reinstall_reset(),
+                () => c.run("reinstall_reset"),
+                !c.canRun("reinstall_reset"),
+                "destructive"
+              )
+            : act(
+                h.readingError
+                  ? m.compute_check_status()
+                  : m.compute_maintenance_continue(),
+                h.resume,
+                h.pending
+              ))}
         {h.readingError && <p role="alert">{m.compute_maintenance_read_failed()}</p>}
         {!operation && act(m.compute_check_status(), () => void h.refresh())}
         {diagnostics}
@@ -961,7 +938,7 @@ export function ComputeSettingsView({
           <p className="compute-muted">{w.createUnavailable()}</p>
           <div className="compute-actions compute-note">
             {c.node.available
-              ? primary()
+              ? cardActions(card.actions.slice(0, 1))
               : !needsDesktopApp()
                 ? null
                 : act(
@@ -982,7 +959,7 @@ export function ComputeSettingsView({
         <Section
           title=""
           action={
-            item.actions?.retry &&
+            (item.actions?.retry || w.needsRetry(item)) &&
             act(
               m.compute_retry_workload(),
               () => void w.retry(item),
@@ -994,6 +971,7 @@ export function ComputeSettingsView({
           <div className="compute-panel">
             <Row
               title={m.compute_ui_current_status()}
+              description={w.problemReason(item)}
               action={<Status tone={workTone(item)}>{workloadStatus(item)}</Status>}
             />
             <Row title={m.compute_location()} description={w.location(item)}>
@@ -1038,7 +1016,8 @@ export function ComputeSettingsView({
                   ? m.compute_delete_original_device_help()
                   : m.compute_delete_cleanup_pending()}
               </p>
-              {act(m.compute_check_status(), () => w.openWorkload(item))}
+              {item.deletion.error !== "original_device_offline" &&
+                act(m.compute_check_status(), () => w.openWorkload(item))}
             </div>
           )}
         {item.owner || item.uses?.length ? (
@@ -1142,7 +1121,7 @@ export function ComputeSettingsView({
         </details>
       </Section>
     );
-  else body = diagnostics;
+  else body = null;
   const selectedLocal = l.data?.environments.find((row) => row.key === localScope);
   if (screen === "home" && renderHome)
     return (

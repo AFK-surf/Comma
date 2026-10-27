@@ -1,3 +1,4 @@
+import { HomeCallControl, useDesktopCallEnabled } from "./voice/DesktopCall";
 import {
   createChatDraftSnippet,
   useConversationDraftSnippets,
@@ -23,7 +24,7 @@ import { useHomeRailFolded } from "./home/HomeRailFolds";
 import { HomeRailCollapseHandle } from "./home/HomeRailHandle";
 import { AppIcon, type AppIconName } from "./icons";
 import {
-  useChatSidebar,
+  useChatSidebarActions,
   useRegisterChatSidebarHost,
 } from "./chat-sidebar/ChatSidebarContext";
 import {
@@ -181,6 +182,21 @@ export const HomeRoute = memo(function HomeRoute({
     }
   };
 
+  // The conversation's callbacks keep their identity when Home hides and shows
+  // again, so a page switch does not render its composer and menus.
+  const sendPendingDraftRef = useRef(sendPendingDraft);
+  sendPendingDraftRef.current = sendPendingDraft;
+  const handleSend = useCallback(
+    (value: string) => sendPendingDraftRef.current(value),
+    []
+  );
+  const handleDraftChange = useCallback((draft: string) => {
+    setPendingError(undefined);
+    setPendingDraft(draft);
+  }, []);
+  const handlePendingDraftApplied = useCallback(() => setPendingDraft(""), []);
+  const handlePendingErrorClear = useCallback(() => setPendingError(undefined), []);
+
   const conversationTarget =
     chat.state.status === "ready"
       ? {
@@ -202,14 +218,11 @@ export const HomeRoute = memo(function HomeRoute({
       conversationSummary={conversationSummary}
       conversationTarget={conversationTarget}
       onConnectApps={onConnectApps}
-      onDraftChange={(draft) => {
-        setPendingError(undefined);
-        setPendingDraft(draft);
-      }}
-      onPendingDraftApplied={() => setPendingDraft("")}
-      onPendingErrorClear={() => setPendingError(undefined)}
+      onDraftChange={handleDraftChange}
+      onPendingDraftApplied={handlePendingDraftApplied}
+      onPendingErrorClear={handlePendingErrorClear}
       onRetry={chat.retry}
-      onSend={sendPendingDraft}
+      onSend={handleSend}
       pendingDraft={pendingDraft}
       pendingError={pendingError}
       surfaceActive={surfaceActive}
@@ -361,7 +374,7 @@ function HomeConversation({
   const workspaceId = conversationTarget?.workspaceId;
   const conversation = useConversation(workspaceId, groupId, conversationId);
   const skills = useWorkspaceSkills(guest ? "" : (workspaceId ?? ""));
-  const { openBrowser, openChat } = useChatSidebar();
+  const { openBrowser, openChat } = useChatSidebarActions();
   // The onboarding's "Start chatting" lands on this composer.
   const [composerFocusRequest, setComposerFocusRequest] = useState(0);
   useOnboardingHandoff(() => {
@@ -473,41 +486,79 @@ function HomeConversation({
     pendingDraft,
   ]);
 
+  // Everything handed down besides `state` keeps its identity while the
+  // conversation streams: the composer, the rails and the menus below are
+  // memoized, and a fresh object per chunk would render them all each time.
   const isBound = Boolean(conversationTarget);
-  const actions: ConversationViewActions = isBound
-    ? {
-        ...(conversation.channel ? { attachFiles: conversation.attachFiles } : {}),
-        ...(conversation.channel && conversation.pickAttachments
-          ? { pickAttachments: conversation.pickAttachments }
-          : {}),
-        ...(conversation.channel && conversation.previewLocalFile
-          ? { previewLocalFile: conversation.previewLocalFile }
-          : {}),
-        discard: conversation.discard,
-        refresh: conversation.refresh,
-        removeAttachment: conversation.removeAttachment,
-        retry: conversation.retry,
-        retryAttachment: conversation.retryAttachment,
-        answerQuestion: conversation.answerQuestion,
-        send: (text, options) => {
-          onPendingErrorClear();
-          return conversation.send(text, options);
-        },
-        setDraft: (draft) => {
-          onPendingErrorClear();
-          return conversation.setDraft(draft);
-        },
-      }
-    : {
-        discard: () => undefined,
-        refresh: onRetry,
-        removeAttachment: () => undefined,
-        retry: () => undefined,
-        retryAttachment: () => undefined,
-        send: onSend,
-        tracksSendAnalytics: true,
-        setDraft: onDraftChange,
-      };
+  const {
+    answerQuestion,
+    attachConversationFiles,
+    attachFiles,
+    channel,
+    discard,
+    pickAttachments,
+    previewLocalFile,
+    refresh,
+    removeAttachment,
+    retry,
+    retryAttachment,
+    send,
+    setDraft,
+  } = conversation;
+  const actions = useMemo<ConversationViewActions>(
+    () =>
+      isBound
+        ? {
+            ...(channel ? { attachFiles } : {}),
+            ...(channel && attachConversationFiles ? { attachConversationFiles } : {}),
+            ...(channel && pickAttachments ? { pickAttachments } : {}),
+            ...(channel && previewLocalFile ? { previewLocalFile } : {}),
+            discard,
+            refresh,
+            removeAttachment,
+            retry,
+            retryAttachment,
+            answerQuestion,
+            send: (text, options) => {
+              onPendingErrorClear();
+              return send(text, options);
+            },
+            setDraft: (draft) => {
+              onPendingErrorClear();
+              return setDraft(draft);
+            },
+          }
+        : {
+            discard: () => undefined,
+            refresh: onRetry,
+            removeAttachment: () => undefined,
+            retry: () => undefined,
+            retryAttachment: () => undefined,
+            send: onSend,
+            tracksSendAnalytics: true,
+            setDraft: onDraftChange,
+          },
+    [
+      answerQuestion,
+      attachConversationFiles,
+      attachFiles,
+      channel,
+      discard,
+      isBound,
+      onDraftChange,
+      onPendingErrorClear,
+      onRetry,
+      onSend,
+      pickAttachments,
+      previewLocalFile,
+      refresh,
+      removeAttachment,
+      retry,
+      retryAttachment,
+      send,
+      setDraft,
+    ]
+  );
   const state: ConversationViewState = isBound
     ? conversation.state
     : idleConversationChannelState;
@@ -526,22 +577,73 @@ function HomeConversation({
       workspaceState.status === "provisioning" ||
       workspaceState.status === "hidden" ||
       workspaceState.status === "unauthorized");
-  const composerPresentation: ConversationComposerPresentation = {
-    disabled: composerDisabled,
-    focusRequest: composerFocusRequest,
-    snippets: composerDraftSnippets,
-    feedback: (
-      <HomeResolutionFeedback
-        onRetry={onRetry}
-        pendingError={pendingError}
-        workspaceState={workspaceState}
-      />
-    ),
-    ...(workspaceState.status === "provisioning"
-      ? { placeholder: messages.home_workspace_preparing_placeholder() }
-      : {}),
-    submitDisabled: composerDisabled || workspaceSubmitBlocked,
-  };
+  const composerPlaceholder =
+    workspaceState.status === "provisioning"
+      ? messages.home_workspace_preparing_placeholder()
+      : undefined;
+  const composerPresentation = useMemo<ConversationComposerPresentation>(
+    () => ({
+      disabled: composerDisabled,
+      focusRequest: composerFocusRequest,
+      snippets: composerDraftSnippets,
+      feedback: (
+        <HomeResolutionFeedback
+          onRetry={onRetry}
+          pendingError={pendingError}
+          workspaceState={workspaceState}
+        />
+      ),
+      ...(composerPlaceholder ? { placeholder: composerPlaceholder } : {}),
+      submitDisabled: composerDisabled || workspaceSubmitBlocked,
+    }),
+    [
+      composerDisabled,
+      composerDraftSnippets,
+      composerFocusRequest,
+      composerPlaceholder,
+      onRetry,
+      pendingError,
+      workspaceState,
+      workspaceSubmitBlocked,
+    ]
+  );
+  const recommendationsActive = surfaceActive && !onboardingAhead;
+  const recommendationsContent = useMemo(
+    () =>
+      workspaceId && conversationId && !guest ? (
+        <RecommendationRail
+          active={recommendationsActive}
+          greetingName={greetingName}
+          onConnectApps={onConnectApps}
+          onOpenTask={handleOpenRecommendationTask}
+          onOpenUrl={handleOpenInCommaBrowser}
+          onUsePrompt={handleUseRecommendationPrompt}
+          workspaceId={workspaceId}
+        />
+      ) : undefined,
+    [
+      conversationId,
+      greetingName,
+      guest,
+      handleOpenInCommaBrowser,
+      handleOpenRecommendationTask,
+      handleUseRecommendationPrompt,
+      onConnectApps,
+      recommendationsActive,
+      workspaceId,
+    ]
+  );
+  const tasksRailLoading =
+    workspaceState.status === "hidden" || workspaceState.status === "unauthorized";
+  const tasksContent = useMemo(
+    () =>
+      guest ? undefined : tasksRailLoading ? (
+        <HomeTasksRailLoading />
+      ) : (
+        <HomeTasksRail enabled={surfaceActive} />
+      ),
+    [guest, surfaceActive, tasksRailLoading]
+  );
 
   return (
     <HomeConversationSurface
@@ -552,34 +654,17 @@ function HomeConversation({
       // A guest has no Tasks or in-app browser; links open normally.
       onOpenConversationRef={guest ? undefined : handleOpenConversationRef}
       onOpenInCommaBrowser={guest ? undefined : handleOpenInCommaBrowser}
-      recommendationsContent={
-        workspaceId && conversationId && !guest ? (
-          <RecommendationRail
-            active={surfaceActive && !onboardingAhead}
-            greetingName={greetingName}
-            onConnectApps={onConnectApps}
-            onOpenTask={handleOpenRecommendationTask}
-            onOpenUrl={handleOpenInCommaBrowser}
-            onUsePrompt={handleUseRecommendationPrompt}
-            workspaceId={workspaceId}
-          />
-        ) : undefined
-      }
-      skills={isBound ? skills : []}
+      recommendationsContent={recommendationsContent}
+      skills={isBound ? skills : noSkills}
       state={state}
       surfaceActive={surfaceActive}
-      tasksContent={
-        guest ? undefined : workspaceState.status === "hidden" ||
-          workspaceState.status === "unauthorized" ? (
-          <HomeTasksRailLoading />
-        ) : (
-          <HomeTasksRail enabled={surfaceActive} />
-        )
-      }
+      tasksContent={tasksContent}
       workspaceId={workspaceId}
     />
   );
 }
+
+const noSkills: CommaSkill[] = [];
 
 function HomeConversationSurface({
   actions,
@@ -609,6 +694,44 @@ function HomeConversationSurface({
   workspaceId?: string | undefined;
 }) {
   const messages = useCommaMessages();
+  const greetLabel = messages.home_greet_panel();
+  const tasksLabel = messages.tasks_title();
+  const leadingPanel = useMemo(
+    () => (
+      <>
+        <HomeRail id="comma-home-greet-panel" label={greetLabel} name="greet">
+          {recommendationsContent}
+        </HomeRail>
+        <HomeRailCollapseHandle
+          controls="comma-home-greet-panel"
+          label={greetLabel}
+          name="greet"
+        />
+      </>
+    ),
+    [greetLabel, recommendationsContent]
+  );
+  const trailingPanel = useMemo(
+    () => (
+      <>
+        <HomeRailCollapseHandle
+          controls="comma-home-tasks-panel"
+          label={tasksLabel}
+          name="tasks"
+        />
+        <HomeRail id="comma-home-tasks-panel" label={tasksLabel} name="tasks">
+          {tasksContent}
+        </HomeRail>
+      </>
+    ),
+    [tasksContent, tasksLabel]
+  );
+  // Without voice labs Home's chat keeps its own layout: no row for the call.
+  const callEnabled = useDesktopCallEnabled();
+  const homeAccessory = useMemo(
+    () => (callEnabled ? <HomeCallControl workspaceId={workspaceId} /> : undefined),
+    [callEnabled, workspaceId]
+  );
 
   return (
     <ConversationView
@@ -617,43 +740,14 @@ function HomeConversationSurface({
       composerPresentation={composerPresentation}
       draftSource={draftSource}
       groupId={groupId}
-      leadingPanel={
-        <>
-          <HomeRail
-            id="comma-home-greet-panel"
-            label={messages.home_greet_panel()}
-            name="greet"
-          >
-            {recommendationsContent}
-          </HomeRail>
-          <HomeRailCollapseHandle
-            controls="comma-home-greet-panel"
-            label={messages.home_greet_panel()}
-            name="greet"
-          />
-        </>
-      }
+      leadingPanel={leadingPanel}
       onOpenConversationRef={onOpenConversationRef}
       onOpenInCommaBrowser={onOpenInCommaBrowser}
       skills={skills}
       state={state}
       surfaceActive={surfaceActive}
-      trailingPanel={
-        <>
-          <HomeRailCollapseHandle
-            controls="comma-home-tasks-panel"
-            label={messages.tasks_title()}
-            name="tasks"
-          />
-          <HomeRail
-            id="comma-home-tasks-panel"
-            label={messages.tasks_title()}
-            name="tasks"
-          >
-            {tasksContent}
-          </HomeRail>
-        </>
-      }
+      trailingPanel={trailingPanel}
+      homeAccessory={homeAccessory}
       variant="home"
       workspaceId={workspaceId}
     />

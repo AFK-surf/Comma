@@ -201,7 +201,7 @@ func (g *gateway) Connect(stream remotev1.RemoteControllerService_ConnectServer)
 		g.connectionMu.Unlock()
 		g.controlErrors.Add(1)
 		g.logger.Warn("registration connection observation failed", "registration_id", registrationID, "connection_epoch", hello.GetConnectionEpoch(), "gateway_instance_id", g.id, "error", err)
-		return status.Error(codes.Unavailable, "connection observation failed")
+		return observationControlError(err)
 	}
 	g.mu.Lock()
 	if current, exists := g.live[registrationID]; exists && current.epoch == hello.GetConnectionEpoch() {
@@ -330,7 +330,8 @@ func requiresFreshAuthoritativeInventory(command *remotev1.ControllerCommand, tr
 	}
 	return result == nil || command.GetEnsureAllocation() == nil ||
 		result.GetOutcome() != remotev1.CommandOutcome_COMMAND_OUTCOME_REJECTED ||
-		result.GetReason() != remotev1.ErrorReason_ERROR_REASON_CAPACITY_EXHAUSTED
+		(result.GetReason() != remotev1.ErrorReason_ERROR_REASON_CAPACITY_EXHAUSTED &&
+			result.GetReason() != remotev1.ErrorReason_ERROR_REASON_ADMISSION_PAUSED)
 }
 
 func (g *gateway) ServeSession(stream remotev1.RemoteControllerService_ServeSessionServer) error {
@@ -543,6 +544,19 @@ func authenticationControlError(err error) error {
 		return status.Error(codes.Unauthenticated, "registration credential rejected")
 	}
 	return status.Error(codes.Unavailable, "registration authentication control unavailable")
+}
+
+// observationControlError tells the Host why Salix refused its hello: an
+// expired or inactive registration is PermissionDenied with that finite reason,
+// so the Host reports it instead of an anonymous outage. Everything else stays
+// Unavailable and the Host reconnects.
+func observationControlError(err error) error {
+	var controlErr *controlStatusError
+	if errors.As(err, &controlErr) && controlErr.status == http.StatusForbidden &&
+		(controlErr.reason == "authorization_expired" || controlErr.reason == "registration_inactive") {
+		return status.Error(codes.PermissionDenied, controlErr.reason)
+	}
+	return status.Error(codes.Unavailable, "connection observation failed")
 }
 
 func enrollmentRejectionReason(err error) string {

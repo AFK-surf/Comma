@@ -45,6 +45,32 @@ defmodule SalixVoice.TestStubs do
     end
   end
 
+  defmodule Preferences do
+    @moduledoc false
+    # Stands in for `SalixIM.VoiceConnects`: returns `:test_preferences`.
+    def voice_preferences(_group_id, _connect_id),
+      do:
+        SystemsRuntime.get_env(:salix_voice, :test_preferences, %{
+          "voice" => nil,
+          "custom_voice" => nil,
+          "router_calls" => false
+        })
+  end
+
+  defmodule Persona do
+    @moduledoc false
+    # Stands in for `SalixVoice.RouterPersona.resolve/2`: reports the request
+    # and returns `:test_persona`.
+    def resolve(group_id, audience) do
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.fetch_env!(:salix_voice, :test_pid),
+        {:persona_resolve, group_id, audience}
+      )
+
+      SystemsRuntime.get_env(:salix_voice, :test_persona, {:error, "router_unavailable"})
+    end
+  end
+
   defmodule GroupDirectory do
     @moduledoc false
     def get_group(group_id) do

@@ -67,6 +67,73 @@ defmodule BridgeForTeams.StationMembersTest do
     assert role(org, project, users.owner) == :none
   end
 
+  test "a provider requester needs the same SSO app audience and current Project authority", %{
+    org: org,
+    project: project,
+    users: users
+  } do
+    alias BridgeForTeams.Schema.{OrgSsoConnection, OrgSsoIdentity}
+    alias BridgeForTeams.Repo
+
+    {:ok, _} =
+      Repo.insert(
+        OrgSsoConnection.changeset(%OrgSsoConnection{}, %{
+          org_id: org.id,
+          provider: "feishu",
+          client_id: "cli-sso",
+          client_secret: "secret"
+        })
+      )
+
+    {:ok, _} =
+      Repo.insert(
+        OrgSsoIdentity.changeset(%OrgSsoIdentity{}, %{
+          org_id: org.id,
+          user_id: users.grant_user.id,
+          provider: "feishu",
+          provider_subject_type: "open_id",
+          provider_subject: "ou-member"
+        })
+      )
+
+    connect = %{"provider" => "feishu", "app_id" => "cli-sso"}
+    user = users.grant_user.id
+
+    assert {:ok, ^user} =
+             SalixStore.StationMembers.requester(
+               org.salix_tenant_id,
+               project.salix_group_id,
+               connect,
+               "ou-member"
+             )
+
+    assert {:error, :requester_required} =
+             SalixStore.StationMembers.requester(
+               org.salix_tenant_id,
+               project.salix_group_id,
+               Map.put(connect, "app_id", "cli-other"),
+               "ou-member"
+             )
+
+    assert {:error, :requester_required} =
+             SalixStore.StationMembers.requester(
+               org.salix_tenant_id,
+               project.salix_group_id,
+               connect,
+               user
+             )
+
+    :ok = Memberships.remove_project_member(project.id, user)
+
+    assert {:error, :requester_required} =
+             SalixStore.StationMembers.requester(
+               org.salix_tenant_id,
+               project.salix_group_id,
+               connect,
+               "ou-member"
+             )
+  end
+
   describe "a Project's Group is the workspace of its stations" do
     defp station_id do
       {public, _seed} = SystemsRuntime.Proc.generate_key(:eddsa, :ed25519)

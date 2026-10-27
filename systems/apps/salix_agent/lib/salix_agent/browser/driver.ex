@@ -174,6 +174,8 @@ defmodule SalixAgent.Browser.Driver do
       case result do
         {:ok, value, commands} -> {{:ok, value}, commands}
         {:error, reason} -> {{:error, reason}, state.commands}
+        {:error, reason, details} -> {{:error, reason, details}, state.commands}
+        {:error, reason, details, commands} -> {{:error, reason, details}, commands}
       end
 
     if from, do: SystemsRuntime.Server.reply(from, reply)
@@ -263,6 +265,8 @@ defmodule SalixAgent.Browser.Driver do
             _ -> {:error, "browser_operation_failed"}
           catch
             {:browser_error, reason} -> {:error, reason}
+            {:browser_error, reason, details} -> {:error, reason, details}
+            {:browser_error, reason, details, commands} -> {:error, reason, details, commands}
             :exit, _ -> {:error, :browser_outcome_unknown}
           end
 

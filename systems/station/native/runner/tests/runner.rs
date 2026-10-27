@@ -109,7 +109,10 @@ impl Runner {
     }
 
     fn start_with(name: &str, extra: &[&str], script: &str) -> Runner {
-        let dir = tmpdir(name);
+        Runner::start_in(tmpdir(name), extra, script)
+    }
+
+    fn start_in(dir: PathBuf, extra: &[&str], script: &str) -> Runner {
         let mut child = Command::new(BIN)
             .args(["--dir", dir.to_str().unwrap(), "--id", "a"])
             .args(extra)
@@ -425,6 +428,37 @@ fn done_after_the_exit_removes_the_files_and_ends_the_runner() {
     assert_eq!(runner.exited(), 0);
     assert!(runner.files().is_empty(), "{:?}", runner.files());
     assert!(client.recv().is_none());
+}
+
+#[test]
+fn a_directory_too_long_for_a_socket_keeps_it_under_tmp() {
+    // As a station's data directory under ~/Library/Application Support does: past the 104 bytes of a socket's path.
+    let root = tmpdir("long");
+    let dir = root.join("Library/Application Support/@comma-staging/station/run/runners");
+    let id = "claude-ember_c-27019641bb-9cdfc301a9";
+    assert!(dir.join(format!("{id}.sock")).as_os_str().len() > 104);
+    let mut child = Command::new(BIN)
+        .args(["--dir", dir.to_str().unwrap(), "--id", id, "--", "/bin/sh", "-c", "printf hi"])
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let info = ready_line(child.stdout.take().unwrap());
+    let mut runner = Runner { dir, info, child: Some(child) };
+    let sock = PathBuf::from(runner.info["socket"].as_str().unwrap());
+    let own = PathBuf::from(format!("/tmp/stillfail-runner-{}", unsafe { libc::geteuid() }));
+    assert_eq!(sock.parent(), Some(own.as_path()));
+    assert_eq!(fs::symlink_metadata(&own).unwrap().permissions().mode() & 0o777, 0o700);
+    assert_eq!(fs::metadata(&sock).unwrap().permissions().mode() & 0o777, 0o600);
+    let mut client = runner.connect();
+    client.send(json!({"op": "attach"}));
+    let ([out, _], _) = client.until_exit([0, 0]);
+    assert_eq!(out, b"hi");
+    client.send(json!({"op": "done"}));
+    assert_eq!(runner.exited(), 0);
+    assert!(!sock.exists());
+    assert!(runner.files().is_empty(), "{:?}", runner.files());
+    drop(runner);
+    let _ = fs::remove_dir_all(&root);
 }
 
 #[test]

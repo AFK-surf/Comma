@@ -59,20 +59,46 @@ type Props = {
   groupId: string;
   workspaceId: string;
 };
-const running = new Map<symbol, () => void>();
-function acquire(key: symbol, release: () => void) {
+/** A running frame: how to take its place, and whether its widget is in view now. */
+type Running = { release: (inView: boolean) => void; inView: () => boolean };
+const running = new Map<symbol, Running>();
+/**
+ * At most three frames run at once. A fourth takes the place of the oldest one whose widget
+ * is out of view. With every running widget in view, a fourth out of view waits for its turn
+ * (it runs when it comes into view), and a fourth in view takes the oldest place. Returns how
+ * to give the place back, or nothing when the newcomer got none.
+ */
+function acquire(key: symbol, entry: Running): (() => void) | undefined {
   running.delete(key);
   if (running.size >= 3) {
-    const first = running.entries().next().value;
-    if (first) {
-      running.delete(first[0]);
-      first[1]();
+    const away = [...running.entries()].find(([, run]) => !run.inView());
+    if (!away && !entry.inView()) {
+      entry.release(false);
+      return undefined;
     }
+    const [gone, victim] = away ?? running.entries().next().value!;
+    running.delete(gone);
+    victim.release(away === undefined);
   }
-  running.set(key, release);
+  running.set(key, entry);
   return () => {
     running.delete(key);
   };
+}
+
+/** A widget's height until its runtime reports its own. */
+const STARTING_HEIGHT = 160;
+/**
+ * Each widget's last reported height, by what it loads: a message that mounts again (the
+ * turn window dropped it, or the thread remounted) holds the widget's size from its first
+ * render, so nothing grows in view. Past the bound, the least recently reported go first.
+ */
+const heights = new Map<string, number>();
+const MAX_HEIGHTS = 1024;
+function rememberHeight(scope: string, value: number) {
+  heights.delete(scope);
+  heights.set(scope, value);
+  if (heights.size > MAX_HEIGHTS) heights.delete(heights.keys().next().value!);
 }
 
 export function DynamicUiWidget(props: Props) {
@@ -107,16 +133,21 @@ function NativeDynamicUiWidget({ part, live, groupId, workspaceId }: Props) {
   const frame = useRef<HTMLIFrameElement>(null);
   const instance = useRef(Symbol("dynamic-ui"));
   const [visible, setVisible] = useState(false);
-  const [active, setActive] = useState(true);
+  // Why the frame is off while the widget is in band: a newer frame took its place while the
+  // widget was out of view (`away`: it runs again as it comes near) or in view (`shown`:
+  // Reload runs it again).
+  const [released, setReleased] = useState<"away" | "shown">();
+  const releasedRef = useRef(released);
+  releasedRef.current = released;
+  const [inView, setInView] = useState(false);
+  const inViewRef = useRef(false);
   const [error, setError] = useState<WidgetFailure>();
   const [proposal, setProposal] = useState("");
   const [linkHover, setLinkHover] = useState<LinkHover>();
-  const [height, setHeight] = useState(160);
-  const measuredScope = useRef<string | undefined>(undefined);
   const [attempt, setAttempt] = useState(0);
   const reload = useCallback(() => {
     setError(undefined);
-    setActive(true);
+    setReleased(undefined);
     setAttempt((value) => value + 1);
   }, []);
   const user = snapshot.principal?.userId;
@@ -136,9 +167,15 @@ function NativeDynamicUiWidget({ part, live, groupId, workspaceId }: Props) {
     part.messageId,
     part.attachmentIndex,
   ]);
-  // The widget's JSON as the core reads it, once it shows; a retry is a new read.
+  // The widget's size from its first render: what its runtime last reported, else the
+  // starting height.
+  const [height, setHeight] = useState(() => heights.get(loadScope) ?? STARTING_HEIGHT);
+  // The widget's JSON as the core reads it, from when its message is in a live thread: read
+  // ahead of the viewport, the widget never waits on the network in view. A retry is a new
+  // read.
+  const reading = live && !!user;
   const { value: load } = useTopic(
-    visible && active && live && user
+    reading
       ? {
           topic: "dynamicUi",
           group: groupId,
@@ -153,7 +190,7 @@ function NativeDynamicUiWidget({ part, live, groupId, workspaceId }: Props) {
   // What this widget saved before, as the core keeps it for the account: every
   // window that shows the widget sees a save at once.
   const { value: saved } = useTopic(
-    visible && active && stateKey ? { topic: "dynamicUiState", key: stateKey } : null
+    reading && stateKey ? { topic: "dynamicUiState", key: stateKey } : null
   );
   const savedRef = useRef(saved);
   savedRef.current = saved;
@@ -180,17 +217,51 @@ function NativeDynamicUiWidget({ part, live, groupId, workspaceId }: Props) {
   const loadFailure: WidgetFailure | undefined =
     load?.status === "failed" ? { kind: load.kind, reason: load.reason } : undefined;
   const failure = error ?? loadFailure;
-  const mounted =
-    active &&
+  const ready =
+    !released &&
     visible &&
     payload !== undefined &&
     !!stateKey &&
     saved !== undefined &&
     !failure;
+  // The widget's frame runs only once it holds one of the three places, so a widget that gets
+  // none never boots a frame.
+  const [hasPlace, setHasPlace] = useState(false);
+  useEffect(() => {
+    if (!ready) return;
+    const place = acquire(instance.current, {
+      release: (shown) => setReleased(shown ? "shown" : "away"),
+      inView: () => inViewRef.current,
+    });
+    // No place now: the widget runs when it comes into view.
+    if (!place) return;
+    setHasPlace(true);
+    return () => {
+      place();
+      setHasPlace(false);
+    };
+  }, [ready]);
+  const mounted = ready && hasPlace;
+  // A widget in view whose JSON has not come within a second shows its text answer meanwhile:
+  // a slow network does not leave an empty slot for the length of a read.
+  const waiting = reading && inView && payload === undefined && !failure;
+  const [slow, setSlow] = useState(false);
+  useEffect(() => {
+    if (!waiting) {
+      setSlow(false);
+      return;
+    }
+    return uiClock.after(1000, () => setSlow(true));
+  }, [waiting]);
+  // The text answer stands in only where the widget cannot run: a static surface, a failure,
+  // a slow read in view, or a widget in view whose place a newer frame took. Loading,
+  // unloaded, or waiting for a place out of view, the widget holds its size as an empty slot.
+  const textStands = !reading || !!failure || slow || released === "shown";
 
   useEffect(() => {
     setProposal("");
     setError(undefined);
+    setHeight(heights.get(loadScope) ?? STARTING_HEIGHT);
   }, [loadScope]);
 
   // A connection that drops and comes back reloads the widget without a click.
@@ -202,8 +273,17 @@ function NativeDynamicUiWidget({ part, live, groupId, workspaceId }: Props) {
 
   useEffect(() => {
     if (!ref.current) return;
+    // The chat scrolls inside a nested viewport, which clips a document-root observer before
+    // its margin applies: rooted there, the band is 480px of the thread. A frame takes about
+    // 250 ms to boot and report its height, so at a reading scroll speed of 1000 px/s it
+    // settles out of view.
+    const root = ref.current.closest('[data-slot="scroll-area-viewport"]');
     let intersects = false;
     let releaseTimer: CancelUiTimer | undefined;
+    // A widget whose place a newer frame took runs again as the reader comes to it.
+    const resume = () => {
+      if (releasedRef.current) setReleased(undefined);
+    };
     const refresh = () => {
       releaseTimer?.();
       // Window occlusion is not a viewport exit. Keep the bounded live instance
@@ -216,24 +296,35 @@ function NativeDynamicUiWidget({ part, live, groupId, workspaceId }: Props) {
         releaseTimer = uiClock.after(1500, () => setVisible(false));
       }
     };
-    const observer = new IntersectionObserver(
+    const band = new IntersectionObserver(
       (entries) => {
         intersects = entries.some((entry) => entry.isIntersecting);
+        if (intersects) resume();
         refresh();
       },
-      { rootMargin: "240px 0px" }
+      { root, rootMargin: "480px 0px" }
+    );
+    // Whether the widget itself is in view decides whose place a fourth frame takes.
+    const view = new IntersectionObserver(
+      (entries) => {
+        inViewRef.current = entries.some((entry) => entry.isIntersecting);
+        setInView(inViewRef.current);
+        if (inViewRef.current) resume();
+      },
+      { root, rootMargin: "0px" }
     );
     document.addEventListener("visibilitychange", refresh);
-    observer.observe(ref.current);
+    band.observe(ref.current);
+    view.observe(ref.current);
     return () => {
       releaseTimer?.();
-      observer.disconnect();
+      band.disconnect();
+      view.disconnect();
       document.removeEventListener("visibilitychange", refresh);
     };
   }, []);
   useEffect(() => {
     if (!mounted || !stateKey) return;
-    const release = acquire(instance.current, () => setActive(false));
     let channel: MessageChannel | undefined;
     let initialized = false;
     // The widget's own frame must say it is ready within 5 s.
@@ -281,8 +372,9 @@ function NativeDynamicUiWidget({ part, live, groupId, workspaceId }: Props) {
                 : "UI failed",
           });
         if (message.type === "height" && Number.isFinite(message.value)) {
-          measuredScope.current = loadScope;
-          setHeight(Math.min(12000, Math.max(60, message.value)));
+          const reported = Math.min(12000, Math.max(60, message.value));
+          rememberHeight(loadScope, reported);
+          setHeight(reported);
         }
         if (
           message.type === "wheel" &&
@@ -531,7 +623,6 @@ function NativeDynamicUiWidget({ part, live, groupId, workspaceId }: Props) {
       port.current = undefined;
       channel?.port1.postMessage({ type: "stop" });
       channel?.port1.close();
-      release();
       // The links under a preview leave with this runtime; a remount starts clean.
       setLinkHover(undefined);
     };
@@ -564,14 +655,11 @@ function NativeDynamicUiWidget({ part, live, groupId, workspaceId }: Props) {
       ref={ref}
       className="comma-chat-widget relative"
       data-testid="dynamic-ui-widget"
-      style={{
-        minHeight:
-          !mounted && !failure && measuredScope.current === loadScope
-            ? height
-            : undefined,
-      }}
+      style={{ minHeight: !mounted && reading && !failure ? height : undefined }}
     >
-      {!mounted ? <p className="text-sm text-secondary">{part.summary}</p> : null}
+      {!mounted && textStands ? (
+        <p className="text-sm text-secondary">{part.summary}</p>
+      ) : null}
       {mounted ? (
         <iframe
           key={`${stateKey}:${attempt}`}
@@ -616,11 +704,11 @@ function NativeDynamicUiWidget({ part, live, groupId, workspaceId }: Props) {
       ) : null}
       {failure ? (
         <WidgetFailureNotice failure={failure} onRetry={reload} />
-      ) : active ? null : (
+      ) : released === "shown" ? (
         <Button hierarchy="secondary-gray" onPress={reload} size="xs">
           {messages.chat_ui_reload()}
         </Button>
-      )}
+      ) : null}
       {proposal ? (
         <div className="stack">
           <p className="whitespace-pre-wrap">{proposal}</p>

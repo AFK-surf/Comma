@@ -85,7 +85,7 @@ defmodule SalixAgent.Tools.OAuth do
       {"oauth.request_authorization",
        "Start a managed OAuth authorization flow for this agent group.\n\n" <>
          "Returns an authorization URL and waits until the user completes or rejects it. " <>
-         "The URL is NOT surfaced automatically: you must post it to the requester yourself through the current visible reply path. For an internal Comma conversation, use call(tool=\"im_api.internal.send_message\", params={...}) with connect_id=\"internal\" inside params. For an external provider, call the matching im_api.* operation directly when provider/connect/API are known; use IM discovery/help only when those facts are missing. " <>
+         "In a Comma conversation the app shows the user a request card with the reason and an authorize button: do not post the URL there. For an external provider the URL is NOT surfaced automatically: post it to the requester yourself; call the matching im_api.* operation directly when provider/connect/API are known, and use IM discovery/help only when those facts are missing. " <>
          "Returns a deferred result with the provider binding when completed. " <>
          "Use the resulting provider and alias in a credential_env entry on compute.exec, process.start, or env.exec, with env_var and value.",
        &__MODULE__.request_oauth_authorization/2, @user_interaction_auto_wait_seconds,
@@ -286,25 +286,31 @@ defmodule SalixAgent.Tools.OAuth do
         ctx
       )
     else
+      surface = conversation_surface(ctx)
+
       request =
-        create_capability_request!(%{
-          "tenant_id" => tenant,
-          "group_id" => group_id,
-          "source_agent_id" => ctx.agent_id,
-          "source_session_id" => session_id(ctx),
-          "tool_call_id" => tool_call_id,
-          "request_type" => "oauth_authorization",
-          "request_payload" => %{
-            "oauth_authorization" => %{
-              "provider" => provider,
-              "alias" => alias_,
-              "state" => state,
-              "reason" => reason,
-              "authorization_url" => authorization_url
-            }
-          },
-          "expires_at" => div(expires_at, 1000)
-        })
+        create_capability_request!(
+          %{
+            "tenant_id" => tenant,
+            "group_id" => group_id,
+            "source_agent_id" => ctx.agent_id,
+            "source_session_id" => session_id(ctx),
+            "tool_call_id" => tool_call_id,
+            "request_type" => "oauth_authorization",
+            "request_payload" => %{
+              "oauth_authorization" => %{
+                "provider" => provider,
+                "alias" => alias_,
+                "state" => state,
+                "reason" => reason,
+                "scopes" => scopes,
+                "authorization_url" => authorization_url
+              }
+            },
+            "expires_at" => div(expires_at, 1000)
+          }
+          |> Map.merge(surface || %{})
+        )
 
       content =
         Jason.encode!(%{
@@ -317,10 +323,7 @@ defmodule SalixAgent.Tools.OAuth do
           "authorization_url" => authorization_url,
           "expires_at" => expires_at,
           "message" => "oauth authorization request is pending",
-          "instructions" =>
-            "Post the authorization_url to the requester yourself through the current visible reply path; it is not delivered automatically. " <>
-              "For an internal Comma conversation, use call(tool=\"im_api.internal.send_message\", params={...}) with connect_id=\"internal\" inside params. For an external provider, call the matching im_api.* operation directly when provider/connect/API are known; use IM discovery/help only when those facts are missing. " <>
-              "Ask the user to complete the browser flow, then call oauth.complete_authorization with this state to verify the outcome.",
+          "instructions" => authorization_instructions(surface),
           "reason" => reason
         })
 
@@ -581,6 +584,34 @@ defmodule SalixAgent.Tools.OAuth do
       &SalixStore.OAuth.Adapters.for_provider/1
     )
   end
+
+  # A request from a Comma conversation is shown there as a card, under the reply to the message the turn serves.
+  defp conversation_surface(ctx) do
+    case Map.get(ctx, :trusted_origin) do
+      %{"provider" => "internal", "conversation_id" => conversation_id} = origin
+      when is_binary(conversation_id) and conversation_id != "" ->
+        %{
+          "surface_kind" => "conversation",
+          "surface_ref" =>
+            %{"conversation_id" => conversation_id}
+            |> put_present("message_id", origin["message_id"])
+        }
+
+      _ ->
+        nil
+    end
+  end
+
+  defp authorization_instructions(nil),
+    do:
+      "Post the authorization_url to the requester yourself through the current visible reply path; it is not delivered automatically. " <>
+        "Call the matching im_api.* operation directly when provider/connect/API are known; use IM discovery/help only when those facts are missing. " <>
+        "Ask the user to complete the browser flow, then call oauth.complete_authorization with this state to verify the outcome."
+
+  defp authorization_instructions(_surface),
+    do:
+      "The Comma app shows the user a card for this request, with your reason and an authorize button; do not post the authorization_url yourself. " <>
+        "This call returns when the user connects the account or declines."
 
   defp create_capability_request!(attrs) do
     case CapabilityRequestStore.create_capability_request(attrs) do

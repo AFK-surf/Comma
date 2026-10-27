@@ -10,6 +10,7 @@ import { test } from "node:test";
 import { cardArg, optionsArg } from "../src/sessions/args.ts";
 import { fingerprint } from "../src/sessions/decision.ts";
 import { sessionKey } from "../src/sessions/hub.ts";
+import { INTERNAL_CONNECT } from "../src/sessions/internal.ts";
 import { fromPeer } from "../src/sessions/messages.ts";
 import { forPeer } from "../src/sessions/others.ts";
 import { Refused } from "../src/sessions/neighbours.ts";
@@ -212,6 +213,45 @@ test("a post carries a card, kept with it and checked", async () => {
   assert.ok((await refused({ to, text: "x", kind: "need_decision", options: { label: "A" } })).includes("must be an array"));
   assert.ok((await refused({ to, text: "x", kind: "need_decision", options: "not json" })).includes("must be an array"));
   assert.ok((await refused({ to, files: [], card: { type: "text" } })).includes("text is empty"));
+  await r.close();
+});
+
+test("a post records milestones: with words on its message, alone shown nowhere and handed to no one", async () => {
+  const r = new Rig();
+  const [key, thread] = newSession(r.hub, web());
+  const [other] = newSession(r.hub, web());
+  r.store.joinThread(thread.id, other, INTERNAL_CONNECT);
+  sayIn(r.hub, thread.id, "ada@x.com", "send the invites");
+  await settle();
+  const to = `EMBER/${thread.threadTs}`;
+  const last = () => r.store.entriesAfter(thread.id, 0).at(-1)!;
+  const handed = (n: number) => (r.store.db.prepare("SELECT COUNT(*) AS c FROM deliveries WHERE thread = ? AND n = ?").get(thread.id, n) as Json).c;
+  // Alone: an entry of its own, each title on one line, handed to no session and unread for no one.
+  assert.equal(await r.call(key, "chat_post", { to, milestones: [" Wrote the\n invite for  Bob "] }), `Recorded a milestone in the Activity of ${to}.`);
+  assert.deepEqual([last().kind, last().text, last().milestones], ["milestone", null, ["Wrote the invite for Bob"]]);
+  assert.equal(handed(last().n), 0);
+  assert.equal(r.store.unreadCount("ada@x.com", thread.id), 0);
+  // With words: the message carries them, and goes to the chat's other session as any post does.
+  assert.equal(await r.call(key, "chat_post", { to, text: "Sent both invites", milestones: ["Wrote the invite for Cy", "Sent the invites"] }), `Posted to ${to}.`);
+  assert.deepEqual([last().kind, last().text, last().milestones], ["message", "Sent both invites", ["Wrote the invite for Cy", "Sent the invites"]]);
+  assert.equal(handed(last().n), 1);
+  assert.equal(r.store.unreadCount("ada@x.com", thread.id), 1);
+  assert.equal(r.store.lastMessage(thread.id)!.text, "Sent both invites");
+
+  const refused = (args: Json) => r.refused(key, "chat_post", args);
+  assert.ok((await refused({ to, milestones: ["Sent"], kind: "all_done", done: "sent both" })).includes("does not end your turn"));
+  assert.ok((await refused({ to, milestones: Array.from({ length: 21 }, (_, i) => `Wrote invoice ${i}`) })).includes("at most 20 milestones"));
+  assert.ok((await refused({ to, milestones: ["字".repeat(81)] })).includes("1 to 80 characters"));
+  assert.ok((await refused({ to, milestones: [" "] })).includes("1 to 80 characters"));
+  assert.ok((await refused({ to, milestones: "Sent" })).includes("a list of titles"));
+  assert.ok((await refused({ to, milestones: [] })).includes("text is empty"));
+  // A Slack thread is no Task: its posts carry none.
+  const m = message();
+  await r.accept(m);
+  await settle();
+  const slack = sessionKey("cl", "C1", m.threadTs);
+  assert.ok((await r.refused(slack, "chat_post", { to: `C1/${m.threadTs}`, text: "done", milestones: ["Sent"] })).includes("only in still.fail chats"));
+  assert.deepEqual(r.chat.texts(), []);
   await r.close();
 });
 

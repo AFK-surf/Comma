@@ -16,10 +16,10 @@ export type Message = {
   connector_id?: string;
   owner_user_id?: string;
   connection_generation?: number;
-  /** On `connected` for a workload credential: the short-lived credential that replaces the bootstrap one. */
-  workload_credential?: { token?: string; expires_at?: string | number };
   /** On `connected`: what the station signs to register its endpoint id for packets through Salix. */
   relay_challenge?: string;
+  /** On `connected` for a device credential: Salix takes the device's next credential over this connection. */
+  credential_renewal?: boolean;
   params?: Record<string, unknown>;
   result?: unknown;
   error?: string;

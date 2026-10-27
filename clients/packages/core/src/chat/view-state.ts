@@ -63,6 +63,8 @@ export function projectionToChannelState(
     participantStatuses: projection.participantStatuses,
     boundWorker: projection.boundWorker,
     taskRun: projection.taskRun,
+    taskRunBlocked: projection.taskRunBlocked,
+    unsupported: projection.unsupported,
     reply: projection.reply,
     serverMessages: projection.serverMessages.map(contractMessageToChannelMessage),
     status: projection.status,

@@ -1,66 +1,107 @@
 defmodule SalixWeb.StationPlace do
   @moduledoc """
-  Salix is the stations' control plane, and it creates the station of a
-  Group's Cloud VM itself. So it places that station in the Group's station
-  roster directly, without an enrollment token, when the VM's connector
-  connects: it asks the station for its key (`station_identity`), admits it
-  through the configured control plane (`config :salix_web,
-  :station_control_plane`), and tells the station where it is placed
-  (`station_place`). The Group's Workload record keeps the placed key, so a
-  VM that comes back with a new key replaces its previous station.
+  Salix admits a Group Workload's Station to the Group roster without an
+  enrollment token. The authenticated connector run supplies the Station key
+  through `station_identity`.
 
-  Without a configured control plane nothing is placed. A station too old to
+  Local roster admission and the exact Workload's remembered key commit
+  together. The key records control-plane admission, not a peer ACK or proof
+  that the Station is online. After commit, the control plane publishes the
+  roster change and sends `station_place` to the same run. A lost ACK keeps
+  the admitted key, so a new generation replaces only its own previous key.
+  Coding Task Workloads retain their separate lifecycle and do not join the
+  Group roster.
+
+  Without a configured control plane nothing is placed. A Station too old to
   answer `station_identity` is left as it is.
   """
 
   require Logger
 
-  alias SalixEnv.Connector.Live
-  alias SalixStore.Compute
+  alias SalixEnv.{Connector.Live, StationConnection}
+  alias SalixStore.{ComputeStation, Repo}
 
   @timeout 20_000
 
   @doc """
-  Admits `station_id` as the station of `group_id`'s Cloud VM, replacing
-  `previous_station_id` when it differs. Answers the `station_place` params.
-  Every Group has a station roster, whichever product owns it.
+  Prepares local roster admission without publishing notifications. The
+  returned admission includes `place`, the `station_place` parameters, and
+  the facts the control plane needs to publish after the owner commits.
   """
-  @callback admit(
+  @callback prepare(
               tenant_id :: String.t(),
               group_id :: String.t(),
               station_id :: String.t(),
               previous_station_id :: String.t() | nil,
               version :: String.t() | nil
-            ) :: {:ok, map()} | {:error, term()}
+            ) ::
+              {:ok, %{required(:place) => map(), optional(atom()) => term()}} | {:error, term()}
 
-  @doc "Places the station behind a managed connector run; never raises."
+  @callback publish(admission :: map()) :: :ok
+
+  @doc "Places the Station behind a current managed connector run; never raises."
   def push(%{tenant_id: tenant, group_id: group, connector_run_id: run} = connection) do
     case SystemsRuntime.get_env(:salix_web, :station_control_plane) do
-      nil ->
-        :none
-
-      control_plane ->
-        place(control_plane, tenant, group, run, Map.get(connection, :connector_id))
+      nil -> :none
+      control_plane -> place(control_plane, tenant, group, run, connection)
     end
+  rescue
+    _ ->
+      Logger.warning("station not placed: local admission failed")
+      {:error, :station_place_failed}
   end
 
-  defp place(control_plane, tenant, group, run, connector_id) do
-    with {:ok, %{"station" => station} = identity} when is_binary(station) <-
-           identify(run),
-         previous = previous(group),
-         {:ok, place} <-
-           control_plane.admit(tenant, group, station, previous, identity["version"]),
+  defp place(control_plane, tenant, group, run, connection) do
+    with {:ok, %{"station" => station} = identity} when is_binary(station) <- identify(run),
+         {:ok, admission} <-
+           StationConnection.with_current(
+             connection,
+             fn
+               %{"owner" => owner} = record when owner in ["group_default", "group_station"] ->
+                 prepare(
+                   control_plane,
+                   tenant,
+                   group,
+                   station,
+                   record["station_id"],
+                   identity["version"],
+                   connection
+                 )
+
+               _ ->
+                 :none
+             end,
+             lock: true
+           ),
+         :ok <- control_plane.publish(admission),
          {:ok, %{"placed" => true}} <-
-           Live.request(run, "station_place", place, timeout: @timeout) do
-      if previous == station, do: :ok, else: remember(group, connector_id, station)
+           Live.request(run, "station_place", admission.place, timeout: @timeout) do
+      :ok
     else
+      :none ->
+        :none
+
       {:error, :old_station} ->
         Logger.info("station not placed: run=#{run} the station does not answer station_identity")
         :none
 
-      other ->
-        Logger.warning("station not placed: run=#{run} #{inspect(other)}")
-        {:error, other}
+      {:error, reason} ->
+        Logger.warning("station not placed: run=#{run} #{inspect(reason)}")
+        {:error, reason}
+
+      _ ->
+        Logger.warning("station not placed: run=#{run} invalid reply")
+        {:error, :invalid_station_reply}
+    end
+  end
+
+  defp prepare(control_plane, tenant, group, station, previous, version, connection) do
+    with {:ok, admission} <- control_plane.prepare(tenant, group, station, previous, version),
+         {:ok, :ok} <- ComputeStation.remember(connection, station) do
+      {:ok, admission}
+    else
+      {:error, reason} -> Repo.rollback(reason)
+      _ -> Repo.rollback(:station_place_failed)
     end
   end
 
@@ -73,29 +114,6 @@ defmodule SalixWeb.StationPlace do
 
       result ->
         result
-    end
-  end
-
-  defp previous(group) do
-    case Compute.group_workload(group) do
-      {:ok, record} -> record["station_id"]
-      _ -> nil
-    end
-  end
-
-  # Only the record of the run that was placed keeps its key.
-  defp remember(group, connector_id, station) do
-    case Compute.update_group_workload(group, fn record ->
-           if connector_id && record["connector_id"] != connector_id,
-             do: {:error, :connector_replaced},
-             else: Map.put(record, "station_id", station)
-         end) do
-      {:ok, _current, _previous} ->
-        :ok
-
-      error ->
-        Logger.warning("placed station not recorded: group=#{group} #{inspect(error)}")
-        {:error, error}
     end
   end
 end

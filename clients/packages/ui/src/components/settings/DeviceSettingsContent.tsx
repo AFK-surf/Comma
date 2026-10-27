@@ -42,7 +42,7 @@ export function DeviceSettingsRow({
   children,
 }: {
   title: string;
-  description?: string;
+  description?: string | undefined;
   action?: ReactNode;
   children?: ReactNode;
 }) {
@@ -112,12 +112,15 @@ export function DeviceSettingsResource({
   name,
   description,
   status,
+  statusNote,
   actions,
   onOpen,
 }: {
   name: string;
   description: string;
   status: ReactNode;
+  /** One short line under the status, such as why it is not ready. */
+  statusNote?: string | undefined;
   actions: ReactNode;
   onOpen(): void;
 }) {
@@ -131,7 +134,14 @@ export function DeviceSettingsResource({
           <span className="compute-row-title">{name}</span>
           <span className="compute-muted">{description}</span>
         </span>
-        {status}
+        {statusNote ? (
+          <span className="compute-resource-state">
+            {status}
+            <span className="compute-muted">{statusNote}</span>
+          </span>
+        ) : (
+          status
+        )}
         <ChevronRightSmallIcon className="size-3 compute-chevron" />
       </button>
       {actions}

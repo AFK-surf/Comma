@@ -54,25 +54,31 @@ test("task details show where the Task runs and its model, not its Worker", asyn
       .locator('[data-slot="task-card"]')
       .filter({ hasText: chatSmokeTaskConversation.title })
       .click();
-    const run = page.locator('[data-testid="task-panel-run"]:visible');
-    await expect(run).toHaveText("on Mac Studio · Claude Sonnet");
+    const place = page.locator('[data-testid="task-panel-run-place"]:visible');
+    const model = page.locator('[data-testid="task-panel-run-model"]:visible');
+    await expect(place).toHaveText("Mac Studio");
+    await expect(model).toHaveText("Claude Sonnet");
     await expect(page.getByText("Research Worker")).toHaveCount(0);
     await expect(page.getByTestId("session-history-participant")).toHaveCount(0);
     await page.setViewportSize({ width: 900, height: 800 });
     await page.getByTestId("task-panel-toggle").click();
-    const narrowRun = page
-      .getByTestId("task-panel-popover")
-      .getByTestId("task-panel-run");
-    await expect(narrowRun).toHaveText("on Mac Studio · Claude Sonnet");
+    const popover = page.getByTestId("task-panel-popover");
+    const narrowPlace = popover.getByTestId("task-panel-run-place");
+    const narrowModel = popover.getByTestId("task-panel-run-model");
+    await expect(narrowPlace).toHaveText("Mac Studio");
+    await expect(narrowModel).toHaveText("Claude Sonnet");
     stub.disconnectTaskStatusStreams();
     stub.setTaskRun({ place: { kind: "cloud_vm" }, model: { kind: "platform" } });
-    await expect(narrowRun).toHaveText("on Cloud VM · official model");
+    await expect(narrowPlace).toHaveText("Cloud VM");
+    await expect(narrowModel).toHaveText("Official model");
     await page.reload();
     await page.getByTestId("task-panel-toggle").click();
-    await expect(narrowRun).toHaveText("on Cloud VM · official model");
+    await expect(narrowPlace).toHaveText("Cloud VM");
+    await expect(narrowModel).toHaveText("Official model");
     // A server before the Task's place and model sends neither: nothing shows.
     stub.setTaskRun(null);
-    await expect(narrowRun).toHaveCount(0);
+    await expect(narrowPlace).toHaveCount(0);
+    await expect(narrowModel).toHaveCount(0);
   } finally {
     await stub.close();
   }

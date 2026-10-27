@@ -1,11 +1,17 @@
 import { useCallback, useEffect, useState } from "react";
-import { useCall, useTopic, type VoiceKeyCreated } from "@comma/core-client";
+import {
+  useCall,
+  useTopic,
+  type VoiceChoice,
+  type VoiceKeyCreated,
+} from "@comma/core-client";
 import type { CommaLocale } from "@comma/i18n";
 import { useCommaLocale, useCommaMessages } from "@comma/i18n/react";
 import { MoreHorizontalIcon } from "@comma/ui/components/icons";
 import { type SettingsCategoryDefinition } from "@comma/ui/components/settings";
 import { type SettingsPanelItem } from "@comma/ui/components/settings-panel";
 import { useWorkspacePreference } from "../activeWorkspace";
+import { useRouterDisplayName } from "../router-identity/RouterIdentityProvider";
 import {
   CreatedVoiceKeyPanel,
   VoiceDialog,
@@ -45,6 +51,67 @@ function numberErrorMessage(error: unknown, m: Messages): string {
   return m.settings_voice_verify_failed();
 }
 
+// GPT-Live's preset voices: the accent each speaks (a BCP 47 tag) and its gender.
+const presetVoices: Record<string, { locale: string; female: boolean }> = {
+  quartz: { locale: "en-AU", female: true },
+  ripple: { locale: "en-AU", female: false },
+  vesper: { locale: "en-GB", female: false },
+  willow: { locale: "en-IE", female: true },
+  stone: { locale: "en-IE", female: false },
+  gleam: { locale: "en-US", female: true },
+  meridian: { locale: "en-US", female: false },
+  bossa: { locale: "pt-BR", female: true },
+  tempo: { locale: "pt-BR", female: false },
+  beacon: { locale: "en-PH", female: false },
+  delta: { locale: "en-US", female: true },
+  cinder: { locale: "en-US", female: false },
+  nuri: { locale: "de", female: true },
+  juni: { locale: "de", female: true },
+  flitz: { locale: "de", female: false },
+  brise: { locale: "fr", female: true },
+  sillage: { locale: "fr", female: false },
+  nira: { locale: "hi", female: true },
+  harema: { locale: "ja", female: true },
+  shida: { locale: "ja", female: false },
+  noeul: { locale: "ko", female: true },
+};
+
+const defaultVoiceId = "default";
+const customVoiceId = "custom";
+
+function voiceId(voice: VoiceChoice | null | undefined): string {
+  if (!voice) return defaultVoiceId;
+  return voice.kind === "custom" ? customVoiceId : `preset:${voice.name}`;
+}
+
+function voiceChoice(id: string): VoiceChoice | null {
+  if (id === customVoiceId) return { kind: "custom" };
+  if (id.startsWith("preset:")) return { kind: "preset", name: id.slice(7) };
+  return null;
+}
+
+function presetSubtitle(
+  name: string,
+  locale: CommaLocale,
+  m: Messages
+): string | undefined {
+  const voice = presetVoices[name];
+  if (!voice) return undefined;
+  const language =
+    new Intl.DisplayNames([locale], { type: "language" }).of(voice.locale) ??
+    voice.locale;
+  return voice.female
+    ? m.settings_voice_voice_female({ language })
+    : m.settings_voice_voice_male({ language });
+}
+
+function customVoiceError(error: unknown, m: Messages): string {
+  const status = (error as { status?: unknown } | null)?.status;
+  return status === 429
+    ? m.settings_voice_custom_rate_limited()
+    : m.settings_voice_custom_failed();
+}
+
 function readinessText(reason: string | null | undefined, m: Messages): string {
   if (reason === "disabled") return m.settings_voice_not_ready_disabled();
   if (
@@ -62,13 +129,21 @@ function readinessText(reason: string | null | undefined, m: Messages): string {
  * API keys that custom voice clients connect with, and whether voice calls are
  * available now (docs/messaging-voice.md).
  *
+ * With `calls` (Settings › Debug › Voice labs) the category also shows the
+ * call preferences: the voice, the custom voice made from a description, and
+ * whether calls speak as the Router.
+ *
  * The core reads them while the page shows; each change is one of its calls. A
  * freshly minted key's plaintext comes back to this hook only: it is never
  * written to storage, and it is gone once the person dismisses it or leaves
  * the category.
  */
-export function useVoiceSettingsCategory(enabled: boolean): SettingsCategoryDefinition {
+export function useVoiceSettingsCategory(
+  enabled: boolean,
+  calls = false
+): SettingsCategoryDefinition {
   const m = useCommaMessages();
+  const routerName = useRouterDisplayName();
   const locale = useCommaLocale();
   const call = useCall();
   const prefer = useWorkspacePreference();
@@ -82,7 +157,7 @@ export function useVoiceSettingsCategory(enabled: boolean): SettingsCategoryDefi
   const keysError = value?.keysError ?? false;
   const loading = enabled && !value;
 
-  const [saveError, setSaveError] = useState<"numbers" | "keys">();
+  const [saveError, setSaveError] = useState<"numbers" | "keys" | "calls">();
   const [busy, setBusy] = useState(false);
   const [created, setCreated] = useState<VoiceKeyCreated>();
   const [dialog, setDialog] = useState<VoiceDialogState>();
@@ -132,7 +207,7 @@ export function useVoiceSettingsCategory(enabled: boolean): SettingsCategoryDefi
   // A row write without a dialog (enable/disable a key, remove a PIN).
   const mutate = useCallback(
     async (
-      section: "numbers" | "keys",
+      section: "numbers" | "keys" | "calls",
       run: (workspace: string) => Promise<unknown>
     ) => {
       if (!activeWorkspaceId) return;
@@ -198,6 +273,14 @@ export function useVoiceSettingsCategory(enabled: boolean): SettingsCategoryDefi
         await call("voice.deleteKey", { workspace, key: keyId });
         return undefined;
       }, keyError),
+    onCreateCustomVoice: (description: string) =>
+      void runDialog(
+        async (workspace) => {
+          await call("voice.createCustomVoice", { workspace, description });
+          return undefined;
+        },
+        (error) => customVoiceError(error, m)
+      ),
   };
 
   const ready = integration?.readiness.ready === true;
@@ -406,6 +489,85 @@ export function useVoiceSettingsCategory(enabled: boolean): SettingsCategoryDefi
     });
   }
 
+  const callItems: SettingsPanelItem[] = [];
+  if (calls && integration) {
+    const prefs = integration.preferences;
+    const custom = prefs.custom_voice;
+    const setPreferences = (change: {
+      voice?: VoiceChoice | null;
+      routerCalls?: boolean;
+    }) =>
+      void mutate("calls", (workspace) =>
+        call("voice.setPreferences", { workspace, ...change })
+      );
+    callItems.push(
+      {
+        id: "voice.calls.voice",
+        title: m.settings_voice_voice(),
+        description: m.settings_voice_voice_description(),
+        ...(saveError === "calls" ? { errorMessage: saveFailed } : {}),
+        control: {
+          type: "dropdown",
+          ariaLabel: m.settings_voice_voice(),
+          width: "fixed",
+          disabled: busy,
+          value: voiceId(prefs.voice),
+          items: [
+            {
+              id: defaultVoiceId,
+              label: m.settings_voice_voice_default(),
+              subtitle: m.settings_voice_voice_default_subtitle(),
+            },
+            ...(custom
+              ? [
+                  {
+                    id: customVoiceId,
+                    label: custom.name || m.settings_voice_voice_custom(),
+                    subtitle: custom.description,
+                    group: m.settings_voice_voice_custom(),
+                  },
+                ]
+              : []),
+            ...integration.voices.map((name) => {
+              const subtitle = presetSubtitle(name, locale, m);
+              return {
+                id: `preset:${name}`,
+                label: name.charAt(0).toUpperCase() + name.slice(1),
+                ...(subtitle ? { subtitle } : {}),
+                group: m.settings_voice_voice_presets(),
+              };
+            }),
+          ],
+          onChange: (id) => setPreferences({ voice: voiceChoice(id) }),
+        },
+      },
+      {
+        id: "voice.calls.custom",
+        title: m.settings_voice_custom(),
+        description: custom?.description || m.settings_voice_custom_none(),
+        control: {
+          type: "button",
+          label: custom
+            ? m.settings_voice_custom_replace()
+            : m.settings_voice_custom_create(),
+          disabled: busy || !activeWorkspaceId,
+          onPress: () => openDialog({ kind: "custom-voice" }),
+        },
+      },
+      {
+        id: "voice.calls.router",
+        title: m.settings_voice_router_calls({ name: routerName }),
+        description: m.settings_voice_router_calls_description({ name: routerName }),
+        control: {
+          type: "toggle",
+          checked: prefs.router_calls,
+          disabled: busy,
+          onChange: (event) => setPreferences({ routerCalls: event.target.checked }),
+        },
+      }
+    );
+  }
+
   const readinessItem: SettingsPanelItem = {
     id: "voice.readiness.status",
     title: m.settings_voice_readiness_title(),
@@ -439,6 +601,9 @@ export function useVoiceSettingsCategory(enabled: boolean): SettingsCategoryDefi
     title: m.settings_voice(),
     sections: [
       { id: "voice.numbers", title: m.settings_voice_numbers(), items: numberItems },
+      ...(callItems.length > 0
+        ? [{ id: "voice.calls", title: m.settings_voice_calls(), items: callItems }]
+        : []),
       { id: "voice.keys", title: m.settings_voice_keys(), items: keyItems },
       {
         id: "voice.readiness",

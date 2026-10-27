@@ -80,8 +80,9 @@ const knownPresets: readonly ProviderPreset[] = [
   preset("inference", "nvidia", "nvidia"),
   preset("inference", "baseten", "baseten"),
   preset("inference", "cloudflare-workers-ai", "cloudflare"),
-  // The backend reaches these over the internet, so a local server needs an
-  // address it can reach, such as a tunnel.
+  // The backend reaches these over the internet. A server on the person's own
+  // computer is a station's: its agents are pointed at it there (Settings ›
+  // Devices, the agent's Local model).
   preset("local", "ollama", "ollama", {
     keySource: "custom",
     name: "Ollama",

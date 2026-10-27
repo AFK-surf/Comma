@@ -199,7 +199,11 @@ export async function startChatSmokeStub({
     contentType: string;
     byUuid?: Record<string, Buffer>;
   };
-  attachmentFiles?: Record<string, { bytes: Buffer; contentType: string }>;
+  /** Attachment bytes by `message_id:index`; `fileName` names the download, as the server's does. */
+  attachmentFiles?: Record<
+    string,
+    { bytes: Buffer; contentType: string; fileName?: string | undefined }
+  >;
   assistantDraft?: string;
   assistantReply?: string;
   /**
@@ -281,6 +285,8 @@ export async function startChatSmokeStub({
   const authHeaders: (string | undefined)[] = [];
   const chatMessageBodies: unknown[] = [];
   const messageBodies: unknown[] = [];
+  /** Each attachment read, in order: its path and the `Range` it asked for (null: the whole file). */
+  const attachmentReads: { path: string; range: string | null }[] = [];
   const uploads: {
     auth: string | undefined;
     filename: string;
@@ -288,6 +294,26 @@ export async function startChatSmokeStub({
     bytes: Buffer;
     contentType: string;
   }[] = [];
+  /** Each message attachment stored as a composer file by reference, in order: no bytes came with it. */
+  const storedAttachments: { messageId: string; index: number; path: string }[] = [];
+  /** The bytes behind each stored path, where the stub serves that attachment: the Router VFS file reads them. */
+  const storedFiles = new Map<
+    string,
+    { filename: string; bytes: Buffer; contentType: string }
+  >();
+  // Waits for a count of message bodies or uploads, settled as each arrives.
+  const countWaiters: { list: unknown[]; count: number; resolve: () => void }[] = [];
+  const waitForCount = (list: unknown[], count: number) =>
+    list.length >= count
+      ? Promise.resolve()
+      : new Promise<void>((resolve) => countWaiters.push({ list, count, resolve }));
+  const settleCountWaiters = () => {
+    for (const waiter of countWaiters.slice()) {
+      if (waiter.list.length < waiter.count) continue;
+      countWaiters.splice(countWaiters.indexOf(waiter), 1);
+      waiter.resolve();
+    }
+  };
   const failedOnce = new Set<string>();
   let workspaceChatCreated = false;
   let workspaceChatRequestCount = 0;
@@ -701,12 +727,96 @@ export async function startChatSmokeStub({
       return;
     }
 
+    // A media URL for an attachment, read with no session: in place of the
+    // blob store's signed URL, the attachment's own address here, which the
+    // stub serves without checking headers. A page that routes it answers both.
+    const mediaFor = /^(.*\/messages\/[^/]+\/attachments\/\d+)\/media$/.exec(path);
+    if (req.method === "POST" && mediaFor) {
+      // Expires long after any test (2100-01-01), so the client never mints it again.
+      writeJson(res, {
+        url: `${origin ?? `http://127.0.0.1:${(server.address() as AddressInfo).port}`}${mediaFor[1]}`,
+        expires_at: 4_102_444_800,
+      });
+      return;
+    }
+
+    // A message attachment stored as a composer file by reference to its blob, named as it is there.
+    const storeFor = /\/messages\/([^/]+)\/attachments\/(\d+)\/workspace-file$/.exec(
+      path
+    );
+    if (req.method === "POST" && storeFor) {
+      const [, messageId, index] = storeFor as unknown as [string, string, string];
+      const content = (
+        [...(taskTranscript ?? []), ...(workspaceTranscript ?? [])] as readonly {
+          message_id?: unknown;
+          content?: unknown;
+        }[]
+      ).find((message) => message.message_id === messageId)?.content;
+      const block = (Array.isArray(content) ? content[Number(index)] : undefined) as
+        | { file_name?: string; blob_ref?: { size?: number } }
+        | undefined;
+      if (!block?.file_name) {
+        writeJson(res, { error: "not_found" }, 404);
+        return;
+      }
+      const uploadId = Buffer.alloc(16);
+      uploadId.writeUInt32BE(storedAttachments.length + 1, 8);
+      const stored = {
+        messageId,
+        index: Number(index),
+        path: `/uploads/${uploadId.toString("base64url")}-${block.file_name}`,
+      };
+      storedAttachments.push(stored);
+      const served = attachmentFiles[`${messageId}:${index}`];
+      if (served)
+        storedFiles.set(stored.path, {
+          filename: block.file_name,
+          bytes: served.bytes,
+          contentType: served.contentType,
+        });
+      writeJson(
+        res,
+        { path: stored.path, name: block.file_name, size: block.blob_ref?.size ?? 0 },
+        201
+      );
+      return;
+    }
+
     const attachment = /\/messages\/([^/]+)\/attachments\/(\d+)$/.exec(path);
     const attachmentFile =
       attachment && attachmentFiles[`${attachment[1]}:${attachment[2]}`];
     if (req.method === "GET" && attachmentFile) {
-      res.writeHead(200, { "content-type": attachmentFile.contentType });
-      res.end(attachmentFile.bytes);
+      // As the attachment endpoint answers: whole, or the one byte range asked for.
+      const size = attachmentFile.bytes.length;
+      const asked = req.headers.range ?? null;
+      attachmentReads.push({ path, range: asked });
+      const match = asked?.match(/^bytes=(\d*)-(\d*)$/);
+      const [first, last] = !match
+        ? [0, size - 1]
+        : match[1] === ""
+          ? [Math.max(size - Number(match[2]), 0), size - 1]
+          : [
+              Number(match[1]),
+              match[2] === "" ? size - 1 : Math.min(Number(match[2]), size - 1),
+            ];
+      if (match && first >= size) {
+        res.writeHead(416, { "content-range": `bytes */${size}` });
+        res.end();
+        return;
+      }
+      res.writeHead(match ? 206 : 200, {
+        "accept-ranges": "bytes",
+        // A span's size reaches a reader on another origin, as the server exposes it.
+        "access-control-expose-headers":
+          "accept-ranges,content-length,content-range,etag",
+        "content-disposition": attachmentFile.fileName
+          ? `attachment; filename*=UTF-8''${encodeURIComponent(attachmentFile.fileName)}`
+          : "attachment",
+        "content-length": String(last - first + 1),
+        "content-type": attachmentFile.contentType,
+        ...(match ? { "content-range": `bytes ${first}-${last}/${size}` } : {}),
+      });
+      res.end(attachmentFile.bytes.subarray(first, last + 1));
       return;
     }
 
@@ -724,11 +834,16 @@ export async function startChatSmokeStub({
       return;
     }
 
-    const uploadedFile =
+    const groupFilePath =
       req.method === "GET" &&
       path === `/v1/comma/groups/${chatSmokeWorkspace.group_id}/files`
-        ? uploads.find((upload) => upload.path === url.searchParams.get("path"))
-        : undefined;
+        ? url.searchParams.get("path")
+        : null;
+    const uploadedFile =
+      groupFilePath === null
+        ? undefined
+        : (uploads.find((upload) => upload.path === groupFilePath) ??
+          storedFiles.get(groupFilePath));
     if (uploadedFile) {
       // GroupFiles.read_image derives its response type from the uploaded path.
       const imageTypes: Record<string, string> = {
@@ -933,6 +1048,7 @@ export async function startChatSmokeStub({
         contentType: file.type || "application/octet-stream",
       };
       uploads.push(upload);
+      settleCountWaiters();
       writeJson(
         res,
         { path: upload.path, name: filename, size: bytes.byteLength },
@@ -975,6 +1091,7 @@ export async function startChatSmokeStub({
         chatMessageBodies.push(body);
       } else {
         messageBodies.push(body);
+        settleCountWaiters();
       }
       notifyWorkspaceChatMessage?.();
       if (holdWorkspaceChatMessage) await workspaceChatMessageRelease;
@@ -1338,6 +1455,8 @@ export async function startChatSmokeStub({
 
   return new Promise<{
     activeTaskListEventStreams: number;
+    /** Each attachment read, in order: its path and the `Range` it asked for (null: the whole file). */
+    attachmentReads: { path: string; range: string | null }[];
     authCookies: (string | undefined)[];
     chatMessageBodies: unknown[];
     authHeaders: (string | undefined)[];
@@ -1405,6 +1524,8 @@ export async function startChatSmokeStub({
       bytes: Buffer;
       contentType: string;
     }[];
+    /** Each message attachment stored as a composer file by reference, in order. */
+    storedAttachments: { messageId: string; index: number; path: string }[];
     /**
      * The account a bearer session (the Electron app) signs in as. A browser
      * session registered for its own cookie can belong to another one.
@@ -1422,6 +1543,10 @@ export async function startChatSmokeStub({
     disconnectTaskStatusStreams: () => void;
     setWorkspaceChatHidden: (hidden: boolean) => void;
     waitForDraft: () => Promise<void>;
+    /** Resolves once `count` messages (other than Comma Center's) were sent. */
+    waitForMessageBodies: (count: number) => Promise<void>;
+    /** Resolves once `count` files were uploaded. */
+    waitForUploads: (count: number) => Promise<void>;
     waitForInitialChatSnapshot: () => Promise<void>;
     waitForStreamingReplyReady: () => Promise<void>;
     waitForWorkspaceChatMessage: () => Promise<void>;
@@ -1638,11 +1763,15 @@ export async function startChatSmokeStub({
           return taskStatusStreams.size;
         },
         uploads,
+        storedAttachments,
+        attachmentReads,
         userId: createE2eSessionProjection({ email: sessionEmail }).user.id,
         setWorkspaceChatHidden: (hidden) => {
           workspaceChatHidden = hidden;
         },
         waitForDraft: () => draftEmitted,
+        waitForMessageBodies: (count) => waitForCount(messageBodies, count),
+        waitForUploads: (count) => waitForCount(uploads, count),
         waitForInitialChatSnapshot: () => initialChatSnapshot,
         waitForStreamingReplyReady: () => streamingReplyReady,
         waitForWorkspaceChatMessage: () => workspaceChatMessageObserved,
@@ -1752,6 +1881,8 @@ export async function startChatSmokeStub({
       loop?: ChatSmokeTaskLoop;
     } = {
       ...chatSmokeTaskConversation,
+      // A coding Task's detail carries its run, as the server's does.
+      ...(taskRun ? { run: taskRun } : {}),
       ...taskConversationExtras,
       ...(currentTaskLabels ? { labels: currentTaskLabels } : {}),
       messages: taskMessages(),

@@ -10,17 +10,15 @@ import {
   type ModelPickerValue,
 } from "@comma/ui/components/model-picker";
 import { ModelVendorIcon } from "@comma/ui/components/model-icons/ModelVendorIcon";
-import { MoreHorizontalIcon } from "@comma/ui/components/icons";
+import { EditBigIcon, MoreHorizontalIcon } from "@comma/ui/components/icons";
 import { Toggle } from "@comma/ui/components/toggle";
 import { toast } from "@comma/ui/components/toast";
+import { Tooltip } from "@comma/ui/components/tooltip";
 import {
   type SettingsCategoryDefinition,
   type SettingsCategoryDetail,
 } from "@comma/ui/components/settings";
-import {
-  type SettingsControl,
-  type SettingsPanelItem,
-} from "@comma/ui/components/settings-panel";
+import { type SettingsPanelItem } from "@comma/ui/components/settings-panel";
 import {
   useCall,
   useTopic,
@@ -40,6 +38,7 @@ import {
 } from "../../nativePlatformActions";
 import { useWorkspacePreference } from "../activeWorkspace";
 import { CommaProductMark } from "../CommaProductMark";
+import { useCommaClientSettings } from "../commaClientSettings";
 import { ProviderMark, QuotaMeters } from "./ProviderMarks";
 import { presetGroups } from "./providerPresets";
 import { useRouterRenamed } from "../router-identity/RouterIdentityProvider";
@@ -212,6 +211,12 @@ export function useModelsCategory(enabled: boolean): {
   const [taskPlaceError, setTaskPlaceError] = useState<string>();
   const [view, setView] = useState<View>();
   const [removing, setRemoving] = useState<{ id: string; busy: boolean }>();
+  /**
+   * A profile the reader turns on, or one just added (on already), waiting for
+   * them to read what that lets the Router do.
+   */
+  const [enabling, setEnabling] = useState<{ id: string; added: boolean }>();
+  const clientSettings = useCommaClientSettings();
   /** A name being edited in the rename dialog: an Agent's or a profile's. */
   const [rename, setRename] = useState<{
     kind: "agent" | "profile";
@@ -305,9 +310,12 @@ export function useModelsCategory(enabled: boolean): {
   };
 
   // A subscription is named for its account; the reader may rename it later.
-  const signIn = useSubscriptionSignIn(workspace, () => {
+  const signIn = useSubscriptionSignIn(workspace, (account) => {
     const connect = view?.kind === "connect" ? view : undefined;
-    if (firstProfile.current && !connect?.reconnect) confirmFirstProfile();
+    if (!connect?.reconnect) {
+      if (firstProfile.current) confirmFirstProfile();
+      if (account) askAfterAdding(account);
+    }
     setView(undefined);
   });
 
@@ -315,8 +323,9 @@ export function useModelsCategory(enabled: boolean): {
   const confirmFirstProfile = () => toast.success(m.settings_providers_first_added());
 
   // The core saved the key as a profile and read the profiles again.
-  const tokenDance = useTokenDanceConnect(workspace, tokenDanceName, () => {
+  const tokenDance = useTokenDanceConnect(workspace, tokenDanceName, (profile) => {
     if (firstProfile.current) confirmFirstProfile();
+    askAfterAdding(profile);
     setView(undefined);
   });
 
@@ -390,15 +399,30 @@ export function useModelsCategory(enabled: boolean): {
     setView(undefined);
   };
 
-  const toggleProfile = (account: ShownProfile) => {
+  const setProfileOn = (account: ShownProfile, on: boolean) => {
     if (!workspace) return;
     void write(() =>
       call("models.updateProfile", {
         workspace,
         profile: account.id,
-        disabled: !account.disabled,
+        disabled: !on,
       })
     );
+  };
+  // The first one the reader turns on waits for them to agree the Router may use it.
+  const toggleProfile = (account: ShownProfile) => {
+    if (account.disabled && !clientSettings.settings.routerProfileNoticeSeen)
+      setEnabling({ id: account.id, added: false });
+    else setProfileOn(account, account.disabled);
+  };
+  // A profile is on as it is added: Not now turns it off again.
+  const askAfterAdding = (profile: { id: string }) => {
+    if (!clientSettings.settings.routerProfileNoticeSeen)
+      setEnabling({ id: profile.id, added: true });
+  };
+  const notNow = (account: ShownProfile) => {
+    setEnabling(undefined);
+    if (enabling?.added) setProfileOn(account, false);
   };
 
   /** Turns models on or off for a profile: shown at once, saved in order by the core. */
@@ -817,25 +841,27 @@ export function useModelsCategory(enabled: boolean): {
     allowPaidHint: m.settings_providers_allow_paid_on(),
   };
 
-  /** The row's own actions, apart from the model it runs. */
-  const agentMenu = (agent: SettingsAgent): SettingsControl => ({
-    type: "menu",
-    label: m.settings_providers_actions({ name: agent.name }),
-    icon: <MoreHorizontalIcon className="size-4" />,
-    items: [
-      {
-        id: "rename",
-        label: m.settings_providers_rename(),
-        onPress: () =>
+  /** Renames the Agent; shows while the row is hovered or the button has focus. */
+  const renameAgentButton = (agent: SettingsAgent) => (
+    <Tooltip content={m.settings_providers_rename()}>
+      <Button
+        aria-label={m.settings_providers_rename()}
+        className="opacity-0 focus-visible:opacity-100 group-hover/settings-row:opacity-100"
+        hierarchy="tertiary-gray"
+        iconLeading={<EditBigIcon className="size-4" />}
+        iconOnly
+        size="md"
+        onPress={() =>
           setRename({
             kind: "agent",
             id: agent.agent_id,
             name: agent.name,
             busy: false,
-          }),
-      },
-    ],
-  });
+          })
+        }
+      />
+    </Tooltip>
+  );
 
   /**
    * The model picker for a choice, and why that choice cannot run if it
@@ -908,15 +934,23 @@ export function useModelsCategory(enabled: boolean): {
 
   const routerRow = (agent: SettingsAgent): SettingsPanelItem => {
     const errorMessage = agentErrors[agent.agent_id];
+    const picked = choice(
+      agent.name,
+      agent.selection ?? { kind: "builtin" },
+      (selection) => selectAgentModel(agent, selection)
+    );
     return {
       id: `models.agent.${agent.agent_id}`,
       title: agent.name,
       description: m.settings_providers_router_role(),
       ...(errorMessage ? { errorMessage } : {}),
-      ...choice(agent.name, agent.selection ?? { kind: "builtin" }, (selection) =>
-        selectAgentModel(agent, selection)
+      content: picked.content,
+      controlLeading: (
+        <>
+          {renameAgentButton(agent)}
+          {picked.controlLeading}
+        </>
       ),
-      control: agentMenu(agent),
     };
   };
 
@@ -940,7 +974,7 @@ export function useModelsCategory(enabled: boolean): {
     for (const device of shownDevices?.devices ?? [])
       places.set(`station:${device.device_id}`, {
         place: { kind: "station", device_id: device.device_id },
-        label: device.alias || device.name,
+        label: device.name,
       });
     if (!places.has(placeId(held)) && held.kind === "station")
       places.set(placeId(held), { place: held, label: held.device_id });
@@ -989,6 +1023,9 @@ export function useModelsCategory(enabled: boolean): {
 
   const removingProfile =
     removing && profiles.find((entry) => entry.id === removing.id);
+  const enablingProfile = profiles.find(
+    (entry) => entry.id === enabling?.id && entry.disabled !== enabling.added
+  );
   const resettingProfile =
     resetting && profiles.find((entry) => entry.id === resetting.id);
   const resetSettled = !!resetting?.settled;
@@ -1081,6 +1118,11 @@ export function useModelsCategory(enabled: boolean): {
               ]
             : []),
         ],
+        // A Router may choose any model these serve for a Task, whatever the
+        // default Task model says.
+        ...(profiles.some((account) => !account.disabled)
+          ? { note: m.settings_providers_router_may_use_profiles() }
+          : {}),
       },
       { id: "models.agents", title: m.settings_providers_agents(), items: agentItems },
     ],
@@ -1157,55 +1199,86 @@ export function useModelsCategory(enabled: boolean): {
               </Dialog>
             ),
           }
-        : rename && nameBefore !== undefined
+        : enablingProfile
           ? {
               overlay: (
                 <Dialog
                   isOpen
-                  isDismissable={!rename.busy}
                   onOpenChange={(open) => {
-                    if (!open && !rename.busy) setRename(undefined);
+                    if (!open) notNow(enablingProfile);
                   }}
-                  title={
-                    rename.kind === "agent"
-                      ? m.settings_providers_rename_agent()
-                      : m.settings_providers_rename_title()
-                  }
-                  variant="input"
-                  input={{
-                    label:
-                      rename.kind === "agent"
-                        ? m.settings_providers_agent_name()
-                        : m.settings_providers_profile_name(),
-                    autoFocus: true,
-                    value: rename.name,
-                    disabled: rename.busy,
-                    ...(rename.error ? { errorMessage: rename.error } : {}),
-                    onChange: (event) =>
-                      setRename({
-                        ...rename,
-                        name: event.target.value,
-                        error: undefined,
-                      }),
-                  }}
+                  title={m.settings_providers_enable_title({
+                    name: profileName(enablingProfile),
+                  })}
+                  description={m.settings_providers_router_may_use_profiles()}
                   actions={[
                     {
-                      label: m.settings_providers_cancel(),
+                      label: m.settings_providers_not_now(),
                       hierarchy: "secondary-gray",
-                      disabled: rename.busy,
-                      onPress: () => setRename(undefined),
+                      onPress: () => notNow(enablingProfile),
                     },
                     {
-                      label: m.settings_providers_save(),
+                      label: m.settings_providers_continue(),
                       hierarchy: "primary",
-                      disabled: !canRename,
-                      onPress: saveRename,
+                      onPress: () => {
+                        setEnabling(undefined);
+                        void clientSettings.update({ routerProfileNoticeSeen: true });
+                        if (!enabling?.added) setProfileOn(enablingProfile, true);
+                      },
                     },
                   ]}
                 />
               ),
             }
-          : {}),
+          : rename && nameBefore !== undefined
+            ? {
+                overlay: (
+                  <Dialog
+                    isOpen
+                    isDismissable={!rename.busy}
+                    onOpenChange={(open) => {
+                      if (!open && !rename.busy) setRename(undefined);
+                    }}
+                    title={
+                      rename.kind === "agent"
+                        ? m.settings_providers_rename_agent()
+                        : m.settings_providers_rename_title()
+                    }
+                    variant="input"
+                    input={{
+                      label:
+                        rename.kind === "agent"
+                          ? m.settings_providers_agent_name()
+                          : m.settings_providers_profile_name(),
+                      autoFocus: true,
+                      value: rename.name,
+                      disabled: rename.busy,
+                      ...(rename.error ? { errorMessage: rename.error } : {}),
+                      onChange: (event) =>
+                        setRename({
+                          ...rename,
+                          name: event.target.value,
+                          error: undefined,
+                        }),
+                    }}
+                    actions={[
+                      {
+                        label: m.settings_providers_cancel(),
+                        hierarchy: "secondary-gray",
+                        disabled: rename.busy,
+                        onPress: () => setRename(undefined),
+                      },
+                      {
+                        label: m.settings_providers_save(),
+                        hierarchy: "primary",
+                        disabled: !canRename,
+                        onPress: saveRename,
+                      },
+                    ]}
+                  />
+                ),
+              }
+            : {}),
   };
 
   const openProfile = (id: string) => setView({ kind: "profile", id });
@@ -1566,9 +1639,10 @@ export function useModelsCategory(enabled: boolean): {
           // profile serves those ids.
           ...(entry.discover && protocol ? { discover: true } : {}),
         }).then(
-          () => {
+          (created) => {
             if (requested !== generation.current) return;
             if (first) confirmFirstProfile();
+            askAfterAdding(created);
             settleForm(current, undefined);
           },
           (reason: unknown) => {

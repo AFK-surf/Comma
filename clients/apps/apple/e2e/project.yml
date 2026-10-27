@@ -1,5 +1,9 @@
 name: CommaGestureTests
 options:
+  fileTypes:
+    icon:
+      file: true
+      buildPhase: resources
   # The Hermes the app runs the client core in (../Vendor/hermes), as the app's project fetches it.
   preGenCommand: ../scripts/fetch-hermes.sh
   deploymentTarget:
@@ -26,6 +30,9 @@ targets:
       - path: ../../../packages/core/native
       - path: Fixture
       - path: Common
+      - path: ../Resources/Assets.xcassets
+      - path: ../Resources/AppIcon.icon
+      - path: ../Resources/Localizable.xcstrings
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: surf.comma.chat-gesture-fixture

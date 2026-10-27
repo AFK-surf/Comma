@@ -1,4 +1,8 @@
-import type { ManualTaskStatus } from "@comma/chat-contract";
+import type {
+  ChatConversationFile,
+  ChatTaskRunChoice,
+  ManualTaskStatus,
+} from "@comma/chat-contract";
 import type { CoreClient } from "@comma/core-client";
 import type { ChatViewValue } from "@comma/core/contract";
 import {
@@ -104,7 +108,11 @@ export class CoreConversationChannel implements ChatChannel {
       conversation: conversationId,
       surface: bridge.self.windowId,
     };
-    this.#previews = new LocalFilePreviews(client, bridge, { groupId, session });
+    this.#previews = new LocalFilePreviews(client, bridge, {
+      conversationId,
+      groupId,
+      session,
+    });
     this.#state = initialState ?? idleConversationChannelState;
     this.#seeded = initialState !== undefined;
     // Main transcodes HEIC on macOS only: the composer turns an undecodable camera file away before it attaches.
@@ -228,6 +236,10 @@ export class CoreConversationChannel implements ChatChannel {
     return this.#call("chatView.setTaskStatus", { status, expectedUpdatedAt });
   }
 
+  setTaskRun(run: ChatTaskRunChoice) {
+    return this.#call("chatView.setTaskRun", { run });
+  }
+
   refresh() {
     return this.#call("chatView.refresh", {});
   }
@@ -254,6 +266,10 @@ export class CoreConversationChannel implements ChatChannel {
     }
     for (const file of files) this.#upload(file);
     return undefined;
+  }
+
+  attachConversationFiles(files: ChatConversationFile[]) {
+    return this.#call("chatView.attachConversationFiles", { files });
   }
 
   previewLocalFile(previewRef: ChatImagePreviewRef, signal?: AbortSignal) {
@@ -551,11 +567,18 @@ export class CoreConversationChannel implements ChatChannel {
     this.#local = this.#local.filter(
       (entry) => entry.shownFrom === undefined || entry.shownFrom > value.revision
     );
-    this.#state = {
+    // An image that uploaded is read by its path from here on (its message
+    // names it so); the thumbnail already held answers for that path.
+    this.#previews.aliasUploaded(next);
+    const shown: ConversationChannelState = {
       ...next,
       draft: this.#draft.adoptable() ?? this.#state.draft,
       draftAttachments: this.#rows(next.draftAttachments),
     };
+    // The core publishes every view again whenever any conversation moves its revision. A view that comes back the
+    // same is no change here: emitting it would render every surface showing this conversation again.
+    if (sameFields(shown, this.#state)) return;
+    this.#state = shown;
     this.#emit();
   }
 
@@ -568,6 +591,15 @@ export class CoreConversationChannel implements ChatChannel {
   #emit() {
     for (const listener of this.#listeners) listener();
   }
+}
+
+/** Whether two states hold the same value or object in each field: the core keeps what did not change. */
+function sameFields(a: ConversationChannelState, b: ConversationChannelState): boolean {
+  const keys = Object.keys(a) as (keyof ConversationChannelState)[];
+  return (
+    keys.length === Object.keys(b).length &&
+    keys.every((key) => Object.is(a[key], b[key]))
+  );
 }
 
 /** The core's view of a conversation still opening, over the transcript carried over. */

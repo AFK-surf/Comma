@@ -21,13 +21,13 @@ import { archiveText, readArchive, threadFile, writeCompressed } from "./archive
 import {
   type Attachment, type AutoTitle, type CardAnswer, type EntryRow, type JobNotice, type JobRow, type Json, type Membership,
   type MessageRow, type NewMessage, type NewSession, type PendingMessage, type ProcessRow, type ProfileStatus,
-  type Quote, type SessionRow, type SessionStats, type SessionThread, type StoreChange, type TaskIndexRow, type TaskMark,
+  type Quote, type RanIn, type SessionRow, type SessionStats, type SessionThread, type StoreChange, type TaskIndexRow, type TaskMark,
   type TaskStatus, type ThreadRow, type ThreadSummary,
   type TurnFor, type TurnRow, type TurnSummary, type WidgetModel, AUTO, I64_MAX, MANUAL, STILLFAIL_SURFACE, attachment,
-  byBytes, cardOf, jsonList, mergeEntries, optionsCard, parsed, quote, takeChars, toEntry, toJob, toMembership,
+  byBytes, cardOf, jsonList, mergeEntries, onlyMilestones, optionsCard, parsed, quote, takeChars, toEntry, toJob, toMembership,
   toMessage, toSession, toSessionThread, toThread, toTurnSummary,
 } from "./rows.ts";
-import { SCHEMA, SCHEMA_VERSION, addArchiveColumns, addAutoTitleColumns, addClientColumn, addTaskAnsweredColumn, addTaskLabelsColumn, addTaskSentColumn, addTaskStartColumn, addWatchColumn } from "./schema.ts";
+import { SCHEMA, SCHEMA_VERSION, addArchiveColumns, addAutoTitleColumns, addClientColumn, addMilestonesColumn, addRuntimeSessionRuntimeColumn, addTaskAnsweredColumn, addTaskLabelsColumn, addTaskSentColumn, addTaskStartColumn, addWatchColumn } from "./schema.ts";
 import * as usage from "./usage.ts";
 
 export * from "./rows.ts";
@@ -97,6 +97,8 @@ export class Store {
       addTaskStartColumn(db);
       addTaskAnsweredColumn(db);
       addTaskLabelsColumn(db);
+      addMilestonesColumn(db);
+      addRuntimeSessionRuntimeColumn(db);
       db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
     } catch (e) {
       db.close();
@@ -267,11 +269,12 @@ export class Store {
     this.#updateSession(key, "UPDATE sessions SET runtime_session_id = ?1 WHERE key = ?2", id, key);
   }
 
-  /// A runtime session the session runs in, on `profile` (null: not known, a profile it had is kept).
+  /// A runtime session the session runs in, on `profile` (null: not known, a profile it had is kept), running the
+  /// session's runtime.
   ranIn(key: string, id: string, profile: string | null): void {
     this.#run(
-      `INSERT INTO runtime_sessions (session_key, id, profile, at) VALUES (?1, ?2, ?3, ?4)
-       ON CONFLICT (session_key, id) DO UPDATE SET profile = COALESCE(excluded.profile, profile)`,
+      `INSERT INTO runtime_sessions (session_key, id, profile, at, runtime) VALUES (?1, ?2, ?3, ?4, (SELECT runtime FROM sessions WHERE key = ?1))
+       ON CONFLICT (session_key, id) DO UPDATE SET profile = COALESCE(excluded.profile, profile), runtime = COALESCE(runtime, excluded.runtime)`,
       key, id, profile, this.now(),
     );
   }
@@ -281,11 +284,96 @@ export class Store {
     return this.#one("SELECT profile FROM runtime_sessions WHERE session_key = ? AND id = ?", key, id)?.profile ?? null;
   }
 
-  /// The runtime sessions the session has run in, the first first, ending with the one it runs in now.
-  runtimeSessions(key: string): string[] {
-    const current = this.getSession(key)?.runtimeSessionId ?? null;
-    const ids: string[] = this.#all("SELECT id FROM runtime_sessions WHERE session_key = ? ORDER BY at, rowid", key).map((r) => r.id);
-    return current === null ? ids : [...ids.filter((id) => id !== current), current];
+  /// The runtime sessions the session has run in, the first first, ending with the one it runs in now; each with the
+  /// runtime it ran (one kept before runtimes were: the session's).
+  runtimeSessions(key: string): RanIn[] {
+    const row = this.getSession(key);
+    const own = row?.runtime ?? "";
+    const current = row?.runtimeSessionId ?? null;
+    const ran: RanIn[] = this.#all("SELECT id, runtime FROM runtime_sessions WHERE session_key = ? ORDER BY at, rowid", key).map((r) => ({ id: r.id, runtime: r.runtime ?? own }));
+    if (current === null) return ran;
+    return [...ran.filter((r) => r.id !== current), ran.find((r) => r.id === current) ?? { id: current, runtime: own }];
+  }
+
+  /// Leaves the runtime session a session runs in, kept with those it ran: its next start goes on afresh in a new one,
+  /// told where its past is (sessions/afresh.ts), as it does on another account.
+  leaveRuntimeSession(key: string): void {
+    this.#with((changes) => {
+      this.#run(
+        `INSERT INTO runtime_sessions (session_key, id, profile, at, runtime)
+           SELECT key, runtime_session_id, NULL, ?2, runtime FROM sessions WHERE key = ?1 AND runtime_session_id IS NOT NULL
+         ON CONFLICT (session_key, id) DO UPDATE SET runtime = COALESCE(runtime, excluded.runtime)`,
+        key, this.now(),
+      );
+      this.#run("UPDATE sessions SET runtime_session_id = NULL WHERE key = ?", key);
+      changes.push({ type: "session", key });
+    });
+  }
+
+  /// The station a Task of this station's own runs on when it is not this one (tasks.ts moveTo); null when its own
+  /// sessions run it.
+  runsOn(thread: number): string | null {
+    return this.#one("SELECT station FROM task_runs WHERE thread = ?", thread)?.station ?? null;
+  }
+
+  /// Task `thread` runs on `station` from now on (null: on its own sessions again). Its row in the Task index is made
+  /// again.
+  setRunsOn(thread: number, station: string | null): void {
+    this.#with((changes) => {
+      if (station === null) this.#run("DELETE FROM task_runs WHERE thread = ?", thread);
+      else this.#run("INSERT INTO task_runs (thread, station, at) VALUES (?, ?, ?) ON CONFLICT (thread) DO UPDATE SET station = excluded.station, at = excluded.at", thread, station, this.now());
+      changes.push({ type: "thread", id: thread, entries: [] });
+    });
+  }
+
+  /// Gives up what was pending for `session` in `thread`: none of it is handed to it.
+  dropPending(thread: number, session: string): void {
+    this.#run("DELETE FROM deliveries WHERE thread = ? AND session = ? AND delivered_at IS NULL", thread, session);
+  }
+
+  /// Through which entry `sessions` answered `thread`: the last post of theirs that ended a turn (all_done, need_help),
+  /// short of the first message still pending for one of them.
+  answeredBy(thread: number, sessions: string[]): number {
+    if (sessions.length === 0) return 0;
+    const list = JSON.stringify(sessions);
+    const ended = this.#one(
+      "SELECT MAX(n) AS n FROM entries WHERE thread = ? AND kind = 'message' AND author_kind = 'agent' AND author IN (SELECT value FROM json_each(?)) AND declared IN ('all_done', 'need_help')",
+      thread, list,
+    )?.n;
+    const pending = this.#one("SELECT MIN(n) AS n FROM deliveries WHERE thread = ? AND session IN (SELECT value FROM json_each(?)) AND delivered_at IS NULL", thread, list)?.n;
+    const answered = ended === null || ended === undefined ? 0 : Number(ended);
+    return pending === null || pending === undefined ? answered : Math.min(answered, Number(pending) - 1);
+  }
+
+  /// The runtimes each session ran in its runtime sessions, by its key (more than its own: it changed runtime).
+  runtimesRun(): Map<string, Set<string>> {
+    const ran = new Map<string, Set<string>>();
+    for (const r of this.#all("SELECT DISTINCT session_key, runtime FROM runtime_sessions WHERE runtime IS NOT NULL")) {
+      const of = ran.get(r.session_key) ?? new Set<string>();
+      of.add(r.runtime);
+      ran.set(r.session_key, of);
+    }
+    return ran;
+  }
+
+  /// Moves a session to another runtime from its next start, on `profile` (`pinned` keeps it there) with `model`,
+  /// `effort` and `fast`. The runtime sessions it ran in keep the runtime they ran, the one it runs in now among them: its
+  /// next start leaves it for a new one (sessions/afresh.ts).
+  setSessionRuntime(key: string, runtime: string, profile: string, pinned: boolean, model: string | null, effort: string | null, fast: boolean | null): void {
+    this.#with((changes) => {
+      this.#run(
+        `INSERT INTO runtime_sessions (session_key, id, profile, at, runtime)
+           SELECT key, runtime_session_id, NULL, ?2, runtime FROM sessions WHERE key = ?1 AND runtime_session_id IS NOT NULL
+         ON CONFLICT (session_key, id) DO UPDATE SET runtime = COALESCE(runtime, excluded.runtime)`,
+        key, this.now(),
+      );
+      this.#run("UPDATE runtime_sessions SET runtime = (SELECT runtime FROM sessions WHERE key = ?1) WHERE session_key = ?1 AND runtime IS NULL", key);
+      this.#run(
+        "UPDATE sessions SET runtime = ?1, profile = ?2, profile_pinned = ?3, model = ?4, effort = ?5, fast = ?6 WHERE key = ?7",
+        runtime, profile, flag(pinned), model, effort, optFlag(fast), key,
+      );
+      changes.push({ type: "session", key });
+    });
   }
 
   setRunning(key: string, running: boolean): void {
@@ -476,6 +564,12 @@ export class Store {
     return said ? toThread(said) : this.threadAt(surface, channel, ts);
   }
 
+  /// The Station whose Task a session takes part in (tasks_elsewhere), null when it takes part in none.
+  taskHostOf(session: string): string | null {
+    const r = this.#one("SELECT te.station FROM thread_sessions ts JOIN tasks_elsewhere te ON te.thread = ts.thread WHERE ts.session = ? LIMIT 1", session);
+    return typeof r?.station === "string" ? r.station : null;
+  }
+
   /// Makes a session take part in a thread, posting through `connect`. False if it already did.
   joinThread(thread: number, session: string, connect: string): boolean {
     return this.#with((changes) => {
@@ -485,6 +579,23 @@ export class Store {
         changes.push({ type: "thread", id: thread, entries: [] });
       }
       return joined;
+    });
+  }
+
+  /// Makes a session no longer take part in a thread: it hears nothing more of it, and what was pending for it there is
+  /// not handed to it. False if it did not take part.
+  leaveThread(thread: number, session: string): boolean {
+    return this.#with((changes) => {
+      const left = this.#tx(() => {
+        const gone = this.#run("DELETE FROM thread_sessions WHERE thread = ? AND session = ?", thread, session) > 0;
+        if (gone) this.#run("DELETE FROM deliveries WHERE thread = ? AND session = ? AND delivered_at IS NULL", thread, session);
+        return gone;
+      });
+      if (left) {
+        changes.push({ type: "session", key: session });
+        changes.push({ type: "thread", id: thread, entries: [] });
+      }
+      return left;
     });
   }
 
@@ -565,22 +676,25 @@ export class Store {
   // ── entries ──
 
   /// Records something said. A message already recorded in that thread (Slack delivers to every connect in the channel,
-  /// and redelivers) is the same message: its n comes back with `fresh` false and nothing changes.
+  /// and redelivers) is the same message: its n comes back with `fresh` false and nothing changes. A post that only
+  /// records milestones (onlyMilestones) is kept as a "milestone" entry, with no text.
   insertMessage(m: NewMessage): [number, boolean] {
     return this.#with((changes) => {
-      const existing = this.#messageAt(m.thread, m.ts);
-      if (existing !== null) return [existing.n, false];
+      const existing = this.#entryAt(m.thread, m.ts);
+      if (existing !== null) return [existing, false];
       const card = m.card ?? undefined;
       const options = m.options ?? undefined;
+      const only = onlyMilestones(m);
       const entry = this.#append(
         {
-          agentIdentity: undefined, thread: m.thread, n: 0, kind: "message", target: null, ts: m.ts, authorKind: m.authorKind,
-          author: m.author, text: m.text, attachments: m.attachments ?? [], quotes: m.quotes ?? [], declared: m.declared ?? null,
+          agentIdentity: undefined, thread: m.thread, n: 0, kind: only ? "milestone" : "message", target: null, ts: m.ts, authorKind: m.authorKind,
+          author: m.author, text: only ? null : m.text, attachments: m.attachments ?? [], quotes: m.quotes ?? [], declared: m.declared ?? null,
           client: m.client ?? null, profile: m.profile ?? null,
           // An options card is kept as options too (what stations and clients from before cards read).
           options: options ?? (card !== undefined && card !== null && typeof card === "object" && card.type === "options" ? card.options : undefined),
           card: card ?? (options === undefined ? undefined : optionsCard(options)),
           at: m.at ?? this.now(),
+          milestones: m.milestones && m.milestones.length > 0 ? [...m.milestones] : undefined,
         },
         changes,
       );
@@ -600,7 +714,7 @@ export class Store {
         {
           agentIdentity: undefined, thread: message.thread, n: 0, kind: "edit", target: message.n, ts: null,
           authorKind: message.authorKind, author: message.author, text, attachments: message.attachments, quotes: message.quotes,
-          declared: null, client: null, profile: null, options: undefined, card: undefined, at: this.now(),
+          declared: null, client: null, profile: null, options: undefined, card: undefined, at: this.now(), milestones: undefined,
         },
         changes,
       );
@@ -736,8 +850,10 @@ export class Store {
 
   // ── deliveries ──
 
-  /// Hands a message to sessions. Those that did not have it yet.
+  /// Hands a message to sessions. Those that did not have it yet. A Task here that runs on another station hands its
+  /// chat's own sessions nothing (runsOn).
   deliver(thread: number, n: number, sessions: string[]): string[] {
+    if (this.runsOn(thread) !== null) return [];
     return this.#with((changes) => {
       const added: string[] = [];
       for (const s of sessions) {
@@ -1545,16 +1661,19 @@ export class Store {
     // The agent it is with: its own session's (a chat made with one), else the first to join it.
     const key: string | undefined = t.home ?? sessions[0];
     const session = key === undefined ? null : this.getSession(key);
+    // Run on another station: as that station's Session was started there (tasks.ts moveTo).
+    const elsewhere = this.runsOn(id);
+    const started = elsewhere === null ? null : parsed(this.#one("SELECT start FROM task_sessions WHERE thread = ? AND station = ? ORDER BY joined_at DESC LIMIT 1", id, elsewhere)?.start ?? "null");
     const body = {
       task: `${t.channel}/${t.thread_ts}`,
       thread: id,
       title: this.#taskTitle(id, t, archived, was),
-      status: this.#deriveTaskStatus(id, archived, prev?.marked ?? null, sessions),
+      status: elsewhere === null ? this.#deriveTaskStatus(id, archived, prev?.marked ?? null, sessions) : this.#elsewhereStatus(id, archived, prev?.marked ?? null, elsewhere),
       created_by: t.created_by ?? session?.createdBy ?? null,
       created_at: t.created_at,
       last_activity_at: this.#taskActivity(id, t, archived, was),
-      runtime: session?.runtime ?? null,
-      model: session?.model ?? null,
+      runtime: elsewhere === null ? (session?.runtime ?? null) : typeof started?.runtime === "string" ? started.runtime : null,
+      model: elsewhere === null ? (session?.model ?? null) : typeof started?.model === "string" ? started.model : null,
       labels: labelsOf(prev?.labels),
     };
     if (was !== undefined && prev.json === JSON.stringify({ ...body, rev: prev.rev })) return;
@@ -1629,6 +1748,16 @@ export class Store {
     return last !== undefined && last.ending !== null && ENDED_FOR_REVIEW.includes(last.ending) ? "needs_review" : "in_progress";
   }
 
+  /// How a Task run on `station` stands, as what it said: done or for review after its Session's last post ended a turn
+  /// so and nothing came after it; else at work.
+  #elsewhereStatus(id: number, archived: boolean, marked: string | null, station: string): TaskStatus {
+    if (archived) return "archived";
+    if (marked === "done" || marked === "cancelled") return marked;
+    const last = this.#one("SELECT author_kind, author, declared FROM entries WHERE thread = ? AND kind = 'message' ORDER BY n DESC LIMIT 1", id);
+    const theirs = last !== undefined && last.author_kind === "agent" && String(last.author).startsWith(`${station}/`);
+    return theirs && ENDED_FOR_REVIEW.includes(last.declared) ? "needs_review" : "in_progress";
+  }
+
   // ── Inner ──
 
   #unreadCount(viewer: string, thread: number, read: number): number {
@@ -1673,6 +1802,12 @@ export class Store {
       return m ? takeChars(m.text, 300) : null;
     }
     return this.#one("SELECT substr(text, 1, 300) AS t FROM merged WHERE thread = ? AND author_kind = 'person' ORDER BY n LIMIT 1", thread)?.t ?? null;
+  }
+
+  /// The n of the entry with ts `ts` in the thread (a message, or a post of milestones alone); null when none has it.
+  #entryAt(thread: number, ts: string): number | null {
+    if (this.#isArchived(thread)) return this.#archivedEntries(thread).find((e) => e.ts === ts)?.n ?? null;
+    return this.#one("SELECT n FROM entries WHERE thread = ? AND ts = ?", thread, ts)?.n ?? null;
   }
 
   #messageAt(thread: number, ts: string): MessageRow | null {
@@ -1820,7 +1955,7 @@ export class Store {
 
   #insertEntry(e: EntryRow): void {
     this.#run(
-      "INSERT INTO entries (thread, n, kind, target, ts, author_kind, author, text, attachments, quotes, declared, client, profile, options, card, at, agent_identity) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO entries (thread, n, kind, target, ts, author_kind, author, text, attachments, quotes, declared, client, profile, options, card, at, agent_identity, milestones) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       e.thread, e.n, e.kind, e.target, e.ts, e.authorKind, e.author, e.text,
       jsonList<Attachment>(e.attachments, attachment), jsonList<Quote>(e.quotes, quote),
       e.declared, e.client, e.profile,
@@ -1828,6 +1963,7 @@ export class Store {
       e.card === undefined ? null : JSON.stringify(e.card),
       e.at,
       e.agentIdentity === undefined ? null : JSON.stringify(e.agentIdentity),
+      e.milestones === undefined ? null : JSON.stringify(e.milestones),
     );
   }
 }

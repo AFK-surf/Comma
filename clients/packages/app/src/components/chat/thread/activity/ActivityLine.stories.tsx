@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
+import { uiClock } from "@comma/ui/clock";
 import "../../../../styles.css";
 import { ParticipantStatusSlot } from "./ActivityLine";
 
@@ -94,4 +95,42 @@ export const FollowingTaskWorkers: Story = {
       ],
     },
   },
+};
+
+export const SearchingTheWeb: Story = {
+  args: {
+    activity: {
+      phase: "execution",
+      status: "running",
+      summaryClass: "public",
+      target: "Beijing weather today",
+      toolName: "web.search",
+    },
+  },
+};
+
+export const LongToolCall: Story = {
+  render: (args) => (
+    <ParticipantStatusSlot
+      {...args}
+      participantStatus={{
+        ...meta.args.participantStatus,
+        waitTool: "cloud_vm.start",
+        waitStartedAt: uiClock.now() - 12_000,
+      }}
+    />
+  ),
+};
+
+export const WaitingForATask: Story = {
+  render: (args) => (
+    <ParticipantStatusSlot
+      {...args}
+      participantStatus={{
+        ...meta.args.participantStatus,
+        waiting: true,
+        waitStartedAt: uiClock.now() - 42_000,
+      }}
+    />
+  ),
 };

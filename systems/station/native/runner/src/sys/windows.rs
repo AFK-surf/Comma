@@ -76,6 +76,11 @@ pub fn answers(sock: &Path) -> bool {
 /// A pipe goes when its last handle closes: nothing to remove.
 pub fn remove_socket(_sock: &Path) {}
 
+/// A pipe is in no directory.
+pub fn create_socket_dir(_sock: &Path, _dir: &Path) -> Result<(), String> {
+    Ok(())
+}
+
 /// Lets go of what the starter handed down besides stdio. Windows passes a child every inheritable handle of its
 /// parent's (Node's own stdio among them, whatever it is told to pass), where Unix closes them on exec: kept, a
 /// runner would hold the station's stdout open as long as it lives, so whoever reads that never sees its end.

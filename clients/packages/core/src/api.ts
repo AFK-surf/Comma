@@ -10,6 +10,7 @@ import type { Account } from "./account.ts";
 import {
   header,
   type ApiRequest,
+  type ClientIdentity,
   type ApiResponse,
   type Host,
   type Pull,
@@ -26,6 +27,28 @@ const sessionRefusals = new Set([
   "session_changed",
   "session_product_lease_unavailable",
 ]);
+
+/**
+ * What this core can do that the server offers only to clients that can (`x-comma-client-capabilities`). A client that
+ * sends none was built before the header, and is offered nothing that needs one.
+ * - `device-plugins`: lists and installs, itself, the plugins that run on the user's own device (the Mac apps).
+ */
+export const CLIENT_CAPABILITIES = ["device-plugins"] as const;
+
+/** The headers every request carries: what the app is (`kind/platform/version`) and what this core can do. */
+export function clientHeaders(client: ClientIdentity | undefined): [string, string][] {
+  const headers: [string, string][] = [
+    ["x-comma-client-capabilities", CLIENT_CAPABILITIES.join(",")],
+  ];
+  if (client)
+    headers.push([
+      "x-comma-client",
+      [client.kind, client.platform, ...(client.version ? [client.version] : [])].join(
+        "/"
+      ),
+    ]);
+  return headers;
+}
 
 /** The server's code for a refusal: `{error: "code"}`, or `{error: {code}}` for a session's. */
 function errorCode(value: unknown): string | undefined {
@@ -51,10 +74,12 @@ export type Conditional<T> =
 export class Api {
   readonly #host: Host;
   readonly #session: Session;
+  readonly #client: [string, string][];
 
   constructor(host: Host, session: Session) {
     this.#host = host;
     this.#session = session;
+    this.#client = clientHeaders(host.client);
   }
 
   /** `method path` for `account`, its answer through `schema`; `headers` adds to the request's own. */
@@ -155,14 +180,22 @@ export class Api {
     init: {
       headers?: [string, string][];
       body?: Uint8Array | null;
+      /** The body is this file the host holds, sent as it is read (`ApiRequest.localFileRef`). */
+      localFileRef?: string;
       timeoutMs?: number;
+      /**
+       * Answers any status the server gave as it is (a Mini App backend's own answer); a refusal for the session still
+       * tells the session.
+       */
+      anyStatus?: boolean;
     } = {}
   ): Effect.Effect<ApiResponse, CoreError> {
     const request: ApiRequest = {
       method,
       path,
-      headers: init.headers ?? [],
+      headers: [...(init.headers ?? []), ...this.#client],
       body: init.body ?? null,
+      ...(init.localFileRef !== undefined ? { localFileRef: init.localFileRef } : {}),
       lease: account.lease,
     };
     return this.#host.fetch(request).pipe(
@@ -175,7 +208,9 @@ export class Api {
           ),
       }),
       Effect.filterOrFail(
-        (response) => response.status >= 200 && response.status < 300,
+        (response) =>
+          (response.status >= 200 && response.status < 300) ||
+          (init.anyStatus === true && response.status !== 401),
         (response) =>
           this.#refusal(request, method, path, response.status, response.body)
       )
@@ -198,8 +233,9 @@ export class Api {
         ? [
             ["accept", "text/event-stream"],
             ["content-type", send.contentType],
+            ...this.#client,
           ]
-        : [["accept", "text/event-stream"]],
+        : [["accept", "text/event-stream"], ...this.#client],
       body: send?.body ?? null,
       lease: account.lease,
     };
@@ -237,7 +273,11 @@ export class Api {
     raw?: { contentType: string; body: Uint8Array },
     extra: [string, string][] = []
   ): Effect.Effect<Conditional<z.output<S>>, CoreError> {
-    const headers: [string, string][] = [["accept", "application/json"], ...extra];
+    const headers: [string, string][] = [
+      ["accept", "application/json"],
+      ...extra,
+      ...this.#client,
+    ];
     if (raw) headers.push(["content-type", raw.contentType]);
     else if (body !== undefined) headers.push(["content-type", "application/json"]);
     if (etag) headers.push(["if-none-match", etag]);

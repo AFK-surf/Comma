@@ -16,6 +16,7 @@ defmodule AlertRouter.Catalog do
   @deployment_failure_runbook "https://github.com/AFK-surf/Comma/blob/main/docs/observability.md"
   @station_task_runbook "https://github.com/AFK-surf/Comma/blob/main/docs/salix/tasks-background-execution.md"
   @cloud_vm_canary_runbook "https://github.com/AFK-surf/Comma/blob/main/docs/observability.md"
+  @cloud_vm_runbook "https://github.com/AFK-surf/Comma/blob/main/.codex/skills/cf-vm-ops/SKILL.md"
 
   @catalog %{
     ["gcp_monitoring", "comma_alerting", "gke_oom_kill"] => %{
@@ -123,10 +124,11 @@ defmodule AlertRouter.Catalog do
       summary: "Cloud VM Task 委派无人应答",
       impact: "派到 Group Cloud VM 上的 Task 收到了新委派，但 VM 上的 station 没有回帖；Router 只能等超时，用户看到任务没有进展。",
       firing_latest:
-        "委派到阈值仍无 Worker 消息：vm_not_ready、station_offline、not_given，或 idle_no_reply、cannot_start（已通知 Router）；running、given_no_reply、桌面 station 只记日志。",
+        "委派到阈值仍无 Worker 消息：vm_not_ready、station_offline、not_given，或 idle_no_reply、cannot_start、station_left（已通知 Router）；running、given_no_reply、桌面 station 只记日志。",
       evidence_values: %{
         "cluster" => :gke_cluster,
-        "threshold" => "Cloud VM：VM 未就绪 / 离线 / 未交付 >= 10 分钟；闲着没回帖催促后再 10 分钟；起不来 10 分钟",
+        "threshold" =>
+          "Cloud VM：VM 未就绪 / 离线 / 未交付 >= 10 分钟；闲着没回帖催促后再 10 分钟；起不来 10 分钟；station 退出 Task 立即",
         "duration" => "达到事件门槛"
       },
       runbook: @station_task_runbook
@@ -168,6 +170,63 @@ defmodule AlertRouter.Catalog do
         "duration" => "无额外持续时间"
       },
       runbook: @cloud_vm_canary_runbook
+    },
+    ["gcp_monitoring", "comma_alerting", "cloud_vm_container_lost"] => %{
+      source: "gcp_monitoring",
+      source_accounts: [:staging],
+      environments: ~w(staging),
+      priority: "P2",
+      team: "comma",
+      service: "cloud_vm",
+      family: "availability",
+      summary: "Cloud VM Container 自行停止，磁盘丢失",
+      impact:
+        "一个 Group 的 Cloud VM Container 不是 Salix 停的，磁盘随之丢失；记录已归档回上一份快照，快照之后写的文件没有了，当时的 Task 会中断。",
+      firing_latest:
+        "Salix 写入 cloud_vm_container_lost 事件：reason 是 rollout（Cloudflare 运行时滚动升级）、exit_code 或 unknown；restored 说明有没有快照可还原。",
+      evidence_values: %{
+        "cluster" => :gke_cluster,
+        "threshold" => "一次 cloud_vm_container_lost 事件；一小时内只呼叫一次",
+        "duration" => "达到事件门槛"
+      },
+      runbook: @cloud_vm_runbook
+    },
+    ["gcp_monitoring", "comma_alerting", "cloud_vm_wake_slow"] => %{
+      source: "gcp_monitoring",
+      source_accounts: [:staging],
+      environments: ~w(staging),
+      priority: "P2",
+      team: "comma",
+      service: "cloud_vm",
+      family: "availability",
+      summary: "Cloud VM 唤醒过慢或反复失败",
+      impact: "Cloud VM 唤醒远超正常的 10 秒，或同一种失败半小时内反复出现；派到 Cloud VM 的 Task 要等很久才开始，或根本开始不了。",
+      firing_latest:
+        "1h 内 ok 唤醒 p95 超过 120 秒，或 30m 内同一失败 outcome 达到 3 次（含 other，不分 provider）；若 cloud_vm_container_lost 同时在响，多半是平台停了 Container 再从快照重来。",
+      evidence_values: %{
+        "threshold" => "ok 唤醒 p95 > 120s（1h），或单一失败 outcome ≥ 3 次（30m）",
+        "duration" => "无额外持续时间"
+      },
+      runbook: @cloud_vm_runbook
+    },
+    ["gcp_monitoring", "comma_alerting", "cloud_vm_stuck_state"] => %{
+      source: "gcp_monitoring",
+      source_accounts: [:staging],
+      environments: ~w(staging),
+      priority: "P2",
+      team: "comma",
+      service: "cloud_vm",
+      family: "availability",
+      summary: "Cloud VM 记录卡在过渡状态超过一小时",
+      impact:
+        "一个 Group 的 Cloud VM 记录在 creating、waking 或 archiving 里停了一小时以上；这个 Group 的 Cloud VM 不能用，reconciler 反复重试却没人知道。",
+      firing_latest:
+        "salix_vm_transitional_oldest_age_seconds 去掉 failed 后按 provider、state 取最大值 > 3600 秒并持续 10 分钟；告警只说明 provider 与 state，不说明哪个 Group。",
+      evidence_values: %{
+        "threshold" => "最老过渡态记录年龄 > 3600s，持续 10 分钟",
+        "duration" => "600s"
+      },
+      runbook: @cloud_vm_runbook
     },
     ["gcp_monitoring", "comma_alerting", "router_request_stalled"] => %{
       source: "gcp_monitoring",

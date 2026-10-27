@@ -35,6 +35,7 @@ defmodule CommaWeb.MixProject do
       {:salix_im, in_umbrella: true},
       {:salix_mcp, in_umbrella: true},
       {:salix_web, in_umbrella: true},
+      {:salix_meet_native, in_umbrella: true},
       {:bandit, "~> 1.5"},
       {:plug, "~> 1.16"},
       {:phoenix_pubsub, "~> 2.1"},

@@ -4,7 +4,8 @@ defmodule Comma.SystemFiles do
   its Agent VFS (`docs/product-features.md`, Files and navigation).
 
   Only the Workspace owner reaches it, as for the Condensed Workspace. Only
-  `/memory/**`, `/imports/**` and `/Comma/**` are visible. The owner may
+  `/memory/**`, `/imports/**` and `/Comma/**` are visible, with the Router's
+  instructions beside them, which the owner may also replace. The owner may
   create, replace or delete a memory file that `memory.write` could write
   (`SalixAgent.Tools.Memory.allowed_write_path?/1`), an episode of any date
   included. `/imports/**` is the raw archive of a migration and stays
@@ -97,15 +98,40 @@ defmodule Comma.SystemFiles do
     end
   end
 
-  @doc "The Router's effective instructions, read-only."
+  @doc "The Router's effective instructions and their `hash`."
   @spec instructions(map(), map(), String.t()) :: {:ok, map()} | {:error, term()}
   def instructions(user, session, group_id) do
     with {:ok, workspace} <- authorize(user, session, group_id),
          {:ok, content} <-
            workspace |> Comma.Salix.Client.get_router_instructions() |> salix_result() do
-      {:ok, %{"content" => content}}
+      {:ok, instructions_result(content)}
     end
   end
+
+  @doc """
+  Replaces the Router's instructions with `attrs["content"]`, if they still
+  have the optional `attrs["expected_hash"]`. Empty content clears them; that
+  is refused while the shared instructions would take over.
+  """
+  @spec write_instructions(map(), map(), String.t(), map()) :: {:ok, map()} | {:error, term()}
+  def write_instructions(user, session, group_id, attrs) do
+    with {:ok, content} <- content(attrs["content"]),
+         {:ok, expected} <- expected_hash(attrs["expected_hash"]),
+         {:ok, workspace} <- authorize(user, session, group_id),
+         {:ok, saved} <-
+           workspace
+           |> Comma.Salix.Client.set_router_instructions(content, expected_hash: expected)
+           |> salix_result() do
+      {:ok, instructions_result(saved)}
+    end
+  end
+
+  defp instructions_result(content),
+    do: %{
+      "content" => content,
+      "size" => byte_size(content),
+      "hash" => SalixStore.Crypto.hex(content)
+    }
 
   defp authorize(user, session, group_id) do
     with {:ok, workspace} <- Workspaces.authorize_group(user, session, group_id),
@@ -197,6 +223,7 @@ defmodule Comma.SystemFiles do
   defp salix_result({:error, :not_found}), do: {:error, :not_found}
   defp salix_result({:error, :too_large}), do: {:error, :file_too_large}
   defp salix_result({:error, {:forbidden, _message}} = error), do: error
+  defp salix_result({:error, {:bad_request, _message}} = error), do: error
   defp salix_result({:error, :bad_path}), do: {:error, {:bad_request, "path is invalid"}}
   defp salix_result({:error, :runtime_path}), do: {:error, {:bad_request, "path is invalid"}}
   defp salix_result({:error, reason}), do: {:error, {:unavailable, reason}}

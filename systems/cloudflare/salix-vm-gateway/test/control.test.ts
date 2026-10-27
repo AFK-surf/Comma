@@ -90,13 +90,13 @@ describe("persistent Container carrier control", () => {
     expect(start).not.toHaveBeenCalled();
     expect(control.observe()?.pending?.claim_id).toBe(permit.claim_id);
   });
-  test("an approved sealed discard supersedes import without late completion changing destruction", async () => {
+  test.each(["import", "ensure"] as const)("an approved sealed discard supersedes %s without late completion changing destruction", async (action) => {
     const disk = storage();
     const control = new ContainerControl(disk);
     await control.open(permit);
     const response = deferred<string>();
     const started = deferred<void>();
-    const importing = control.run(permit, "import", () => {
+    const importing = control.run(permit, action, () => {
       started.resolve(); return response.promise;
     }, () => ({ status: 200 }), { archive_operation: "snapshot-1" });
     const abandoned = expect(importing).rejects.toThrow("control_command_changed");

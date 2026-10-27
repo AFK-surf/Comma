@@ -182,25 +182,45 @@ defmodule SalixStore.AgentVMMProviderTest do
     assert omitted.status == "available"
     assert omitted.observation["admission"] == "accepting"
 
-    duplicate = %{
+    ready = %{
       "allocationId" => "allocation",
       "revision" => "1",
       "state" => "ALLOCATION_STATE_READY"
     }
 
-    assert {:error, :invalid_observation} =
-             AgentVMM.observe_registration(registration.id, "gateway", %{
-               "connectionEpoch" => "92",
-               "inventoryWatermark" => 0,
-               "inventory" => [duplicate, duplicate]
-             })
+    draining = Map.put(ready, "state", "ALLOCATION_STATE_DRAINING")
+    residual = Map.put(ready, "allocationId", "unknown-allocation")
+    fillers = Enum.map(1..64, &Map.put(residual, "allocationId", "residual-#{&1}"))
 
-    assert {:error, :invalid_observation} =
-             AgentVMM.observe_registration(registration.id, "gateway", %{
-               "connectionEpoch" => "93",
-               "inventoryWatermark" => 0,
-               "inventory" => [Map.put(duplicate, "allocationId", "unknown-allocation")]
-             })
+    # Inventory is disposable: a contradictory duplicate is dropped, unknown
+    # entries are residual Host facts, entries past the per-request bound wait
+    # for a later observation, and an unusable embedded observation is not
+    # stored. None of them blocks the hello or the renewal.
+    for {epoch, inventory, observation} <- [
+          {"92", [ready, draining], nil},
+          {"93", [residual, Map.delete(ready, "allocationId")], "not-an-observation"},
+          {"94", fillers ++ [draining], %{"sequence" => "0"}}
+        ] do
+      Repo.update_all(from(r in AgentVMM.Registration, where: r.id == ^registration.id),
+        set: [authorization_expires_at: DateTime.add(SystemsClock.utc_now(), 60, :second)]
+      )
+
+      hello = %{"connectionEpoch" => epoch, "inventoryWatermark" => 0, "inventory" => inventory}
+      hello = if observation, do: Map.put(hello, "observation", observation), else: hello
+
+      assert {:ok, :ok} = AgentVMM.observe_registration(registration.id, "gateway", hello)
+      assert Repo.get!(Compute.Allocation, "allocation").status == "ready"
+
+      assert Repo.get!(Compute.ProviderBinding, binding.id).observation["connection_epoch"] ==
+               epoch
+
+      refute Repo.get(AgentVMM.RegistrationObservation, registration.id)
+
+      assert DateTime.diff(
+               Repo.get!(AgentVMM.Registration, registration.id).authorization_expires_at,
+               SystemsClock.utc_now()
+             ) > 86_400
+    end
 
     assert {:ok, :ok} =
              AgentVMM.observe_registration(registration.id, "gateway", %{

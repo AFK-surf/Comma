@@ -14,10 +14,11 @@ defmodule SalixIM.LarkInbound do
       (`SalixIM.LarkThreads`).
     * `im.message.recalled_v1`: a message was recalled. It is recorded and
       asks nothing of the Router.
-    * `card.action.trigger`: a person pressed a button of a card. Only the
-      declassification card (`SalixIM.IFC.LarkConfirmation`) has buttons.
-      The press settles its request and never reaches the Router; the answer
-      to the callback is the card that replaces the question.
+    * `card.action.trigger`: a person pressed a button of a card. A press on
+      the declassification card (`SalixIM.IFC.LarkConfirmation`) settles its
+      request and never reaches the Router. A press on a question card
+      (`SalixIM.QuestionCard`) is the presser's message to the Router. Either
+      way the answer to the callback is the card that replaces the question.
 
   A message for the bot enters the Group's Router Conversation through
   `ProviderConnects.enqueue_group_router_im_provider_message/5`.
@@ -71,7 +72,8 @@ defmodule SalixIM.LarkInbound do
     ProviderConnects,
     ProviderObservations,
     ProviderReceipts,
-    ProviderRecipientIdentity
+    ProviderRecipientIdentity,
+    QuestionCard
   }
 
   alias SalixIM.IFC.LarkConfirmation
@@ -270,11 +272,14 @@ defmodule SalixIM.LarkInbound do
   defp dispatch(
          connect,
          %{"header" => %{"event_type" => "card.action.trigger"}} = envelope,
-         _request_id
+         request_id
        ) do
     cond do
       not card_action_shape?(envelope) ->
         {:error, :invalid_envelope}
+
+      QuestionCard.feishu_action?(envelope) ->
+        answer_question(connect, envelope, request_id)
 
       not LarkConfirmation.action?(envelope) ->
         {:ignored, :event_not_routed}
@@ -289,6 +294,64 @@ defmodule SalixIM.LarkInbound do
   end
 
   defp dispatch(_connect, _envelope, _request_id), do: {:ignored, :event_not_routed}
+
+  # A press on a question card (`SalixIM.QuestionCard`). The answer is that
+  # person's message in the card's chat, the card's own message ID standing
+  # for it, so the Router answers under the card. One answer per card: its
+  # receipt is claimed first, and a later press is told the card was
+  # answered. A delivery that failed gives the receipt back. The response
+  # replaces the card with who answered what.
+  defp answer_question(connect, envelope, request_id) do
+    case QuestionCard.feishu_answer(envelope) do
+      :invalid ->
+        {:ignored, :card_action_ignored}
+
+      {:empty, toast} ->
+        {:card, toast}
+
+      {:ok, answer} ->
+        operator = map(map(envelope["event"])["operator"])
+        receipt = "question:" <> answer["message_id"]
+
+        sender = %{
+          "sender_type" => "user",
+          "sender_id" => %{
+            "open_id" => answer["open_id"],
+            "union_id" => text(operator["union_id"]),
+            "user_id" => text(operator["user_id"])
+          }
+        }
+
+        message = %{
+          "message_id" => answer["message_id"],
+          "chat_id" => answer["chat_id"],
+          "chat_type" => if(answer["chat_type"] == "", do: "group", else: answer["chat_type"]),
+          "thread_id" => answer["thread_id"],
+          "message_type" => "text",
+          "content" => Jason.encode!(%{"text" => answer["said"]}),
+          "create_time" => Integer.to_string(SystemsClock.system_time(:millisecond))
+        }
+
+        case ProviderReceipts.record_lark(connect["connect_id"], receipt) do
+          {:ok, true} ->
+            with :ok <- observe_chat_and_sender(connect, message, sender),
+                 {:ok, _status} <-
+                   route(connect, envelope, message, sender, answer["message_id"], request_id) do
+              {:card, answer["response"]}
+            else
+              error ->
+                _ = ProviderReceipts.delete_lark(connect["connect_id"], receipt)
+                error
+            end
+
+          {:ok, false} ->
+            {:card, QuestionCard.feishu_answered_before(envelope)}
+
+          {:error, _reason} = error ->
+            error
+        end
+    end
+  end
 
   # The values of a card press this module and `LarkConfirmation` read. Lark
   # sends the `value` of a button as an object, or as its JSON string.

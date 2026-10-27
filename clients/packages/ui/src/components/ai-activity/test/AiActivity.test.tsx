@@ -1,4 +1,5 @@
 import { render, screen } from "@comma/test-utils/render";
+import { stubProperty } from "@comma/test-utils/stub-property";
 import { fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { act } from "react";
@@ -28,6 +29,19 @@ const longEvents = Array.from({ length: 9 }, (_, index) => ({
   summary: `Activity event ${index + 1}`,
 })) satisfies AiActivityEvent[];
 
+// The chat status bubble's wait: one activity whose summary ticks each second.
+function waiting(seconds: number) {
+  return (
+    <AiActivity
+      activityKey="Waiting for an update"
+      phase="execution"
+      shimmer
+      status="running"
+      summary={`Waiting for an update · ${seconds}s`}
+    />
+  );
+}
+
 describe("AiActivity", () => {
   it("keeps an active headline separate from public history", () => {
     const { container } = render(
@@ -50,6 +64,28 @@ describe("AiActivity", () => {
       container.querySelector(".comma-ai-activity-chevron")
     ).not.toBeInTheDocument();
     expect(container.querySelector('[data-shimmer="true"]')).toBeInTheDocument();
+  });
+
+  it("keeps the shimmer sweep running while the summary ticks in place", () => {
+    stubProperty(window, "CSS", { value: { supports: () => true } });
+    const sweeps: Array<{ cancel: () => void }> = [];
+    stubProperty(HTMLElement.prototype, "animate", {
+      value: () => {
+        const sweep = { cancel: vi.fn(), onfinish: null, playState: "running" };
+        sweeps.push(sweep);
+        return sweep;
+      },
+      writable: true,
+    });
+    const { rerender } = render(waiting(24));
+    vi.advanceTimersByTime(16);
+    expect(sweeps).toHaveLength(1);
+
+    rerender(waiting(25));
+    vi.advanceTimersByTime(16);
+    expect(screen.getByRole("status")).toHaveTextContent("Waiting for an update · 25s");
+    expect(sweeps).toHaveLength(1);
+    expect(sweeps[0]!.cancel).not.toHaveBeenCalled();
   });
 
   it("keeps the headline node stable while the first real history enables disclosure", () => {
@@ -806,6 +842,21 @@ describe("AiActivity", () => {
         frames.push(callback);
         return frames.length;
       });
+    const resizeObservers: {
+      callback: ResizeObserverCallback;
+      observer: ResizeObserver;
+    }[] = [];
+    const resizeObserver = vi
+      .spyOn(globalThis, "ResizeObserver")
+      .mockImplementation(function (callback: ResizeObserverCallback) {
+        const observer = {
+          disconnect() {},
+          observe() {},
+          unobserve() {},
+        } as unknown as ResizeObserver;
+        resizeObservers.push({ callback, observer });
+        return observer;
+      } as never);
     const { container, rerender } = render(
       <AiActivity
         activityKey="thinking"
@@ -816,30 +867,37 @@ describe("AiActivity", () => {
       />
     );
     const text = container.querySelector(".comma-ai-activity-text") as HTMLSpanElement;
-    const textBounds = vi
-      .spyOn(text, "getBoundingClientRect")
-      .mockReturnValueOnce({
-        bottom: 20,
-        height: 20,
-        left: 0,
-        right: 72,
-        top: 0,
-        width: 72,
-        x: 0,
-        y: 0,
-        toJSON: () => ({}),
-      } as DOMRect)
-      .mockReturnValueOnce({
-        bottom: 20,
-        height: 20,
-        left: 0,
-        right: 220,
-        top: 0,
-        width: 220,
-        x: 0,
-        y: 0,
-        toJSON: () => ({}),
-      } as DOMRect);
+    // The width the text was last laid out at reaches the swap through its
+    // size observer, never through a read during the commit.
+    act(() => {
+      for (const observer of resizeObservers) {
+        observer.callback(
+          [
+            {
+              borderBoxSize: [{ blockSize: 20, inlineSize: 72 }],
+              contentRect: { height: 20, width: 72 } as DOMRectReadOnly,
+              target: text,
+            } as unknown as ResizeObserverEntry,
+          ],
+          observer.observer
+        );
+      }
+    });
+    // The mount's own frames (the shimmer's read batch) run before the swap.
+    act(() => {
+      for (const frame of frames.splice(0)) frame(16);
+    });
+    const textBounds = vi.spyOn(text, "getBoundingClientRect").mockReturnValue({
+      bottom: 20,
+      height: 20,
+      left: 0,
+      right: 220,
+      top: 0,
+      width: 220,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    } as DOMRect);
     frames.length = 0;
     requestFrame.mockClear();
 
@@ -857,6 +915,14 @@ describe("AiActivity", () => {
     const disclosure = screen.getByRole("button", {
       name: /Reading the workspace.*fs\.read_file/,
     });
+    // The commit itself reads no layout; the frame's shared read phase
+    // measures the swapped text and starts the chevron where the old text ended.
+    expect(textBounds).not.toHaveBeenCalled();
+    expect(disclosure).not.toHaveStyle({
+      "--ai-activity-chevron-shift": "-148px",
+    });
+    act(() => frames.shift()?.(16));
+    expect(textBounds).toHaveBeenCalledOnce();
     expect(disclosure).toHaveStyle({
       "--ai-activity-chevron-shift": "-148px",
     });
@@ -870,6 +936,7 @@ describe("AiActivity", () => {
       "--ai-activity-chevron-shift": "0px",
     });
     textBounds.mockRestore();
+    resizeObserver.mockRestore();
     requestFrame.mockRestore();
   });
 

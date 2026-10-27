@@ -40,11 +40,14 @@ import kotlin.math.roundToInt
  *
  * It must be the list's parent, not a sibling laid over it: only the parent sees what the list
  * draws. The rubber-band translation the scroll module applies inside the list's own draw is part
- * of what is recorded, so the blur follows overscroll too.
+ * of what is recorded, so the blur follows overscroll too. Something drawn in a layer above the
+ * chrome reaches the blur only through [overlay].
  *
  * [Mode.FADE] draws only the tint ramp: the gradient fallback, with no blur and no extra pass.
  * Bands and top patches are skipped while nothing is scrolled under them ([setTopOverflow],
- * [setBottomOverflow]): a blurred flat background looks exactly like the flat background.
+ * [setBottomOverflow]): a blurred flat background looks exactly like the flat background. The
+ * last reply rests in the bottom band's ramp, so that band rises from under the chrome with the
+ * content going under it instead of switching on at the first pixel.
  */
 class BackdropBlurLayout @JvmOverloads constructor(
     context: Context,
@@ -126,7 +129,23 @@ class BackdropBlurLayout @JvmOverloads constructor(
     /** Whether content is scrolled under the top band; the band is not drawn while it is not. */
     fun setTopOverflow(overflow: Boolean) = top.setOverflow(overflow)
 
-    fun setBottomOverflow(overflow: Boolean) = bottom.setOverflow(overflow)
+    /**
+     * How far content is scrolled under the bottom band, in px. The band is lowered under the chrome
+     * by its ramp's height less this, so it is all the way up once that much is under it and gone at 0.
+     */
+    fun setBottomOverflow(overflowPx: Int) = bottom.setOverflow(overflowPx)
+
+    /**
+     * Drawn over the children as part of what is frosted: the piece of a transition in a layer above
+     * the chrome (a message flying in) that is under the chrome, so it is frosted like the content.
+     * Its owner records it; this layout does not need to draw again when it changes.
+     */
+    var overlay: RenderNode? = null
+        set(value) {
+            if (field === value) return
+            field = value
+            invalidate()
+        }
 
     /** Whether the last frame drew a blur pass; for tests and benchmarks. */
     val isBlurring: Boolean get() = mode == Mode.BLUR && (top.drawsBlur || bottom.drawsBlur || drawsPatches || drawsFloating)
@@ -144,10 +163,14 @@ class BackdropBlurLayout @JvmOverloads constructor(
         drawsFloating = blur && floating.isNotEmpty()
         if (!top.drawsBlur && !bottom.drawsBlur && !drawsPatches && !drawsFloating) {
             super.dispatchDraw(canvas)
+            drawOverlay(canvas)
         } else {
             content.setPosition(0, 0, width, height)
             val recording = content.beginRecording(width, height)
-            try { super.dispatchDraw(recording) } finally { content.endRecording() }
+            try {
+                super.dispatchDraw(recording)
+                drawOverlay(recording)
+            } finally { content.endRecording() }
             canvas.drawRenderNode(content)
             top.drawBlur(canvas)
             bottom.drawBlur(canvas)
@@ -158,6 +181,11 @@ class BackdropBlurLayout @JvmOverloads constructor(
             top.drawTint(canvas)
             bottom.drawTint(canvas)
         }
+    }
+
+    /** Only a hardware canvas draws render nodes; a software draw has no transition running over it. */
+    private fun drawOverlay(canvas: Canvas) {
+        if (canvas.isHardwareAccelerated) overlay?.let(canvas::drawRenderNode)
     }
 
     private fun rebuild() {
@@ -231,6 +259,8 @@ class BackdropBlurLayout @JvmOverloads constructor(
         private var insetPx = 0
         var overflow = false
             private set
+        /** How far a bottom band has come up from under its chrome; see [setBottomOverflow]. */
+        private var risePx = Int.MAX_VALUE
         var drawsBlur = false
         private var recorded = false
 
@@ -256,7 +286,21 @@ class BackdropBlurLayout @JvmOverloads constructor(
             invalidate()
         }
 
-        private val bandTop: Int get() = if (fromTop) 0 else height - insetPx - heightPx
+        fun setOverflow(px: Int) {
+            setOverflow(px > 0)
+            val sunk = sinkPx
+            risePx = px.coerceAtLeast(0)
+            // Rising only shifts the source window, as the IME does; the shaders and effects stay.
+            if (sinkPx != sunk) {
+                recorded = false
+                invalidate()
+            }
+        }
+
+        /** How far below its place the band is drawn while it comes up; never for the top band. */
+        private val sinkPx: Int get() = (heightPx - solidPx - risePx).coerceAtLeast(0)
+
+        private val bandTop: Int get() = if (fromTop) 0 else height - insetPx - heightPx + sinkPx
 
         fun rebuild() {
             // Geometry and size changes all come through here; the layers' shifted copies follow them.

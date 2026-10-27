@@ -30,11 +30,24 @@ defmodule SalixEnv.ComputeReconciler do
   @claim_retry_ms 5_000
   @max_retry_ms 60_000
   @concurrency 4
+  # The fleet gauges (SalixWeb.CloudVM.FleetMetrics): one aggregate read per
+  # node per minute on the existing sweep tick, no timer of its own.
+  @fleet_metrics_every_ms 60_000
   @cursor_id "compute-reconciler-agent-vmm"
   @provider "agent_vmm"
   @shell_observation_due_sql """
   ? = 'available' AND (?->>'connection_epoch') IS NOT NULL
-  AND (?->>'runtime_verified_host_epoch') IS DISTINCT FROM (?->>'connection_epoch')
+  AND ((?->>'runtime_verified_host_epoch') IS DISTINCT FROM (?->>'connection_epoch')
+    OR NOT EXISTS (
+      SELECT 1 FROM agent_vmm_sessions s
+      JOIN compute_runtime_instances r ON r.id = s.runtime_instance_id
+      WHERE r.workload_id = ? AND r.generation = ?
+        AND r.allocation_id = ? AND s.allocation_id = r.allocation_id
+        AND s.allocation_generation = ? AND s.registration_id = ?
+        AND s.status = 'ready' AND s.expires_at > ?
+        AND s.gateway_instance_id = (?->>'gateway_instance_id')
+        AND s.connection_epoch = (?->>'connection_epoch')
+    ))
   """
   @runtime_ready_sql """
   NOT EXISTS (
@@ -113,7 +126,7 @@ defmodule SalixEnv.ComputeReconciler do
   defp reconcile_with_budget(provider, allocation, workload, opts) do
     confirmation =
       if provider == "cloudflare",
-        do: apply(SalixWeb.ComputeProviders.Cloudflare, :confirm_completed_wake, [workload]),
+        do: apply(SalixWeb.ComputeProviders.Cloudflare, :reconcile_wake, [workload, opts]),
         else: :continue
 
     case confirmation do
@@ -243,73 +256,6 @@ defmodule SalixEnv.ComputeReconciler do
 
       %{workload_id: workload_id, generation: generation, retry: "scheduled"}
     end)
-  end
-
-  @doc "Open one explicit restore retry for the exact observed Group, target, wake, and budget."
-  def retry_group_restore(group_id, expected) when is_binary(group_id) and is_map(expected) do
-    case Compute.update_group_workload(group_id, fn current ->
-           workload = Repo.get!(Compute.Workload, current["workload_id"])
-
-           claim =
-             Repo.one(
-               from(c in Compute.ReconcilerClaim,
-                 where:
-                   c.provider == "cloudflare" and c.workload_id == ^workload.id and
-                     c.generation == ^workload.generation,
-                 lock: "FOR UPDATE"
-               )
-             )
-
-           now = SystemsClock.utc_now()
-           started = current["last_wake_at"]
-           error = (claim && claim.last_error) || %{}
-
-           identity = %{
-             "workload_id" => workload.id,
-             "generation" => workload.generation,
-             "wake_operation_id" => current["wake_operation_id"],
-             "restore_deadline_ms" => if(is_integer(started), do: started + 2_700_000),
-             "provider_resource_name" => current["provider_resource_name"],
-             "profile_key" => get_in(current, ["provider_spec", "profile_key"]),
-             "archive_operation" => get_in(current, ["archive", "operation"]),
-             "cloudflare_control" => current["cloudflare_control"],
-             "claim_error" => error
-           }
-
-           if (current["provider"] == "cloudflare" and current["status"] == "waking" and
-                 workload.desired_state == "ready" and identity == expected and
-                 is_binary(identity["wake_operation_id"]) and
-                 is_binary(identity["archive_operation"]) and is_integer(started) and
-                 started + 2_700_000 <= DateTime.to_unix(now, :millisecond) and
-                 error["kind"] == "action_required" and
-                 error["code"] in [
-                   "group_archive_restore_expired",
-                   "group_provider_recovery_expired"
-                 ] and
-                 not is_nil(claim) and
-                 get_in(current, ["cloudflare_control", "sealed"]) != true) &&
-                (is_nil(claim.lease_expires_at) or
-                   DateTime.compare(claim.lease_expires_at, now) != :gt) do
-             Repo.update_all(from(c in Compute.ReconcilerClaim, where: c.id == ^claim.id),
-               set: [last_error: %{}, next_retry_at: now, updated_at: now]
-             )
-
-             Map.put(current, "last_wake_at", DateTime.to_unix(now, :millisecond))
-           else
-             {:error, :recovery_changed}
-           end
-         end) do
-      {:ok, current, _previous} ->
-        {:ok,
-         %{
-           workload_id: current["workload_id"],
-           generation: expected["generation"],
-           retry: "scheduled"
-         }}
-
-      {:error, _} = error ->
-        error
-    end
   end
 
   @doc "Request an archived Group wake, reopening only a recovery superseded by a later archive."
@@ -565,7 +511,8 @@ defmodule SalixEnv.ComputeReconciler do
       interval_ms: Keyword.get(opts, :interval_ms, @default_interval_ms),
       enabled: Keyword.get(opts, :start_sweeper?, true),
       tasks: %{},
-      timer: nil
+      timer: nil,
+      fleet_metrics_at: nil
     }
 
     {:ok, if(state.enabled, do: schedule_sweep(state, 0), else: state)}
@@ -585,7 +532,7 @@ defmodule SalixEnv.ComputeReconciler do
 
   @impl true
   def handle_info(:sweep, state) do
-    state = %{state | timer: nil}
+    state = %{state | timer: nil} |> maybe_emit_fleet_metrics()
     slots = @concurrency - map_size(state.tasks)
 
     {state, more?} =
@@ -676,6 +623,24 @@ defmodule SalixEnv.ComputeReconciler do
 
         schedule_sweep(%{state | tasks: tasks}, 0)
     end
+  end
+
+  defp maybe_emit_fleet_metrics(state) do
+    now = SystemsClock.monotonic_time(:millisecond)
+
+    if is_nil(state.fleet_metrics_at) or now - state.fleet_metrics_at >= @fleet_metrics_every_ms do
+      _ = emit_fleet_metrics()
+      %{state | fleet_metrics_at: now}
+    else
+      state
+    end
+  end
+
+  @doc "Publish the Group Cloud VM fleet gauges (`SalixWeb.CloudVM.FleetMetrics.emit/1`)."
+  @spec emit_fleet_metrics(keyword()) :: :ok | {:error, term()}
+  def emit_fleet_metrics(opts \\ []) do
+    # salix_web sits above salix_env, as the Cloudflare provider does.
+    apply(SalixWeb.CloudVM.FleetMetrics, :emit, [opts])
   end
 
   defp schedule_sweep(state, delay) do
@@ -884,7 +849,7 @@ defmodule SalixEnv.ComputeReconciler do
                   fragment("?->>'group_default' = 'true'", w.spec) and
                   (w.desired_state != "ready" or
                      fragment("? #>> '{archive,wake_requested_at}' IS NOT NULL", w.spec) or
-                     w.observed_state in ["creating", "ready", "waking", "archiving"])) or
+                     w.observed_state in ["creating", "ready", "waking", "archiving", "pending"])) or
                (b.provider == "agent_vmm" and
                   fragment("COALESCE(?->>'group_default', '') <> 'true'", w.spec) and
                   (w.observed_state != w.desired_state or
@@ -907,6 +872,14 @@ defmodule SalixEnv.ComputeReconciler do
                           b.status,
                           b.observation,
                           a.provider_observation,
+                          b.observation,
+                          w.id,
+                          w.generation,
+                          a.id,
+                          a.generation,
+                          b.provider_ref,
+                          ^now,
+                          b.observation,
                           b.observation
                         ))) and
                   b.provider == "agent_vmm")),
@@ -957,8 +930,18 @@ defmodule SalixEnv.ComputeReconciler do
           claim.generation == w.generation and
           (claim.lease_expires_at > ^now or claim.next_retry_at > ^now or
              fragment(
-               "?->>'kind' = 'action_required' AND COALESCE(?->>'code', '') <> 'runtime_recovery_expired'",
+               """
+               ?->>'kind' = 'action_required'
+               AND COALESCE(?->>'code', '') <> 'runtime_recovery_expired'
+               AND NOT (? = 'cloudflare'
+                 AND (? = 'waking' OR COALESCE(? #>> '{archive,archive_reason}', '') = 'disposable_reset')
+                 AND COALESCE(?->>'code', '') IN ('group_archive_restore_expired', 'group_provider_recovery_expired'))
+               """,
                claim.last_error,
+               claim.last_error,
+               b.provider,
+               w.observed_state,
+               w.spec,
                claim.last_error
              )),
       where:
@@ -986,7 +969,7 @@ defmodule SalixEnv.ComputeReconciler do
                 fragment("?->>'group_default' = 'true'", w.spec) and
                 (w.desired_state != "ready" or
                    fragment("? #>> '{archive,wake_requested_at}' IS NOT NULL", w.spec) or
-                   w.observed_state in ["creating", "ready", "waking", "archiving"])) or
+                   w.observed_state in ["creating", "ready", "waking", "archiving", "pending"])) or
              (b.provider == "agent_vmm" and
                 fragment("COALESCE(?->>'group_default', '') <> 'true'", w.spec) and
                 (w.observed_state != w.desired_state or
@@ -1009,6 +992,14 @@ defmodule SalixEnv.ComputeReconciler do
                         b.status,
                         b.observation,
                         a.provider_observation,
+                        b.observation,
+                        w.id,
+                        w.generation,
+                        a.id,
+                        a.generation,
+                        b.provider_ref,
+                        ^now,
+                        b.observation,
                         b.observation
                       ))) and
                 b.provider == "agent_vmm")) and is_nil(claim.id),
@@ -1146,6 +1137,19 @@ defmodule SalixEnv.ComputeReconciler do
     park_action_required(
       workload,
       %{"kind" => "action_required", "code" => "runtime_template_retired"},
+      claim_token
+    )
+  end
+
+  defp settle_claim(workload, {:error, :container_start_evidence_unavailable}, claim_token) do
+    park_action_required(
+      workload,
+      %{
+        "kind" => "action_required",
+        "code" => "container_start_evidence_unavailable",
+        "message" =>
+          "The previous container start is unknown. Inspect the container on its original Host before retrying."
+      },
       claim_token
     )
   end

@@ -68,7 +68,8 @@ export function runCommand(
     };
     const terminate = () => {
       signalProcessTree("SIGTERM");
-      clock.setTimer(1_000, () => signalProcessTree("SIGKILL"));
+      // A helper that ignores SIGTERM must die even while a test clock stands still.
+      realMainClock.setTimer(1_000, () => signalProcessTree("SIGKILL"));
     };
     const cancelTimeout = clock.setTimer(timeoutMs, () => {
       terminate();
@@ -107,12 +108,15 @@ function readNativeCommandError(
 ): { code: string; reason: string } | undefined {
   try {
     const value = JSON.parse(stdout) as {
-      error?: { code?: unknown; reason?: unknown };
+      error?: { code?: unknown; reason?: unknown; message?: unknown };
       failureCode?: unknown;
       failureStage?: unknown;
     };
     if (typeof value.error?.code === "string" && typeof value.error.reason === "string")
       return { code: value.error.code, reason: value.error.reason };
+    // A maintenance refusal such as `owner_busy` names only its code and message.
+    if (typeof value.error?.code === "string")
+      return { code: value.error.code, reason: "operation_failed" };
     if (typeof value.failureCode === "string")
       return {
         code: value.failureCode,

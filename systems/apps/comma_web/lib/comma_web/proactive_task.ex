@@ -229,8 +229,8 @@ defmodule CommaWeb.ProactiveTask do
 
   # Evidence for the Router, never sent as is. The Router reads the Task itself.
   defp text(%{"status" => "failed"} = task),
-    do: "The Task \"#{task["title"]}\" failed and may need the owner to decide what happens next."
+    do: "The Task \"#{task["title"]}\" failed and may need the user to decide what happens next."
 
   defp text(task),
-    do: "The Task \"#{task["title"]}\" stopped and asks the owner for a decision or input."
+    do: "The Task \"#{task["title"]}\" stopped and asks the user for a decision or input."
 end

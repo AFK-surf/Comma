@@ -119,7 +119,17 @@ defmodule SalixStore.S3 do
                }}
               | {:error, term()}
 
-  @optional_callbacks multipart_uploads: 2
+  @typedoc """
+  What a signed GET answers with: `:expires_in` seconds it stays valid (at most
+  a week), and the `:content_type` and `:content_disposition` it is served as.
+  """
+  @type presign_opt ::
+          {:expires_in, pos_integer()}
+          | {:content_type, String.t()}
+          | {:content_disposition, String.t()}
+  @callback presign_get(key(), [presign_opt()]) :: {:ok, String.t()} | {:error, term()}
+
+  @optional_callbacks multipart_uploads: 2, presign_get: 2
 
   # ---- public dispatch ----
 
@@ -152,6 +162,22 @@ defmodule SalixStore.S3 do
 
     if function_exported?(backend, :multipart_uploads, 2) do
       backend.multipart_uploads(prefix, opts)
+    else
+      {:error, :unsupported}
+    end
+  end
+
+  @doc """
+  A URL anyone holding it reads `key` from, in any byte ranges, straight from
+  the store until it expires: `{:error, :unsupported}` from a backend that
+  cannot sign one.
+  """
+  @spec presign_get(key(), [presign_opt()]) :: {:ok, String.t()} | {:error, term()}
+  def presign_get(key, opts \\ []) do
+    backend = backend()
+
+    if function_exported?(backend, :presign_get, 2) do
+      backend.presign_get(key, opts)
     else
       {:error, :unsupported}
     end

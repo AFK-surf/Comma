@@ -571,6 +571,75 @@ describe("WorkspaceConnectorRuntimeService", () => {
     });
   });
 
+  it("renews the credential in the same connection a quarter of its life before it expires", async () => {
+    const harness = createRuntimeHarness();
+    harness.runtime.prewarm("wsp_alpha");
+    const { path } = await harness.instance("wsp_alpha");
+    await writeStatus(path);
+    harness.clock.at(testEpoch + 5_399_000);
+    (await harness.renewal()).run();
+    await harness.renewal();
+    expect(harness.endpoint.mintCount()).toBe(1);
+
+    // The next credential, for the same device, in the same connection file;
+    // the live connection may still hold the old one, so it stays unrevoked.
+    harness.clock.at(testEpoch + 5_400_000);
+    const renewed = harness.instance("wsp_alpha", "salix_tok_2");
+    (await harness.renewal()).run();
+    expect((await renewed).path).toBe(path);
+    expect(harness.endpoint.requests.at(-1)?.body).toMatchObject({
+      expires_in_seconds: 7_200,
+      stable_device_id: "dev_1",
+    });
+    expect(harness.endpoint.revocations).toEqual([]);
+    // The connection the station reported stays the target: nothing reconnected.
+    await expect(
+      harness.runtime.registrationTarget("wsp_alpha")
+    ).resolves.toMatchObject({
+      connectorRunId: "run_live",
+    });
+
+    harness.clock.at(testEpoch + 7_200_000);
+    (await harness.renewal()).run();
+    await harness.endpoint.revoked("salix_tok_1");
+    expect(harness.endpoint.mintCount()).toBe(2);
+    await harness.runtime.close();
+    expect(harness.endpoint.revocations).toEqual([
+      { token: "salix_tok_1", workspaceId: "wsp_alpha" },
+      { token: "salix_tok_2", workspaceId: "wsp_alpha" },
+    ]);
+  });
+
+  it("a renewal that cannot write the connection keeps the credential in use", async () => {
+    const harness = createRuntimeHarness();
+    harness.runtime.prewarm("wsp_alpha");
+    const { path } = await harness.instance("wsp_alpha");
+    await writeStatus(path);
+    // Without the app's `synch` the runtime writes no connection.
+    await rm(join(tempDir, "synch"));
+    harness.clock.at(testEpoch + 5_400_000);
+    (await harness.renewal()).run();
+    // The watch goes on after the failed renewal.
+    await harness.renewal();
+    expect(harness.endpoint.mintCount()).toBe(2);
+    await writeFile(join(tempDir, "synch"), "#!/bin/sh\n", { mode: 0o755 });
+
+    // The next write of the connection still carries the credential in use,
+    // not the one the renewal minted but never wrote.
+    const scoped = harness.runtime.setScope("wsp_alpha", "local_file_read");
+    await harness.polling();
+    const written = JSON.parse(await readFile(path, "utf8")) as InstanceFile;
+    expect(written.connector).toMatchObject({
+      connector_token: "salix_tok_1",
+      scope: "local_file_read",
+    });
+    expect(harness.endpoint.revocations).toEqual([]);
+    await writeStatus(path, { scope: "local_file_read" });
+    await harness.poll();
+    await scoped;
+    await harness.runtime.close();
+  });
+
   it("mint failures back off and recover on a later attempt", async () => {
     const harness = createRuntimeHarness({ failFirstMints: 2 });
     const pending = harness.runtime.registrationTarget("wsp_alpha");

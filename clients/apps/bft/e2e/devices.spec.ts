@@ -126,12 +126,7 @@ test("lists the Cloud VM, the devices, Compute and Android setup", async ({ page
   await expect(
     vm.getByRole("switch", { name: "Use the Cloud VM in this Agent Swarm" })
   ).toBeChecked();
-  // The VM exists, so its runner is shown and cannot be changed.
-  await expect(
-    vm.getByText(
-      "The runner choice applies when the Cloud VM is first created. An existing Cloud VM stays where it is."
-    )
-  ).toBeVisible();
+  // This existing VM uses the runner, so removal is unavailable.
   await expect(vm.getByRole("button")).toHaveCount(0);
 
   const mac = m.getByRole("row", { name: /Mac Studio/ });
@@ -546,7 +541,9 @@ test("a swarm member reads the page without admin controls", async ({ page }) =>
   const m = main(page);
   await expect(m.getByRole("row", { name: /Mac Studio/ })).toBeVisible();
   await expect(cloudVmSection(page).getByText("Sleeping")).toBeVisible();
-  await expect(cloudVmSection(page).getByText("Cloudflare")).toBeVisible();
+  await expect(
+    cloudVmSection(page).getByText("Cloudflare", { exact: true })
+  ).toBeVisible();
   await expect(page.getByRole("button", { name: "Add device" })).toHaveCount(0);
   await expect(m.getByRole("switch")).toHaveCount(0);
   await expect(m.getByRole("button", { name: "Choose runner" })).toHaveCount(0);
@@ -572,7 +569,7 @@ test("before the Cloud VM exists, an admin chooses its runner once", async ({
         // The first answer is lost; the retry repeats the same request.
         if (writes(requests).length === 1) return { status: 503, body: {} };
         runner = { name: "Spare Mac mini", status: "processing" };
-        return ok({ notice: "The runner was asked to get ready for the Cloud VM." });
+        return ok({ notice: "The runner was asked to prepare the VMM Station." });
       }
       return undefined;
     },
@@ -591,9 +588,11 @@ test("before the Cloud VM exists, an admin chooses its runner once", async ({
   const vm = cloudVmSection(page);
   await expect(vm.getByText("Not created yet")).toBeVisible();
   await expect(vm.getByText("A new Cloud VM runs on")).toBeVisible();
-  await expect(vm.getByText("Cloudflare")).toBeVisible();
+  await expect(vm.getByText("Cloudflare", { exact: true })).toBeVisible();
   await vm.getByRole("button", { name: "Choose runner" }).click();
-  const dialog = page.getByRole("dialog", { name: "Choose a runner for the Cloud VM" });
+  const dialog = page.getByRole("dialog", {
+    name: "Choose a runner for the VMM Station",
+  });
   await dialog.getByRole("button", { name: /Runner/ }).click();
   await page.getByRole("option", { name: "Spare Mac mini" }).click();
   await dialog.getByRole("button", { name: "Use this runner" }).click();
@@ -601,7 +600,7 @@ test("before the Cloud VM exists, an admin chooses its runner once", async ({
   await dialog.getByRole("button", { name: "Use this runner" }).click();
 
   await expect(
-    page.getByText("The runner was asked to get ready for the Cloud VM.")
+    page.getByText("The runner was asked to prepare the VMM Station.")
   ).toBeVisible();
   await expect(dialog).toHaveCount(0);
   await expect(vm.getByText("Installing")).toBeVisible();
@@ -646,7 +645,9 @@ test("a second runner is refused with the server's reason", async ({ page }) => 
   );
 
   await cloudVmSection(page).getByRole("button", { name: "Choose runner" }).click();
-  const dialog = page.getByRole("dialog", { name: "Choose a runner for the Cloud VM" });
+  const dialog = page.getByRole("dialog", {
+    name: "Choose a runner for the VMM Station",
+  });
   await dialog.getByRole("button", { name: "Use this runner" }).click();
   await expect(
     dialog.getByText(

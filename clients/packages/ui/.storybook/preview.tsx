@@ -54,7 +54,11 @@ const preview: Preview = {
   },
   initialGlobals: {
     layoutInspector: "disabled",
-    motionPreference: "full",
+    // Story tests run with motion reduced: an assertion made after an element
+    // enters with a transition would otherwise hold only once the browser had
+    // drawn enough frames, which a busy runner may not do within waitFor's
+    // second. A story about motion itself sets `motionPreference: "full"`.
+    motionPreference: import.meta.env.MODE === "test" ? "reduced" : "full",
     theme: "light",
   },
   parameters: {

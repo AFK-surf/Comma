@@ -21,6 +21,7 @@ import type {
   TaskSummary,
 } from "./contract.ts";
 import type { Ctx } from "./ctx.ts";
+import type { HostedTasks } from "./hosted-tasks.ts";
 
 const MAX_ENTRIES = 1_000;
 const BATCH = 50;
@@ -79,6 +80,8 @@ export class TaskSummaries {
   /** The list in focus by group and conversation, while it holds. */
   #projected: Map<string, ProductInboxItem> | null = null;
   #accountKey: string | null = null;
+  /** Tasks Comma's server does not keep: their facts are read where they are kept, never asked of it. */
+  hosted: HostedTasks | undefined;
 
   constructor(ctx: Ctx) {
     this.#ctx = ctx;
@@ -203,7 +206,8 @@ export class TaskSummaries {
     const group = String(topic.group);
     if (!group) return;
     for (const id of idsOf(topic))
-      if (!this.#item(group, id)?.archiveVersion) this.#request(group, id);
+      if (!this.hosted?.owns(id) && !this.#item(group, id)?.archiveVersion)
+        this.#request(group, id);
   }
 
   #request(group: string, id: string): void {
@@ -285,11 +289,28 @@ export class TaskSummaries {
       : cached;
   }
 
+  /** A Task Comma's server does not keep, as where it is kept says it. */
+  #hosted(group: string, id: string): TaskSummary | null {
+    const account = this.#ctx.session.current();
+    return account && this.hosted?.owns(id)
+      ? this.hosted.summary(account, group, id)
+      : null;
+  }
+
+  /** The Tasks Comma's server does not keep changed: the topics that show one compute again. */
+  hostedChanged(): void {
+    const hosted = this.hosted;
+    if (!hosted) return;
+    this.#ctx.kernel.store.invalidateAll(
+      (t) => t.topic === "taskSummaries" && idsOf(t).some((id) => hosted.owns(id))
+    );
+  }
+
   #value(topic: Topic): TaskSummariesValue {
     const group = String(topic.group);
     return {
       summaries: idsOf(topic).flatMap((id) => {
-        const summary = this.#summary(group, id);
+        const summary = this.#hosted(group, id) ?? this.#summary(group, id);
         return summary
           ? [
               {

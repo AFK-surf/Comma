@@ -1,7 +1,8 @@
 // Sessions this machine's own Claude Code and Codex keep (run in a terminal, in ~/.claude and ~/.codex), for a person
 // to go on with one in a chat: ported from the Rust station's machine_sessions.rs (`list`, `find`, `conversation` and what
 // they read with), and the routes' answers (admin/mod.rs GET /machine-sessions, GET /machine-sessions/:runtime/:id).
-// Only read; blocking (many transcripts), so it runs in a reader thread.
+// Only read; blocking (many transcripts), so it runs in a reader thread. Only the runtimes whose local sign-in a Workspace
+// chose (accounts/sources.ts, `allowed`) are read: for another, nothing in its home is opened and nothing is listed.
 //
 // Directories are read in the order the file system gives (opendir, as Rust's read_dir), not sorted: which of equally
 // recent files comes first, and which project a Claude session is found in first, stay the Rust's.
@@ -13,15 +14,20 @@ import { HttpError } from "./views.ts";
 
 type Runtime = "claude" | "codex";
 
-/// Where the machine's runtimes keep their sessions (MachineRoots): Claude Code's projects/, Codex's sessions/.
-export type Roots = { claude: string; codex: string };
+/// Where the machine's runtimes keep their sessions (MachineRoots): Claude Code's projects/, Codex's sessions/; null for
+/// a runtime not to be read.
+export type Roots = { claude: string | null; codex: string | null };
 
-/// MachineRoots::of the station's environment: $HOME/.claude/projects, and $CODEX_HOME (else $HOME/.codex)/sessions.
-export function roots(): Roots {
+/// MachineRoots::of the station's environment, of the runtimes `allowed`: $HOME/.claude/projects, and $CODEX_HOME (else
+/// $HOME/.codex)/sessions.
+export function roots(allowed: readonly string[]): Roots {
   const home = process.env.HOME ?? ".";
   const codex = process.env.CODEX_HOME ? process.env.CODEX_HOME : join(home, ".codex");
-  return { claude: join(home, ".claude", "projects"), codex: join(codex, "sessions") };
+  return { claude: allowed.includes("claude") ? join(home, ".claude", "projects") : null, codex: allowed.includes("codex") ? join(codex, "sessions") : null };
 }
+
+/// The runtimes a read's args allow (`allowed`; none when absent).
+const allowedOf = (a: unknown): string[] => (Array.isArray(a) ? a.filter((r): r is string => typeof r === "string") : []);
 
 /// A session of the machine's, as the pages list it (MachineSession; `path` is not written).
 export type MachineSession = {
@@ -447,6 +453,7 @@ function read(runtime: Runtime, path: string, updatedAt: number, size: number): 
 /// codex_names: the names Codex gave its threads (session_index.jsonl beside sessions/: the latest line for an id counts).
 function codexNames(r: Roots): Map<string, string> {
   const names = new Map<string, string>();
+  if (r.codex === null) return names;
   for (const line of lines(join(dirname(r.codex), "session_index.jsonl"))) {
     const v = parse(line);
     const [id, name] = [str(get(v, "id")), str(get(v, "thread_name"))];
@@ -464,8 +471,8 @@ function named(s: MachineSession, names: Map<string, string>): MachineSession {
 /// something.
 function list(r: Roots, limit: number): MachineSession[] {
   const files: [Runtime, string, number, number][] = [];
-  for (const dir of readDir(r.claude)) {
-    const d = join(r.claude, dir.name);
+  for (const dir of r.claude === null ? [] : readDir(r.claude)) {
+    const d = join(r.claude!, dir.name);
     for (const file of readDir(d)) {
       const path = join(d, file.name);
       if (extension(file.name) !== "jsonl") continue;
@@ -474,7 +481,7 @@ function list(r: Roots, limit: number): MachineSession[] {
     }
   }
   const rollouts: string[] = [];
-  rolloutsIn(r.codex, rollouts);
+  if (r.codex !== null) rolloutsIn(r.codex, rollouts);
   for (const path of rollouts) {
     const st = stamp(path);
     if (st) files.push(["codex", path, st[0], st[1]]);
@@ -497,12 +504,14 @@ function list(r: Roots, limit: number): MachineSession[] {
 /// find: one of the machine's sessions, by its runtime and id.
 export function find(r: Roots, runtime: Runtime, id: string): MachineSession | null {
   if (id === "" || !/^[A-Za-z0-9-]+$/.test(id)) return null;
+  const root = r[runtime];
+  if (root === null) return null;
   let path: string | undefined;
   if (runtime === "claude") {
-    path = readDir(r.claude).map((d) => join(r.claude, d.name, `${id}.jsonl`)).find(isFile);
+    path = readDir(root).map((d) => join(root, d.name, `${id}.jsonl`)).find(isFile);
   } else {
     const rollouts: string[] = [];
-    rolloutsIn(r.codex, rollouts);
+    rolloutsIn(root, rollouts);
     const mine = rollouts
       .filter((p) => rolloutOf(p, id))
       .map((p) => [stamp(p)?.[0], p] as const)
@@ -529,26 +538,26 @@ function shown(s: MachineSession): Json {
 // ---- the routes' answers (admin/mod.rs) ----
 
 /// GET /machine-sessions: the machine's latest 100, each with the station's session already going on with it.
-export function machineSessions(s: Store): Json {
-  const found = list(roots(), 100);
+export function machineSessions(s: Store, allowed: unknown): Json {
+  const found = list(roots(allowedOf(allowed)), 100);
   // A HashMap collected from every session: of two going on with one, the last listed (least recently active) stands.
   const going = new Map<string, string>();
-  for (const r of listSessions(s)) for (const id of runtimeSessions(s, r.key)) going.set(`${r.runtime}\0${id}`, r.key);
+  for (const r of listSessions(s)) for (const ran of runtimeSessions(s, r.key)) going.set(`${ran.runtime}\0${ran.id}`, r.key);
   for (const m of found) m.session = going.get(`${m.runtime}\0${m.id}`) ?? null;
   return { sessions: found.map(shown) };
 }
 
 /// GET /machine-sessions/:runtime/:id: one of them to look at before going on with it: what was said, the latest
 /// `limit` (a usize, default 200, 1–1000).
-export function machineSession(s: Store, lang: Lang, runtime: string, id: string, limitParam: string | undefined): Json {
+export function machineSession(s: Store, lang: Lang, runtime: string, id: string, limitParam: string | undefined, allowed: unknown): Json {
   if (runtime !== "claude" && runtime !== "codex") throw new HttpError(404, `no runtime ${runtime}`);
   // str::parse::<usize>: digits, a `+` before them at most, no more than a u64 holds; else the default.
   const asked = limitParam !== undefined && /^\+?[0-9]+$/.test(limitParam) && BigInt(limitParam) <= 18446744073709551615n ? BigInt(limitParam) : 200n;
   const limit = Number(asked < 1n ? 1n : asked > 1000n ? 1000n : asked);
-  const found = find(roots(), runtime, id);
+  const found = find(roots(allowedOf(allowed)), runtime, id);
   if (found === null) throw new HttpError(404, tr(lang, "station.admin.noLocalSession", { id }));
   const said = conversation(runtime, found.path);
-  found.session = listSessions(s).find((r) => r.runtime === runtime && runtimeSessions(s, r.key).includes(found.id))?.key ?? null;
+  found.session = listSessions(s).find((r) => runtimeSessions(s, r.key).some((ran) => ran.runtime === runtime && ran.id === found.id))?.key ?? null;
   const total = said.length;
   return { session: shown(found), total, said: said.slice(Math.max(0, total - limit)) };
 }

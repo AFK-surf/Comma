@@ -43,6 +43,16 @@ const BRAND_MARKS = new Set([
   "DiscordBrandIcon",
 ]);
 
+// Central ships these as a fill in both packages, so no stroke rule reaches
+// them. They take the stroke-2 package (centralIconVariants.ts).
+const FILL_ONLY = new Set([
+  "ColumnWideAddIcon",
+  "LayoutColumnIcon",
+  "PanelLeftIcon",
+  "PanelRightIcon",
+  "ShapesPlusXSquareCircleIcon",
+]);
+
 describe("icon stroke weight", () => {
   it("renders adjustable strokes for outlined interface glyphs", () => {
     for (const [exportName, IconExport] of Object.entries(icons)) {
@@ -58,10 +68,14 @@ describe("icon stroke weight", () => {
       const Icon = IconExport as ComponentType;
       const view = render(<Icon />);
       // Filled paths cannot follow the shared stroke-width token.
-      expect(
-        view.container.querySelector('svg [stroke-width="2"], svg[stroke-width="2"]'),
-        entry.exportName
-      ).not.toBeNull();
+      const stroke = view.container.querySelector(
+        'svg [stroke-width="2"], svg[stroke-width="2"]'
+      );
+      if (FILL_ONLY.has(exportName)) {
+        expect(view.container.querySelector("[stroke-width]"), exportName).toBeNull();
+      } else {
+        expect(stroke, entry.exportName).not.toBeNull();
+      }
       view.unmount();
     }
   });
@@ -122,27 +136,25 @@ describe("iconRegistry", () => {
     });
   });
 
-  it("takes stroke-1.5 only for glyphs Central ships as a fill", () => {
-    // Everything else must be stroke-2 and let the global token thin it.
-    const preThinned = iconRegistry
+  it("takes stroke-1.5 only where the stroke-2 glyph has no 2 stroke to match", () => {
+    // Everything else is stroke-2: the shared stroke rule draws both packages'
+    // main strokes at the token width.
+    const realStroke = iconRegistry
       .filter((entry) => entry.variant.stroke === 1.5)
       .map((entry) => entry.exportName);
 
-    expect(preThinned.toSorted()).toEqual([
+    expect(realStroke.toSorted()).toEqual([
       "BookIcon",
-      "ColumnWideAddIcon",
-      // Central draws the cursor at 2.05556, which the global token's
-      // `[stroke-width="2"]` selector cannot match, let alone thin.
+      // Central draws the cursor at 2.05556 in the stroke-2 package, which the
+      // shared `[stroke-width="2"]` rule does not match.
       "Cursor1Icon",
-      "LayoutColumnIcon",
-      "PanelLeftIcon",
-      "PanelRightIcon",
-      "ShapesPlusXSquareCircleIcon",
+      "MacbookAirIcon",
+      "Smartwatch2Icon",
       "SquareGridCircleIcon",
     ]);
 
     for (const entry of iconRegistry) {
-      if (preThinned.includes(entry.exportName)) continue;
+      if (realStroke.includes(entry.exportName)) continue;
       expect(entry.variant.stroke, entry.exportName).toBe(2);
     }
   });

@@ -18,9 +18,45 @@ use super::Signal;
 /// Where the parent of a forked runner waits to hear it is ready (see `leave_session`); -1 when there is none.
 static READY_FD: AtomicI32 = AtomicI32::new(-1);
 
-/// `<dir>/<id>.sock`.
+/// The longest path a Unix socket takes, its NUL aside (`sun_path` is 104 bytes on macOS, 108 on Linux).
+#[cfg(target_os = "macos")]
+const SOCKET_PATH_MAX: usize = 103;
+#[cfg(not(target_os = "macos"))]
+const SOCKET_PATH_MAX: usize = 107;
+
+/// `<dir>/<id>.sock`, or, when that is too long for a socket (a data directory under `~/Library/Application Support`),
+/// `/tmp/stillfail-runner-<uid>/<hash of dir>-<id>.sock`: the hash keeps two directories' runners of one id apart.
 pub fn socket_path(dir: &Path, id: &str) -> PathBuf {
-    dir.join(format!("{id}.sock"))
+    let path = dir.join(format!("{id}.sock"));
+    if path.as_os_str().len() <= SOCKET_PATH_MAX {
+        return path;
+    }
+    // FNV-1a over the directory's bytes.
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in dir.as_os_str().as_encoded_bytes() {
+        hash = (*byte as u64 ^ hash).wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    // SAFETY: geteuid has no failure.
+    let uid = unsafe { libc::geteuid() };
+    PathBuf::from(format!("/tmp/stillfail-runner-{uid}/{hash:016x}-{id}.sock"))
+}
+
+/// Makes the directory `sock` goes in. One outside the runner's `--dir` is in /tmp, where anyone could have made it
+/// first: it is used only as this user's own directory, 0700, and not a link.
+pub fn create_socket_dir(sock: &Path, dir: &Path) -> Result<(), String> {
+    let parent = sock.parent().unwrap_or(dir);
+    if parent == dir {
+        return Ok(());
+    }
+    create_dir(parent).map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
+    let meta = fs::symlink_metadata(parent).map_err(|e| format!("cannot look at {}: {e}", parent.display()))?;
+    use std::os::unix::fs::MetadataExt;
+    // SAFETY: geteuid has no failure.
+    let uid = unsafe { libc::geteuid() };
+    if !meta.is_dir() || meta.uid() != uid || meta.mode() & 0o077 != 0 {
+        return Err(format!("{} is not a directory of this user's alone", parent.display()));
+    }
+    Ok(())
 }
 
 /// Whether a runner listens on `sock` now. Nothing a runner left on disk says so: the record of one that was killed, or
@@ -278,6 +314,20 @@ fn target(pid: i32, group: bool, exiting: bool) -> Result<i32, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_socket_too_long_for_its_directory_goes_under_tmp() {
+        let short = Path::new("/tmp/sfr");
+        assert_eq!(socket_path(short, "a"), PathBuf::from("/tmp/sfr/a.sock"));
+        let long = PathBuf::from(format!("/Users/someone/Library/Application Support/@comma/station/run/runners{}", "/x".repeat(10)));
+        let id = "claude-ember_c-27019641bb-9cdfc301a9";
+        let sock = socket_path(&long, id);
+        assert!(sock.as_os_str().len() <= SOCKET_PATH_MAX, "{}", sock.display());
+        assert!(sock.starts_with(format!("/tmp/stillfail-runner-{}", unsafe { libc::geteuid() })));
+        assert!(sock.to_string_lossy().ends_with(&format!("-{id}.sock")));
+        assert_eq!(socket_path(&long, id), sock);
+        assert_ne!(socket_path(&long.join("y"), id), sock);
+    }
 
     #[test]
     fn a_signal_goes_to_the_agent_alone_unless_to_its_group() {

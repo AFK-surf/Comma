@@ -187,6 +187,10 @@ const inlineElementRenderers = {
       />
     ),
   },
+  // Drawn after the message's text by its row (MessageMiniAppCards), outside the Markdown renderer.
+  "mini-app": {
+    render: () => null,
+  },
   // Setting a device up needs a phone near it: here the offer shows as the device's name.
   "device-setup-offer": {
     render: (part) => <span>{part.offer.name}</span>,
@@ -197,6 +201,10 @@ const inlineElementRenderers = {
   },
   // The answer's own words show as the person's message; the card shows what was picked.
   "question-answer": {
+    render: () => null,
+  },
+  // Drawn after the message (MessageMacAppItemCards), not in its text.
+  "mac-app-item": {
     render: () => null,
   },
   "inline-task": {
@@ -272,7 +280,7 @@ export function messageMarkdownElements(
       markdownText: (part) =>
         part.kind === "markdown"
           ? part.text
-          : part.kind === "question"
+          : part.kind === "question" || part.kind === "mini-app"
             ? ""
             : undefined,
       isBlock: (part) => part.kind === "dynamic-ui",
@@ -481,11 +489,6 @@ export function taskSummary(
       preview?.activity_status ??
       task.activityStatus ??
       "idle",
-    freshness:
-      projectedTask?.freshness ??
-      preview?.freshness?.state ??
-      task.freshness ??
-      "unknown",
     id:
       projectedTask?.conversationId ??
       preview?.id ??

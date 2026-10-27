@@ -150,6 +150,21 @@ defmodule SalixAgent.ToolsPeersTest do
            }}
 
     def computer_use(_agent_id, %{device_id: "device-laptop", environment_id: "laptop"}, %{
+          "action" => "get_app_state"
+        }),
+        do:
+          {:ok,
+           %{
+             "ok" => true,
+             "text" => "Computer Use state (ComputerUseNext Snapshot: s1)",
+             "image_path" => "capture-state.png",
+             "image_content_type" => "image/png",
+             "image_width" => 800,
+             "image_height" => 600,
+             "image_size_bytes" => 1234
+           }}
+
+    def computer_use(_agent_id, %{device_id: "device-laptop", environment_id: "laptop"}, %{
           "action" => "boom"
         }),
         do: {:ok, %{"ok" => false, "error" => "daemon exploded"}}
@@ -661,6 +676,39 @@ defmodule SalixAgent.ToolsPeersTest do
              "environment_id" => "laptop",
              "path" => "capture-example.png"
            }
+
+    # A background state keeps the accessibility tree beside its screenshot.
+    state =
+      Jason.decode!(
+        Peers.computer_use(
+          %{
+            "device_id" => "device-laptop",
+            "environment" => "laptop",
+            "action" => "get_app_state"
+          },
+          Map.put(ctx, :model_supports_images, true)
+        )
+      )
+
+    assert [
+             %{"type" => "text", "text" => "Computer Use state (ComputerUseNext Snapshot: s1)"},
+             %{"type" => "image", "file_ref" => %{"path" => "capture-state.png"}}
+           ] = state
+
+    # Without image input the state still returns its tree: the action already ran.
+    text_only =
+      Jason.decode!(
+        Peers.computer_use(
+          %{
+            "device_id" => "device-laptop",
+            "environment" => "laptop",
+            "action" => "get_app_state"
+          },
+          Map.put(ctx, :model_supports_images, false)
+        )
+      )
+
+    assert text_only == %{"result" => "Computer Use state (ComputerUseNext Snapshot: s1)"}
 
     # connector error envelope raises
     assert_raise RuntimeError, ~r/daemon exploded/, fn ->

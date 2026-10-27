@@ -177,7 +177,11 @@ defmodule MCPRuntimeE2E do
 
     mcp_tools = mcp_operation_tools!(tenant_key, agent_id, alias_name)
 
-    assert!(mcp_tools != [], "MCP tools were not listed with canonical operation ids")
+    assert!(
+      mcp_tools != [],
+      "MCP tools were not listed with canonical operation ids: " <>
+        listing_evidence(tenant_key, agent_id, group_id, bind_resp["binding_id"])
+    )
 
     _help_payload = tool_help!(tenant_key, agent_id, List.first(mcp_tools)["operation_id"])
 
@@ -637,6 +641,17 @@ defmodule MCPRuntimeE2E do
       |> to_string()
       |> String.starts_with?("mcp.#{alias_name}.")
     end)
+  end
+
+  # What the agent's mcp.list and the stored connection said, for a listing that came back empty after a
+  # discovery found tools.
+  defp listing_evidence(tenant_key, agent_id, group_id, binding_id) do
+    listed = session_tool_result!(tenant_key, agent_id, "mcp.list", %{})
+
+    stored =
+      SalixMCP.Store.get_binding_with_definition(tenant_id(), group_id, binding_id)
+
+    "mcp.list=#{inspect(listed, limit: :infinity)} stored=#{inspect(stored, limit: :infinity)}"
   end
 
   defp tool_help!(tenant_key, agent_id, operation_id) do
@@ -1577,7 +1592,11 @@ defmodule MCPRuntimeE2E do
 
     tools = mcp_operation_tools!(tenant_key, agent_id, alias_name)
 
-    assert!(tools != [], "device MCP tools were not listed with canonical operation ids")
+    assert!(
+      tools != [],
+      "device MCP tools were not listed with canonical operation ids: " <>
+        listing_evidence(tenant_key, agent_id, group_id, binding["binding_id"])
+    )
 
     tool =
       Enum.find(tools, &String.contains?(&1["operation_id"], "resolve")) ||

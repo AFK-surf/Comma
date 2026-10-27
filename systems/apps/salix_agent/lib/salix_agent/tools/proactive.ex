@@ -23,7 +23,7 @@ defmodule SalixAgent.Tools.Proactive do
     [
       tool(
         "state",
-        "Read the owner's canonical reminder states, bounded watches, automatic handoff budget, notification budget, whether the owner can see Home replies in the desktop App now (app_active), the owner's bound personal chats (personal_targets: the exact reply tool and arguments for a reminder you decided on while app_active is false) and the Drive path of their proactive notebook when it exists. Reuse exact keys/generations and linked Task creation receipts. Read source facts through existing Composio or conversation tools; no provider read or write occurs here.",
+        "Read the user's canonical reminder states, bounded watches, automatic handoff budget, notification budget, whether the user can see Home replies in the desktop App now (app_active), the user's bound personal chats (personal_targets: the exact reply tool and arguments for a reminder you decided on while app_active is false) and the Drive path of their proactive notebook when it exists. Reuse exact keys/generations and linked Task creation receipts. Read source facts through existing Composio or conversation tools; no provider read or write occurs here.",
         %{},
         [],
         :state,
@@ -31,7 +31,7 @@ defmodule SalixAgent.Tools.Proactive do
       ),
       tool(
         "watch",
-        "Follow one matter the owner asked about, such as a pull request, issue, page or thread, with the bundled proactive Loop. Slack, GitHub, Linear and Notion reads use the connected plugin MCP tool (mcp.slack.*, mcp.github.*, mcp.linear.*, mcp.notion.*) with a poll interval. Confirm the follow only after success. Comma already checks connected sources for new work; do not watch them again.\n\nDiscover read schemas with existing tools. Supply a stable key, source_ref, exact read recipe with a pinned account (or internal conversation), and either a provider trigger or a bounded poll interval of 5 minutes to 24 hours. Plugin MCP, internal and Routine reads have no provider trigger. Optional related read binds a field from the primary result for a thread/context read. This is enrollment, not another Task or permission to write to a source.",
+        "Follow one matter the user asked about, such as a pull request, issue, page or thread, with the bundled proactive Loop. Slack, GitHub, Linear and Notion reads use the connected plugin MCP tool (mcp.slack.*, mcp.github.*, mcp.linear.*, mcp.notion.*) with a poll interval. Confirm the follow only after success. Comma already checks connected sources for new work; do not watch them again.\n\nDiscover read schemas with existing tools. Supply a stable key, source_ref, exact read recipe with a pinned account (or internal conversation), and either a provider trigger or a bounded poll interval of 5 minutes to 24 hours. Plugin MCP, internal and Routine reads have no provider trigger. Optional related read binds a field from the primary result for a thread/context read. This is enrollment, not another Task or permission to write to a source.",
         %{
           "key" => string(),
           "intent" => string(),
@@ -56,7 +56,7 @@ defmodule SalixAgent.Tools.Proactive do
       ),
       tool(
         "act",
-        "Update proactive matter and reminder state: track, remind, notify, quiet, snooze, draft, handled, link_task, resume or source. Send replies through normal authorized reply tools, never through this state tool.\n\nUse track to record a freshly read source and observation without sending any message. Use remind with source_ref, observation_id, title, exact read recipe and future run_at to create an explicit reminder at a time the owner chose. After a background handoff, record your decision on its key before replying: notify spends the owner's notification budget for an automatic matter and fails when it is closed, quiet records why you stay quiet, and snooze with a reason rechecks the matter at run_at. Apply the owner's reply to the same canonical reminder across App/Telegram/WeChat: draft starts the offered work in a Task, snooze reminds later, handled ends it, and link_task or resume repair state. Supply its exact key from state and a stable request_id; snooze takes future Unix milliseconds run_at. Use source to inspect its fresh source. If an unquoted reply has several possible subjects, ask which one: omitting key only resolves a single active reminder. Handled does not close an external issue or complete a Task. Confirm only after success.",
+        "Update proactive matter and reminder state: track, remind, notify, quiet, snooze, draft, handled, link_task, resume or source. Send replies through normal authorized reply tools, never through this state tool.\n\nUse track to record a freshly read source and observation without sending any message. Use remind with source_ref, observation_id, title, exact read recipe and future run_at to create an explicit reminder at a time the user chose. After a background handoff, record your decision on its key before replying: notify spends the user's notification budget for an automatic matter and fails when it is closed, quiet records why you stay quiet, and snooze with a reason rechecks the matter at run_at. Apply the user's reply to the same canonical reminder across App/Telegram/WeChat: draft starts the offered work in a Task, snooze reminds later, handled ends it, and link_task or resume repair state. Supply its exact key from state and a stable request_id; snooze takes future Unix milliseconds run_at. Use source to inspect its fresh source. If an unquoted reply has several possible subjects, ask which one: omitting key only resolves a single active reminder. Handled does not close an external issue or complete a Task. Confirm only after success.",
         %{
           "action" => %{
             "type" => "string",
@@ -101,7 +101,7 @@ defmodule SalixAgent.Tools.Proactive do
   # The Router must tell the owner why a follow is not active and what fixes it.
   defp hint(:consented_source_required),
     do:
-      ". The owner has not connected this source through its Comma plugin, or the pinned account is not theirs. An account from composio.request_connection cannot be watched; ask the owner to connect the plugin in Plugins."
+      ". The user has not connected this source through its Comma plugin, or the pinned account is not theirs. An account from composio.request_connection cannot be watched; ask the user to connect the plugin in Plugins."
 
   defp hint(:proactive_source_required),
     do:
@@ -111,7 +111,7 @@ defmodule SalixAgent.Tools.Proactive do
     do: ". This source has no provider trigger here; use poll_interval_ms instead."
 
   defp hint(:comma_home_router_required),
-    do: ". Only the owner's Home Router session can enroll a watch."
+    do: ". Only the user's Home Router session can enroll a watch."
 
   defp hint(:invalid_proactive_watch),
     do:

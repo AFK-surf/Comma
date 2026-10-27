@@ -30,6 +30,28 @@ final class CommaStoreTests: XCTestCase {
         XCTAssertEqual(store.workspace?.name, "Mine", "The Workspace takes the name the list knows")
     }
 
+    /// The list has the Tasks the Workspace's stations host among the others, with where each runs and what it
+    /// cannot take.
+    func testTheListHasTheTasksTheStationsHost() async throws {
+        let harness = try StoreHarness()
+        let store = harness.store
+        await harness.start()
+        XCTAssertEqual(harness.core.topics("tasks").first?["hosted"] as? String, "1")
+        var hosted = item("station:st_a:7")
+        hosted["host"] = ["station": "st_a", "thread": "7", "machine": ["name": "Studio", "online": false]]
+        hosted["unsupported"] = ["archive", "pin", "share"]
+        harness.core.publish("tasks", matching: ["workspace": "w1", "hosted": "1"], [
+            "source": "live-sync", "activeWorkspaceId": "w1", "items": [hosted, item("a")], "workspaces": [],
+        ])
+        await until { store.tasksLoaded }
+        XCTAssertEqual(store.tasks.map(\.id), ["station:st_a:7", "a"])
+        XCTAssertEqual(store.tasks[0].host?.machine, "Studio")
+        XCTAssertEqual(store.tasks[0].host?.online, false)
+        XCTAssertEqual(store.tasks[0].unsupported, ["archive", "pin", "share"])
+        XCTAssertNil(store.tasks[1].host)
+        XCTAssertTrue(store.tasks[1].unsupported.isEmpty)
+    }
+
     /// A list kept on the device whose read failed is a list read and failed: Home leaves the skeleton.
     func testAKeptListWhoseReadFailedIsShownAsFailed() async throws {
         let harness = try StoreHarness()

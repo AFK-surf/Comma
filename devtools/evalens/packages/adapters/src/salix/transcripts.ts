@@ -322,7 +322,7 @@ function buildRouterVisibleTranscriptSeed(
       created_at: input.createdAt,
       conversation: {
         kind: "user_chat",
-        title: "Bridge chat",
+        title: "Comma",
         participants: [
           {
             actor_type: "user",

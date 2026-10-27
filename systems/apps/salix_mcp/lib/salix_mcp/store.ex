@@ -60,7 +60,8 @@ defmodule SalixMCP.Store do
 
     with :ok <- reject_public_id_input(attrs, "mcp_id"),
          :ok <- ensure_system_trust_input(attrs, tenant_id),
-         {:ok, normalized} <- Install.normalize(attrs) do
+         {:ok, normalized} <- Install.normalize(attrs),
+         :ok <- ensure_client_transport_system_only(normalized, tenant_id) do
       now = now()
       mcp_id = Ids.new_mcp_definition_id()
       normalized = scope_normalized_definition(normalized, tenant_id)
@@ -162,7 +163,8 @@ defmodule SalixMCP.Store do
     with {:ok, current, key} <- get_definition_record_with_key(mcp_id, tenant_id),
          :ok <- ensure_definition_mutable(current, tenant_id),
          :ok <- ensure_system_trust_input(attrs, current["tenant_id"]),
-         {:ok, normalized} <- maybe_normalize_definition_update(attrs) do
+         {:ok, normalized} <- maybe_normalize_definition_update(attrs),
+         :ok <- ensure_client_transport_system_only(normalized, current["tenant_id"]) do
       update_record(key, fn rec ->
         now = now()
 
@@ -335,6 +337,14 @@ defmodule SalixMCP.Store do
         "updated_at" => now
       }
 
+      # A binding to one person's own device (the Mac apps) names that person;
+      # SalixMCP.Provider runs it only for their requests.
+      rec =
+        case trim(attrs["owner_user_id"]) do
+          "" -> rec
+          owner -> Map.put(rec, "owner_user_id", owner)
+        end
+
       case put_new(Keys.ctl_mcp_group_binding(tenant_id, group_id, binding_id), rec) do
         {:ok, rec} ->
           _ =
@@ -383,6 +393,7 @@ defmodule SalixMCP.Store do
                |> maybe_put("config_values", attrs["config_values"])
                |> maybe_put_oauth_binding_refs(oauth_binding_refs_update)
                |> maybe_put("root_grants", attrs["root_grants"])
+               |> maybe_put("owner_user_id", attrs["owner_user_id"])
                |> maybe_put_enabled(attrs)
                |> maybe_clear_remote_oauth_binding(current)
                |> Map.update("revision", 1, &(int(&1, 1) + 1))
@@ -668,6 +679,23 @@ defmodule SalixMCP.Store do
       {:error, {:bad_request, "MCP definition trust is system-controlled"}}
     end
   end
+
+  # The Comma desktop app's own MCP servers are reached through the device's
+  # Connector (`client_mcp`, SalixMCP.Connection), which hands the message to the
+  # app's Main. Only a system definition (the Mac apps) names that transport.
+  defp ensure_client_transport_system_only(normalized, tenant_id) do
+    if system_definition_scope?(tenant_id) or not client_transport?(normalized) do
+      :ok
+    else
+      {:error,
+       {:bad_request, "The comma-client transport is reserved for Comma's own MCP servers"}}
+    end
+  end
+
+  defp client_transport?(%{"transport" => "comma-client"}), do: true
+  defp client_transport?(%{} = map), do: Enum.any?(Map.values(map), &client_transport?/1)
+  defp client_transport?(list) when is_list(list), do: Enum.any?(list, &client_transport?/1)
+  defp client_transport?(_value), do: false
 
   defp trust_input?(attrs) do
     salix_metadata = attrs |> Map.get("salix_metadata", %{}) |> normalize_map()

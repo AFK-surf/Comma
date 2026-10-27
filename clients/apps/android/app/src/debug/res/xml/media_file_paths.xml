@@ -1,6 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<!-- Debug builds also serve the media demo's sample files. Keep the first entry as in main. -->
-<paths>
-    <cache-path name="media" path="media-accounts/" />
-    <cache-path name="media_demo" path="media-demo/" />
-</paths>

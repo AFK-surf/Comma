@@ -1,4 +1,3 @@
-import { formatNumber, type CommaLocale } from "@comma/i18n";
 import { useCommaMessages } from "@comma/i18n/react";
 import { ScrollArea, type ScrollEdgeMask } from "@comma/ui/components/scroll-area";
 import type { ReactNode } from "react";
@@ -24,10 +23,9 @@ export function ThreadScrollViewport({
     handleScrollIntent,
     scrollRootRef,
     scrollToBottom,
-    unseenCount,
+    showScrollToBottom,
   },
   freezeContentInlineSizeOnWindowResize,
-  locale,
   overlay,
   resize: {
     handleMeasuredContentResize,
@@ -47,10 +45,9 @@ export function ThreadScrollViewport({
     | "handleScrollIntent"
     | "scrollRootRef"
     | "scrollToBottom"
-    | "unseenCount"
+    | "showScrollToBottom"
   >;
   freezeContentInlineSizeOnWindowResize: boolean;
-  locale: CommaLocale;
   /** A layer over the transcript, such as an open reply thread. */
   overlay?: ReactNode;
   resize: MeasuredThreadResize;
@@ -147,13 +144,14 @@ export function ThreadScrollViewport({
 
       {overlay}
 
-      {unseenCount > 0 ? (
-        <button className="comma-chat-new-pill" onClick={scrollToBottom} type="button">
-          ↓{" "}
-          {messagesApi.chat_new_messages({
-            count: unseenCount,
-            formattedCount: formatNumber(unseenCount, locale),
-          })}
+      {showScrollToBottom ? (
+        <button
+          aria-label={messagesApi.chat_back_to_bottom()}
+          className="comma-chat-new-pill"
+          onClick={scrollToBottom}
+          type="button"
+        >
+          <span aria-hidden="true">↓</span> {messagesApi.chat_back_to_bottom()}
         </button>
       ) : null}
     </div>

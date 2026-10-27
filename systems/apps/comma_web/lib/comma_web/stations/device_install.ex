@@ -12,7 +12,9 @@ defmodule CommaWeb.Stations.DeviceInstall do
   a request with no known public origin.
 
   The enrollment is issued as that member: the signed-in user of Settings >
-  Devices, or the requester of the Router's install tool turn.
+  Devices, or the requester of the Router's install tool turn. A Connector
+  command for a known member is theirs too (`{:connector, user_id}`): the
+  device it installs shows in their Settings > Devices.
   """
 
   @behaviour SalixEnv.DeviceInstall
@@ -21,10 +23,16 @@ defmodule CommaWeb.Stations.DeviceInstall do
 
   @impl true
   def station_command(tenant_id, group_id, name, requester) do
+    case issuer(requester) do
+      {:ok, issuer} -> station_command(tenant_id, group_id, name, requester, issuer)
+      :none -> :connector
+    end
+  end
+
+  defp station_command(tenant_id, group_id, name, requester, issuer) do
     with true <- Comma.Stations.Config.device_cutover?(),
          {:ok, %{"salix_tenant_id" => ^tenant_id} = workspace} <-
            Comma.Workspaces.get_by_group(group_id),
-         {:ok, issuer} <- issuer(requester),
          true <- uses_stations?(tenant_id, group_id, issuer),
          origin when is_binary(origin) <- Comma.Stations.Config.origin(origin(requester)) do
       # From here the member uses stations: a refusal is theirs, not a fallback.
@@ -41,7 +49,7 @@ defmodule CommaWeb.Stations.DeviceInstall do
          }}
       end
     else
-      _ -> :connector
+      _ -> {:connector, issuer}
     end
   end
 

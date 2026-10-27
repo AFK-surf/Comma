@@ -15,6 +15,7 @@ import {
 } from "./comma/api-schemas.ts";
 import type { TaskWorker, TaskWorkersValue } from "./contract.ts";
 import type { Ctx } from "./ctx.ts";
+import type { HostedTasks } from "./hosted-tasks.ts";
 import { readEvents } from "./sse.ts";
 
 export const TASK_FEED_WAIT_MS = 30_000;
@@ -41,16 +42,20 @@ export class TaskWorkers {
   /** Each followed Task's Worker as its last snapshot said (null: none bound yet); absent before one. */
   readonly #workers = new Map<string, TaskWorker | null>();
   #accountKey: string | null = null;
+  /** Tasks Comma's server does not keep: they have no Worker of Comma's, and none is followed for them. */
+  hosted: HostedTasks | undefined;
 
   constructor(ctx: Ctx) {
     this.#ctx = ctx;
     const { kernel } = ctx;
     kernel.source("taskWorkers", {
       start: (topic) => {
-        for (const id of idsOf(topic)) this.#retain(String(topic.group), id);
+        for (const id of idsOf(topic))
+          if (!this.hosted?.owns(id)) this.#retain(String(topic.group), id);
       },
       stop: (topic) => {
-        for (const id of idsOf(topic)) this.#release(String(topic.group), id);
+        for (const id of idsOf(topic))
+          if (!this.hosted?.owns(id)) this.#release(String(topic.group), id);
       },
       compute: (topic): Value => ({ ok: this.#value(topic) }),
       evictAfterMs: 0,
@@ -69,7 +74,9 @@ export class TaskWorkers {
     const group = String(topic.group);
     const value: TaskWorkersValue = {};
     for (const id of idsOf(topic)) {
-      const worker = this.#workers.get(keyFor(group, id));
+      const worker = this.hosted?.owns(id)
+        ? null
+        : this.#workers.get(keyFor(group, id));
       if (worker !== undefined) value[id] = worker;
     }
     return value;
@@ -173,5 +180,6 @@ function boundWorker(event: {
     participantId: bound.participant_id,
     // The feed omits a waiting Participant: listed and active means working.
     active: participant?.state === "active",
+    failed: participant?.state === "error",
   };
 }

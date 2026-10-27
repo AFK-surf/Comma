@@ -1,14 +1,23 @@
-import { assertMaintenanceCapable } from "./host-maintenance-protocol";
+import { MaintenanceCapabilityProbe } from "./host-maintenance-protocol";
 import { createHash, randomUUID } from "node:crypto";
-import { constants, realpathSync } from "node:fs";
-import { access, lstat, mkdir, open, readFile, rename, rm } from "node:fs/promises";
+import { constants, createReadStream, realpathSync } from "node:fs";
+import {
+  access,
+  lstat,
+  mkdir,
+  open,
+  readFile,
+  rename,
+  rm,
+  stat,
+} from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import extract from "extract-zip";
 import { DatabaseSync } from "node:sqlite";
-import { clockTimeoutSignal, realMainClock, type MainClock } from "../../clock";
+import { realMainClock, type MainClock } from "../../clock";
 import type { ComputeNodeState } from "@comma/native-bridge";
 import { getPublishedAssetUrl } from "../../../release-config";
 import publishedHost from "../../../../../../../.github/agent-vmm-host.json";
@@ -16,9 +25,27 @@ import publishedHost from "../../../../../../../.github/agent-vmm-host.json";
 const APP_NAME = "Agent VMM Host.app";
 const MAX_ARCHIVE_BYTES = 2 * 1024 ** 3;
 const MAX_EXTRACTED_BYTES = 8 * 1024 ** 3;
-const DOWNLOAD_TIMEOUT_MS = 15 * 60_000;
-const LOCK_WAIT_MS = DOWNLOAD_TIMEOUT_MS;
+/** A download that receives no byte for this long is given up; its `.part` file resumes on the next attempt. */
+const DOWNLOAD_IDLE_MS = 60_000;
+/**
+ * Without a caller deadline (Local maintenance), one preparation may take this long in total: waiting for another
+ * preparer, downloading, publishing. Automatic continuation passes its own overall deadline instead.
+ */
+const DEFAULT_PREPARATION_MS = 45 * 60_000;
+const PUBLISH_TIMEOUT_MS = 10 * 60_000;
 const LOCK_POLL_MS = 250;
+
+/** The Host preflight found too little free disk space. Nothing was installed. */
+export class HostPreflightError extends Error {
+  constructor(
+    readonly requiredBytes: number,
+    readonly availableBytes: number
+  ) {
+    super(
+      `Agent VMM Host needs ${Math.ceil(requiredBytes / 1024 ** 3)} GB of free disk space.`
+    );
+  }
+}
 export type HostPreparationState = NonNullable<ComputeNodeState["preparation"]>;
 export type HostCommand = (
   command: string,
@@ -92,9 +119,18 @@ interface PendingHostUpdate {
   requestId: string;
 }
 
+export interface HostPreparationOptions {
+  /** Epoch ms after which lock waits, downloads and helper commands give up. */
+  deadline?: number;
+}
+
 export interface HostPreparation {
   state(): HostPreparationState;
-  ensure(report: (state: HostPreparationState) => void): Promise<void>;
+  /** Prepares the Host, then runs its disk preflight (`HostPreflightError`) before any installation. */
+  ensure(
+    report: (state: HostPreparationState) => void,
+    options?: HostPreparationOptions
+  ): Promise<void>;
   rebuild(report: (state: HostPreparationState) => void): Promise<void>;
 }
 
@@ -106,7 +142,8 @@ export class AgentVMMHostPreparation implements HostPreparation {
     readonly config: HostConfiguration,
     private readonly run: HostCommand,
     private readonly fetcher: typeof fetch = fetch,
-    private readonly clock: MainClock = realMainClock
+    private readonly clock: MainClock = realMainClock,
+    readonly probe = new MaintenanceCapabilityProbe(run)
   ) {}
 
   state(): HostPreparationState {
@@ -135,14 +172,66 @@ export class AgentVMMHostPreparation implements HostPreparation {
     report(this.state());
   }
 
-  ensure(report: (state: HostPreparationState) => void) {
-    return this.prepare(false, report);
+  async ensure(
+    report: (state: HostPreparationState) => void,
+    options: HostPreparationOptions = {}
+  ) {
+    const deadline = options.deadline ?? this.clock.now() + DEFAULT_PREPARATION_MS;
+    await this.prepare(false, report, deadline);
+    try {
+      await this.preflight(deadline);
+    } catch (error) {
+      this.setPhase("failed", report, error);
+      throw error;
+    }
   }
 
   rebuild(report: (state: HostPreparationState) => void) {
     if (!this.config.sourcePath)
       throw new Error("Rebuild requires COMMA_VMM_SOURCE_PATH.");
-    return this.prepare(true, report);
+    return this.prepare(true, report, this.clock.now() + DEFAULT_PREPARATION_MS);
+  }
+
+  /**
+   * The Host's own resource preflight, before a managed installation creates its VM disk. An older Host without the
+   * command, or an answer Main cannot read, skips the check: the installation then reports its own failure.
+   */
+  private async preflight(deadline: number) {
+    let value: unknown;
+    try {
+      value = JSON.parse(
+        await this.run(
+          this.config.lifecyclePath,
+          ["preflight", "--json"],
+          undefined,
+          this.remaining(deadline, 30_000)
+        )
+      );
+    } catch {
+      return;
+    }
+    const answer = value as {
+      ok?: unknown;
+      issues?: { code?: unknown; requiredBytes?: unknown; availableBytes?: unknown }[];
+    } | null;
+    if (answer?.ok !== false || !Array.isArray(answer.issues)) return;
+    const disk = answer.issues.find((issue) => issue?.code === "insufficient_disk");
+    if (
+      disk &&
+      Number.isSafeInteger(disk.requiredBytes) &&
+      Number.isSafeInteger(disk.availableBytes)
+    )
+      throw new HostPreflightError(
+        disk.requiredBytes as number,
+        disk.availableBytes as number
+      );
+  }
+
+  /** The command timeout: its own bound, or less when the overall deadline is nearer. */
+  private remaining(deadline: number, bound: number) {
+    const left = deadline - this.clock.now();
+    if (left <= 0) throw new Error("Host preparation exceeded its deadline.");
+    return Math.min(bound, left);
   }
 
   /** Prepare a verified helper outside both the installed application and VM data.
@@ -171,7 +260,7 @@ export class AgentVMMHostPreparation implements HostPreparation {
     await mkdir(this.config.directory, { recursive: true, mode: 0o700 });
     let lock: DatabaseSync | undefined;
     try {
-      lock = await this.acquireLock();
+      lock = await this.acquireLock(this.clock.now() + DEFAULT_PREPARATION_MS);
       const sourceDirectory = join(this.config.directory, `.maintenance-${requestId}`);
       if (
         (await pathExists(sourceDirectory)) &&
@@ -187,8 +276,6 @@ export class AgentVMMHostPreparation implements HostPreparation {
         try {
           await this.verifyBundle(sourceApp);
           version = await this.bundleVersion(sourceApp);
-          if (!this.config.sourcePath && version.release_id !== artifact.release_id)
-            throw new Error("Cached maintenance bundle has a different release.");
         } catch {
           version = undefined;
           await rm(sourceApp, { recursive: true, force: true });
@@ -199,16 +286,20 @@ export class AgentVMMHostPreparation implements HostPreparation {
         await mkdir(prepared, { recursive: true, mode: 0o700 });
         const staged = this.config.sourcePath
           ? await this.build(prepared, phase)
-          : await this.download(prepared, phase, artifact);
+          : await this.download(
+              prepared,
+              phase,
+              this.clock.now() + DEFAULT_PREPARATION_MS,
+              artifact
+            );
         await this.verifyBundle(staged);
         await rename(staged, sourceApp);
         version = await this.bundleVersion(sourceApp);
       }
+      // The download was checked against the pinned digest when it landed; its release is the bundle's own.
       const targetReleaseId = this.config.sourcePath
         ? (this.buildReleaseId ?? version.release_id)
         : artifact.release_id;
-      if (version.release_id !== targetReleaseId)
-        throw new Error("Host bundle release does not match the selected artifact.");
       const digest = this.config.sourcePath
         ? {}
         : { artifactSha256: artifact.sha256, artifactSize: artifact.size };
@@ -236,11 +327,10 @@ export class AgentVMMHostPreparation implements HostPreparation {
   }
 
   /** SQLite releases the cross-process lock on process exit, so no stale lock deletion is needed.
-   * A second preparer waits for the current one, up to the download bound. One waiter per process
+   * A second preparer waits for the current one, up to the caller's overall deadline. One waiter per process
    * polls once per {@link LOCK_POLL_MS}; it opens no network connection while it waits.
    */
-  private async acquireLock() {
-    const deadline = this.clock.now() + LOCK_WAIT_MS;
+  private async acquireLock(deadline: number) {
     for (;;) {
       const lock = new DatabaseSync(join(this.config.directory, ".prepare.sqlite"));
       try {
@@ -274,7 +364,8 @@ export class AgentVMMHostPreparation implements HostPreparation {
 
   private async prepare(
     rebuild: boolean,
-    report: (state: HostPreparationState) => void
+    report: (state: HostPreparationState) => void,
+    deadline: number
   ) {
     const phase = (value: HostPreparationState["phase"]) =>
       this.setPhase(value, report);
@@ -282,7 +373,7 @@ export class AgentVMMHostPreparation implements HostPreparation {
     await mkdir(this.config.directory, { recursive: true, mode: 0o700 });
     let lock: DatabaseSync;
     try {
-      lock = await this.acquireLock();
+      lock = await this.acquireLock(deadline);
     } catch (error) {
       this.setPhase("failed", report, error);
       throw error;
@@ -312,7 +403,7 @@ export class AgentVMMHostPreparation implements HostPreparation {
       await mkdir(preparedDirectory, { recursive: true, mode: 0o700 });
       const stagedApp = this.config.sourcePath
         ? await this.build(preparedDirectory, phase)
-        : await this.download(preparedDirectory, phase);
+        : await this.download(preparedDirectory, phase, deadline);
       phase("installing");
       try {
         await this.verifyBundle(stagedApp);
@@ -329,7 +420,7 @@ export class AgentVMMHostPreparation implements HostPreparation {
             join(stagedApp, "Contents", "Helpers", "agent-vmm-lifecycle"),
             ["publish-host", "--source-app", stagedApp, ...this.config.serviceArgs],
             undefined,
-            10 * 60_000
+            this.remaining(deadline, PUBLISH_TIMEOUT_MS)
           );
         await this.activateSource();
       } else {
@@ -381,15 +472,14 @@ export class AgentVMMHostPreparation implements HostPreparation {
         { cause: error }
       );
     }
+    // Read only the fields this version knows; a newer owner may add others. Main never writes this file.
     if (
       !policy ||
       typeof policy !== "object" ||
       !("version" in policy) ||
-      policy.version !== 1 ||
-      !("uninstalled" in policy) ||
-      typeof policy.uninstalled !== "boolean" ||
+      !Number.isSafeInteger(policy.version) ||
       ("activeRequest" in policy && policy.activeRequest) ||
-      policy.uninstalled
+      ("uninstalled" in policy && policy.uninstalled === true)
     )
       throw new Error(
         "Continue local Host maintenance or explicitly reinstall Agent VMM before automatic setup."
@@ -398,11 +488,7 @@ export class AgentVMMHostPreparation implements HostPreparation {
 
   private async activateSource() {
     if (this.config.sourcePath) {
-      await assertMaintenanceCapable(
-        this.config.lifecyclePath,
-        this.run,
-        this.config.serviceArgs
-      );
+      await this.probe.assert(this.config.lifecyclePath, this.config.serviceArgs);
       // Managed enrollment reuses any healthy shared Host. Repair first so an
       // explicit source selection also selects the running service binary.
       await this.run(
@@ -427,11 +513,7 @@ export class AgentVMMHostPreparation implements HostPreparation {
     ) {
       throw new Error("The pending Host update record is invalid.");
     }
-    await assertMaintenanceCapable(
-      this.config.lifecyclePath,
-      this.run,
-      this.config.serviceArgs
-    );
+    await this.probe.assert(this.config.lifecyclePath, this.config.serviceArgs);
     await this.run(
       this.config.lifecyclePath,
       [
@@ -452,6 +534,7 @@ export class AgentVMMHostPreparation implements HostPreparation {
   private async download(
     directory: string,
     phase: (phase: HostPreparationState["phase"]) => void,
+    deadline: number,
     artifact?: typeof publishedHost
   ) {
     const selected = artifact ?? publishedHost;
@@ -480,41 +563,17 @@ export class AgentVMMHostPreparation implements HostPreparation {
     }
     if (!cached) {
       phase("downloading");
-      const partial = `${archive}.part`;
-      const response = await this.fetchArchive(url);
-      if (!response.ok || !response.body)
-        throw new Error(`Host download failed (HTTP ${response.status}).`);
-      if (new URL(response.url || url).protocol !== "https:")
-        throw new Error("Host download redirected outside HTTPS.");
-      const digest = createHash("sha256");
-      let bytes = 0;
-      const file = await open(partial, "w", 0o600);
-      try {
-        await pipeline(
-          Readable.fromWeb(response.body as Parameters<typeof Readable.fromWeb>[0]),
-          new Transform({
-            transform(chunk: Buffer, _encoding, callback) {
-              bytes += chunk.length;
-              if (bytes > MAX_ARCHIVE_BYTES) {
-                callback(new Error("Host archive exceeds 2 GiB."));
-                return;
-              }
-              digest.update(chunk);
-              callback(null, chunk);
-            },
-          }),
-          file.createWriteStream()
-        );
-      } finally {
-        await file.close();
-      }
-      const sha256 = digest.digest("hex");
+      const { sha256, bytes } = await this.downloadPart(archive, url, deadline);
       if (pinned && (bytes !== selected.size || sha256 !== selected.sha256)) {
+        // A wrong archive must not be resumed again.
+        await rm(`${archive}.part`, { force: true });
+        await rm(`${archive}.part.json`, { force: true });
         throw new Error(
           "Host download does not match the selected published artifact. Retry the download."
         );
       }
-      await rename(partial, archive);
+      await rename(`${archive}.part`, archive);
+      await rm(`${archive}.part.json`, { force: true });
       const record = await open(metadata, "w", 0o600);
       try {
         await record.writeFile(JSON.stringify({ url: url.href, sha256, size: bytes }));
@@ -554,16 +613,147 @@ export class AgentVMMHostPreparation implements HostPreparation {
     return join(extracted, APP_NAME);
   }
 
-  private async fetchArchive(initialUrl: URL) {
+  /**
+   * Downloads `url` into `<archive>.part`. A `.part` file left by an interrupted attempt of the same URL resumes with
+   * an HTTP Range request (and `If-Range` with the first answer's validator); a server that answers the whole file
+   * restarts it. The attempt stops after {@link DOWNLOAD_IDLE_MS} without a byte, or at the overall deadline.
+   */
+  private async downloadPart(archive: string, url: URL, deadline: number) {
+    const partial = `${archive}.part`;
+    const partRecord = `${archive}.part.json`;
+    let offset = 0;
+    let validator: string | undefined;
+    try {
+      const record = JSON.parse(await readFile(partRecord, "utf8")) as {
+        url?: unknown;
+        validator?: unknown;
+      };
+      if (record.url === url.href && (await pathExists(partial))) {
+        offset = (await stat(partial)).size;
+        validator = typeof record.validator === "string" ? record.validator : undefined;
+      }
+    } catch {
+      /* No resumable part. */
+    }
+    const controller = new AbortController();
+    const abort = (message: string) =>
+      controller.abort(new DOMException(message, "TimeoutError"));
+    const stopDeadline = this.clock.setTimer(
+      Math.max(0, deadline - this.clock.now()),
+      () => abort("Host download exceeded its deadline.")
+    );
+    let stopIdle = this.clock.setTimer(DOWNLOAD_IDLE_MS, () =>
+      abort("Host download stopped receiving data.")
+    );
+    const touch = () => {
+      stopIdle();
+      stopIdle = this.clock.setTimer(DOWNLOAD_IDLE_MS, () =>
+        abort("Host download stopped receiving data.")
+      );
+    };
+    try {
+      const headers: Record<string, string> =
+        offset > 0
+          ? {
+              range: `bytes=${offset}-`,
+              ...(validator ? { "if-range": validator } : {}),
+            }
+          : {};
+      const response = await this.fetchArchive(url, controller.signal, headers);
+      if (offset > 0 && response.status === 206) {
+        const range = /^bytes (\d+)-\d+\/(\d+|\*)$/.exec(
+          response.headers.get("content-range") ?? ""
+        );
+        if (Number(range?.[1]) !== offset) {
+          await response.body?.cancel();
+          offset = 0;
+          await rm(partial, { force: true });
+          await rm(partRecord, { force: true });
+          throw new Error(
+            "Host download resumed at another offset. Retry the download."
+          );
+        }
+      } else {
+        if (offset > 0 && response.status === 416) {
+          // The kept part no longer fits the file: start over on the next attempt.
+          await rm(partial, { force: true });
+          await rm(partRecord, { force: true });
+        }
+        if (!response.ok || !response.body)
+          throw new Error(`Host download failed (HTTP ${response.status}).`);
+        offset = 0;
+      }
+      if (!response.body)
+        throw new Error(`Host download failed (HTTP ${response.status}).`);
+      if (new URL(response.url || url).protocol !== "https:")
+        throw new Error("Host download redirected outside HTTPS.");
+      const nextValidator =
+        response.headers.get("etag") ??
+        response.headers.get("last-modified") ??
+        undefined;
+      if (offset === 0) {
+        const record = await open(partRecord, "w", 0o600);
+        try {
+          await record.writeFile(
+            JSON.stringify({
+              url: url.href,
+              ...(nextValidator ? { validator: nextValidator } : {}),
+            })
+          );
+        } finally {
+          await record.close();
+        }
+      }
+      const digest = createHash("sha256");
+      // The digest covers the whole archive, so a resumed part hashes its kept bytes first.
+      if (offset > 0)
+        for await (const chunk of createReadStream(partial, { end: offset - 1 }))
+          digest.update(chunk as Buffer);
+      let bytes = offset;
+      const file = await open(partial, offset > 0 ? "a" : "w", 0o600);
+      try {
+        await pipeline(
+          Readable.fromWeb(response.body as Parameters<typeof Readable.fromWeb>[0]),
+          new Transform({
+            transform(chunk: Buffer, _encoding, callback) {
+              touch();
+              bytes += chunk.length;
+              if (bytes > MAX_ARCHIVE_BYTES) {
+                callback(new Error("Host archive exceeds 2 GiB."));
+                return;
+              }
+              digest.update(chunk);
+              callback(null, chunk);
+            },
+          }),
+          file.createWriteStream()
+        );
+      } finally {
+        await file.close();
+      }
+      return { sha256: digest.digest("hex"), bytes };
+    } catch (error) {
+      if (controller.signal.aborted) throw controller.signal.reason as Error;
+      throw error;
+    } finally {
+      stopIdle();
+      stopDeadline();
+    }
+  }
+
+  private async fetchArchive(
+    initialUrl: URL,
+    signal: AbortSignal,
+    headers: Record<string, string>
+  ) {
     let url = initialUrl;
-    const signal = clockTimeoutSignal(this.clock, DOWNLOAD_TIMEOUT_MS);
     for (let redirects = 0; redirects <= 5; redirects += 1) {
       if (url.protocol !== "https:" || url.username || url.password) {
         throw new Error(
           "Host download requires HTTPS without URL credentials, including redirects."
         );
       }
-      const response = await this.fetcher(url, { signal, redirect: "manual" });
+      const response = await this.fetcher(url, { signal, redirect: "manual", headers });
       if (response.status < 300 || response.status >= 400) return response;
       const location = response.headers.get("location");
       await response.body?.cancel();
@@ -580,29 +770,13 @@ export class AgentVMMHostPreparation implements HostPreparation {
     phase("building");
     const source = this.config.sourcePath!;
     const guest = join(directory, "guest");
-    // The source owner builds Guest on Linux arm64 and Host on macOS. Existing
-    // source scripts report missing Docker/toolchain prerequisites directly.
+    // The source's Guest build runs `docker buildx` for linux/arm64 itself and reuses its build cache.
     await this.run(
-      "docker",
-      [
-        "run",
-        "--rm",
-        "--platform",
-        "linux/arm64",
-        "--privileged",
-        "--mount",
-        `type=bind,source=${source},target=/source`,
-        "--mount",
-        `type=bind,source=${directory},target=/output`,
-        "-w",
-        "/source",
-        "alpine:latest",
-        "sh",
-        "-lc",
-        "apk add --no-cache bash bzip2 coreutils cpio curl file findutils git go grep jq squashfs-tools tar xz && git config --global --add safe.directory /source && build/guest/build.sh /output/guest development runtime",
-      ],
+      join(source, "build", "guest", "build.sh"),
+      [guest, "development", "runtime"],
       undefined,
-      60 * 60_000
+      60 * 60_000,
+      { cwd: source }
     );
     this.buildReleaseId = `comma-dev-${randomUUID()}`;
     await this.run("make", ["headless-release"], undefined, 60 * 60_000, {

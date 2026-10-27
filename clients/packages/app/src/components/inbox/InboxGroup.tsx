@@ -2,7 +2,6 @@ import { uiClock } from "@comma/ui/clock";
 import { memo, useRef } from "react";
 import { Link } from "@tanstack/react-router";
 import {
-  contentFreshnessLabel,
   formatDate,
   formatNumber,
   messages as catalog,
@@ -29,7 +28,6 @@ export const InboxRow = memo(function InboxRow({
   workspaceId,
   title,
   status,
-  freshness,
   updatedAt,
   loop,
   selected,
@@ -42,7 +40,6 @@ export const InboxRow = memo(function InboxRow({
   ProductInboxItem,
   "conversationId" | "groupId" | "workspaceId" | "title" | "status" | "updatedAt"
 > & {
-  freshness: ProductInboxItem["freshness"];
   /** The row names the Loop's trigger type. */
   loop: ProductInboxItem["loop"];
   selected: boolean;
@@ -60,7 +57,6 @@ export const InboxRow = memo(function InboxRow({
   const openTasksFilter = useOpenTasksFilter();
   // Every Inbox row is a Task, so it draws the same status glyph as Properties.
   const statusBucket = taskStatusBucket(status);
-  const freshnessLabel = contentFreshnessLabel(freshness, locale);
   const relativeTime = formatCompactRelative(updatedAt, locale);
 
   return (
@@ -68,15 +64,10 @@ export const InboxRow = memo(function InboxRow({
       <Link
         aria-current={selected ? "page" : undefined}
         aria-haspopup="menu"
-        aria-label={[
-          title,
-          loop ? taskLoopLabel(loop, messages) : undefined,
-          freshnessLabel,
-        ]
+        aria-label={[title, loop ? taskLoopLabel(loop, messages) : undefined]
           .filter(Boolean)
           .join(", ")}
         className="block rounded-xl no-underline outline-none focus-visible:shadow-focus-gray"
-        data-freshness={freshness}
         data-task-status={status}
         data-testid="inbox-item"
         onClick={onOpen}
@@ -119,23 +110,9 @@ export const InboxRow = memo(function InboxRow({
           iconKey={statusBucket}
           layout="sidebar"
           selected={selected || menu.isOpen}
-          tail={
-            <span className="flex items-center gap-xs">
-              {freshnessLabel ? (
-                <span
-                  className={
-                    freshness === "stale"
-                      ? "text-fg-warning-secondary"
-                      : "text-tertiary"
-                  }
-                >
-                  {freshnessLabel}
-                </span>
-              ) : null}
-              <span>{relativeTime}</span>
-            </span>
-          }
+          tail={<span>{relativeTime}</span>}
           title={title}
+          titleIdentity={conversationId}
         />
       </Link>
       <InboxItemMenuPopover

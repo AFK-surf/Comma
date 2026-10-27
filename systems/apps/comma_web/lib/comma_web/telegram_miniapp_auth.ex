@@ -1,9 +1,11 @@
 defmodule CommaWeb.TelegramMiniAppAuth do
   @moduledoc """
-  Exchanges a signed Telegram Mini App launch for a short, Task-only Comma session.
+  Exchanges a signed Telegram Mini App launch for a short Comma session that
+  reads the Group's Tasks and runs the Workspace's Comma apps.
 
   Telegram signs the launch data. The active Comma product binding identifies the
-  User and Group. The URL parameters only select a view inside that Group.
+  User and Group. The URL parameters only select a view inside that Group: a
+  Task, or an app (`CommaWeb.MiniAppPort.telegram_app_url/3`).
 
   This adapter follows Telegram's Mini App HMAC format. `tgappex` collapses
   duplicate fields and does not check age or compare hashes in constant time.
@@ -62,7 +64,9 @@ defmodule CommaWeb.TelegramMiniAppAuth do
     do: {:error, :invalid_telegram_miniapp_login}
 
   def authorize_panel_request(conn, user, %{"session_source" => "channel_task_panel"} = session) do
-    with true <- panel_path?(conn.method, conn.request_path, session["group_id"]),
+    with true <-
+           panel_path?(conn.method, conn.request_path, session["group_id"]) or
+             app_path?(conn, session["workspace_id"]),
          {:ok, %{link: link, user: owner, workspace: workspace}} <-
            TelegramLinks.resolve_sender(session["channel_subject"]),
          true <- owner["id"] == user["id"] and workspace["id"] == session["workspace_id"],
@@ -185,7 +189,56 @@ defmodule CommaWeb.TelegramMiniAppAuth do
     end
   end
 
+  # A media URL for an attachment of the panel's Task, which its video player
+  # reads: the blob store's signed URL, which no later check stops before it
+  # expires (`Comma.ConversationAttachments.media_ttl_seconds/0`).
+  defp panel_path?("POST", path, group_id) when is_binary(group_id) do
+    case String.split(path, "/", trim: true) do
+      [
+        "v1",
+        "comma",
+        "groups",
+        ^group_id,
+        "conversations",
+        conversation_id,
+        "messages",
+        _message_id,
+        "attachments",
+        _index,
+        "media"
+      ] ->
+        SalixStore.Ids.valid_conversation_id?(conversation_id)
+
+      _ ->
+        false
+    end
+  end
+
   defp panel_path?(_method, _path, _group_id), do: false
+
+  # An app the panel runs: the app and its Version's files in the panel's
+  # Workspace, and its runtime calls (`CommaWeb.MiniAppEndpoints`) through that
+  # Workspace. Share links stay with full sessions.
+  @app_runtime_routes ~w(open backend storage ai web drive icon cover)
+
+  defp app_path?(conn, workspace_id) when is_binary(workspace_id) and workspace_id != "" do
+    case String.split(conn.request_path, "/", trim: true) do
+      ["v1", "comma", "workspaces", ^workspace_id, "apps", _app_id] ->
+        conn.method == "GET"
+
+      ["v1", "comma", "workspaces", ^workspace_id, "apps", _app_id, "versions", _n, "bundle"] ->
+        conn.method == "GET"
+
+      ["v1", "comma", "apps", app_id, route | _rest]
+      when app_id != "links" and route in @app_runtime_routes ->
+        Plug.Conn.get_req_header(conn, "x-comma-app-via") == ["workspace/" <> workspace_id]
+
+      _ ->
+        false
+    end
+  end
+
+  defp app_path?(_conn, _workspace_id), do: false
 
   defp decode_fields(data) do
     fields = URI.query_decoder(data) |> Enum.to_list()

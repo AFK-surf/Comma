@@ -205,13 +205,46 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmDevicesTest do
   end
 
   describe "Cloud VM runner" do
+    test "an admin can add a VMM Station runner beside an existing Cloudflare VM", %{
+      conn: conn,
+      org: org,
+      project: project
+    } do
+      assert {:ok, original, :created} =
+               SalixStore.Compute.ensure_group_workload(%{
+                 "tenant_id" => org.salix_tenant_id,
+                 "group_id" => project.salix_group_id,
+                 "provider" => "cloudflare",
+                 "provider_resource_id" => "vm-#{project.id}",
+                 "provider_resource_name" => "vm-#{project.id}",
+                 "provider_spec" => %{"profile_key" => "cf-standard-2"},
+                 "status" => "archived"
+               })
+
+      page = conn |> get(devices_path(org, project)) |> json_response(200) |> data()
+      assert page["cloud_vm"]["runner_choosable"] == true
+      assert page["cloud_vm"]["vm"]["location"] == %{"kind" => "cloudflare"}
+      lab = runner(org, "station-mac", "Station Mac", SystemsClock.utc_now())
+
+      assert conn
+             |> put(devices_path(org, project, "/cloud-vm/runner"), %{
+               "runner_id" => lab.id,
+               "request_id" => "station-choice"
+             })
+             |> json_response(200)
+
+      assert {:ok, preserved} = SalixStore.Compute.group_workload(project.salix_group_id)
+      assert preserved["workload_id"] == original["workload_id"]
+      assert preserved["status"] == "archived"
+    end
+
     test "an admin chooses one org runner; a second one is refused until the first is removed",
          %{conn: conn, org: org, project: project} do
       lab = runner(org, "lab-mac", "Lab Mac mini", SystemsClock.utc_now())
       spare = runner(org, "spare-mac", "Spare Mac mini", SystemsClock.utc_now())
       choose = %{"runner_id" => lab.id, "request_id" => "choice-1"}
 
-      assert %{"notice" => "The runner was asked to get ready for the Cloud VM."} =
+      assert %{"notice" => "The runner was asked to prepare the VMM Station."} =
                conn
                |> put(devices_path(org, project, "/cloud-vm/runner"), choose)
                |> json_response(200)
@@ -227,7 +260,7 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmDevicesTest do
       assert %{
                "vm" => nil,
                "runner" => %{"name" => "Lab Mac mini", "status" => "processing"},
-               # The Host is not installed yet, so a VM created now goes to Cloudflare.
+               # New Cloud VMs use Cloudflare independently of the Station runner.
                "next_location" => %{"kind" => "cloudflare"},
                "runner_choosable" => false,
                "runner_removable" => true

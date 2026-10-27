@@ -128,6 +128,14 @@ private def automaticCardTarget (result : Term) : Term :=
       textKey target "conversation_id" == id then target
   else nil
 
+/-- `TaskCard` publishes no card for a Slack bot or app, or for a source with
+no person (a Worker report or a schedule), so no card is owed. -/
+private def cardNotApplicable (result : Term) : Bool :=
+  let content := decodedContent result
+  let card := textKey content "task_card"
+  content.isMap && textKey content "created" == a "true" && card.isMap &&
+    textKey card "status" == b "not_applicable"
+
 private def resolved (sessionId key : Term) : Term :=
   .map [(b "type", b "provider_reply_obligation_resolved"), (b "session_id", sessionId), (b "obligation_key", key)]
 
@@ -162,7 +170,7 @@ def cardObligationEvents (sessionId result fallback : Term) : KernelM (List Term
   if !result.isMap || !successfulTerminal result then return []
   let (operation, params) ← operationAndParams result fallback
   if operation != taskCreate || ov params "triage_delegation_ref" != nil then return []
-  if (automaticCardTarget result).isMap then return []
+  if (automaticCardTarget result).isMap || cardNotApplicable result then return []
   let content := decodedContent result
   let conversation := match textKey content "conversation_id" with
     | .binary raw => .binary (trim raw)

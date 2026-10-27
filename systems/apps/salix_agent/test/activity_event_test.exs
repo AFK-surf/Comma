@@ -88,7 +88,31 @@ defmodule SalixAgent.ActivityEventTest do
            "id" => "t6",
            "name" => "fs.read_file",
            "args" => %{"path" => "/notes.md", "description" => "should be ignored"}
-         }, %{"action" => "Reading a file", "goal" => nil}}
+         }, %{"action" => "Reading a file", "goal" => nil, "target" => "notes.md"}},
+        {"a search names its query",
+         %{
+           id: "t7",
+           name: "call",
+           args: %{"tool" => "web.search", "params" => %{"query" => "  北京\n天气 "}}
+         }, %{"target" => "北京 天气", "tool_name" => "web.search"}},
+        {"a page read names the site of its first page",
+         %{
+           "id" => "t8",
+           "name" => "web.read_pages",
+           "args" => %{"urls" => ["https://www.example.com/a?b=1", "https://other.org"]}
+         }, %{"target" => "example.com"}},
+        {"a runtime file read names nothing",
+         %{
+           "id" => "t9",
+           "name" => "fs.read_file",
+           "args" => %{"path" => "/.runtime/skills/index.md"}
+         }, %{"target" => nil}},
+        {"other tools name nothing",
+         %{
+           "id" => "t10",
+           "name" => "env.exec",
+           "args" => %{"command" => "cat secret.txt", "path" => "secret.txt"}
+         }, %{"target" => nil}}
       ] do
     test name do
       unquote(Macro.escape(call))

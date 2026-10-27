@@ -1,3 +1,4 @@
+/* oxlint-disable jsx-a11y/prefer-tag-over-role -- A source's Routine cards are one labelled group of actions, not a form, so fieldset does not fit. */
 import { uiClock } from "@comma/ui/clock";
 import { SourceContext } from "./SourceContext";
 import { useTaskSummary, useArchiveAction } from "../tasks/useTaskArchive";
@@ -9,6 +10,7 @@ import type {
   RecommendationDocumentPart,
   RecommendationEnvelope,
   RecommendationGeneratedCard,
+  RecommendationQuoteLine,
   RecommendationSource,
 } from "@comma/recommendation-contract";
 import {
@@ -18,7 +20,7 @@ import {
 import { useCommaLocale, useCommaMessages } from "@comma/i18n/react";
 import { Button } from "@comma/ui/components/Button";
 import {
-  CirclePlusIcon,
+  CircleMinusOutlineIcon,
   DragHandleIcon,
   LoadingCircleIcon,
   ReloadIcon,
@@ -35,7 +37,6 @@ import {
 import { HoverCard } from "@comma/ui/components/hover-card";
 import {
   isReducedMotionEnabled,
-  subscribeToReducedMotion,
   motionDuration,
   motionEasing,
   spacing,
@@ -300,6 +301,8 @@ export const boundRoutineDragTranslation = boundPointerReorderTranslation;
 // the last generation failed.
 type RailFailure = "unavailable" | "rate_limited" | undefined;
 
+const STALE_BRIEFING_MS = 24 * 60 * 60 * 1000;
+
 // Routine failures that the member cannot act on stay out of the UI: the rail
 // keeps the last briefing, and the server logs and counts every failed run.
 // Exhausted credits name the action the member can take to resume generation.
@@ -532,6 +535,20 @@ export const RecommendationRail = memo(function RecommendationRail({
     }
   };
 
+  // The member does not want to hear about this item again; the core shows the
+  // briefing the server answers, without it.
+  const dismiss = async (item: RecommendationSourceItem) => {
+    try {
+      await call("recommendations.dismiss", { workspace: workspaceId, ...item });
+    } catch {
+      toast.error(messages.recommendations_title(), {
+        id: `routine-dismiss-failed:${workspaceId}`,
+        description: messages.recommendations_dismiss_failed(),
+        testId: "routine-problem-toast",
+      });
+    }
+  };
+
   const sources = envelope?.settings.sources ?? [];
   const performAction = (
     action: RecommendationAction,
@@ -635,6 +652,21 @@ export const RecommendationRail = memo(function RecommendationRail({
       </div>
     ) : null;
 
+  // A briefing that the last run could not replace, or that is more than a day
+  // old, says when it was made, so it does not pass for today's. It is a date,
+  // not a problem notice.
+  const generatedAt = envelope?.snapshot?.generatedAt;
+  const staleSince =
+    generatedAt !== undefined &&
+    (envelope?.state === "stale" || uiClock.now() - generatedAt > STALE_BRIEFING_MS)
+      ? new Intl.DateTimeFormat(locale, {
+          month: "short",
+          day: "numeric",
+          hour: "2-digit",
+          minute: "2-digit",
+        }).format(generatedAt)
+      : undefined;
+
   const routinesToolbar = (
     <RoutinesToolbar
       cards={orderedCards}
@@ -686,6 +718,14 @@ export const RecommendationRail = memo(function RecommendationRail({
               sources={envelope?.settings.sources ?? []}
             />
             {routinesToolbar}
+            {staleSince ? (
+              <p
+                className="comma-recommendations-stale"
+                data-testid="routine-stale-notice"
+              >
+                {messages.recommendations_stale({ time: staleSince })}
+              </p>
+            ) : null}
             {initialLoading ? (
               // The briefing is not on screen yet: its cards give way to their
               // shape until the first read answers.
@@ -701,6 +741,7 @@ export const RecommendationRail = memo(function RecommendationRail({
                     card={card}
                     key={card.id}
                     onAction={(action) => performAction(action, card)}
+                    onDismiss={(item) => void dismiss(item)}
                     onOpenTask={onOpenTask}
                     onOpenUrl={onOpenUrl}
                     sources={envelope?.settings.sources ?? []}
@@ -1439,23 +1480,33 @@ function RecommendationFallbackCardView({
 }) {
   // Isolated compatibility surfaces show only server-authored inert text.
   // They never reinterpret unregistered data or invent an action.
+  const origin = recommendationCardOrigin(card, sources);
   return (
-    <article className="comma-recommendation-card" data-template="fallback">
-      <RecommendationCardHeading card={card} sources={sources} />
-      <p>{card.fallbackText}</p>
-    </article>
+    <div
+      aria-label={origin.name}
+      className="comma-recommendation-card"
+      data-template="fallback"
+      role="group"
+    >
+      <article className="comma-recommendation-task-card">
+        <p className="comma-recommendation-task-objective">{card.fallbackText}</p>
+        <RecommendationSourceOrigin {...origin} />
+      </article>
+    </div>
   );
 }
 
 function RecommendationGeneratedCardView({
   card,
   onAction,
+  onDismiss,
   onOpenTask,
   onOpenUrl,
   sources,
 }: {
   card: RecommendationGeneratedCard;
   onAction: (action: RecommendationAction) => void;
+  onDismiss?: ((item: RecommendationSourceItem) => void) | undefined;
   onOpenTask: (conversationId: string) => void;
   onOpenUrl: (url: string) => void;
   sources: readonly RecommendationSource[];
@@ -1466,6 +1517,7 @@ function RecommendationGeneratedCardView({
     <RecommendationTextListCard
       card={card}
       onAction={onAction}
+      onDismiss={onDismiss}
       onOpenTask={onOpenTask}
       onOpenUrl={onOpenUrl}
       sources={sources}
@@ -1476,57 +1528,64 @@ function RecommendationGeneratedCardView({
 export function RecommendationTextListCard({
   card,
   onAction,
+  onDismiss,
   onOpenTask,
   onOpenUrl,
   sources = [],
 }: {
   card: Extract<RecommendationGeneratedCard, { template: "text-list@1" }>;
   onAction: (action: RecommendationAction) => void;
+  onDismiss?: ((item: RecommendationSourceItem) => void) | undefined;
   onOpenTask: (conversationId: string) => void;
   onOpenUrl: (url: string) => void;
   sources?: readonly RecommendationSource[];
 }) {
+  const origin = recommendationCardOrigin(card, sources);
+  // Each row is a card of its own in the rail's column; the source card only
+  // groups them and names their source on each one.
   return (
-    <article className="comma-recommendation-card" data-template={card.template}>
-      <RecommendationCardHeading card={card} sources={sources} />
-      <div className="comma-recommendation-items">
-        {card.items.map((item) => {
-          const task = linkedRowTask(item);
-          const row = (
-            <RecommendationTextItem
-              item={item}
-              key={item.id}
-              onAction={onAction}
-              onOpenTask={onOpenTask}
-              onOpenUrl={onOpenUrl}
-              sources={sources}
-            />
-          );
-          return task ? (
-            <VisibleRecommendationTaskRow key={item.id} id={task.conversationId}>
-              {row}
-            </VisibleRecommendationTaskRow>
-          ) : (
-            row
-          );
-        })}
-      </div>
+    <div
+      aria-label={origin.name}
+      className="comma-recommendation-card"
+      data-template={card.template}
+      role="group"
+    >
+      {card.items.map((item) => {
+        const task = linkedRowTask(item);
+        const row = (
+          <RecommendationTextItem
+            item={item}
+            key={item.id}
+            onAction={onAction}
+            onDismiss={onDismiss}
+            onOpenTask={onOpenTask}
+            onOpenUrl={onOpenUrl}
+            origin={origin}
+            sources={sources}
+          />
+        );
+        return task ? (
+          <VisibleRecommendationTaskRow key={item.id} id={task.conversationId}>
+            {row}
+          </VisibleRecommendationTaskRow>
+        ) : (
+          row
+        );
+      })}
       {card.footerAction ? (
-        <RecommendationActionHoverCard action={card.footerAction}>
-          <button
-            className="comma-recommendation-footer-action"
-            onClick={() => onAction(card.footerAction!)}
-            type="button"
-          >
-            <span>{card.footerAction.label}</span>
-            <CirclePlusIcon
-              aria-hidden="true"
-              className="comma-recommendation-row-icon"
-            />
-          </button>
-        </RecommendationActionHoverCard>
+        <button
+          aria-label={card.footerAction.label}
+          className="comma-recommendation-task-card comma-recommendation-footer-action"
+          onClick={() => onAction(card.footerAction!)}
+          type="button"
+        >
+          <span className="comma-recommendation-task-objective">
+            {card.footerAction.label}
+          </span>
+          <RecommendationSourceOrigin {...origin} />
+        </button>
       ) : null}
-    </article>
+    </div>
   );
 }
 
@@ -1534,6 +1593,22 @@ type RecommendationTextListItem = Extract<
   RecommendationGeneratedCard,
   { template: "text-list@1" }
 >["items"][number];
+
+/** The source item a row stands for: what the member dismisses. */
+export type RecommendationSourceItem = { sourceId: string; sourceUrl: string };
+
+// A row names its source item with its source link. A row that stands for an
+// existing Task leaves with that Task instead.
+function rowSourceItem(
+  item: RecommendationTextListItem
+): RecommendationSourceItem | undefined {
+  if (linkedRowTask(item)) return undefined;
+  for (const part of item.parts) {
+    if (part.kind === "inline-link" && part.link.sourceId)
+      return { sourceId: part.link.sourceId, sourceUrl: part.link.href };
+  }
+  return undefined;
+}
 
 // A member row's prompt is the member's own task title, then its source URL.
 // Sent as is, the imperative would hand the member's part, such as a decision,
@@ -1582,137 +1657,87 @@ function linkedRowTask(item: RecommendationTextListItem) {
   return tasks.length === 1 ? tasks[0]!.task : undefined;
 }
 
-// The row is one target with one action, so a full-bleed button underneath the
-// prose carries the press and the prompt preview. Inline chips sit above it and
-// take their own pointer events back, which would leave every chip a hole in
-// that hover surface; each chip without a preview of its own therefore stands in
-// for the row, anchored to the row so the card holds still across the sweep.
+// A row is a card that shows what its hover card used to: the task, the quoted
+// source words as its evidence, then the source. The card is one target with
+// one action, so a full-bleed button underneath carries the press. Links in the
+// quote, inline chips and the dismiss control sit above it and take their own
+// pointer events back.
 function RecommendationTextItem({
   item,
   onAction,
+  onDismiss,
   onOpenTask,
   onOpenUrl,
+  origin,
   sources,
 }: {
   item: RecommendationTextListItem;
   onAction: (action: RecommendationAction) => void;
+  onDismiss?: ((item: RecommendationSourceItem) => void) | undefined;
   onOpenTask: (conversationId: string) => void;
   onOpenUrl: (url: string) => void;
+  origin: RecommendationOrigin;
   sources: readonly RecommendationSource[];
 }) {
-  const rowRef = useRef<HTMLDivElement | null>(null);
-
+  const messages = useCommaMessages();
+  const sourceItem = onDismiss ? rowSourceItem(item) : undefined;
+  // A row that is only its source link is the member's task: the card leads
+  // with the task's objective (the link's label without one), then quotes the
+  // source words.
   const sourceLink =
     item.parts.length === 1 && item.parts[0]?.kind === "inline-link"
       ? item.parts[0].link
       : undefined;
-  useEffect(() => {
-    const row = rowRef.current;
-    if (!sourceLink || !row) return;
-    let label: HTMLElement | null = null;
-    let cancelFrame = () => {};
-    const reset = () => {
-      cancelFrame();
-      if (label) {
-        label.scrollLeft = 0;
-        label.style.removeProperty("--comma-scrolled");
-        label.style.removeProperty("--comma-unscrolled");
-      }
-      delete row.dataset.scrolling;
-    };
-    const update = () => {
-      reset();
-      // The Markdown renderer can mount its inline label after this row's effect.
-      label = row.querySelector<HTMLElement>(
-        ".comma-recommendation-inline-source > span"
-      );
-      if (!label) return;
-      const target = label;
-      const active = row.matches(":hover") || row.contains(document.activeElement);
-      const distance = label.scrollWidth - label.clientWidth;
-      if (!active || distance <= 0 || isReducedMotionEnabled()) return;
-      row.dataset.scrolling = "true";
-      const start = uiClock.monotonic() + 600;
-      const tick = (now: number) => {
-        const offset = Math.min(distance, Math.max(0, now - start) * 0.04);
-        target.scrollLeft = offset;
-        // The label fades out at each edge that still hides some of it.
-        target.style.setProperty("--comma-scrolled", `${offset}px`);
-        target.style.setProperty("--comma-unscrolled", `${distance - offset}px`);
-        if (offset < distance) cancelFrame = uiClock.frame(tick);
-      };
-      cancelFrame = uiClock.frame(tick);
-    };
-    const blur = () => {
-      cancelFrame();
-      cancelFrame = uiClock.frame(update);
-    };
-    row.addEventListener("pointerenter", update);
-    row.addEventListener("pointerleave", update);
-    row.addEventListener("focusin", update);
-    row.addEventListener("focusout", blur);
-    const observer = new ResizeObserver(update);
-    observer.observe(row);
-    const unsubscribeMotion = subscribeToReducedMotion(update);
-    return () => {
-      reset();
-      observer.disconnect();
-      unsubscribeMotion();
-      row.removeEventListener("pointerenter", update);
-      row.removeEventListener("pointerleave", update);
-      row.removeEventListener("focusin", update);
-      row.removeEventListener("focusout", blur);
-    };
-  }, [sourceLink]);
-
   const linkedTask = linkedRowTask(item);
-  const trigger = (
-    <button
-      aria-label={linkedTask?.label ?? item.action.label}
-      className="comma-recommendation-text-item-action"
-      onClick={() =>
-        linkedTask ? onOpenTask(linkedTask.conversationId) : onAction(item.action)
-      }
-      type="button"
-    />
-  );
 
   return (
-    <div
-      className="comma-recommendation-text-item"
-      data-source-only={
-        item.parts.length === 1 && item.parts[0]?.kind === "inline-link"
-          ? "true"
-          : undefined
-      }
-      ref={rowRef}
-    >
-      {sourceLink?.previewText ? (
-        <RecommendationLinkHoverCard
-          fallbackAnchorRef={rowRef}
-          onOpenUrl={onOpenUrl}
-          link={sourceLink}
-          source={resolveRecommendationSource(sources, sourceLink.sourceId)}
-        >
-          {trigger}
-        </RecommendationLinkHoverCard>
-      ) : (
-        <RecommendationActionHoverCard action={item.action} anchorRef={rowRef}>
-          {trigger}
-        </RecommendationActionHoverCard>
-      )}
-      <RecommendationDocument
-        className="comma-recommendation-text-item-content"
-        onAction={onAction}
-        fallbackAction={item.action}
-        fallbackAnchorRef={rowRef}
-        onOpenTask={onOpenTask}
-        onOpenUrl={onOpenUrl}
-        parts={item.parts}
-        sources={sources}
-        variant="card"
+    <div className="comma-recommendation-task-card comma-recommendation-text-item">
+      <button
+        aria-label={linkedTask?.label ?? item.action.label}
+        className="comma-recommendation-text-item-action"
+        onClick={() =>
+          linkedTask ? onOpenTask(linkedTask.conversationId) : onAction(item.action)
+        }
+        type="button"
       />
-      <CirclePlusIcon aria-hidden="true" className="comma-recommendation-row-icon" />
+      {sourceLink ? (
+        <p className="comma-recommendation-task-objective">
+          {sourceLink.objective ?? sourceLink.label}
+        </p>
+      ) : (
+        <RecommendationDocument
+          className="comma-recommendation-task-objective comma-recommendation-text-item-content"
+          onAction={onAction}
+          fallbackAction={item.action}
+          onOpenTask={onOpenTask}
+          onOpenUrl={onOpenUrl}
+          parts={item.parts}
+          sources={sources}
+          variant="card"
+        />
+      )}
+      {sourceLink?.quote ? (
+        <blockquote
+          aria-label={messages.recommendations_source_context()}
+          className="comma-recommendation-source-detail"
+        >
+          <SourceContext lines={sourceLink.quote} onOpenUrl={onOpenUrl} />
+        </blockquote>
+      ) : null}
+      <RecommendationSourceOrigin {...origin} />
+      {sourceItem && onDismiss ? (
+        <Tooltip content={messages.recommendations_dismiss()} placement="top">
+          <button
+            aria-label={messages.recommendations_dismiss()}
+            className="comma-recommendation-row-dismiss"
+            data-testid="routine-row-dismiss"
+            onClick={() => onDismiss(sourceItem)}
+            type="button"
+          >
+            <CircleMinusOutlineIcon aria-hidden="true" />
+          </button>
+        </Tooltip>
+      ) : null}
     </div>
   );
 }
@@ -1726,15 +1751,23 @@ export function RecommendationMediaListCard({
   onAction: (action: RecommendationAction) => void;
   sources?: readonly RecommendationSource[];
 }) {
+  const origin = recommendationCardOrigin(card, sources);
   return (
-    <article className="comma-recommendation-card" data-template={card.template}>
-      <RecommendationCardHeading card={card} sources={sources} />
-      <div className="comma-recommendation-items">
-        {card.items.map((item) => (
-          <RecommendationMediaItem item={item} key={item.id} onAction={onAction} />
-        ))}
-      </div>
-    </article>
+    <div
+      aria-label={origin.name}
+      className="comma-recommendation-card"
+      data-template={card.template}
+      role="group"
+    >
+      {card.items.map((item) => (
+        <RecommendationMediaItem
+          item={item}
+          key={item.id}
+          onAction={onAction}
+          origin={origin}
+        />
+      ))}
+    </div>
   );
 }
 
@@ -1792,33 +1825,29 @@ function isRenderableAction(value: unknown): value is RecommendationAction {
 function RecommendationMediaItem({
   item,
   onAction,
+  origin,
 }: {
   item: Extract<RecommendationCard, { template: "media-list@1" }>["items"][number];
   onAction: (action: RecommendationAction) => void;
+  origin: RecommendationOrigin;
 }) {
   const safeImageUrl = useLinkPreviewMediaUrl(item.imageUrl);
-  const content = (
-    <>
-      {safeImageUrl ? <img alt="" src={safeImageUrl} /> : null}
-      <span>
-        <strong>{item.title}</strong>
-        {item.description ? <small>{item.description}</small> : null}
-      </span>
-      <CirclePlusIcon aria-hidden="true" className="comma-recommendation-row-icon" />
-    </>
-  );
-
   return (
-    <RecommendationActionHoverCard action={item.action}>
-      <button
-        className="comma-recommendation-media-item"
-        data-has-image={safeImageUrl ? "true" : "false"}
-        onClick={() => onAction(item.action)}
-        type="button"
-      >
-        {content}
-      </button>
-    </RecommendationActionHoverCard>
+    <button
+      className="comma-recommendation-task-card comma-recommendation-media-item"
+      data-has-image={safeImageUrl ? "true" : "false"}
+      onClick={() => onAction(item.action)}
+      type="button"
+    >
+      <span className="comma-recommendation-media-item-body">
+        {safeImageUrl ? <img alt="" src={safeImageUrl} /> : null}
+        <span>
+          <strong>{item.title}</strong>
+          {item.description ? <small>{item.description}</small> : null}
+        </span>
+      </span>
+      <RecommendationSourceOrigin {...origin} />
+    </button>
   );
 }
 
@@ -1829,22 +1858,18 @@ function RecommendationMediaItem({
 // host/path).
 function RecommendationLinkHoverCard({
   children,
-  fallbackAction,
-  fallbackAnchorRef,
   link,
   source,
   onOpenUrl,
 }: {
   children: ReactElement;
   onOpenUrl: (url: string) => void;
-  fallbackAction?: RecommendationAction | undefined;
-  fallbackAnchorRef?: RefObject<Element | null> | undefined;
   link: {
     href: string;
     label: string;
     sourceId?: string | undefined;
-    previewText?: string | undefined;
-    taskPrompt?: string | undefined;
+    objective?: string | undefined;
+    quote?: readonly RecommendationQuoteLine[] | undefined;
   };
   source: RecommendationSource | undefined;
 }) {
@@ -1852,7 +1877,7 @@ function RecommendationLinkHoverCard({
   const previewContext = useContext(RecommendationLinkPreviewContext);
   // Read lazily, once the card first opens; an excerpt admitted with the snapshot needs none.
   const [preview, handleOpenChange] = useLinkPreview(
-    previewContext && !link.previewText
+    previewContext && !link.quote
       ? {
           workspaceId: previewContext.workspaceId,
           href: link.href,
@@ -1863,10 +1888,9 @@ function RecommendationLinkHoverCard({
 
   // This excerpt was admitted with the member snapshot. Render only supported
   // inline tokens, not arbitrary HTML or another provider's fetched preview.
-  if (link.previewText) {
+  if (link.quote) {
     return (
       <HoverCard
-        anchorRef={fallbackAnchorRef}
         boundaryRef={previewContext?.boundaryRef}
         className="comma-recommendation-prompt-hover-card comma-recommendation-source-detail-card"
         content={
@@ -1876,35 +1900,22 @@ function RecommendationLinkHoverCard({
             orientation="vertical"
             edgeEffect="none"
           >
-            {/* The task the row starts leads. The quoted source words under
-                it are its evidence, and the last line names their source. */}
-            {link.taskPrompt ? (
-              <p className="comma-recommendation-task-objective">
-                {/* The task prompt starts with the objective. A blank line separates the source URL. */}
-                {link.taskPrompt.split("\n\n", 1)[0]}
-              </p>
+            {/* The task the link starts leads, as on its Routine card. The
+                quoted source words under it are its evidence, and the last
+                line names their source. */}
+            {link.objective ? (
+              <p className="comma-recommendation-task-objective">{link.objective}</p>
             ) : null}
             <blockquote
               aria-label={messages.recommendations_source_context()}
               className="comma-recommendation-source-detail"
             >
-              <SourceContext
-                text={link.previewText}
-                sourceHref={link.href}
-                onOpenUrl={onOpenUrl}
-              />
+              <SourceContext lines={link.quote} onOpenUrl={onOpenUrl} />
             </blockquote>
-            <div className="comma-recommendation-source-origin">
-              <span
-                aria-hidden="true"
-                className="comma-recommendation-source-origin-mark"
-              >
-                <LinkProviderIcon source={source} />
-              </span>
-              <span className="comma-recommendation-source-origin-name">
-                {source?.appName ?? messages.recommendations_source_context()}
-              </span>
-            </div>
+            <RecommendationSourceOrigin
+              name={source?.appName ?? messages.recommendations_source_context()}
+              source={source}
+            />
           </ScrollArea>
         }
         placement="bottom start"
@@ -1915,18 +1926,8 @@ function RecommendationLinkHoverCard({
   }
 
   // Mail is private: there is nothing to preview beyond the label the chip
-  // already shows, so a Gmail link never gets a link card. It still stands in
-  // for the row it sits in, so the chip is not a hole in the row's hover.
-  if (isPrivateMailLink(link.href, source)) {
-    return (
-      <RecommendationActionHoverCard
-        action={fallbackAction}
-        anchorRef={fallbackAnchorRef}
-      >
-        {children}
-      </RecommendationActionHoverCard>
-    );
-  }
+  // already shows, so a Gmail link never gets a link card.
+  if (isPrivateMailLink(link.href, source)) return children;
 
   const destination = describeLinkDestination(link.href);
   return (
@@ -1960,35 +1961,6 @@ function RecommendationLinkHoverCard({
       }
       onOpenChange={handleOpenChange}
       placement="bottom start"
-    >
-      {children}
-    </HoverCard>
-  );
-}
-
-function RecommendationActionHoverCard({
-  action,
-  anchorRef,
-  children,
-}: {
-  action: RecommendationAction | undefined;
-  anchorRef?: RefObject<Element | null> | undefined;
-  children: ReactElement;
-}) {
-  const messages = useCommaMessages();
-  if (!action || !("prompt" in action)) return children;
-
-  return (
-    <HoverCard
-      anchorRef={anchorRef}
-      className="comma-recommendation-prompt-hover-card"
-      content={
-        <div className="comma-recommendation-prompt-preview">
-          <strong>{action.label}</strong>
-          <p>{recommendationComposerText(action, messages)}</p>
-        </div>
-      }
-      placement="right top"
     >
       {children}
     </HoverCard>
@@ -2086,6 +2058,9 @@ function splitRecommendationSummary(
     ? first.text.slice(separator.index + separator[0].length)
     : undefined;
   const hasBody = Boolean(remainder?.trim()) || parts.length > 1;
+  // A title with its paragraph break and nothing after it is a briefing whose
+  // prose the server left out, after a row was dismissed or handled.
+  if (validTitle && separator && !hasBody) return { body: [], title: candidate };
   if (!validTitle || !hasBody) return { body: parts, title: fallbackTitle };
 
   const body = remainder?.trim()
@@ -2098,7 +2073,6 @@ export function RecommendationDocument({
   className,
   onAction,
   fallbackAction,
-  fallbackAnchorRef,
   onOpenTask,
   onOpenUrl,
   parts,
@@ -2107,13 +2081,8 @@ export function RecommendationDocument({
 }: {
   className?: string;
   onAction?: ((action: RecommendationAction) => void) | undefined;
-  /**
-   * The action of the row this document fills, if it has one. Chips carry their
-   * own pointer events, so a chip with no preview of its own shows this instead
-   * of swallowing the row's hover.
-   */
+  /** The action of the row this document fills: a task link chip stages it. */
   fallbackAction?: RecommendationAction | undefined;
-  fallbackAnchorRef?: RefObject<Element | null> | undefined;
   onOpenTask: (conversationId: string) => void;
   onOpenUrl: (url: string) => void;
   parts: readonly RecommendationDocumentPart[];
@@ -2129,8 +2098,6 @@ export function RecommendationDocument({
             const source = resolveRecommendationSource(sources, part.link.sourceId);
             return (
               <RecommendationLinkHoverCard
-                fallbackAction={fallbackAction}
-                fallbackAnchorRef={fallbackAnchorRef}
                 link={part.link}
                 onOpenUrl={onOpenUrl}
                 source={source}
@@ -2138,7 +2105,7 @@ export function RecommendationDocument({
                 <button
                   className="comma-recommendation-inline comma-recommendation-inline-link comma-recommendation-inline-source"
                   data-variant={variant}
-                  data-source-detail={part.link.previewText ? "true" : undefined}
+                  data-source-detail={part.link.quote ? "true" : undefined}
                   onClick={() =>
                     part.link.taskPrompt && onAction
                       ? onAction(
@@ -2150,9 +2117,7 @@ export function RecommendationDocument({
                   type="button"
                   {...{ [recommendationLinkHrefAttribute]: part.link.href }}
                 >
-                  {variant === "card" && parts.length === 1 ? null : (
-                    <LinkProviderIcon source={source} />
-                  )}
+                  <LinkProviderIcon source={source} />
                   <span>{part.link.label}</span>
                 </button>
               </RecommendationLinkHoverCard>
@@ -2165,36 +2130,22 @@ export function RecommendationDocument({
               : "";
             return (
               <VisibleRecommendationTask id={part.task.conversationId}>
-                <RecommendationActionHoverCard
-                  action={fallbackAction}
-                  anchorRef={fallbackAnchorRef}
+                <button
+                  className={`comma-recommendation-inline${sourceClassName}`}
+                  data-variant={variant}
+                  onClick={() => onOpenTask(part.task.conversationId)}
+                  type="button"
                 >
-                  <button
-                    className={`comma-recommendation-inline${sourceClassName}`}
-                    data-variant={variant}
-                    onClick={() => onOpenTask(part.task.conversationId)}
-                    type="button"
-                  >
-                    {part.task.sourceId ? <LinkProviderIcon source={source} /> : null}
-                    <span>{part.task.label}</span>
-                  </button>
-                </RecommendationActionHoverCard>
+                  {part.task.sourceId ? <LinkProviderIcon source={source} /> : null}
+                  <span>{part.task.label}</span>
+                </button>
               </VisibleRecommendationTask>
             );
           }
           return null;
         },
       }),
-    [
-      fallbackAction,
-      fallbackAnchorRef,
-      onAction,
-      onOpenTask,
-      onOpenUrl,
-      parts,
-      sources,
-      variant,
-    ]
+    [fallbackAction, onAction, onOpenTask, onOpenUrl, parts, sources, variant]
   );
 
   return (
@@ -2243,18 +2194,33 @@ function RecommendationCardLogo({
   );
 }
 
-function RecommendationCardHeading({
-  card,
-  sources,
-}: {
-  card: Pick<RecommendationCard, "sourceIds" | "title">;
-  sources: readonly RecommendationSource[];
-}) {
+/** The source a Routine card names under its words: its mark and app name. */
+type RecommendationOrigin = {
+  name: string;
+  source: RecommendationSource | undefined;
+};
+
+function recommendationCardOrigin(
+  card: Pick<RecommendationCard, "sourceIds" | "title">,
+  sources: readonly RecommendationSource[]
+): RecommendationOrigin {
+  return {
+    name: recommendationCardDisplayTitle(card, sources),
+    source:
+      card.sourceIds.length === 1
+        ? resolveRecommendationSource(sources, card.sourceIds[0])
+        : undefined,
+  };
+}
+
+function RecommendationSourceOrigin({ name, source }: RecommendationOrigin) {
   return (
-    <div className="comma-recommendation-card-heading">
-      <RecommendationCardLogo card={card} sources={sources} />
-      <h3>{recommendationCardDisplayTitle(card, sources)}</h3>
-    </div>
+    <span className="comma-recommendation-source-origin">
+      <span aria-hidden="true" className="comma-recommendation-source-origin-mark">
+        <LinkProviderIcon source={source} />
+      </span>
+      <span className="comma-recommendation-source-origin-name">{name}</span>
+    </span>
   );
 }
 

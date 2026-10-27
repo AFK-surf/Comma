@@ -230,10 +230,11 @@ test("a rich link opens on the card's skeleton and settles into the card", async
     // bars sweep on the app's shared loading shine.
     const hoverCard = page.getByRole("tooltip");
     await expect(hoverCard).toHaveClass(/comma-recommendation-rich-link-hover-card/);
-    await expect(skeleton.locator('[data-bar="title"]')).toHaveCSS(
-      "animation-name",
-      "comma-recommendation-link-card-shine"
-    );
+    expect(
+      await skeleton
+        .locator('[data-bar="title"]')
+        .evaluate((bar) => getComputedStyle(bar, "::after").animationName)
+    ).toBe("comma-shiny-text-shine");
     await expect(page.getByTestId("recommendation-link-card")).toHaveCount(0);
 
     releasePreview();

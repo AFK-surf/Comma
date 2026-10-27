@@ -118,22 +118,28 @@ defmodule Salix.Bindings.IMAgentWorkspace do
 
   @impl true
   def read_ref_stream(agent_id, ref, filename) do
+    with {:ok, filename} <- checked_ref_read(agent_id, ref, filename),
+         {:ok, stream, size} <- Blob.stream(agent_id, ref) do
+      {:ok, stream, size, filename}
+    end
+  end
+
+  @impl true
+  def read_ref_stream(agent_id, ref, filename, range) do
+    with {:ok, filename} <- checked_ref_read(agent_id, ref, filename),
+         {:ok, stream, size} <- Blob.stream(agent_id, ref, range) do
+      {:ok, stream, size, filename}
+    end
+  end
+
+  defp checked_ref_read(agent_id, ref, filename) do
     filename = trim(filename)
 
     cond do
-      trim(agent_id) == "" ->
-        {:error, "agent VFS is not available"}
-
-      filename in ["", ".", "..", "/"] ->
-        {:error, "filename is required"}
-
-      not valid_blob_ref?(ref) ->
-        {:error, "invalid immutable blob ref"}
-
-      true ->
-        with {:ok, stream, size} <- Blob.stream(agent_id, ref) do
-          {:ok, stream, size, filename}
-        end
+      trim(agent_id) == "" -> {:error, "agent VFS is not available"}
+      filename in ["", ".", "..", "/"] -> {:error, "filename is required"}
+      not valid_blob_ref?(ref) -> {:error, "invalid immutable blob ref"}
+      true -> {:ok, filename}
     end
   end
 

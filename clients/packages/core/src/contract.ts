@@ -28,6 +28,8 @@ import type {
   ChatRuntimeSnapshot,
   ChatSkill,
   ChatTarget,
+  ChatTaskAction,
+  ChatTaskRunChoice,
   ChatWorkspaceResolution,
   ChatWorkspaceSkillsInput,
 } from "@comma/chat-contract";
@@ -68,8 +70,9 @@ export const TOPICS = {
   /**
    * A workspace's tasks and chats (the product inbox): `workspace`, or with none the one in focus (`tasks.focus`),
    * else the first. Kept on the device; read again while it is shown and whenever the server says the list changed.
+   * With `hosted` "1", the Tasks the workspace's stations host are among them, each by its last change (`host`).
    */
-  tasks: { workspace: ["string", "def"] },
+  tasks: { workspace: ["string", "def"], hosted: ["string", "def"] },
   /**
    * Usage and billing for a workspace: `prefer`, or the first. The plans, the workspace's balance and subscription. Read
    * while it is shown, again on `billing.refresh`, and on a backoff after a return from Stripe (`billing.returned`).
@@ -116,10 +119,18 @@ export const TOPICS = {
   },
   /** How many of the Group's first page of Tasks carry each label (read again when `key` changes). */
   taskLabelCounts: { group: ["string", "req"], key: ["string", "def"] },
+  /**
+   * An Agent's requests to a person in a Conversation, for its request cards: read, then followed live while a
+   * surface shows the Conversation.
+   */
+  agentRequests: { group: ["string", "req"], conversation: ["string", "req"] },
   /** Settings › Condensed Workspace: the shared facts of the Group of the workspace `prefer` (else the first). */
   condensedWorkspace: { prefer: ["string", "def"] },
   /** Settings › Voice: the verified caller numbers and voice API keys of the workspace `prefer` (else the first). */
   voice: { prefer: ["string", "def"] },
+  /** The desktop's voice call to the Router (voice-call.ts). */
+  voiceCall: {},
+  deviceSetup: {},
   /**
    * Settings › Devices: the computers of the workspace `prefer` (else the first), with this computer (`local`, its id)
    * read wherever it falls in the list. Read every 15 s while shown. Each `visit` (the page opened again) checks
@@ -149,16 +160,6 @@ export const TOPICS = {
   stationDecisions: { workspace: ["string", "req"] },
   /** Jobs and services on a workspace's stations that have run for an hour or more. */
   stationJobs: { workspace: ["string", "req"] },
-  /**
-   * One chat on a station: by its `thread`, or by its `session` while it has none. Its latest messages first (older
-   * ones as asked), what is being sent from here, and its agents; kept current by the station's events while shown.
-   */
-  stationChat: {
-    workspace: ["string", "req"],
-    station: ["string", "req"],
-    thread: ["string", "def"],
-    session: ["string", "def"],
-  },
   /**
    * Settings › Compute: the environments and workloads of the workspace `prefer` (else the first), the page after
    * `after`. Read every 5 s while something prepares (at most 60 reads), unless `shared` ("1": the page drives reads
@@ -197,6 +198,11 @@ export const TOPICS = {
   /** A file downloaded to the device (`source`: its `FileSource` as JSON), as `downloads.start` reads it. */
   download: { source: ["string", "req"] },
   /**
+   * A file a media element reads in ranges (`source`: its `FileSource` as JSON, `type`: the `audio/*`, `video/*` or
+   * `image/*` type to read it as), open while a window shows the topic.
+   */
+  fileStream: { source: ["string", "req"], type: ["string", "req"] },
+  /**
    * The connection's recovery, while a window shows it: the session cannot be used for now (the server could not be
    * reached, or the product's lease is not given), and the core finds it out again at 0, 1, 3, 10 and 30 seconds.
    * `trying` through the burst, `exhausted` once it stopped until `session.recover`; null while none is needed.
@@ -226,6 +232,17 @@ export const TOPICS = {
    * Read when first shown and kept a minute; each new read of the list in focus reads the shown ones again.
    */
   mentionTasks: { group: ["string", "req"] },
+  /**
+   * Follow-ups the server suggests for the settled turn ending in assistant message `message` of conversation
+   * `conversation` (Group `group`), written in `locale` unless the conversation's own language decides: at most four,
+   * the most likely first. Asked once per turn and locale; null until the answer, empty when there are none.
+   */
+  chatSuggestions: {
+    group: ["string", "req"],
+    conversation: ["string", "req"],
+    message: ["string", "req"],
+    locale: ["string", "req"],
+  },
   /**
    * The bound Worker of each Task `ids` names (comma-separated, at most 2) in Group `group`: the reply slot's activity
    * focus, from each Task's participant feed while shown.
@@ -329,6 +346,16 @@ export const TOPICS = {
   stationTasks: { workspace: ["string", "def"] },
   /** Settings › Archived tasks: the archived Tasks of `workspace` (else the one in focus), 50 at a time. */
   archivedTasks: { workspace: ["string", "def"] },
+  /**
+   * Coding Task `task`'s pull request, as the core last learned it from the server (coding-pull-requests.ts): the same
+   * for every surface of the Task.
+   */
+  codingPullRequest: { workspace: ["string", "req"], task: ["string", "req"] },
+  /**
+   * The same, and while a surface shows it with its window in front (subscribed only then), an open pull request's
+   * status is read every 30 s until its checks finish and GitHub has said whether it merges.
+   */
+  codingPullRequestWatch: { workspace: ["string", "req"], task: ["string", "req"] },
   /** The Tasks pinned in `group`, read while shown and again after a pin changes. */
   taskPins: { group: ["string", "req"] },
   /** Settings › Shared tasks: the active public links of `workspace`'s Group (else the one in focus's). */
@@ -338,6 +365,30 @@ export const TOPICS = {
     group: ["string", "req"],
     conversation: ["string", "req"],
     visit: ["string", "def"],
+  },
+  /**
+   * The Mini Apps of `workspace`: its own apps and the apps it installed, read when shown and on `miniApps.refresh`
+   * (each new `read` reads again).
+   */
+  miniApps: { workspace: ["string", "req"], read: ["string", "def"] },
+  /**
+   * One Mini App as `workspace` sees it: the app, its latest 50 Versions and its link (the owner's), read when shown
+   * and on `miniApp.refresh`; a change made here shows at once.
+   */
+  miniApp: {
+    workspace: ["string", "req"],
+    app: ["string", "req"],
+    read: ["string", "def"],
+  },
+  /**
+   * An app's `icon_url` or `cover_url` as an image the page can show, read with the account's session and the access
+   * path (`workspace`, or a link's `link` token) while shown. A URL names one Version's image, which never changes, so
+   * a read is kept for the account's session.
+   */
+  miniAppImage: {
+    url: ["string", "req"],
+    workspace: ["string", "def"],
+    link: ["string", "def"],
   },
   /** A Group's Task-board arrangement (kept on the device; read again when shown). */
   taskOrder: { group: ["string", "req"] },
@@ -713,18 +764,25 @@ export interface ProductInboxItem {
   meetingPhase?: MeetingPhase | undefined;
   archiveAvailability?: { allowed: boolean; reason: string | null } | undefined;
   archiveVersion?: number | undefined;
-  /** `<group>:<conversation>`. */
+  /** `<group>:<conversation>`; a station-hosted Task's: `station:<station>:<thread>`. */
   id: string;
-  source: "salix.conversation";
+  source: "salix.conversation" | "station.chat";
+  /** A Task a station hosts (`source` "station.chat"): its station's chat, which `conversationId` stands in for. */
+  host?: ProductInboxHost | undefined;
+  /** What this Task cannot take from here (a station-hosted one: archiving, pinning, a share link); none when absent. */
+  unsupported?: TaskAction[] | undefined;
   groupId: string;
   workspaceId: string;
   workspaceName: string;
   conversationId: string;
-  freshness?: "fresh" | "stale" | "unknown" | undefined;
   kind: "user_chat" | "agent_task";
   /** Requesting platform from the canonical summary; absent when not recorded. */
   origin?: string | undefined;
   labels?: string[] | undefined;
+  /** A coding Task's pull request, as last read from GitHub; absent where it has none. */
+  pullRequest?:
+    | { number: number; state: "open" | "draft" | "merged" | "closed"; url: string }
+    | undefined;
   clientPlatform?: string | undefined;
   /**
    * The Message the Task was created from, such as the person's Home request the Router answered with this Task.
@@ -745,6 +803,19 @@ export interface ProductInboxItem {
   statusBucket?: TaskStatusBucket | undefined;
   statusFailed?: boolean | undefined;
   updatedAt: number;
+}
+
+/** What a person does to a Task from its list or its page, beyond its conversation. */
+export type TaskAction = ChatTaskAction;
+
+/** Where a Task a station hosts runs: the station's chat, and what this device knows of its machine. */
+export interface ProductInboxHost {
+  station: string;
+  thread: string;
+  /** The machine's name, and whether it is online; null where this device knows none. */
+  machine: { name: string; online: boolean } | null;
+  model: string | null;
+  runtime: string | null;
 }
 
 export type ProductInboxListSource = ProductInboxListResult["source"];
@@ -1201,6 +1272,44 @@ export interface TaskLabelsValue {
   loading: boolean;
 }
 
+/**
+ * An Agent's request to a person in a Conversation (a Capability Request), as its card shows it. The server owns its
+ * status and outcome; the first decision wins, and every device sees it. Only the connect-account kind
+ * (`oauth_authorization`) has a card so far.
+ */
+export interface AgentRequest {
+  id: string;
+  type: "oauth_authorization";
+  /** `expired`: its deadline passed with no decision. `cancelled`: the Agent withdrew it. */
+  status: "pending" | "completed" | "expired" | "cancelled" | "failed";
+  /** How a completed request ended. */
+  outcome: "connected" | "declined" | null;
+  /** Unix milliseconds. */
+  expiresAt: number | null;
+  createdAt: number | null;
+  /** The person's message the Agent's turn served: the card sits under the reply to it. */
+  sourceMessageId: string | null;
+  oauth: {
+    provider: string;
+    alias: string;
+    /** Why the Agent asks, in its words. */
+    reason: string;
+    scopes: string[];
+    /** The page to authorize on, while the request waits. */
+    authorizationUrl?: string;
+    /** The account it connected. */
+    account?: string;
+  };
+}
+
+export interface AgentRequestsValue {
+  requests: AgentRequest[];
+  /** Nothing read yet. */
+  loading: boolean;
+  /** The last read failed; the stream retries. */
+  error: boolean;
+}
+
 export type CondensedWorkspace = {
   enabled: boolean;
   revision: number;
@@ -1250,6 +1359,31 @@ export interface VoiceIntegration {
   readiness: { ready: boolean; reason?: string | null | undefined };
   sessions_url?: string | null | undefined;
   readiness_url?: string | null | undefined;
+  preferences: VoicePreferences;
+  /** The preset voice names. */
+  voices: string[];
+}
+
+/** A call voice: a preset by name, or the workspace's custom voice. */
+export type VoiceChoice = { kind: "preset"; name: string } | { kind: "custom" };
+
+/** What a workspace's calls speak with (null voice: the platform's), and whether they speak as the Router. */
+export interface VoicePreferences {
+  voice: VoiceChoice | null;
+  custom_voice: { name: string; description: string } | null;
+  router_calls: boolean;
+}
+
+/**
+ * The desktop's voice call: none (`idle`), dialled and waiting for the Router (`calling`), or talking (`connected`,
+ * since `connectedAt`, epoch ms). `available` is whether this app can call at all (the desktop's).
+ */
+export interface VoiceCallValue {
+  available: boolean;
+  phase: "idle" | "calling" | "connected";
+  workspace: string | null;
+  muted: boolean;
+  connectedAt: number | null;
 }
 
 /** Each half is null until read; its error is whether its last read failed (`voice.refresh`). */
@@ -1320,6 +1454,7 @@ export type DeviceAccess = "off" | "read" | "full";
 
 /** A computer as shown: each runtime says whether its readiness still holds now (`fresh`). */
 export type ShownDevice = Omit<Device, "device_runtimes"> & {
+  isCommaDevice?: boolean;
   device_runtimes: (DeviceRuntime & { fresh: boolean })[];
 };
 
@@ -1522,67 +1657,6 @@ export interface StationAttachment {
   size: number;
 }
 
-/** How a card in a chat stands: waiting, or how it ended (`by` null: the viewer). */
-export interface StationCardState {
-  resolved: boolean;
-  /** Waiting, but taken off the viewer's list. */
-  dismissed?: boolean;
-  outcome?:
-    | { kind: "chose"; by: string | null; label: string }
-    | { kind: "replied"; by: string | null }
-    | { kind: "replaced" };
-}
-
-export interface StationChatMessage {
-  seq: number;
-  thread: number;
-  kind: "person" | "agent" | "system";
-  author: string;
-  mine: boolean;
-  text: string;
-  attachments: StationAttachment[];
-  createdAt: number;
-  /** How an agent's post ended its turn. */
-  ending?: "all_done" | "need_help" | "waiting";
-  /** Sent, and not taken by an agent yet. */
-  waiting: boolean;
-  card?: StationCardShown;
-  cardState?: StationCardState;
-}
-
-/** A message being sent from this device, or one that failed (`error`: why). */
-export interface StationOutgoing {
-  id: string;
-  text: string;
-  state: "sending" | "failed";
-  error?: string;
-}
-
-export interface StationChatAgent {
-  session: string;
-  /** Its model and effort, in its station's words. */
-  name: string;
-  state: StationAgentState;
-  /** At work now: it can be stopped. */
-  running: boolean;
-}
-
-export interface StationChatValue {
-  workspace: string;
-  station: string;
-  /** Its chat; null while a session has none. */
-  thread: number | null;
-  title: string | null;
-  link: { state: StationLinkState; message?: string };
-  agents: StationChatAgent[];
-  messages: StationChatMessage[];
-  /** Older messages can be read (`stations.older`). */
-  more: boolean;
-  outbox: StationOutgoing[];
-  loading: boolean;
-  error?: string;
-}
-
 /** What a station's device tools allow Comma's agents: nothing, reading files, or everything. */
 export type StationToolsAccess = "off" | "read" | "full";
 
@@ -1613,6 +1687,8 @@ export interface ComputeWorkload {
         provider: string;
         registration_id?: string | undefined;
         allocation_id?: string | undefined;
+        /** The Comma Device of an Agent VMM registration (the devices list's `device_id`). */
+        device_id?: string | undefined;
       }
     | undefined;
   actions?:
@@ -1661,6 +1737,19 @@ export interface ComputeWorkload {
     | undefined;
   phase_observed_at?: string | undefined;
   updated_at?: string | undefined;
+  /** Why the current generation is not ready yet; `retryable: false` needs an action. */
+  problem?:
+    | {
+        code:
+          | "capacity_unavailable"
+          | "image_unavailable"
+          | "runtime_instance_changed"
+          | "host_unreachable"
+          | "other";
+        retryable: boolean;
+      }
+    | null
+    | undefined;
 }
 
 export interface ComputeProjection {
@@ -1838,6 +1927,8 @@ export interface TaskWorker {
   name: string;
   participantId: string;
   active: boolean;
+  /** Stopped with an error and not working again yet, so the Task waits on nobody until it is retried or reported. */
+  failed?: boolean;
   /** The maker of the model it runs (`comma` for Comma's own), whose mark stands for it; absent when not known. */
   vendor?: string;
 }
@@ -1873,6 +1964,11 @@ export interface FileBytes {
   type: string;
 }
 
+/** One span of a chat file (`files.readRange`): its bytes, the file's type, and the whole file's size. */
+export interface FileRange extends FileBytes {
+  size: number;
+}
+
 /**
  * `dynamicUi`'s value: the widget's JSON (`ui`), or why it cannot show: `load`, it could not be read; `display`, it is
  * over 256 KiB or no JSON.
@@ -1886,6 +1982,13 @@ export type DynamicUiValue =
 export interface DynamicUiStateValue {
   state: string | null;
   cards: string | null;
+}
+
+/** A follow-up the person can send next (`chatSuggestions`): `label` names it, `prompt` is the message itself. */
+export interface ChatSuggestion {
+  id: string;
+  label: string;
+  prompt: string;
 }
 
 /** A Task a message can mention (`mentionTasks`); `updatedAt` is 0 when the server gave none. */
@@ -1920,6 +2023,8 @@ export type ComputeNodeOperationValue = {
   workActivity: "idle" | "active" | "unknown";
   /** The server's failure code for an action-required operation, such as `material_handoff_expired`. */
   errorCode?: string;
+  /** Why the server revoked the registration: expiry may be replaced automatically, an explicit revocation may not. */
+  registrationRevocationReason?: "authorization_expired" | "revoked";
   shellPhase?:
     | "not_initialized"
     | "preparing"
@@ -2032,7 +2137,6 @@ export interface GroupTask {
   status: string;
   updatedAt: number;
   activityStatus: string;
-  freshness: "fresh" | "stale" | "unknown";
 }
 
 /** A Task a station hosts (a chat on the station's own page), as the station last reported it to Comma. */
@@ -2086,7 +2190,7 @@ export type GroupTasksValue =
 /** `groupTask`'s value: null while read; `failed`, it could not be read now. */
 export type GroupTaskValue =
   | null
-  | { status: "ready"; preview: CommaConversationPreview }
+  | { status: "ready"; preview: CommaConversationPreview; loop?: TaskLoop }
   | { status: "failed" };
 
 export type TaskPreviewValue =
@@ -2105,7 +2209,8 @@ export type MarkKind =
   | "taskReviewSeen"
   | "inboxDeleted"
   | "inboxUnread"
-  | "chatTaskDismissed";
+  | "chatTaskDismissed"
+  | "codingPullRequestPromptDismissed";
 
 /** Id → the projection revision (`updatedAt`) at which the mark was made. */
 export interface MarksValue {
@@ -2184,6 +2289,18 @@ export interface DownloadValue {
   failure: "network" | "unavailable" | null;
   /** How many times the file was asked to start or stop: a state with a higher count came after such a call. */
   asked: number;
+}
+
+/**
+ * A file a media element plays: `ready` with the `url` it reads in ranges, `opening`, `failed` (not a file that can be
+ * read in ranges, or its URL could not be opened), or `unsupported` (a file the host can only read whole, with
+ * `files.read`). On the desktop app the URL is Main's, which adds the session's credential to each read and is
+ * forgotten once no window shows the topic; elsewhere it is the server's media URL for an attachment, which names the
+ * session and expires on its own (it is minted again while shown).
+ */
+export interface FileStreamValue {
+  status: "opening" | "ready" | "failed" | "unsupported";
+  url: string | null;
 }
 
 /** `error`: the first read failed (`accountSessions.refresh` reads again). */
@@ -2274,6 +2391,150 @@ export type TaskPlace =
   | { kind: "salix" }
   | { kind: "cloud_vm" }
   | { kind: "station"; device_id: string };
+
+/** A repository the workspace's connected GitHub account reaches (`coding.repos`). */
+export interface CodingRepo {
+  owner: string;
+  name: string;
+  defaultBranch: string | null;
+  private: boolean;
+}
+
+/** One file of a coding session's changes: its unified diff, when it was not left out for size. */
+export interface CodingFileChange {
+  path: string;
+  status: string;
+  additions: number;
+  deletions: number;
+  patch: string | null;
+}
+
+/** The pull request of a session branch: where it stands, whether it merges cleanly, and its checks where known. */
+export interface CodingPullRequest {
+  url: string;
+  number: number | null;
+  /** Its title; null only for the moment after one is made here, before it is read again. */
+  title: string | null;
+  /** Its description; null before it is read (one just made here). */
+  body: string | null;
+  /** The commit its head is at, which a merge names; null before it is read (one just made here). */
+  headSha: string | null;
+  state: "open" | "draft" | "merged" | "closed";
+  mergeable: "mergeable" | "conflicting" | "unknown";
+  /**
+   * Its checks while open, where GitHub has any: the rest of `total` after `passed` and `failed` still run. `skipped`
+   * counts the passed ones GitHub skipped.
+   */
+  checks: { passed: number; failed: number; skipped: number; total: number } | null;
+  /** Merged, and the branch has commits made after its last one: a new pull request would propose them. */
+  newCommits: boolean;
+}
+
+/**
+ * What the core knows of a coding Task's pull request, for every surface of the Task (`codingPullRequest`): `known`
+ * once a read of the whole branch's changes, of its status, or a request about it answered; `pr` null where the branch
+ * has none; `busy` while a request that opens, edits or merges it is on its way, from any surface.
+ */
+export interface CodingPullRequestValue {
+  known: boolean;
+  pr: CodingPullRequest | null;
+  busy: boolean;
+}
+
+/** One commit of a session branch: its full sha, its message's first line, its author's name, when it was committed. */
+export interface CodingCommit {
+  sha: string;
+  title: string;
+  author: string;
+  /** ISO 8601; null where the source did not say. */
+  at: string | null;
+}
+
+/**
+ * A coding session's changes (`coding.changes`): `truncated` when files or patches were left out for size;
+ * `pullRequest` the branch's pull request, where it has one and the source could say (read with the whole branch
+ * only); `commits` the branch's commits past its base, the newest first; `uncommitted` whether its sandbox has
+ * changes not committed yet.
+ */
+export interface CodingChanges {
+  source: "sandbox" | "github";
+  base: string | null;
+  branch: string | null;
+  truncated: boolean;
+  files: CodingFileChange[];
+  pullRequest: CodingPullRequest | null;
+  commits: CodingCommit[];
+  uncommitted: boolean;
+}
+
+/**
+ * Where a coding session stands (`coding.session`): its repository and branch, and its sandbox: `starting`, `ready`,
+ * `stopped` (shut down while idle; a reply starts a new one), `lost`, `failed` (`reason`) or `ended`.
+ */
+/** The tokens a coding Session's model calls used: input includes the cached part. */
+export interface CodingUsage {
+  modelCalls: number;
+  inputTokens: number;
+  cachedTokens: number;
+  outputTokens: number;
+  model: string | null;
+}
+
+/** What a tool step did, as the page shows it. */
+export type CodingStepBody =
+  | { kind: "command"; command: string }
+  | { kind: "edit"; path: string; diff: string }
+  | { kind: "patch"; diff: string }
+  | { kind: "read"; path: string; lines: string | null }
+  | { kind: "args"; text: string };
+
+/** One step of a group: a tool call with its result, or the model's thinking. */
+export type CodingStep =
+  | {
+      kind: "tool";
+      id: string;
+      tool: string;
+      /** Its first meaningful argument: the command, path, pattern or query. */
+      hint: string;
+      body: CodingStepBody;
+      result: string | null;
+      /** No result yet: still running, or cut off. */
+      pending: boolean;
+      failed: boolean;
+      durationMs: number | null;
+    }
+  | { kind: "thinking"; id: string; text: string };
+
+/**
+ * An item of a coding Session's execution history: what a person or the Task said, what the agent wrote, or a run of
+ * tool steps and thinking between them.
+ */
+export type CodingHistoryItem =
+  | { kind: "received"; id: string; text: string; at: string | null }
+  | { kind: "text"; id: string; text: string; at: string | null }
+  | {
+      kind: "group";
+      id: string;
+      steps: CodingStep[];
+      failures: number;
+      pending: number;
+    };
+
+/** A page of a coding Session's execution history, from its sandbox. `available` is false while it is not running. */
+export interface CodingHistory {
+  available: boolean;
+  /** The index of its first entry; earlier ones are read with `before: start`. */
+  start: number;
+  total: number;
+  items: CodingHistoryItem[];
+  usage: CodingUsage | null;
+}
+
+export interface CodingSession {
+  repo: { owner: string; name: string; baseRef: string | null; branch: string | null };
+  state: "starting" | "ready" | "stopped" | "lost" | "failed" | "ended";
+  reason: string | null;
+}
 
 /** How the Router writes to people: as it always has, or in a few short sentences. */
 export type ReplyStyle = "default" | "concise";
@@ -2445,6 +2706,14 @@ export interface RecordingTranscript {
 /** The most UTF-8 bytes a Quick Chat message takes; the server refuses longer text (400), so Main sends none. */
 export const QUICK_CHAT_TEXT_MAX_BYTES = 16_000;
 
+/** A ticket for live dictation (`quickChat.dictationTicket`): open `url` with `?ticket=` before `expires_at`. */
+export interface QuickChatDictationTicket {
+  url: string;
+  ticket: string;
+  /** Unix seconds. */
+  expires_at: number;
+}
+
 /** A Quick Chat message accepted by Home (`quickChat.sendMessage`). The Router may create a Task afterward. */
 export interface QuickChatMessage {
   workspace_id: string;
@@ -2561,6 +2830,137 @@ export interface DoingItem {
   error?: ErrorBody;
 }
 
+/** A Mini App's visibility: only its Workspace's members (`private`), the Workspace, or anyone with its link. */
+export type MiniAppVisibility = "private" | "workspace" | "link";
+
+/** A Mini App as the Comma API describes it to one Workspace (`grants` are that Workspace's). */
+export interface MiniApp {
+  id: string;
+  slug: string;
+  workspace_id: string;
+  name: string;
+  description: string;
+  icon_url: string | null;
+  /** The shown Version's cover: a small screenshot of its first screen, for the Apps gallery. */
+  cover_url: string | null;
+  repo: { owner: string; name: string } | null;
+  visibility: MiniAppVisibility;
+  status: "active" | "disabled";
+  live_version: number | null;
+  latest_version: number | null;
+  author: { name: string };
+  capabilities: string[];
+  egress: string[];
+  secrets: string[];
+  grants: string[];
+  installed: boolean;
+  install: { pinned_version: number | null } | null;
+  /** The stores the manifest of the Version this viewer runs declares. */
+  storage: ("app" | "user" | "device")[];
+  /** Whether the Version this viewer runs has a backend. */
+  has_backend: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+/** One immutable build of a Mini App. */
+export interface MiniAppVersion {
+  number: number;
+  state: "uploading" | "ready" | "failed";
+  commit: string | null;
+  digest: string | null;
+  has_backend: boolean;
+  conversation_id: string | null;
+  message_seq: number | null;
+  notes: string | null;
+  created_at: string;
+  live: boolean;
+}
+
+/** A Mini App's share link. */
+export interface MiniAppLink {
+  token: string;
+  url: string;
+  created_at: string;
+}
+
+/** `miniApps`: a Workspace's own and installed apps. */
+export interface MiniAppsValue {
+  status: "loading" | "ready" | "failed";
+  apps: MiniApp[];
+  error: string | null;
+}
+
+/** `miniApp`: one app with its Versions and link (null: none, or not the owner's to see). */
+export interface MiniAppValue {
+  status: "loading" | "ready" | "failed" | "missing";
+  app: MiniApp | null;
+  versions: MiniAppVersion[];
+  link: MiniAppLink | null;
+  error: string | null;
+}
+
+/** `miniAppImage`: the image as a `data:` URL (null: there is none to show there, or it could not be read). */
+export interface MiniAppImageValue {
+  status: "loading" | "ready";
+  src: string | null;
+}
+
+/** Where an opened app runs from: a Workspace that owns or installed it, or a link. */
+export type MiniAppVia = { workspace: string } | { token: string };
+
+/** The platform a host runs apps on. */
+export type MiniAppPlatform = "mac" | "web";
+
+/** An opened app: what its host needs to start the frame, bound to one session id the core checks on every call. */
+export interface MiniAppSessionInfo {
+  session: string;
+  app: MiniApp;
+  version: number;
+  digest: string;
+  guest: boolean;
+  viewer: { id: string; name: string; avatarUrl: string | null; guest: boolean };
+  /** The manifest's capabilities this platform and viewer can use. */
+  capabilities: string[];
+  grants: string[];
+  storage: ("app" | "user" | "device")[];
+  /** Whether the opened Version has a backend for `backend.fetch`. */
+  backend: boolean;
+}
+
+/** A Mini App bundle's files. */
+export interface MiniAppBundle {
+  digest: string;
+  files: { path: string; mime: string; data: Uint8Array }[];
+}
+
+/** The error codes an app sees. */
+export type MiniAppErrorCode =
+  | "unsupported"
+  | "not_granted"
+  | "denied"
+  | "signup_required"
+  | "app_paused"
+  | "rate_limited"
+  | "invalid"
+  | "not_found"
+  | "conflict"
+  | "quota_exceeded"
+  | "failed"
+  | "unavailable";
+
+/**
+ * What `miniApps.invoke` decided: `done` with the op's value; `host` the host does the effect itself (the core allowed
+ * it); `grant` the viewer has not granted `capability` yet (the host shows the grant sheet); `confirm` the op needs a
+ * click in host UI each time (the host asks, then calls again with `confirmed`); `error` the app's error.
+ */
+export type MiniAppInvokeResult =
+  | { status: "done"; value: unknown }
+  | { status: "host"; op: string; args: unknown }
+  | { status: "grant"; capability: string }
+  | { status: "confirm"; capability: string; op: string; args: unknown }
+  | { status: "error"; code: MiniAppErrorCode; message: string };
+
 /** Each topic's value. */
 export interface TopicValues {
   driveSearch: DriveSearchValue;
@@ -2587,15 +2987,17 @@ export interface TopicValues {
   tailnet: TailnetValue;
   taskLabels: TaskLabelsValue;
   taskLabelCounts: Record<string, number> | null;
+  agentRequests: AgentRequestsValue;
   condensedWorkspace: CondensedWorkspaceValue;
   voice: VoiceValue;
+  voiceCall: VoiceCallValue;
+  deviceSetup: import("./device-setup/controller.ts").SetupValue;
   devices: DevicesValue;
   stationsHome: StationsHomeValue;
   stations: StationsValue;
   stationChats: StationChatsValue;
   stationDecisions: StationDecisionsValue;
   stationJobs: StationJobsValue;
-  stationChat: StationChatValue;
   compute: ComputeValue;
   skills: SkillsValue;
   recommendations: RecommendationsValue;
@@ -2603,6 +3005,7 @@ export interface TopicValues {
   sessionRecovery: "trying" | "exhausted" | null;
   appUpdate: AppUpdateValue;
   mentionTasks: MentionTask[] | null;
+  chatSuggestions: ChatSuggestion[] | null;
   taskWorkers: TaskWorkersValue;
   sessionBrowser: SessionBrowserValue;
   browserView: BrowserViewValue;
@@ -2616,6 +3019,7 @@ export interface TopicValues {
   profile: ProfileValue;
   accountSessions: AccountSessionsValue;
   download: DownloadValue;
+  fileStream: FileStreamValue;
   workspace: ResolvedWorkspace;
   marks: MarksValue;
   proactive: ProactiveValue;
@@ -2623,10 +3027,15 @@ export interface TopicValues {
   /** Null until read (and while a read fails). */
   router: { agent: string; name: string; reply_style?: ReplyStyle | undefined } | null;
   taskSummaries: TaskSummariesValue;
+  codingPullRequest: CodingPullRequestValue;
+  codingPullRequestWatch: CodingPullRequestValue;
   archivedTasks: ArchivedTasksValue;
   taskPins: TaskPinsValue;
   taskShares: TaskSharesValue;
   taskShare: TaskShareValue;
+  miniApps: MiniAppsValue;
+  miniApp: MiniAppValue;
+  miniAppImage: MiniAppImageValue;
   taskOrder: TaskOrderValue;
   history: SessionHistoryValue;
   chat: { session: ChatSessionIdentity; snapshot: ChatRuntimeSnapshot };
@@ -2651,6 +3060,12 @@ export type ScreenStreamIceServer = {
 
 /** Each call's params and answer. */
 export interface Calls {
+  "deviceSetup.start": { params: { workspace: string }; result: null };
+  "deviceSetup.event": {
+    params: import("./device-setup/controller.ts").SetupInput;
+    result: null;
+  };
+  "deviceSetup.remove": { params: { workspace: string; device: string }; result: null };
   // The session lifecycle (the core runs it on the web and in Electron). Each answers the session contract's
   // result: a failure is a typed error with its recovery, never a thrown one. `expected` and `attempt` fence a call
   // made from a session that has changed since (another tab signed in, a newer attempt replaced this one).
@@ -2766,6 +3181,8 @@ export interface Calls {
       origin?: PluginInstallOrigin;
       /** Transient submission. Never persisted or published to topics. */
       configValues?: Record<string, string>;
+      /** This desktop's device in the workspace, for a plugin that runs on it (the Mac apps). */
+      deviceId?: string;
     };
     result: PluginInstallAnswer;
   };
@@ -2853,6 +3270,14 @@ export interface Calls {
     params: { client_request_id: string; text: string; workspace?: string };
     result: QuickChatMessage;
   };
+  /**
+   * A one-minute, single-use ticket for live dictation's socket (`url`): the words as they are spoken. Fails
+   * (503) where the server has no live speech recognition.
+   */
+  "quickChat.dictationTicket": {
+    params: Record<string, never>;
+    result: QuickChatDictationTicket;
+  };
   /** Renames a Task: at most 200 characters. */
   "tasks.rename": {
     params: { group: string; conversation: string; title: string };
@@ -2893,6 +3318,124 @@ export interface Calls {
   };
   /** Stops sharing the Task; it leaves the Shared tasks list. */
   "taskShare.revoke": { params: { group: string; conversation: string }; result: null };
+  /** Reads a Workspace's apps again. */
+  "miniApps.refresh": { params: { workspace: string }; result: null };
+  /** Reads one app again. */
+  "miniApp.refresh": { params: { workspace: string; app: string }; result: null };
+  /** Makes an app (and its repository from the template when `repo` is not given). */
+  "miniApps.create": {
+    params: {
+      workspace: string;
+      name: string;
+      description?: string;
+      repo?: { owner: string; name: string };
+    };
+    result: MiniApp;
+  };
+  "miniApps.update": {
+    params: {
+      workspace: string;
+      app: string;
+      name?: string;
+      description?: string;
+      visibility?: MiniAppVisibility;
+    };
+    result: MiniApp;
+  };
+  /** Deletes an app with its Versions, storage, link and Installs (its repository stays). */
+  "miniApps.delete": { params: { workspace: string; app: string }; result: null };
+  /**
+   * Makes `version` (the Version the viewer previewed in the build Task) live: the server opens the Task's pull request
+   * when it has none, accepts the review and merges the pull request at that Version's commit.
+   */
+  "miniApps.publish": {
+    params: {
+      workspace: string;
+      app: string;
+      group: string;
+      conversation: string;
+      reviewVersion: number;
+      version: number;
+      visibility?: MiniAppVisibility;
+    };
+    result: MiniApp;
+  };
+  "miniApps.rollback": {
+    params: { workspace: string; app: string; version: number };
+    result: MiniApp;
+  };
+  "miniApps.disable": { params: { workspace: string; app: string }; result: MiniApp };
+  "miniApps.enable": { params: { workspace: string; app: string }; result: MiniApp };
+  /** Shares the app by link: the link. */
+  "miniApps.link.publish": {
+    params: { workspace: string; app: string };
+    result: MiniAppLink;
+  };
+  /** Replaces the link (the previous one stops working). */
+  "miniApps.link.reset": {
+    params: { workspace: string; app: string };
+    result: MiniAppLink;
+  };
+  "miniApps.link.revoke": { params: { workspace: string; app: string }; result: null };
+  /** Sets the capabilities `workspace` grants the app (Settings > Apps revokes here). */
+  "miniApps.grants.set": {
+    params: { workspace: string; app: string; grants: string[] };
+    result: MiniApp;
+  };
+  "miniApps.secret.set": {
+    params: { workspace: string; app: string; name: string; value: string };
+    result: { secrets: string[] };
+  };
+  "miniApps.secret.delete": {
+    params: { workspace: string; app: string; name: string };
+    result: { secrets: string[] };
+  };
+  /** Adds a shared app to `workspace` (an Install that follows the live Version, or pins one). */
+  "miniApps.install": {
+    params: { workspace: string; token: string; pinnedVersion?: number };
+    result: MiniApp;
+  };
+  "miniApps.uninstall": { params: { workspace: string; app: string }; result: null };
+  /** Makes a new app from a shared one's source and starts its Coding Task. */
+  "miniApps.remix": {
+    params: { workspace: string; token: string };
+    result: { app: MiniApp; task: { group_id: string; conversation_id: string } };
+  };
+  "miniApps.report": {
+    params: { workspace: string; app: string; reason: string };
+    result: null;
+  };
+  /** What a link opens: the app (no secrets, no repository) and its live Version. */
+  "miniApps.link.resolve": {
+    params: { token: string };
+    result: { app: MiniApp; version: number };
+  };
+  /** Opens an app to run in a frame of this window: the session every later call names. */
+  "miniApps.session.open": {
+    params: {
+      app: string;
+      via: MiniAppVia;
+      platform: MiniAppPlatform;
+      version?: number;
+    };
+    result: MiniAppSessionInfo;
+  };
+  "miniApps.session.close": { params: { session: string }; result: null };
+  /** The opened Version's files (kept by digest). */
+  "miniApps.bundle": { params: { session: string }; result: MiniAppBundle };
+  /**
+   * One call of an opened app's frame: the app is the session's, never one the frame names. `confirmed` only from the
+   * host's own confirm sheet.
+   */
+  "miniApps.invoke": {
+    params: { session: string; op: string; args: unknown; confirmed?: boolean };
+    result: MiniAppInvokeResult;
+  };
+  /** The viewer allowed `capability` on the grant sheet: kept on the Install (or the app), or for a link this run. */
+  "miniApps.grant": {
+    params: { session: string; capability: string };
+    result: { grants: string[] };
+  };
   /** The workspace the app works in from now on, on every window (kept with the account until it signs out). */
   "workspace.select": { params: { workspace: string }; result: null };
   /**
@@ -2992,13 +3535,10 @@ export interface Calls {
     params: { workspace: string; conversation: string; participant: string };
     result: null;
   };
-  /**
-   * Reads the operation once a second on the core's Clock until it is ready (at most `waitMs`, default 30 s), then
-   * initializes its workload once. Fails `initialization_incomplete` on action required, removal or the wait.
-   */
-  "computeNode.initializeWorkload": {
-    params: { workspaceId: string; operationId: string; waitMs?: number };
-    result: ComputeNodeOperationValue;
+  /** Issues a Linux installation command for the current member's Workspace. */
+  "computeNode.installCommand": {
+    params: { workspaceId: string; requestId: string };
+    result: { command: string; expiresAt: string };
   };
   /** Authorizes installing a compute node (idempotent by `requestId`): its one-time descriptor. Main's only. */
   "computeNode.authorize": {
@@ -3366,6 +3906,11 @@ export interface Calls {
     params: { workspace: string; patch: unknown };
     result: null;
   };
+  /** The member does not want to hear about one source item (a row's `sourceId` and URL) again. */
+  "recommendations.dismiss": {
+    params: { workspace: string; sourceId: string; sourceUrl: string };
+    result: null;
+  };
   "proactive.set": { params: { prefer?: string; enabled: boolean }; result: null };
   /**
    * One page of the Group Router's files under `path` (`/memory/...` or `/imports/...`), in path order; `cursor` is the
@@ -3401,10 +3946,18 @@ export interface Calls {
     params: { group: string; path: string; expectedHash?: string };
     result: { path: string; deleted: boolean };
   };
-  /** The Router's effective instructions, read-only. */
+  /** The Router's effective instructions, with the content `hash` a later write names. */
   "systemFiles.instructions": {
     params: { group: string };
-    result: { content: string };
+    result: { content: string; hash?: string | null };
+  };
+  /**
+   * Replaces the Router's instructions; empty content clears them. With `expectedHash`, fails with status 409 when
+   * they changed since; answers them and their new `hash`.
+   */
+  "systemFiles.writeInstructions": {
+    params: { group: string; content: string; expectedHash?: string };
+    result: { content: string; hash?: string | null };
   };
   "skills.refresh": { params: { workspace: string }; result: null };
   /** One skill's content and the paths of its files. */
@@ -3450,11 +4003,11 @@ export interface Calls {
     result: ComputeWorkload;
   };
   "compute.retry": {
-    params: { workspace: string; id: string; revision: number; generation: number };
+    params: { workspace: string; id: string; generation: number };
     result: ComputeWorkload;
   };
   "compute.rename": {
-    params: { workspace: string; id: string; revision: number; name: string };
+    params: { workspace: string; id: string; name: string };
     result: ComputeWorkload;
   };
   /** Deletes a workload; `request` the deletion under way, else the one kept on the device, else a new one. */
@@ -3462,7 +4015,6 @@ export interface Calls {
     params: {
       workspace: string;
       id: string;
-      revision: number;
       generation: number;
       request?: string;
     };
@@ -3489,8 +4041,10 @@ export interface Calls {
     result: StationProfile[];
   };
   /**
-   * Makes a Task on `station` (its own chat) and sends its first message: its session and chat. Made again with the same
-   * `key` (a call that failed), it is the same Task. Fails `machine_offline` when the station is not reached.
+   * Makes a Task on `station` (its own chat) and sends its first message: its session and chat, and the Task as any
+   * Task is named (its Group and its conversation), which opens it. Made again with the same `key` (a call that failed),
+   * it is the same Task. Fails `machine_offline` when the station is not reached. The first message carries
+   * `attachments` (`stations.upload`), and may be them alone.
    */
   "stations.newTask": {
     params: {
@@ -3503,26 +4057,14 @@ export interface Calls {
       effort?: string;
       title?: string;
       text: string;
+      attachments?: StationAttachment[];
     };
-    result: { session: string; thread: number };
-  };
-  /**
-   * Sets the labels of a Task a station hosts (the Group's label ids) on its station: the labels it has then. The
-   * device's copy of the list shows them at once; fails `machine_offline` when the station is not reached.
-   */
-  "stations.setLabels": {
-    params: { workspace: string; station: string; thread: number; labels: string[] };
-    result: { labels: string[] };
-  };
-  /** A person marks a Task done or cancelled, or (`in_progress`) leaves it to what its chat shows: its status then. */
-  "stations.setStatus": {
-    params: {
-      workspace: string;
-      station: string;
+    result: {
+      session: string;
       thread: number;
-      status: StationTaskMark;
+      groupId: string;
+      conversationId: string;
     };
-    result: { status: string };
   };
   /** Answers a card with one of its options (an option that closes it closes it). */
   "stations.answer": {
@@ -3551,49 +4093,10 @@ export interface Calls {
     params: { workspace: string; station: string; thread: number; seq: number };
     result: null;
   };
-  /**
-   * Sends a message to a chat (`thread`, or `session` while it has none: its chat is made first). It shows in the
-   * chat's outbox until the station has it, and stays there, failed, when it could not be sent.
-   */
-  "stations.send": {
-    params: {
-      workspace: string;
-      station: string;
-      thread?: number;
-      session?: string;
-      text: string;
-      attachments?: StationAttachment[];
-    };
-    result: null;
-  };
-  /** Sends a failed message again, as the same message. */
-  "stations.retry": {
-    params: { workspace: string; station: string; thread: number; id: string };
-    result: null;
-  };
-  "stations.discard": {
-    params: { workspace: string; station: string; thread: number; id: string };
-    result: null;
-  };
-  /** Reads the page of messages before those shown. */
-  "stations.older": {
-    params: { workspace: string; station: string; thread: number };
-    result: null;
-  };
-  /** The viewer saw the chat to its end: the station marks it read. */
-  "stations.read": {
-    params: { workspace: string; station: string; thread: number };
-    result: null;
-  };
   /** Puts a file on the station for a message to carry (`bytes` base64, at most 8 MB). */
   "stations.upload": {
     params: { workspace: string; station: string; name: string; bytes: string };
     result: StationAttachment;
-  };
-  /** Stops an agent's turn. */
-  "stations.stopAgent": {
-    params: { workspace: string; station: string; session: string };
-    result: null;
   };
   /** Sets it aside on this device: it stays, listed last. */
   "stations.defer": {
@@ -3724,6 +4227,27 @@ export interface Calls {
     result: null;
   };
   "voice.deleteKey": { params: { workspace: string; key: string }; result: null };
+  /** Changes the call voice and/or Router calls; an absent field keeps its value. */
+  "voice.setPreferences": {
+    params: { workspace: string; voice?: VoiceChoice | null; routerCalls?: boolean };
+    result: null;
+  };
+  /** Calls the Router of `workspace` from this app (the desktop's): answers once the call is dialled. */
+  "voiceCall.start": { params: { workspace: string }; result: null };
+  /** Hangs up the call, if any. */
+  "voiceCall.end": { params: Record<string, never>; result: null };
+  /** Mutes or unmutes this side of the call. */
+  "voiceCall.setMuted": { params: { muted: boolean }; result: null };
+  /** Makes the workspace's custom voice from a description and selects it. */
+  "voice.createCustomVoice": {
+    params: { workspace: string; description: string; name?: string };
+    result: null;
+  };
+  /** Declines an Agent's request; the Agent's waiting call returns that the person declined. */
+  "agentRequests.decline": {
+    params: { group: string; conversation: string; request: string };
+    result: null;
+  };
   "taskLabels.refresh": { params: { group: string }; result: null };
   "taskLabels.create": {
     params: { group: string; name: string; color?: string; description?: string };
@@ -4052,6 +4576,15 @@ export interface Calls {
     result: ChatCommandReceipt;
   };
   /**
+   * Runs the Task on another model, perhaps in another place (`taskRunChoices` lists them). Refused with why: the
+   * place or model is not usable, or its computer did not take the Task (`CommaApiError` 422 `task_run_refused`,
+   * whose body's `reason` clients word and `message` says otherwise). Where it runs comes with the next values.
+   */
+  "chatView.setTaskRun": {
+    params: ChatViewTarget & { run: ChatTaskRunChoice };
+    result: ChatCommandReceipt;
+  };
+  /**
    * Adds files to the draft: each shows (uploading) in the value with the receipt's revision. With
    * `questionMessageId` they go to that question card's other answer instead (`questionAttachments`), apart from
    * the draft.
@@ -4060,6 +4593,32 @@ export interface Calls {
     params: ChatViewTarget & {
       files: { name: string; size: number; bytes: Uint8Array }[];
       questionMessageId?: string;
+    };
+    result: ChatCommandReceipt;
+  };
+  /**
+   * Adds files a pick left with the host (`localFileRef`) to the draft, of any size the server takes: a host that
+   * `uploadsLocalFiles` uploads each from where it is as it is read, and the draft row's id is its ref.
+   */
+  "chatView.attachLocalFiles": {
+    params: ChatViewTarget & {
+      files: { localFileRef: string; mediaType: string; name: string; size: number }[];
+    };
+    result: ChatCommandReceipt;
+  };
+  /**
+   * Adds attachments of messages in the Group to the draft, of any size: the server stores each as a composer file by
+   * reference to its blob (`storeConversationFile`), so no bytes pass through the client.
+   */
+  "chatView.attachConversationFiles": {
+    params: ChatViewTarget & {
+      files: {
+        conversationId: string;
+        messageId: string;
+        index: number;
+        name: string;
+        size: number;
+      }[];
     };
     result: ChatCommandReceipt;
   };
@@ -4137,10 +4696,34 @@ export interface Calls {
   /** A workspace image's preview, drawn by the host from the server's verified bytes. */
   "chat.readGroupImage": { params: ChatReadGroupImageInput; result: Uint8Array };
   /**
-   * A chat file's bytes, for the account's session, up to 10 MB. Fails as the server refused it (its code and status),
-   * `network` or `timeout`, or `too_large`.
+   * A chat file's bytes, for the account's session, up to 10 MB (a larger one plays from `fileStream`); a larger one
+   * fails `too_large` without arriving whole. Fails as the server refused it (its code and status), `network` or
+   * `timeout`.
    */
   "files.read": { params: FileSource; result: FileBytes };
+  /**
+   * Up to `length` bytes of a chat file from `offset` (at most 10 MB a call), for a reader that shows part of a file
+   * of any size (a text's head, a PDF's pages), with the whole file's size. Fails as `files.read` does.
+   */
+  "files.readRange": {
+    params: { source: FileSource; offset: number; length: number };
+    result: FileRange;
+  };
+  /**
+   * A URL a browser downloads a message's attachment from itself, at any size: its media URL, which names the session
+   * and expires within hours. Web only: `unsupported` on the desktop (which saves through `files.save`) and for other
+   * sources; fails as the server refused it.
+   */
+  "files.link": { params: FileSource; result: { url: string } };
+  /**
+   * Saves a chat file into the Downloads folder as `name`, written as it arrives, so a file of any size saves: the saved
+   * file's opaque handle and the name it took, or null when it could not be written. Desktop only (`unsupported`
+   * elsewhere); fails as the server refused the file (its code and status).
+   */
+  "files.save": {
+    params: { source: FileSource; name: string };
+    result: { downloadRef: string; fileName: string } | null;
+  };
   /**
    * Downloads a file to the device unless it is there or on its way (`download` says how it goes), named `name`; with
    * `expect`, only a file of that size and SHA-256 is kept.
@@ -4158,6 +4741,122 @@ export interface Calls {
   "downloads.cancel": { params: { source: FileSource }; result: { asked: number } };
   /** A reply sent with no view of the conversation (Electron Main's notification banner). */
   "chat.sendDetached": { params: ChatTarget & { text: string }; result: null };
+  /**
+   * Puts a file in the workspace's Router chat for a cloud Task to carry (`chat.startTask`), checked as the composer's
+   * attachments are: its workspace file.
+   */
+  "chat.uploadTaskFile": {
+    params: { workspaceId: string; name: string; bytes: Uint8Array };
+    result: { name: string; path: string; size: number };
+  };
+  /**
+   * A Task in Comma's cloud with `model`, its first message `text`, owned by the person. The message names the files
+   * `uploads` (`chat.uploadTaskFile`), and may be them alone. Made once under `key`: made again with it (a call that
+   * failed), it is the same Task. Answers the Task as soon as it is made; nothing is posted to Home. A refusal fails
+   * `refused` with why.
+   */
+  "chat.startTask": {
+    params: {
+      workspaceId: string;
+      key: string;
+      model: { id: string; name: string };
+      text: string;
+      uploads?: { name: string; path: string }[];
+    };
+    result: { groupId: string; conversationId: string };
+  };
+  /** One page (100) of the repositories the workspace's connected GitHub account reaches, recently pushed first. */
+  "coding.repos": {
+    params: { workspaceId: string; page?: number };
+    result: CodingRepo[];
+  };
+  /** One page (100) of a repository's branch names. */
+  "coding.branches": {
+    params: { workspaceId: string; owner: string; name: string; page?: number };
+    result: string[];
+  };
+  /**
+   * A coding session: a Task, owned by the person, that runs on a cloud sandbox of its own with `repo` checked out
+   * (from `baseRef`, else its default branch) and works on a session branch it pushes. `model` names the runtime
+   * (`claude` or `codex`, and optionally its model); without one, Codex. The runtime's own default model runs
+   * when it names none. Made once per `key`.
+   */
+  "coding.start": {
+    params: {
+      workspaceId: string;
+      key: string;
+      text: string;
+      repo: { owner: string; name: string; baseRef?: string };
+      model?: { provider: "claude" | "codex"; model?: string; effort?: string };
+      /** The subscription the sandbox runs on, lent alone (a profile id of the `models` topic). */
+      accountId?: string;
+    };
+    result: { taskId: string; groupId: string };
+  };
+  /** Where a coding session stands now: its repository and branch, and its sandbox's state. */
+  "coding.session": {
+    params: { workspaceId: string; taskId: string };
+    result: CodingSession;
+  };
+  /**
+   * The session branch's changes against its base: from its sandbox, or from GitHub once the sandbox is gone. With
+   * `commit` (a full sha of the branch's), what that commit changed; with `uncommitted`, what is not committed yet.
+   */
+  "coding.changes": {
+    params: {
+      workspaceId: string;
+      taskId: string;
+      commit?: string;
+      uncommitted?: boolean;
+    };
+    result: CodingChanges;
+  };
+  /** A page of the session's execution history, the latest first: before entry `before` when given. */
+  "coding.history": {
+    params: { workspaceId: string; taskId: string; before?: number };
+    result: CodingHistory;
+  };
+  /**
+   * Opens a pull request of the session branch into its base (or answers the open one): the sandbox pushes and opens
+   * it while it runs, Comma opens the pushed branch on GitHub once it is gone. Titled for the Task and described with
+   * what it was asked unless `title` and `body` say otherwise. One pull request request runs at a time per Task
+   * (`codingPullRequest`'s `busy`); another fails `busy`. What each answers is learned for `codingPullRequest`.
+   */
+  "coding.pullRequest": {
+    params: {
+      workspaceId: string;
+      taskId: string;
+      title?: string;
+      body?: string;
+      draft?: boolean;
+    };
+    result: { url: string; number: number | null; title: string | null };
+  };
+  /** Changes the open pull request's title and description (an empty one clears it), and marks a draft ready. */
+  "coding.updatePullRequest": {
+    params: {
+      workspaceId: string;
+      taskId: string;
+      title?: string;
+      body?: string;
+      ready?: boolean;
+    };
+    result: CodingPullRequest | null;
+  };
+  /**
+   * Merges the open pull request the member confirmed (`number`, at head `headSha`), the first way the repository
+   * allows of squash, merge commit and rebase. Refused when the branch's open pull request is another one, or its head
+   * moved past `headSha` (commits pushed after it are not merged unseen).
+   */
+  "coding.mergePullRequest": {
+    params: { workspaceId: string; taskId: string; number: number; headSha: string };
+    result: { method: string; pullRequest: CodingPullRequest | null };
+  };
+  /** A single-use link (a minute) to the sandbox's web terminal; fails `sandbox_not_running` when it has none. */
+  "coding.terminal": {
+    params: { workspaceId: string; taskId: string };
+    result: { url: string };
+  };
   /** The language the core words chat's messages in. */
   "chat.locale": { params: { locale: string }; result: null };
   /** This device's id per workspace (Electron's connector), sent with each message. */
@@ -4234,7 +4933,10 @@ export interface Calls {
     params: { deviceId: string | null; meetingKey: string; generation: number };
     result: MeetingRecorderValue;
   };
-  /** Sends the account's meeting commands that wait again now. */
+  /**
+   * A person's Retry: sends the account's meeting commands that wait again now, and archives the outputs of meeting
+   * Tasks again, showing how it ends even for a meeting whose failure was shown before.
+   */
   "meetingRecorder.retryTaskSync": {
     params: Record<string, never>;
     result: MeetingRecorderValue;
@@ -4316,9 +5018,11 @@ export const TOPIC_SPECS: Record<string, KeyedSpec> = {
   stationTasks: { fields: { tasks: { key: ["id"] } } },
   archivedTasks: { fields: { tasks: { key: ["id"] } } },
   taskShares: { fields: { shares: { key: ["id"] } } },
+  miniApps: { fields: { apps: { key: ["id"] } } },
+  agentRequests: { fields: { requests: { key: ["id"] } } },
+  miniApp: { fields: { versions: { key: ["number"] } } },
   stations: { fields: { stations: { key: ["id"] } } },
   stationDecisions: { fields: { items: { key: ["station", "thread", "seq"] } } },
-  stationChat: { fields: { messages: { key: ["seq"] }, outbox: { key: ["id"] } } },
   chat: {
     fields: {
       snapshot: {
@@ -4522,7 +5226,7 @@ export type DriveSystemRef =
   /** `hash`: the content last read, which a save or delete names as its precondition. */
   | { kind: "vfs"; group: string; path: string; hash?: string | undefined }
   | { kind: "skill"; skill: string; workspace: string }
-  | { kind: "instructions"; group: string };
+  | { kind: "instructions"; group: string; hash?: string | undefined };
 
 export interface DriveFile {
   id: string;
@@ -4677,10 +5381,11 @@ export type MeetingRecorderAction =
   | "stop"
   | "discard";
 
-/** A meeting's Task as the server keeps it. */
+/** A meeting's Task as the server keeps it, with the workspace that opens it. */
 export interface MeetingTaskReference {
   groupId: string;
   taskId: string;
+  workspaceId: string;
 }
 
 /** The `meetingRecorder` topic's value. */
@@ -4709,7 +5414,11 @@ export interface MeetingRecorderValue {
     summaryError?: string | undefined;
     task?: MeetingTaskReference | undefined;
     smartSummary?: boolean | undefined;
-    archive?: "done" | "error" | undefined;
+    /**
+     * `missing`: the Task ended without attaching its outputs; `pending`: it did not attach them in time; `error`:
+     * saving them in Drive failed.
+     */
+    archive?: "done" | "missing" | "pending" | "error" | undefined;
     recording: MeetingRecording;
   } | null;
 }

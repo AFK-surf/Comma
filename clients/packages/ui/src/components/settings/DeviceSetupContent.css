@@ -1,0 +1,82 @@
+.comma-device-setup {
+  --compute-border: var(--color-border-secondary);
+  --compute-hairline: var(--border-width-0-5) solid var(--compute-border);
+  --compute-muted: var(--color-text-tertiary);
+  --compute-inset: var(--spacing-lg);
+  --compute-text-inset: var(--spacing-none);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm--line-height);
+}
+.comma-device-setup p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.comma-device-setup-status {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-lg);
+  padding: var(--spacing-xl);
+  border: var(--border-width-0-5) solid var(--color-border-secondary);
+  border-radius: var(--radius-lg);
+  background: var(--color-bg-secondary);
+  color: var(--color-text-tertiary);
+}
+.comma-device-setup-status__icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: var(--spacing-6xl);
+  height: var(--spacing-6xl);
+  border-radius: var(--radius-lg);
+  background: var(--color-bg-tertiary);
+}
+.comma-device-setup-status[data-tone="success"] .comma-device-setup-status__icon {
+  color: var(--color-fg-success-primary);
+}
+.comma-device-setup-status[data-tone="warning"] .comma-device-setup-status__icon {
+  color: var(--color-fg-warning-primary);
+}
+.comma-device-setup-status__copy {
+  flex: 1;
+  min-width: 0;
+}
+.comma-device-setup-status__title {
+  font-size: var(--text-sm);
+  font-weight: var(--font-weight-medium);
+  color: var(--color-text-primary);
+}
+.comma-device-setup-status__description {
+  margin-top: var(--spacing-xxs) !important;
+  font-size: var(--text-xs);
+  line-height: var(--text-xs--line-height);
+  color: var(--color-text-tertiary);
+}
+.comma-device-setup-help__trigger {
+  width: 100%;
+  justify-content: flex-start;
+  padding-inline: var(--spacing-xs);
+  font-size: var(--text-xs);
+  color: var(--color-text-tertiary);
+}
+.comma-device-setup-help__trigger > .comma-icon-slot:last-child {
+  margin-left: auto;
+}
+.comma-device-setup-help__trigger[aria-expanded="true"] > .comma-icon-slot:last-child {
+  transform: rotate(180deg);
+}
+.comma-device-setup-help__content {
+  padding: var(--spacing-md) var(--spacing-xs);
+  color: var(--color-text-tertiary);
+  font-size: var(--text-xs);
+  line-height: var(--text-xs--line-height);
+}
+.comma-device-setup-list {
+  border: var(--compute-hairline);
+  border-radius: var(--radius-lg);
+}
+.comma-device-setup-list__title {
+  color: var(--color-text-quaternary);
+  font-size: var(--text-xs);
+  font-weight: var(--font-weight-medium);
+}

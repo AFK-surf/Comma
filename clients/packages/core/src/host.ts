@@ -31,7 +31,10 @@ import type {
   MeetingEvent,
   MeetingOp,
   MeetingOps,
+  SavedStream,
   SessionAuthorityResume,
+  VoiceCallSocketEvent,
+  VoiceCallSocketOp,
 } from "./hosts/utility-protocol.ts";
 
 export type {
@@ -60,9 +63,20 @@ export type {
   MeetingPresenceMeeting,
   MeetingPresenceState,
   MeetingRecording,
+  SavedStream,
+  VoiceCallSocketEvent,
+  VoiceCallSocketOp,
 } from "./hosts/utility-protocol.ts";
 
 /** The session a request belongs to (no credential in it). */
+/** Where Main reads a file's bytes: the API's GET `path` under the session `lease`, or a signed `url` (no credential). */
+export type FileRead = { path: string; lease: SessionLease } | { url: string };
+/**
+ * Where a stream's bytes are read: as a file read (`FileRead`), or by the core (`core`, its `fileSource` as JSON: a file
+ * of a Task a station hosts, which only the core reaches), which Main asks for each range (`files.readRange`).
+ */
+export type StreamRead = FileRead | { core: string };
+
 export interface SessionLease {
   audience: string;
   authorityInstanceId: string;
@@ -76,6 +90,11 @@ export interface ApiRequest {
   path: string;
   headers: [string, string][];
   body: Uint8Array | null;
+  /**
+   * The body is the bytes of this file a pick left with the host (`lfi1_…`), read as the request sends them, so the
+   * file is never held whole (`body` is then null). Only a host that `uploadsLocalFiles` is given one.
+   */
+  localFileRef?: string;
   /** The session it is made for: refused by the host when that is not the current one. */
   lease: SessionLease;
 }
@@ -288,6 +307,34 @@ export interface DesktopPorts {
     content: Uint8Array
   ): Effect.Effect<{ downloadRef: string; fileName: string } | null, HostError>;
   /**
+   * Begins saving a file the core reads itself a part at a time (a file of a Task a station hosts) into the Downloads
+   * folder as `fileName`: its `id`. `saveWrite` writes each part in order, once the one before it is written;
+   * `saveClose` with `keep` puts the file in place (its opaque handle and the name it took, or null when it could not
+   * be saved), without it leaves nothing of it.
+   */
+  saveOpen(fileName: string): Effect.Effect<{ id: number }, HostError>;
+  saveWrite(id: number, bytes: Uint8Array): Effect.Effect<void, HostError>;
+  saveClose(
+    id: number,
+    keep: boolean
+  ): Effect.Effect<{ downloadRef: string; fileName: string } | null, HostError>;
+  /**
+   * A URL a window's media element reads a file from, in the ranges it asks for, typed `type`: the API's GET `path`,
+   * to each read of which Main adds the credential of `lease` and which it refuses once that session is not the current
+   * one, or a signed `url`, which Main reads with no credential. Open until `closeStream`.
+   */
+  openStream(input: StreamRead & { type: string }): Effect.Effect<string, HostError>;
+  /** Main forgets a URL `openStream` gave. */
+  closeStream(url: string): Effect.Effect<void, HostError>;
+  /**
+   * Saves a file into the Downloads folder as `fileName`, written as it arrives: the API's GET `path` read under
+   * `lease`, or a signed `url`. The saved file's opaque handle and the name it took, the server's refusal (`status`,
+   * `code`), or null when it could not be written.
+   */
+  saveStream(
+    input: FileRead & { fileName: string }
+  ): Effect.Effect<SavedStream, HostError>;
+  /**
    * Listens on `127.0.0.1:<port>` (0: any free port) for GETs of `path`, with the pages of `source`'s sign-in. Fails
    * `authorization_port_in_use` when the port is taken.
    */
@@ -315,6 +362,16 @@ export interface MeetingPorts {
   ): Effect.Effect<MeetingAnswer<O>, HostError>;
   /** What Main saw, from now on (Main tells it again after the core restarts). */
   listen(listener: (event: MeetingEvent) => void): void;
+}
+
+/**
+ * The `comma.voice.v1` socket of the desktop's voice call (voice-call.ts), held by Main: it carries the voice key, the
+ * call's audio goes between it and the window's speaker and microphone, and its text messages come to the core.
+ */
+export interface VoiceCallPorts {
+  command(op: VoiceCallSocketOp): void;
+  /** What the socket did, from now on. */
+  listen(listener: (event: VoiceCallSocketEvent) => void): void;
 }
 
 export function header(
@@ -589,6 +646,14 @@ export interface DownloadPorts {
   ): Effect.Effect<{ received: number } | { size: number; sha256: string }, HostError>;
   /** Gives a download up: nothing of it stays. */
   close(id: number): Effect.Effect<void, HostError>;
+  /**
+   * Begins writing a file the core reads itself a part at a time (a file of a Task a station hosts) to `path`: its
+   * `id`. `append` writes each part in order (how much is written so far); `finish` puts the file in place of what was
+   * at its path, as a download's is (its size and SHA-256, lower-case hex); `close` gives it up.
+   */
+  create(path: string): Effect.Effect<{ id: number }, HostError>;
+  append(id: number, bytes: Uint8Array): Effect.Effect<{ received: number }, HostError>;
+  finish(id: number): Effect.Effect<{ size: number; sha256: string }, HostError>;
   /** Removes `path`: a file, or a directory with all under it. */
   remove(path: string): Effect.Effect<void, HostError>;
   /** Removes every top-level directory but `keep` (an account's); everything when it is null. */
@@ -610,9 +675,35 @@ export interface ResetPorts {
   readonly restart: Effect.Effect<void, HostError>;
 }
 
+/** What the core's requests say about the app making them (`x-comma-client`). */
+export interface ClientIdentity {
+  readonly kind: ClientKind | "web";
+  readonly platform: ClientPlatform;
+  /** The app's version, where the host knows it. */
+  readonly version?: string | undefined;
+}
+
 export interface Host {
+  /** The app the core runs in, as its requests report it. A host without one reports only its capabilities. */
+  readonly client?: ClientIdentity | undefined;
+  /** Foreground BLE setup and secure revocation records. Unavailable on unsupported hosts. */
+  readonly deviceSetup?: DeviceSetupPort;
   /** A request to the Comma API, with the session's credential added by the host. */
   fetch(request: ApiRequest): Effect.Effect<ApiResponse, HostError>;
+  /**
+   * `fetch` sends a request's `localFileRef` as its body (Electron, whose picks leave files with Main; Android, whose
+   * picks stay with the provider that gave them).
+   */
+  readonly uploadsLocalFiles?: boolean;
+  /**
+   * `length` bytes from `offset` of a file a pick left with the app (its `localFileRef`): what goes up to a station,
+   * a part at a time. Absent where the app cannot read its picks so.
+   */
+  readLocalFile?(
+    ref: string,
+    offset: number,
+    length: number
+  ): Effect.Effect<Uint8Array, HostError>;
   /** As `fetch`, its body read as it arrives, open while the scope is. */
   fetchStream(
     request: ApiRequest
@@ -660,6 +751,8 @@ export interface Host {
   readonly desktop?: DesktopPorts;
   /** Electron's meeting recorder parts (Main's). A host without them records no meetings. */
   readonly meeting?: MeetingPorts;
+  /** The voice call socket (Main's, Electron only). A host without it makes no voice calls. */
+  readonly voiceCall?: VoiceCallPorts;
 
   /** This installation's Drive node (drive-catalog.ts). Only Electron's host has one. */
   readonly localDrive?: LocalDrivePorts;
@@ -690,4 +783,24 @@ export interface Host {
    * `bearerSession`); `host`, a test tells the core each change (`Core.observeSession`).
    */
   readonly sessionSource: "host" | "core";
+}
+
+/** Native operations never pass through a renderer. Each setup has a fresh session locator. */
+export interface DeviceSetupPort {
+  call(
+    op:
+      | "start"
+      | "next"
+      | "stopScan"
+      | "connect"
+      | "read"
+      | "notify"
+      | "write"
+      | "disconnect"
+      | "close"
+      | "records"
+      | "put"
+      | "remove",
+    input: Record<string, unknown>
+  ): Effect.Effect<unknown, HostError>;
 }

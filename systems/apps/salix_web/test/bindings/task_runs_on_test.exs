@@ -2,10 +2,9 @@ defmodule Salix.Bindings.TaskRunsOnTest do
   @moduledoc """
   Task placement through `Salix.Bindings.AgentConversations.runs_on/2`.
   A desktop station must be connected and accept Tasks with a model its profiles enable.
-  A Loop Task runs while every app is closed, so it never runs on a person's own computer.
-  Cloud VM placement requires the Group's Cloud VM switch to be on.
-  An Agent starts the VM first with `cloud_vm.start`. Task placement requires
-  a ready VM and a connected station.
+  Cloud VM placement requires the Group's Cloud VM switch to be on, and nothing
+  else: a Task made while the VM sleeps or was never made is kept for its
+  station and the VM woken (`SalixWeb.StationTasks`).
   """
   use SystemsClock.Case, async: false
 
@@ -39,27 +38,16 @@ defmodule Salix.Bindings.TaskRunsOnTest do
              {:ok, %{"kind" => "station", "device_id" => device_id}}
   end
 
-  test "a Loop Task is refused a person's own computer, connected or not", %{scope: scope} do
-    {personal, run_id} =
-      connect_run_device!(scope, "device-personal-#{SystemsRuntime.Proc.unique_integer()}", %{
+  test "a station that is not connected now is refused", %{scope: scope} do
+    {device_id, run_id} =
+      connect_run_device!(scope, "device-offline-#{SystemsRuntime.Proc.unique_integer()}", %{
         "tasks" => 2
       })
 
-    {:ok, _} = Registry.update_meta(run_id, &Map.put(&1, "owner_user_id", "user-1"))
     {:ok, _} = Registry.mark_disconnected(run_id)
-    runs_on = %{"kind" => "station", "device_id" => personal}
-    loop = Map.put(scope, :loop, true)
 
-    assert AgentConversations.runs_on(loop, runs_on) == {:error, :personal_station_for_loop}
-
-    # A one-shot Task only needs the station to be connected now.
-    assert AgentConversations.runs_on(scope, runs_on) == {:error, :device_offline}
-
-    # A station its owner does not carry around takes Loop Tasks.
-    unattended = connect!(scope, "device-unattended", %{"tasks" => 2})
-
-    assert AgentConversations.runs_on(loop, %{"kind" => "station", "device_id" => unattended}) ==
-             {:ok, %{"kind" => "station", "device_id" => unattended}}
+    assert AgentConversations.runs_on(scope, %{"kind" => "station", "device_id" => device_id}) ==
+             {:error, :device_offline}
   end
 
   test "a Task's model on a station must be one its profiles enable, as the station said", %{
@@ -87,8 +75,7 @@ defmodule Salix.Bindings.TaskRunsOnTest do
              {:error, {:not_on_station, %{}}}
   end
 
-  test "Cloud VM Task placement requires the Group's switch and a ready VM with a connected station",
-       %{scope: scope} do
+  test "Cloud VM Task placement requires the Group's switch, not a running VM", %{scope: scope} do
     # The Group's Cloud VM switch is off: no Worker places a Task there, bound to it or not.
     {:ok, bound} =
       SalixAgent.Control.create(
@@ -122,21 +109,21 @@ defmodule Salix.Bindings.TaskRunsOnTest do
 
     {:ok, _} = Salix.Control.Groups.update(scope.group_id, %{"cloud_vm_enabled" => true})
 
-    # The switch passes admission for every Worker, but does not create or start the Group VM.
-    assert AgentConversations.runs_on(scope, %{"kind" => "cloud_vm"}) ==
-             {:error, :cloud_vm_not_running}
+    # The switch passes admission for every Worker, with no VM made or
+    # running yet: the Task's station gives the VM its wake (cloud_vm_test).
+    place = %{"kind" => "cloud_vm", "device_id" => RuntimeIds.cloud_vm_device_id(scope.group_id)}
 
-    scope = %{scope | agent_id: bound["agent_id"]}
+    for agent_id <- [scope.agent_id, bound["agent_id"]] do
+      assert AgentConversations.runs_on(%{scope | agent_id: agent_id}, %{"kind" => "cloud_vm"}) ==
+               {:ok, place}
+    end
 
-    assert AgentConversations.runs_on(scope, %{"kind" => "cloud_vm"}) ==
-             {:error, :cloud_vm_not_running}
-
-    # Its station connected, but the VM is not ready (its archive is still to be
-    # restored): no Task runs there yet. A ready one is in cloud_vm_test.
-    connect_device!(scope, RuntimeIds.cloud_vm_device_id(scope.group_id), %{})
-
-    assert AgentConversations.runs_on(scope, %{"kind" => "cloud_vm"}) ==
-             {:error, :cloud_vm_not_running}
+    # The Cloud VM's station named as a desktop station is the Cloud VM.
+    assert AgentConversations.runs_on(scope, %{
+             "kind" => "station",
+             "device_id" => place["device_id"]
+           }) ==
+             {:error, :use_cloud_vm_kind}
   end
 
   defp connect!(scope, prefix, capabilities),

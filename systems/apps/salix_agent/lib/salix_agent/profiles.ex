@@ -15,7 +15,8 @@ defmodule SalixAgent.Profiles do
   The AccountPool records that serve a request, best first. `opts`: `:model`
   (the catalog model asked for), `:provider_model` (the id the provider is
   asked for it by, what a window of one model counts for) and `:now` (ms since
-  the epoch).
+  the epoch). `:keep_unusable`: when none of those that serve the model can
+  take it now, give them anyway.
   """
   def rank(records, opts \\ []) when is_list(records) do
     profiles = Enum.map(records, &profile/1)
@@ -25,7 +26,7 @@ defmodule SalixAgent.Profiles do
       "provider_model" => blank(opts[:provider_model]),
       # None that serves it is none: the request moves to another source.
       "strict" => true,
-      "keep_unusable" => false,
+      "keep_unusable" => opts[:keep_unusable] == true,
       "now" => opts[:now] || SystemsClock.system_time(:millisecond)
     }
 
@@ -52,6 +53,22 @@ defmodule SalixAgent.Profiles do
     case Native.usable_json(Jason.encode!(profile), "", SystemsClock.system_time(:millisecond)) do
       {:ok, usable} -> not usable
       {:error, _} -> false
+    end
+  end
+
+  @doc """
+  When an account held back by its used-up windows for a model (the id the
+  provider is asked for it by) has refilled, in ms since the epoch: nil when
+  no window holds it back or one that does has no known refill.
+  """
+  def refills_at(record, provider_model) do
+    case Native.refills_at_json(
+           Jason.encode!(profile(record)),
+           provider_model || "",
+           SystemsClock.system_time(:millisecond)
+         ) do
+      {:ok, at} -> at
+      {:error, _} -> nil
     end
   end
 

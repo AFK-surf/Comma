@@ -6,7 +6,7 @@ import { CoreError, utf8 } from "@comma/core-kernel";
 import { Effect } from "effect";
 import { z } from "zod";
 import type { Account } from "../account.ts";
-import { route } from "../api.ts";
+import { REQUEST_TIMEOUT_MS, route } from "../api.ts";
 import {
   commaConversationEventSchema,
   commaConversationListEventSchema,
@@ -61,7 +61,7 @@ export function createChatApi(ctx: Ctx, account: Account, env: ChatEnv): ChatApi
   const lift = <A>(effect: Effect.Effect<A, CoreError>): Effect.Effect<A, Error> =>
     effect.pipe(Effect.mapError(asApiError));
   const json = <S extends z.ZodType>(
-    method: "GET" | "POST" | "PATCH",
+    method: "GET" | "POST" | "PATCH" | "PUT",
     path: string,
     schema: S,
     body?: unknown
@@ -139,6 +139,36 @@ export function createChatApi(ctx: Ctx, account: Account, env: ChatEnv): ChatApi
         {
           status,
           expected_updated_at: expectedUpdatedAt,
+        }
+      ),
+    setTaskRun: (groupId, conversationId, run) =>
+      json(
+        "PUT",
+        `${conversationPath(groupId, conversationId)}/run`,
+        commaConversationSchema,
+        {
+          runs_on:
+            run.runsOn.kind === "station"
+              ? { kind: "station", device_id: run.runsOn.deviceId }
+              : { kind: run.runsOn.kind },
+          model:
+            run.model === null
+              ? null
+              : run.model.kind === "catalog"
+                ? {
+                    kind: "catalog",
+                    model: run.model.model,
+                    // As a model named in a message runs: a subscription first, an API key when none can.
+                    allow_paid: true,
+                    ...(run.model.reasoningEffort
+                      ? { reasoning_effort: run.model.reasoningEffort }
+                      : {}),
+                  }
+                : {
+                    kind: "runtime",
+                    provider: run.model.provider,
+                    ...(run.model.model ? { model: run.model.model } : {}),
+                  },
         }
       ),
     listMessages: (groupId, conversationId, query) => {
@@ -224,6 +254,54 @@ export function createChatApi(ctx: Ctx, account: Account, env: ChatEnv): ChatApi
             )
         );
       }),
+    ...(ctx.host.uploadsLocalFiles
+      ? {
+          uploadLocalFile: (
+            groupId: string,
+            attrs: { localFileRef: string; name: string; size: number }
+          ) =>
+            lift(
+              ctx.api
+                .raw(
+                  account,
+                  "PUT",
+                  `${route`/v1/comma/groups/${groupId}/files`}?${new URLSearchParams({
+                    name: attrs.name,
+                    size: String(attrs.size),
+                  })}`,
+                  {
+                    headers: [["content-type", "application/octet-stream"]],
+                    localFileRef: attrs.localFileRef,
+                    // The request's own bound plus a second for every 32 KiB: a slow uplink still finishes.
+                    timeoutMs:
+                      REQUEST_TIMEOUT_MS + Math.ceil(attrs.size / 32_768) * 1_000,
+                  }
+                )
+                .pipe(
+                  Effect.flatMap((response) => {
+                    const out = commaGroupFileSchema.safeParse(
+                      JSON.parse(new TextDecoder().decode(response.body))
+                    );
+                    return out.success
+                      ? Effect.succeed(out.data)
+                      : Effect.fail(
+                          new CoreError(
+                            "bad_response",
+                            "an upload's answer was not a file"
+                          )
+                        );
+                  })
+                )
+            ),
+        }
+      : {}),
+    storeConversationFile: (groupId, file) =>
+      json(
+        "POST",
+        route`/v1/comma/groups/${groupId}/conversations/${file.conversationId}/messages/${file.messageId}/attachments/${String(file.index)}/workspace-file`,
+        commaGroupFileSchema,
+        {}
+      ),
     fetchGroupFile: (groupId, path) =>
       bytes(
         "GET",

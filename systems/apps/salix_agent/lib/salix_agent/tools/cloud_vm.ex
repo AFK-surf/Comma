@@ -9,7 +9,7 @@ defmodule SalixAgent.Tools.CloudVM do
   def defs do
     [
       {"cloud_vm.start",
-       "Start the Workspace's Cloud VM and wait until its station is connected. Omit agent_id to start it for yourself, including as a Comma Router, or name a Worker of this Workspace. Answers each state it went through with seconds since the start.\n\nThe Cloud VM belongs to the Workspace. The Workspace's Cloud VM switch permits startup and Task placement there; a Cloud VM binding only makes it the Worker's default Task location. Nothing starts it otherwise: a Task with runs_on {\"kind\":\"cloud_vm\"} is refused while it is not running, and a message to it then fails. States: none, creating, archived, waking, ready, connected, failed, ...; a VM already connected answers at once. Starting takes from seconds to a few minutes.",
+       "Start the Workspace's Cloud VM and wait until its station is connected. Omit agent_id to start it for yourself, including as a Comma Router, or name a Worker of this Workspace. Answers each state it went through with seconds since the start.\n\nThe Cloud VM belongs to the Workspace. The Workspace's Cloud VM switch permits startup and Task placement there; a Cloud VM binding only makes it the Worker's default Task location. A Task with runs_on {\"kind\":\"cloud_vm\"} wakes it by itself and is given to it once it is up, so start it only to run commands on it yourself; a message to it while it is not running fails. States: none, creating, archived, waking, ready, connected, failed, ...; a VM already connected answers at once. Starting takes from seconds to a few minutes.",
        schema(), &__MODULE__.start/2, AsyncPolicy.normal_tool_auto_wait_seconds(),
        [safety: "write"]}
     ]

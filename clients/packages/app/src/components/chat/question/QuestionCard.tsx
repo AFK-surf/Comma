@@ -46,6 +46,7 @@ import {
   QuestionCardAttachmentsContext,
   type QuestionCardActions,
 } from "./QuestionCardContext";
+import "../agent-card/agent-card.css";
 import "./question-card.css";
 
 const NO_ATTACHMENTS: readonly DraftAttachment[] = [];
@@ -230,6 +231,8 @@ function QuestionForm({
   const onDrop = (event: DragEvent<HTMLFormElement>) => {
     if (!event.dataTransfer.types.includes("Files")) return;
     event.preventDefault();
+    // The card's answer takes these files, not the conversation's draft around it.
+    event.stopPropagation();
     addFiles(Array.from(event.dataTransfer.files));
     otherRef.current?.focus();
   };
@@ -344,10 +347,20 @@ function QuestionForm({
     // oxlint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- the card's own shortcuts (⌘↵, number keys) and the images pasted or dropped on it
     <form
       aria-labelledby={promptId}
-      className="comma-question-card"
+      className="comma-agent-card"
       noValidate
+      // The card is a drop target of its own: the conversation around it does
+      // not show its drop overlay while files are over the card.
+      onDragEnter={(event) => {
+        if (event.dataTransfer.types.includes("Files")) event.stopPropagation();
+      }}
+      onDragLeave={(event) => {
+        if (event.dataTransfer.types.includes("Files")) event.stopPropagation();
+      }}
       onDragOver={(event) => {
-        if (event.dataTransfer.types.includes("Files")) event.preventDefault();
+        if (!event.dataTransfer.types.includes("Files")) return;
+        event.preventDefault();
+        event.stopPropagation();
       }}
       onDrop={onDrop}
       onKeyDownCapture={onKeyDownCapture}
@@ -359,12 +372,12 @@ function QuestionForm({
       }}
       ref={formRef}
     >
-      <div className="comma-question-card-head">
-        <p className="comma-question-card-prompt" id={promptId}>
+      <div className="comma-agent-card-head">
+        <p className="comma-agent-card-title" id={promptId}>
           {part.prompt}
         </p>
         {multiple ? (
-          <p className="comma-question-card-meta">{messages.chat_question_multi()}</p>
+          <p className="comma-agent-card-meta">{messages.chat_question_multi()}</p>
         ) : null}
       </div>
       <ChoiceList
@@ -455,17 +468,17 @@ function QuestionForm({
           </Button>
         </div>
       ) : null}
-      <output className="comma-question-card-note">{note}</output>
-      <div className="comma-question-card-foot">
-        <span className="comma-question-card-hint">
+      <output className="comma-agent-card-note">{note}</output>
+      <div className="comma-agent-card-foot">
+        <span className="comma-agent-card-hint">
           <kbd>↑</kbd>
           <kbd>↓</kbd> {messages.chat_question_hint_select()}
-          <span aria-hidden="true" className="comma-question-card-hint-sep">
+          <span aria-hidden="true" className="comma-agent-card-hint-sep">
             ·
           </span>
           <kbd>↵</kbd> {messages.chat_question_send()}
         </span>
-        <span className="comma-question-card-actions">
+        <span className="comma-agent-card-actions">
           <Button
             hierarchy="secondary-gray"
             onPress={() => {
@@ -586,14 +599,11 @@ function QuestionReceipt({ part }: { part: ChatQuestionPart }) {
   return (
     <section
       aria-label={part.prompt}
-      className="comma-question-receipt"
+      className="comma-agent-receipt"
       data-status={status}
     >
       <span
-        className={cx(
-          "comma-question-receipt-icon",
-          status !== "answered" && "is-muted"
-        )}
+        className={cx("comma-agent-receipt-icon", status !== "answered" && "is-muted")}
       >
         {status === "sending" ? (
           <LoadingCircleIcon aria-hidden="true" className="motion-safe:animate-spin" />
@@ -607,14 +617,14 @@ function QuestionReceipt({ part }: { part: ChatQuestionPart }) {
           <CheckIcon aria-hidden="true" />
         )}
       </span>
-      <span className="comma-question-receipt-text">
-        <span className="comma-question-receipt-prompt">{part.prompt}</span>
-        <span className={cx("comma-question-receipt-answer", !given && "is-muted")}>
+      <span className="comma-agent-receipt-text">
+        <span className="comma-agent-receipt-prompt">{part.prompt}</span>
+        <span className={cx("comma-agent-receipt-answer", !given && "is-muted")}>
           {given
             ? answerLabel(part.choices, part.state)
             : receiptLabel(status, messages)}
           {status === "sending" ? (
-            <span className="comma-question-receipt-note">
+            <span className="comma-agent-receipt-note">
               {" "}
               · {messages.chat_question_sending()}
             </span>

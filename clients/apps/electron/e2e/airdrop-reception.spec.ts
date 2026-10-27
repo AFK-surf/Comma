@@ -7,7 +7,7 @@ import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { findElectronWindowByNativeRole } from "../src/test-support/electron-native-window";
 import { recordElectronOnboardingCompleted } from "../../../e2e/helpers/electron-profile";
-import { chatSmokeWorkspaceChat, startChatSmokeStub } from "../../../e2e/p0/chat-stub";
+import { startChatSmokeStub } from "../../../e2e/p0/chat-stub";
 import { closeElectronTestApp } from "./close-electron-test-app";
 
 const electronAppDir = resolve(process.cwd(), "apps/electron");
@@ -117,9 +117,7 @@ test(
 
       const toast = main.locator('[data-testid^="comma-airdrop-"]');
       await expect(toast.getByText("AirDrop from iPhone")).toBeVisible();
-      await expect(
-        toast.getByText(`Adds to “${chatSmokeWorkspaceChat.title}”`)
-      ).toBeVisible();
+      await expect(toast.getByText("Adds to “Comma”")).toBeVisible();
       await expect(toast.getByText("generated-image-preview.png")).toBeVisible();
       const cardOverflow = () =>
         main.evaluate(
@@ -145,9 +143,7 @@ test(
       await toast.getByRole("button", { name: "Accept" }).click();
 
       // The card becomes the result, showing the received image itself.
-      await expect(
-        toast.getByText(`Added to “${chatSmokeWorkspaceChat.title}”`)
-      ).toBeVisible();
+      await expect(toast.getByText("Added to “Comma”")).toBeVisible();
       expect(await lowestCardEdge).toBeLessThanOrEqual(0);
       // Main serves the preview bytes over the binary command; the image decodes.
       const preview = toast.getByRole("img", { name: "generated-image-preview.png" });
@@ -223,9 +219,7 @@ test(
       await expect(strip.getByRole("listitem")).toHaveCount(8);
       await toast.getByRole("button", { name: "Accept" }).click();
 
-      await expect(
-        toast.getByText(`Added to “${chatSmokeWorkspaceChat.title}”`)
-      ).toBeVisible();
+      await expect(toast.getByText("Added to “Comma”")).toBeVisible();
       // Every file decodes its own preview, not only the first few.
       const previews = strip.getByRole("img");
       await expect(previews).toHaveCount(8);

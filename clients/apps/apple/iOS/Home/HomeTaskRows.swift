@@ -38,12 +38,14 @@ struct HomeTaskRows: View {
                 TaskActionMenuItems(store: store, task: task, rename: { renaming = task }, share: { sharing = task })
             }
             .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                Button { Task { await store.setTaskArchived(task, archived: true) } } label: {
-                    Label { Text("Archive") } icon: { SwipeIcon.image(TaskActionMenuItems.archiveIcon) }
+                if !task.unsupported.contains("archive") {
+                    Button { Task { await store.setTaskArchived(task, archived: true) } } label: {
+                        Label { Text("Archive") } icon: { SwipeIcon.image(TaskActionMenuItems.archiveIcon) }
+                    }
+                    // A swipe action does not draw itself disabled, so a refused Archive dims its fill.
+                    .tint(CommaTheme.brandSolid.opacity(task.archiveRefusal == nil ? 1 : 0.4))
+                    .archiveAvailability(of: task)
                 }
-                // A swipe action does not draw itself disabled, so a refused Archive dims its fill.
-                .tint(CommaTheme.brandSolid.opacity(task.archiveRefusal == nil ? 1 : 0.4))
-                .archiveAvailability(of: task)
                 MarkDoneSwipe(store: store, task: task)
             }
             .commaListRow(.task)

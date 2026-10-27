@@ -11,12 +11,15 @@ import { ThreadUserAvatarContext, ThreadWorkerVendorContext } from "../threadCon
 export function MessageAvatar({
   actorRole,
   createdBy,
+  system = false,
   user = false,
   preview = false,
   unavailable = false,
 }: {
   actorRole?: ChatMessage["actorRole"];
   createdBy?: string | undefined;
+  /** Comma's own runtime wrote it, so it wears the Router's Comma mark. */
+  system?: boolean;
   user?: boolean;
   preview?: boolean;
   unavailable?: boolean;
@@ -32,13 +35,15 @@ export function MessageAvatar({
       ? profile
       : undefined;
   const workerVendor = useContext(ThreadWorkerVendorContext);
+  const commaMark = actorRole === "router" || system;
   const className = cx(
     "comma-chat-assistant-source-avatar",
-    actorRole === "router" && "comma-chat-assistant-router-mark",
+    commaMark && "comma-chat-assistant-router-mark",
     user && "comma-chat-user-source-avatar",
     preview && "comma-chat-reply-preview-avatar"
   );
-  if (actorRole === "worker" && !unavailable)
+  // A runtime message is Comma's even when it carries a Worker role.
+  if (actorRole === "worker" && !system && !unavailable)
     return <WorkerModelMark className={className} vendor={workerVendor} />;
   return (
     <span aria-hidden className={className} data-unavailable={unavailable || undefined}>
@@ -52,7 +57,7 @@ export function MessageAvatar({
           email={userProfile?.email ?? ""}
           size="xs"
         />
-      ) : actorRole === "router" ? (
+      ) : commaMark ? (
         <CommaProductMark viewBox="2 2 16 16" />
       ) : (
         <SparklesIcon />

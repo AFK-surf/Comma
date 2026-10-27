@@ -27,6 +27,11 @@ import { deviceSetupOfferValue } from "./chat/model/inlineElementContract.ts";
 import { type Ctx, Live } from "./ctx.ts";
 import type { Workspaces } from "./workspaces.ts";
 
+export const isCommaDevice = (source: string | undefined | null): boolean =>
+  ["t-circle", "m5stack-sticks3", "waveshare-amoled-1-32", "esp32-devkit"].includes(
+    source ?? ""
+  );
+
 const POLL_MS = 15_000;
 const PAGE = 20;
 const KEPT = 50;
@@ -119,7 +124,11 @@ export class Devices {
   readonly #probes = Semaphore.makeUnsafe(2);
   #accountKey: string | null = null;
 
-  constructor(ctx: Ctx, workspaces: Workspaces) {
+  constructor(
+    ctx: Ctx,
+    workspaces: Workspaces,
+    private readonly setup?: import("./device-setup/controller.ts").DeviceSetup
+  ) {
     this.#ctx = ctx;
     this.#workspaces = workspaces;
     this.#live = new Live(ctx.runner);
@@ -562,6 +571,7 @@ export class Devices {
           return;
         }
         shown.workspace = workspace;
+        if (!after) this.setup?.reconcile(account.value, workspace);
         if (!background) {
           shown.loading = true;
           this.#changed(key);
@@ -747,6 +757,7 @@ export class Devices {
     const now = this.#ctx.now();
     const show = (device: Device): ShownDevice => ({
       ...device,
+      isCommaDevice: isCommaDevice(device.system_info?.client_source),
       device_runtimes: device.device_runtimes.map((runtime) => ({
         ...runtime,
         fresh:

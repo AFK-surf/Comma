@@ -1,9 +1,9 @@
 defmodule SalixMeet.Ports.MeetingDispatch do
   @moduledoc """
-  Port from the meeting runtime driver to a connector-hosted meeting runtime.
+  Port from the Meeting runtime driver to its selected carrier.
 
-  The composition host selects a connected environment that advertises the
-  meeting runtime capability and dispatches the join over the connector bridge.
+  The composition host resolves automatic placement or the persisted target.
+  VMM, connected, and native runtimes share the Meeting's dispatch authority.
   """
 
   @callback join(map()) :: {:ok, map()} | :ok | {:error, term()}
@@ -11,8 +11,8 @@ defmodule SalixMeet.Ports.MeetingDispatch do
   @doc """
   Command the joined bot to post a chat message into the live meeting.
 
-  `payload` carries `"meeting_id"`, `"group_id"` (used to resolve the current
-  connector env), `"message_id"` (stable across retries), and `"text"`.
+  `payload` carries the Meeting's persisted target, a stable `"message_id"`,
+  and `"text"`.
   """
   @callback send_chat(map()) :: {:ok, map()} | :ok | {:error, term()}
 
@@ -27,7 +27,8 @@ defmodule SalixMeet.Ports.MeetingDispatch do
   well-formed answer). Callers must treat `:unavailable` as fail-closed —
   never as either definite answer.
   """
-  @callback session_status(map()) :: {:ok, :live | :none | :unavailable} | {:error, term()}
+  @callback session_status(map()) ::
+              {:ok, :live | :none | :unavailable | :unavailable_idempotent} | {:error, term()}
 
   def join(payload), do: impl().join(payload)
 

@@ -74,7 +74,18 @@ defmodule CommaWeb.CommaFilesTest do
     end
 
     @impl true
-    def get_group_conversation_messages(_workspace, _conversation_id), do: {:ok, []}
+    # The latest window of the history (`:listed_messages`), which can leave
+    # out an older message that a read by its id still finds.
+    def get_group_conversation_messages(_workspace, _conversation_id),
+      do: {:ok, Process.get(:listed_messages, Process.get(:conversation_messages, []))}
+
+    @impl true
+    def get_group_conversation_message(_workspace, _conversation_id, message_id) do
+      case Enum.find(Process.get(:conversation_messages, []), &(&1["message_id"] == message_id)) do
+        nil -> {:error, :not_found}
+        message -> {:ok, message}
+      end
+    end
 
     @impl true
     def ensure_group_conversation_user_participant(_workspace, conversation_id, user_id) do
@@ -127,6 +138,21 @@ defmodule CommaWeb.CommaFilesTest do
     def write_agent_file(workspace, path, body) do
       SystemsRuntime.Proc.send(test_pid!(), {:write_agent_file, workspace, path, body})
       Process.get(:write_agent_file_result, {:ok, %{"path" => path}})
+    end
+
+    @impl true
+    def write_agent_file_stream(workspace, path, stream) do
+      body = Enum.join(stream)
+      SystemsRuntime.Proc.send(test_pid!(), {:write_agent_file_stream, workspace, path, body})
+      {:ok, %{"path" => path}}
+    rescue
+      error -> {:error, error}
+    end
+
+    @impl true
+    def link_agent_blob(workspace, agent_id, ref, path) do
+      SystemsRuntime.Proc.send(test_pid!(), {:link_agent_blob, workspace, agent_id, ref, path})
+      {:ok, %{"path" => path}}
     end
 
     @impl true
@@ -210,6 +236,123 @@ defmodule CommaWeb.CommaFilesTest do
     settle_receive(
       {:write_agent_file, %{"id" => ^workspace_id, "status" => "active"}, ^path, ^source}
     )
+  end
+
+  test "streams a raw-body upload of any type in several reads" do
+    %{workspace: workspace, session: session} = create_fixture("files-stream@example.com")
+    # Three 1 MiB reads and a remainder.
+    source = :binary.copy("v", 3 * 1_048_576 + 17)
+
+    body =
+      session["token"]
+      |> stream_conn(workspace["id"], "clip one.mp4", source)
+      |> call()
+      |> expect_json(201)
+
+    assert body["name"] == "clip one.mp4"
+    assert body["size"] == byte_size(source)
+    assert body["path"] =~ ~r|^/uploads/[A-Za-z0-9_-]{22}-clip-one\.mp4$|
+
+    path = body["path"]
+    workspace_id = workspace["id"]
+    settle_receive({:write_agent_file_stream, %{"id" => ^workspace_id}, ^path, ^source})
+  end
+
+  test "refuses a raw-body upload without a name, over the limit or shorter than declared" do
+    %{workspace: workspace, session: session} =
+      create_fixture("files-stream-refused@example.com")
+
+    unnamed =
+      session["token"]
+      |> stream_conn(workspace["id"], nil, "x")
+      |> call()
+      |> expect_json(400)
+
+    assert unnamed["error"] == "file_required"
+
+    too_large =
+      session["token"]
+      |> stream_conn(workspace["id"], "big.bin", "x")
+      |> stream_size(Comma.GroupFiles.max_stream_upload_bytes() + 1)
+      |> call()
+      |> expect_json(413)
+
+    assert too_large["error"] == "file_too_large"
+
+    short =
+      session["token"]
+      |> stream_conn(workspace["id"], "short.bin", "abc")
+      |> stream_size(4)
+      |> call()
+      |> expect_json(400)
+
+    assert short["error"] == "upload_incomplete"
+    refute_received {:write_agent_file_stream, _, _, _}
+  end
+
+  test "stores an agent's attachment of any size as a composer file by reference to its blob" do
+    %{user: user, workspace: workspace, session: session} =
+      create_fixture("files-attachment@example.com")
+
+    group_id = workspace["default_group_id"]
+
+    ref = %{
+      "uuid" => String.duplicate("b", 32),
+      "hash" => String.duplicate("a", 64),
+      "size" => 40_000_000
+    }
+
+    Process.put(:conversation_messages, [
+      %{
+        "message_id" => "msg_clip",
+        "agent_id" => "worker_clip",
+        "content" => [
+          %{"type" => "text", "text" => "Here is the clip."},
+          %{
+            "type" => "file",
+            "file_name" => "clip one.mp4",
+            "mime_type" => "video/mp4",
+            "blob_ref" => ref
+          }
+        ]
+      }
+    ])
+
+    store = fn token, index ->
+      :post
+      |> json_conn(
+        "/v1/comma/groups/#{group_id}/conversations/c1/messages/msg_clip/attachments/#{index}/workspace-file",
+        %{}
+      )
+      |> user_auth(token)
+      |> call()
+    end
+
+    body = session["token"] |> store.(1) |> expect_json(201)
+    assert body["name"] == "clip one.mp4"
+    assert body["size"] == 40_000_000
+    assert body["path"] =~ ~r|^/uploads/[A-Za-z0-9_-]{22}-clip-one\.mp4$|
+
+    path = body["path"]
+    workspace_id = workspace["id"]
+    settle_receive({:link_agent_blob, %{"id" => ^workspace_id}, "worker_clip", ^ref, ^path})
+
+    assert (session["token"] |> store.(0)).status == 404
+
+    # A message past the latest window of the history still opens by its id.
+    Process.put(:listed_messages, [])
+    assert %{"path" => deep_path} = session["token"] |> store.(1) |> expect_json(201)
+    settle_receive({:link_agent_blob, %{"id" => ^workspace_id}, "worker_clip", ^ref, ^deep_path})
+
+    restricted =
+      admin_json(:post, "/v1/comma/admin/users/#{user["id"]}/sessions", %{
+        "restricted" => true,
+        "group_id" => group_id
+      })
+      |> expect_json(201)
+
+    assert (restricted["token"] |> store.(1)).status == 403
+    refute_received {:link_agent_blob, _, _, _, _}
   end
 
   test "serves an authenticated uploaded image from the authorized Router VFS" do
@@ -445,6 +588,28 @@ defmodule CommaWeb.CommaFilesTest do
     :post
     |> multipart_conn("/v1/comma/groups/#{group_id}/files", opts)
     |> user_auth(token)
+  end
+
+  defp stream_conn(token, comma_workspace_id, name, body) do
+    group_id = group_id_for_comma_workspace!(comma_workspace_id)
+    params = %{"size" => byte_size(body)}
+    params = if name, do: Map.put(params, "name", name), else: params
+
+    :put
+    |> conn("/v1/comma/groups/#{group_id}/files?" <> URI.encode_query(params), body)
+    |> put_req_header("content-type", "application/octet-stream")
+    |> user_auth(token)
+  end
+
+  # Replaces the declared size the body is checked against.
+  defp stream_size(conn, size) do
+    query = conn.query_string |> URI.decode_query() |> Map.put("size", size)
+
+    %{
+      conn
+      | query_string: URI.encode_query(query),
+        query_params: %Plug.Conn.Unfetched{aspect: :query_params}
+    }
   end
 
   defp image_conn(token, comma_workspace_id, path) do

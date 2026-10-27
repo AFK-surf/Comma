@@ -26,7 +26,7 @@ const member = viewer("dev@example.com", "member");
 
 type Rig = Awaited<ReturnType<typeof rig>>;
 
-async function rig(o: { approval?: string; data?: string; store?: Store; quota?: { n: number }; resetQuota?: AccountsDeps["resetQuota"]; machine?: MachineLogins; discover?: AccountsDeps["discover"]; check?: AccountsDeps["check"]; clock?: Clock.Clock } = {}) {
+async function rig(o: { approval?: string; data?: string; store?: Store; quota?: { n: number }; resetQuota?: AccountsDeps["resetQuota"]; machine?: MachineLogins; discover?: AccountsDeps["discover"]; check?: AccountsDeps["check"]; clock?: Clock.Clock; env?: AccountsDeps["env"]; workspace?: string | null } = {}) {
   const data = o.data ?? temp("routes");
   const path = join(data, "config.json");
   if (!existsSync(path)) {
@@ -53,6 +53,9 @@ async function rig(o: { approval?: string; data?: string; store?: Store; quota?:
     config,
     loginCommands: { claude: exe(fake), codex: exe(fake) },
     machine: o.machine ?? null,
+    // The Workspace the station enrolled in: asking for a machine account over the mesh chooses its local sign-in.
+    workspace: () => (o.workspace === undefined ? "ws" : o.workspace),
+    ...(o.env ? { env: o.env } : {}),
     checkOnStart: false,
     check: o.check ?? (async () => ({ state: "ok", detail: "fake", models: [], checkedAt: Date.now() })),
     quota: quota
@@ -250,6 +253,31 @@ describe("the accounts routes", { concurrency: true }, () => {
     await t.close();
   });
 
+  test("the machine's own login signed in from this computer is then used", async () => {
+    const m = fakeMachine({ codex: `[ -f "$HOME/.codex/auth.json" ] && echo 'Logged in using ChatGPT' || echo 'Not logged in'` });
+    const dir = temp("machine-login");
+    const approved = approval(dir);
+    const t = await rig({ data: dir, approval: approved.path, machine: new MachineLogins(m.env, undefined, () => "zh"), env: m.env });
+    // Where the command saves the machine's login (the stand-in saves nothing); read once the command ended.
+    const { mkdirSync } = await import("node:fs");
+    mkdirSync(join(m.home, ".codex"));
+    writeFileSync(join(m.home, ".codex/auth.json"), "{}");
+    const [status, started] = await t.call("POST", "/machine-logins", { runtime: "codex" });
+    assert.equal(status, 200, JSON.stringify(started));
+    await approved.approve();
+    await upon(
+      (wake) => t.accounts.onChange(wake),
+      () => t.profile("machine-codex"),
+      "the machine's Codex used",
+    );
+    assert.equal(isMachine(t.profile("machine-codex")!), true);
+    assert.deepEqual(
+      t.accounts.machineSignInsView().map((v) => [v.runtime, v.job?.state, v.error]),
+      [["codex", "done", null]],
+    );
+    await t.close();
+  });
+
   test("profile checks and quotas are kept so a restart shows them at once", async () => {
     const data = temp("restart");
     const db = join(data, "stillfail.db");
@@ -302,7 +330,7 @@ describe("the accounts routes", { concurrency: true }, () => {
     await s.close();
   });
 
-  test("the desktop app's station takes up the machine's logins no profile runs, with every model their check finds", async () => {
+  test("machine accounts require explicit consent and stay disabled after refresh and restart", async () => {
     const m = fakeMachine({ claude: `echo '{"loggedIn": true, "email": "b@x.com", "subscriptionType": "max"}'`, codex: "echo 'Logged in using ChatGPT'" });
     const { mkdirSync } = await import("node:fs");
     mkdirSync(join(m.home, ".claude"));
@@ -317,11 +345,24 @@ describe("the accounts routes", { concurrency: true }, () => {
       machine: new MachineLogins(m.env, undefined, () => "zh"),
       check: async (r) => ({ state: "ok", detail: "fake", models: r.runtime === "claude" ? ["claude-opus-5-5", "claude-sonnet-5-5"] : ["gpt-6"], checkedAt: 0 }),
     });
-    s.accounts.useMachineLogins();
+    await s.accounts.machine!.refresh();
+    assert.deepEqual(s.accounts.profiles().map((p) => p.id), ["cx"]);
+    // Workspace membership alone does not authorize this computer's credentials.
+    assert.equal((await s.call("POST", "/profiles/machine", { runtime: "claude" }, member))[0], 403);
+    s.config.update((raw) => { raw.tools = { owner: member.sub }; });
+    assert.equal((await s.call("POST", "/profiles/machine", { runtime: "claude" }, owner))[0], 403);
+    assert.equal((await s.call("POST", "/profiles/machine", { runtime: "claude" }, member))[0], 200);
     const made = await until(() => (s.profile("machine-claude")?.models.length ?? 0) > 0 && s.profile("machine-claude"), "the machine's Claude Code taken up");
     assert.deepEqual([isMachine(made), made.models], [true, ["claude-opus-5-5", "claude-sonnet-5-5"]]);
+    assert.equal((await s.call("DELETE", "/profiles/machine-claude", undefined, owner))[0], 403);
+    assert.equal((await s.call("DELETE", "/profiles/machine-claude", undefined, member))[0], 200);
+    await s.accounts.machine!.refresh();
     await s.close();
-    assert.deepEqual(s.accounts.profiles().map((p) => p.id), ["cx", "machine-claude"]);
+    const restarted = await rig({ data, machine: new MachineLogins(m.env, undefined, () => "zh") });
+    await restarted.accounts.machine!.refresh();
+    assert.deepEqual(restarted.accounts.profiles().map((p) => p.id), ["cx"]);
+    assert.ok(existsSync(join(m.home, ".claude/.credentials.json")));
+    await restarted.close();
   });
 
   test("a machine login whose models could not be listed has them listed when the station starts again, and later ones as they come", async () => {
@@ -333,13 +374,13 @@ describe("the accounts routes", { concurrency: true }, () => {
     writeFileSync(join(data, "config.json"), JSON.stringify({ profiles: [], connects: [] }));
     // Offline: the profile is made, with no model.
     const offline = await rig({ data, machine: new MachineLogins(m.env, undefined, () => "zh"), check: async () => ({ state: "failed", detail: "offline", models: null, checkedAt: 0 }) });
-    offline.accounts.useMachineLogins();
+    assert.equal((await offline.call("POST", "/profiles/machine", { runtime: "claude" }))[0], 200);
     await until(() => offline.profile("machine-claude"), "the profile made");
     await offline.close();
     assert.deepEqual(offline.profile("machine-claude")!.models, []);
     let listed = ["claude-opus-5-5"];
     const online = await rig({ data, machine: new MachineLogins(m.env, undefined, () => "zh"), check: async () => ({ state: "ok", detail: "fake", models: listed, checkedAt: 0 }) });
-    online.accounts.useMachineLogins();
+    await online.accounts.check("machine-claude");
     await until(() => (online.profile("machine-claude")?.models.length ?? 0) > 0, "its models listed");
     // A model its account gains later is enabled when it is checked again.
     listed = ["claude-opus-6", "claude-opus-5-5"];

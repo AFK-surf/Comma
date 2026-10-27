@@ -60,10 +60,10 @@ final class StatusMenuCommandServer {
 
     private func handle(_ frame: CommaStatusMenuHostFrame) {
         switch frame {
-        case let .show(requestId, clickId, closeId, iconPath, openId, rows, toolTip, width):
+        case let .show(requestId, closeId, iconPath, openId, rows, toolTip, width):
             statusMenu.show(
                 iconPath: iconPath, toolTip: toolTip, rows: rows, width: width,
-                clickId: clickId, openId: openId, closeId: closeId
+                openId: openId, closeId: closeId
             )
             emit(.result(requestId: requestId, error: nil, ok: true))
         case let .hide(requestId):

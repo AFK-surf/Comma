@@ -1,3 +1,4 @@
+import { chatAttachmentDownloadMaxBytes } from "@comma/chat-contract";
 import {
   act,
   fireEvent,
@@ -6,11 +7,17 @@ import {
   waitFor,
   within,
 } from "@comma/test-utils/render";
+import type { CommaNativeBridge } from "@comma/native-bridge";
+import { installNativeBridgeMock } from "@comma/test-utils/native-bridge";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createScriptedCore } from "@comma/test-utils/scripted-core";
 import { ConversationThread } from "../ConversationThread";
 import type { ChatMessage, LocalFilePreview } from "@comma/core/chat";
-import { composeMessageWithQuotes, decodeUserMessage } from "@comma/core/chat";
+import {
+  composeMessageWithQuotes,
+  decodeUserMessage,
+  normalizeServerMessages,
+} from "@comma/core/chat";
 import { messageMarkdown } from "@comma/core/markdown";
 
 // Keep MarkdownStream, the trusted inline compiler, and every attachment
@@ -89,6 +96,67 @@ const fileCard = (position: number) =>
   screen.queryByTestId(`chat-attachment-file-msg_agent_media-${position}`);
 
 describe("real chat Markdown and attachment composition", () => {
+  it("shows a Coding task's uploaded PNG from its blob without loading a sandbox path", async () => {
+    const blobRef = {
+      kind: "blob",
+      uuid: "b".repeat(32),
+      hash: "a".repeat(64),
+      size: 67,
+    };
+    const posted = normalizeServerMessages(
+      [
+        {
+          message_id: "msg_coding_image",
+          kind: "message",
+          actor_type: "agent",
+          agent_id: "agt_worker",
+          content: [
+            { type: "text", text: "Android screenshot\n\n![Home](home%2Epng)" },
+            {
+              type: "file",
+              file_name: "home.png",
+              path: "/uploads/tasks/cnv_coding/post/0-home.png",
+              blob_ref: blobRef,
+            },
+          ],
+        },
+      ],
+      [],
+      "agent_task",
+      "cnv_coding"
+    );
+    const preview = vi.fn(async () => ({ url: previewUrl, release: vi.fn() }));
+    const core = createScriptedCore();
+    const { container } = render(
+      core.wrap(
+        <ConversationThread
+          conversationId="cnv_coding"
+          groupId="grp_1"
+          messages={posted}
+          onDiscard={noop}
+          onPreviewLocalFile={preview}
+          onRetry={noop}
+          workspaceId="wsp_1"
+        />
+      )
+    );
+
+    const image = await screen.findByRole("img", { name: "home.png" });
+    expect(image).toHaveAttribute("src", previewUrl);
+    expect(preview).toHaveBeenCalledWith(
+      {
+        kind: "agent-blob",
+        agentId: "agt_worker",
+        blobRef,
+        fileName: "home.png",
+        mediaType: "image/png",
+      },
+      expect.anything()
+    );
+    expect(container.querySelectorAll("img")).toHaveLength(1);
+    expect(screen.queryByTestId("chat-attachment-file-msg_coding_image-0")).toBeNull();
+  });
+
   it("keeps a streamed Comma reply in its source turn when an external user message arrives", async () => {
     const home = message("msg_home", "user", "Home question");
     const external = message("msg_wechat", "user", "WeChat question", {
@@ -269,6 +337,41 @@ describe("real chat Markdown and attachment composition", () => {
     ).toHaveAttribute("data-message-group-first", "true");
   });
 
+  it("leaves a reply that is only a code block to the block's own Copy", async () => {
+    const { container } = render(
+      <ConversationThread
+        groupId="grp_1"
+        workspaceId="wsp_1"
+        messages={[
+          message(
+            "msg_code",
+            "assistant",
+            "```text\nComma is a teammate in Linear.\n```"
+          ),
+          message("msg_prose", "assistant", "Run this:\n\n```sh\nmake\n```"),
+        ]}
+        onDiscard={noop}
+        onRetry={noop}
+      />
+    );
+
+    const codeOnly = within(
+      container.querySelector<HTMLElement>('[data-message-id="msg_code"]')!
+    );
+    expect(
+      await codeOnly.findByRole("button", { name: "Copy code" })
+    ).toBeInTheDocument();
+    expect(codeOnly.queryByRole("button", { name: "Copy reply" })).toBeNull();
+
+    const withProse = within(
+      container.querySelector<HTMLElement>('[data-message-id="msg_prose"]')!
+    );
+    expect(
+      await withProse.findByRole("button", { name: "Copy code" })
+    ).toBeInTheDocument();
+    expect(withProse.getByRole("button", { name: "Copy reply" })).toBeInTheDocument();
+  });
+
   it("hands a growing Markdown reply to its canonical trusted task, image group, and media file cards", async () => {
     const release = vi.fn();
     const preview = vi.fn(async () => ({ url: previewUrl, release }));
@@ -443,12 +546,26 @@ describe("real chat Markdown and attachment composition", () => {
           url: previewUrl,
           release: vi.fn(),
         })
-      )
+      ),
+      // The web's host cannot stream, so the page reads a video a part at a time.
+      stream: { status: string; url: string | null } = {
+        status: "unsupported",
+        url: null,
+      }
     ) => {
       vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:inline-video");
       vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
       const core = createScriptedCore({
-        calls: (name, params) => (name === "files.read" ? read(params) : null),
+        values: (topic) => (topic.topic === "fileStream" ? stream : undefined),
+        calls: (name, params) =>
+          name === "files.readRange"
+            ? read(params).then((file) => ({ ...file, size: file.bytes.length }))
+            : name === "files.read"
+              ? {
+                  bytes: new TextEncoder().encode("whole chart PNG"),
+                  type: "image/png",
+                }
+              : null,
       });
       const thread = (threadAttachments: ChatMessage["attachments"]) =>
         core.wrap(
@@ -500,11 +617,15 @@ describe("real chat Markdown and attachment composition", () => {
       expect(video).toHaveAccessibleName("demo.webm");
       expect(video.closest(".comma-chat-inline-video")).not.toBeNull();
       expect(read).toHaveBeenCalledWith({
-        source: "attachment",
-        group: "grp_1",
-        conversation: "cnv_media",
-        message: "msg_agent_media",
-        index: 1,
+        source: {
+          source: "attachment",
+          group: "grp_1",
+          conversation: "cnv_media",
+          message: "msg_agent_media",
+          index: 1,
+        },
+        offset: 0,
+        length: chatAttachmentDownloadMaxBytes,
       });
       // The decoder gets the allowlisted type, whatever the endpoint answered.
       expect(vi.mocked(URL.createObjectURL).mock.calls[0]![0]).toHaveProperty(
@@ -520,6 +641,43 @@ describe("real chat Markdown and attachment composition", () => {
       rerender(thread(structuredClone(agentMedia)));
       expect(container.querySelector("video")).toBe(video);
       expect(read).toHaveBeenCalledOnce();
+    });
+
+    it("copies an agent's whole image through the desktop clipboard from its Copy button", async () => {
+      // The desktop session denies the renderer clipboard-write, so the bytes go to Main.
+      const writeImage = vi.fn<CommaNativeBridge["clipboard"]["writeImage"]>(
+        async () => ({ status: "copied" })
+      );
+      installNativeBridgeMock({ platform: "electron", clipboard: { writeImage } });
+      renderAgentMedia(vi.fn(async (_params: unknown) => fileBytes("webm-bytes")));
+
+      await screen.findByRole("img", { name: "chart.png" });
+      fireEvent.click(screen.getByRole("button", { name: "Copy image" }));
+      await waitFor(() =>
+        expect(writeImage).toHaveBeenCalledWith({
+          pngImage: new Uint8Array(new TextEncoder().encode("whole chart PNG")),
+        })
+      );
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: "Image copied" })).toBeInTheDocument()
+      );
+    });
+
+    it("plays an agent's video from the stream where the host streams, reading none of it whole", async () => {
+      const read = vi.fn(async (_params: unknown) => fileBytes("webm-bytes"));
+      const { container } = renderAgentMedia(read, undefined, {
+        status: "ready",
+        url: "comma-file://stream/demo",
+      });
+
+      const video = await waitFor(() => {
+        const element = container.querySelector("video");
+        expect(element).not.toBeNull();
+        return element!;
+      });
+      expect(video).toHaveAttribute("src", "comma-file://stream/demo");
+      expect(fileCard(1)).toBeNull();
+      expect(read).not.toHaveBeenCalled();
     });
 
     it("falls back to the file card when the video bytes cannot be read", async () => {
@@ -805,5 +963,75 @@ describe("a streaming reply beside mounted history", () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+});
+
+describe("a Task Worker's reply to a runtime message", () => {
+  it("shows the runtime message's preview with Comma's mark", () => {
+    // The Worker answers the runtime's nudge after another thread's reply
+    // crossed it, so the nudge shows as a preview above the answer.
+    const messages = normalizeServerMessages(
+      [
+        {
+          message_id: "msg_request",
+          kind: "message",
+          actor_type: "user",
+          user_id: "usr_1",
+          content: [{ type: "text", text: "Fix the build" }],
+        },
+        {
+          message_id: "msg_nudge",
+          kind: "message",
+          actor_type: "system",
+          role_label: "runtime",
+          metadata: { message_type: "task_worker_nudge" },
+          content: [
+            {
+              type: "text",
+              text: "Your session stopped without publishing a result Message.",
+            },
+          ],
+        },
+        {
+          message_id: "msg_request_reply",
+          kind: "message",
+          actor_type: "agent",
+          agent_id: "agt_worker",
+          reply_to_message_id: "msg_request",
+          thread_root_message_id: "msg_request",
+          content: [{ type: "text", text: "On it" }],
+        },
+        {
+          message_id: "msg_nudge_reply",
+          kind: "message",
+          actor_type: "agent",
+          agent_id: "agt_worker",
+          reply_to_message_id: "msg_nudge",
+          thread_root_message_id: "msg_nudge",
+          content: [{ type: "text", text: "Build fixed" }],
+        },
+      ],
+      [],
+      "agent_task",
+      "cnv_task"
+    );
+    const { container } = render(
+      <ConversationThread
+        conversationKind="agent_task"
+        groupId="grp_1"
+        messages={messages}
+        onDiscard={noop}
+        onRetry={noop}
+        workspaceId="wsp_1"
+      />
+    );
+
+    const preview = container.querySelector('[data-reply-preview-target="msg_nudge"]');
+    expect(preview).not.toBeNull();
+    expect(preview!.querySelector('[data-slot="comma-product-mark"]')).not.toBeNull();
+    expect(preview!.querySelector(".comma-worker-model-mark")).toBeNull();
+    expect(
+      preview!.querySelectorAll(".comma-chat-reply-preview-avatar svg")
+    ).toHaveLength(1);
   });
 });

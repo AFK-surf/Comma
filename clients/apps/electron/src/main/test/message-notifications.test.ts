@@ -205,7 +205,8 @@ describe("MessageNotificationsService", () => {
     await pending;
 
     expect(shown).toHaveLength(1);
-    expect(setBadgeCount).not.toHaveBeenCalled();
+    // Only the focus's clear: the cancelled delivery is not counted.
+    expect(setBadgeCount.mock.calls).toEqual([[0]]);
   });
 
   it("badges the app icon with Router messages delivered while away", async () => {
@@ -224,12 +225,19 @@ describe("MessageNotificationsService", () => {
   });
 
   it("leaves the badge alone when nothing reached the user", async () => {
-    const { focusApp, service, setBadgeCount } = createHarness({ deliver: false });
+    const { service, setBadgeCount } = createHarness({ deliver: false });
 
     await service.show(arrival());
+    expect(setBadgeCount).not.toHaveBeenCalled();
+  });
+
+  it("clears a badge a previous run left on the first return to Comma, once", () => {
+    const { focusApp, setBadgeCount } = createHarness();
+
+    focusApp();
     focusApp();
 
-    expect(setBadgeCount).not.toHaveBeenCalled();
+    expect(setBadgeCount.mock.calls).toEqual([[0]]);
   });
 
   it("leaves the banner silent when Comma's sound preference is off", async () => {

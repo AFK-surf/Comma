@@ -9,14 +9,15 @@ import androidx.activity.result.contract.ActivityResultContract
 import androidx.activity.result.contract.ActivityResultContracts
 
 /**
- * The system photo picker in multi-select mode, with the selection limit chosen per launch (the
- * free attachment slots) rather than fixed at registration. Input must be at least 2; a single
- * free slot uses the single-photo picker instead (see [PhotoPick]).
+ * The system photo picker in multi-select mode, showing [media], with the selection limit chosen
+ * per launch (the free attachment slots) rather than fixed at registration. Input must be at
+ * least 2; a single free slot uses the single-photo picker instead (see [PhotoPick]).
  */
-internal class CappedPhotoPicker : ActivityResultContract<Int, List<Uri>>() {
+internal class CappedPhotoPicker(
+    private val media: ActivityResultContracts.PickVisualMedia.VisualMediaType,
+) : ActivityResultContract<Int, List<Uri>>() {
     override fun createIntent(context: Context, input: Int): Intent =
-        ActivityResultContracts.PickMultipleVisualMedia(input)
-            .createIntent(context, PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+        ActivityResultContracts.PickMultipleVisualMedia(input).createIntent(context, PickVisualMediaRequest(media))
 
     override fun parseResult(resultCode: Int, intent: Intent?): List<Uri> =
         ActivityResultContracts.PickMultipleVisualMedia().parseResult(resultCode, intent)

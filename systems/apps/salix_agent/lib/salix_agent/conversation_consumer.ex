@@ -1,7 +1,14 @@
 defmodule SalixAgent.ConversationConsumer do
   @moduledoc false
 
-  alias SalixAgent.{AgentActor, InternalSession, InternalSessionStore}
+  alias SalixAgent.{
+    AgentActor,
+    InternalSession,
+    InternalSessionStore,
+    RetiredSessions,
+    SessionBirth
+  }
+
   alias SalixAgent.AgentActor.SessionDelivery
 
   def adapter, do: SystemsRuntime.get_env(:salix_agent, :conversation_source_mod)
@@ -45,14 +52,32 @@ defmodule SalixAgent.ConversationConsumer do
   defp do_consume(agent_id, source, owner, cached_progress) do
     with adapter when is_atom(adapter) and not is_nil(adapter) <- adapter(),
          :ok <- adapter.prefetch(agent_id),
-         {:ok, binding} <- adapter.binding(agent_id, source),
-         {:ok, progress, runtime} <-
+         {:ok, binding} <- adapter.binding(agent_id, source) do
+      consume_binding(adapter, agent_id, source, owner, cached_progress, binding)
+    else
+      nil -> :done
+      error -> error
+    end
+  end
+
+  defp consume_binding(adapter, agent_id, source, owner, cached_progress, binding) do
+    with {:ok, progress, runtime} <-
            current_progress(agent_id, binding, cached_progress, owner, source),
          {:ok, binding, messages} <- adapter.batch(binding, progress) do
       observe_source(binding, progress, messages)
 
       Enum.reduce_while(messages, {:done, {progress, runtime}}, fn message, _ ->
-        with {:ok, entry} <- admit(adapter, agent_id, source, binding, message, owner, runtime, 3) do
+        with {:ok, entry} <-
+               admit(
+                 adapter,
+                 agent_id,
+                 source,
+                 binding,
+                 message,
+                 owner,
+                 runtime,
+                 {3, retry_deadline()}
+               ) do
           {:cont,
            {if(message["seq"] < binding.conversation["message_tail_seq"], do: :more, else: :done),
             {entry.conversation_source, runtime}}}
@@ -62,12 +87,23 @@ defmodule SalixAgent.ConversationConsumer do
         end
       end)
     else
-      nil -> :done
+      {:error, :conversation_source_retired} -> retire_source(adapter, binding)
       error -> error
     end
   end
 
-  defp admit(adapter, agent, source, binding, message, owner, runtime, attempts) do
+  # This task dies after the AgentReplyTask timeout, and a killed task neither
+  # admits nor rejects the message: the source is retried with the same head
+  # forever and every later message of the Conversation waits behind it. A
+  # slow failure (a local-file import uses its whole 60 s read lease) therefore
+  # retries only while the first quarter of that timeout lasts, so one message
+  # always settles, admitted or rejected, inside one task.
+  defp retry_deadline,
+    do:
+      SystemsClock.monotonic_time(:millisecond) +
+        div(SalixAgent.AgentReplyTask.timeout_ms(), 4)
+
+  defp admit(adapter, agent, source, binding, message, owner, runtime, {attempts, retry_until}) do
     result =
       safe_admission(fn ->
         with {:ok, current} <- adapter.binding(agent, source),
@@ -88,7 +124,7 @@ defmodule SalixAgent.ConversationConsumer do
         {:error, :conversation_source_retired}
 
       {:error, :conversation_source_retired} ->
-        result
+        retire_source(adapter, binding)
 
       {:error, {:agent_owner_remote, _node}} ->
         result
@@ -103,13 +139,19 @@ defmodule SalixAgent.ConversationConsumer do
       {:error, _, false} ->
         reject(adapter, agent, binding, message, result, owner, runtime)
 
-      _ when attempts > 1 ->
-        SystemsClock.sleep(100)
-        admit(adapter, agent, source, binding, message, owner, runtime, attempts - 1)
-
       _ ->
-        reject(adapter, agent, binding, message, result, owner, runtime)
+        if attempts > 1 and SystemsClock.monotonic_time(:millisecond) < retry_until do
+          SystemsClock.sleep(100)
+          retry = {attempts - 1, retry_until}
+          admit(adapter, agent, source, binding, message, owner, runtime, retry)
+        else
+          reject(adapter, agent, binding, message, result, owner, runtime)
+        end
     end
+  end
+
+  defp retire_source(adapter, binding) do
+    with :ok <- adapter.retire(binding), do: {:error, :conversation_source_retired}
   end
 
   defp safe_admission(fun) do
@@ -211,7 +253,10 @@ defmodule SalixAgent.ConversationConsumer do
       SystemsClock.monotonic_time() - started
     )
 
-    result
+    case result do
+      {:error, :session_read_only} -> {:error, :conversation_source_retired}
+      other -> other
+    end
   end
 
   def progress(agent_id, session_id) do
@@ -220,19 +265,48 @@ defmodule SalixAgent.ConversationConsumer do
         {:ok, InternalSession.conversation_sources(session), :internal}
 
       {:error, :not_found} ->
-        {:ok, %{}, :new}
+        missing_session_progress(agent_id, session_id)
 
       error ->
         error
     end
   end
 
+  # Missing internal state does not make a retired Session writable.
+  # Recovery uses this result too, so it must not wait for an impossible frontier.
+  defp missing_session_progress(agent_id, session_id) do
+    case RetiredSessions.probe(agent_id, session_id) do
+      :present ->
+        {:error, :conversation_source_retired}
+
+      :absent ->
+        case SessionBirth.side(agent_id, session_id) do
+          {:ok, :retired} -> {:error, :conversation_source_retired}
+          {:ok, :internal} -> {:ok, %{}, :new}
+          {:error, :not_found} -> {:ok, %{}, :new}
+          error -> error
+        end
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
   def reset_source(agent_id, old_session_id, new_session_id) do
-    with {:ok, sources, _runtime} <- progress(agent_id, old_session_id) do
-      {:ok,
-       Map.new(sources, fn {key, source} ->
-         {key, Map.put(source, "generation", new_session_id)}
-       end)}
+    # Rotation copies internal frontiers. Retired history has no such frontier
+    # and must not prevent an explicit switch to a fresh Session identity.
+    case InternalSessionStore.read(agent_id, old_session_id) do
+      {:ok, session} ->
+        {:ok,
+         Map.new(InternalSession.conversation_sources(session), fn {key, source} ->
+           {key, Map.put(source, "generation", new_session_id)}
+         end)}
+
+      {:error, :not_found} ->
+        {:ok, %{}}
+
+      error ->
+        error
     end
   end
 

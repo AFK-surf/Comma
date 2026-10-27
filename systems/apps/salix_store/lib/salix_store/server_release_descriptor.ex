@@ -17,25 +17,26 @@ defmodule SalixStore.ServerReleaseDescriptor do
     {"salix-connect", "darwin-amd64", "salix-connect"},
     {"salix-connect", "darwin-arm64", "salix-connect"},
     {"agent-vmm-host", "darwin-arm64", "Agent-VMM-Host.zip"},
+    {"agent-vmm-host", "linux-arm64", "Agent-VMM-Host.tar.gz"},
     {"computer-use-helper", "darwin-amd64", "comma-computer-use.tar.gz"},
     {"computer-use-helper", "darwin-arm64", "comma-computer-use.tar.gz"}
   ]
   @target_files MapSet.new(@targets)
-  # A descriptor from a release before the standalone Computer Use helper has no helper targets.
-  @required_target_files MapSet.reject(@target_files, &(elem(&1, 0) == "computer-use-helper"))
-  @primary_artifacts %{
-    "runner" => "mac-mini-provisioner",
-    "salix-connect" => "salix-connect",
-    "agent-vmm-host" => "Agent-VMM-Host.zip",
-    "computer-use-helper" => "comma-computer-use.tar.gz"
-  }
+  # Optional delivery targets do not gate existing installation surfaces.
+  @required_target_files MapSet.reject(@target_files, fn {component, platform, _} ->
+                           component == "computer-use-helper" or
+                             {component, platform} == {"agent-vmm-host", "linux-arm64"}
+                         end)
+  @primary_artifacts Map.new(@targets, fn {component, platform, artifact} ->
+                       {{component, platform}, artifact}
+                     end)
 
   def target(component, platform), do: target(component, platform, @default_root)
 
   def target(component, platform, root) when is_binary(root) do
     with {:ok, descriptor} <- read(root),
          {:ok, entry} <-
-           exact_entry(descriptor, component, platform, @primary_artifacts[component]) do
+           exact_entry(descriptor, component, platform, @primary_artifacts[{component, platform}]) do
       {:ok,
        %{
          release_id: entry["release_id"],

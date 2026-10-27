@@ -7,7 +7,7 @@
 // (one Task-list stream the server keeps open up to 30 s) before reading it again; it ends once all three are saved,
 // fails when the Task settled without them, and gives up after 30 minutes. The lane (tasks.ts) runs two jobs at a time.
 import { CoreError, fromUtf8 } from "@comma/core-kernel";
-import { Duration, Effect } from "effect";
+import { Cause, Duration, Effect, Exit } from "effect";
 import { z } from "zod";
 import type { Account } from "../account.ts";
 import { route } from "../api.ts";
@@ -27,6 +27,7 @@ export type MeetingOutputExtension = (typeof meetingOutputExtensions)[number];
 export interface MeetingOutputJob {
   id: string;
   account: string;
+  workspaceId: string;
   groupId: string;
   taskId: string;
   /** The title the Task was created with. */
@@ -77,6 +78,23 @@ const MAX_BYTES = 10_000_000;
 const basename = (path: string) => path.slice(path.lastIndexOf("/") + 1);
 /** An event came: the Task changed. */
 const CHANGED = new CoreError("changed", "the Task changed");
+
+/**
+ * How a job ended: `settled` when the Task ended without attaching its outputs, `pending` when it did not attach them
+ * in time, `error` when reading or saving them failed.
+ */
+export type MeetingOutputEnd = "done" | "settled" | "pending" | "error";
+
+export function meetingOutputEnd(exit: Exit.Exit<void, unknown>): MeetingOutputEnd {
+  if (Exit.isSuccess(exit)) return "done";
+  const error = Cause.squash(exit.cause);
+  if (!(error instanceof CoreError)) return "error";
+  return error.code === "outputs_incomplete"
+    ? "settled"
+    : error.code === "outputs_pending"
+      ? "pending"
+      : "error";
+}
 
 /** Saves `job`'s outputs, `checkpoint` after each; done once all three are saved. */
 export function archiveMeetingOutputs(

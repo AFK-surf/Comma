@@ -386,6 +386,7 @@ defmodule SalixCluster.Schedules do
              blocked: [String.t()],
              undeliverable: [String.t()],
              inactive: [String.t()],
+             paused: [String.t()],
              failed: [{String.t(), term()}]
            }}
           | {:error, term()}
@@ -418,6 +419,9 @@ defmodule SalixCluster.Schedules do
            blocked: for({id, {:ok, :blocked}} <- results, do: id),
            undeliverable: for({id, {:ok, :undeliverable}} <- results, do: id),
            inactive: for({id, {:ok, :inactive}} <- results, do: id),
+           # A Task receiver skipped the window because its Task is not
+           # active and has not ended; the definition stays.
+           paused: for({id, {:ok, :paused}} <- results, do: id),
            failed: for({id, {:error, reason}} <- results, do: {id, reason})
          }}
       end

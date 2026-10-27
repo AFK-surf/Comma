@@ -63,7 +63,7 @@ test(
       sharedElectron.useApi(server.server);
       await sharedElectron.signIn({ email: "smoke@comma.local", userId: stub.userId });
       // Main's clipboard and browser are the test's until it ends.
-      await app.evaluate(({ clipboard, shell }) => {
+      await app.evaluate(async ({ clipboard, shell }) => {
         const scope = globalThis as typeof globalThis & {
           deviceCopyProbe?: {
             failCopy: boolean;
@@ -86,13 +86,13 @@ test(
           },
         };
         scope.deviceCopyProbe = probe;
-        clipboard.writeText("previous clipboard");
-        clipboard.writeText = (text, type) => {
+        await clipboard.writeText("previous clipboard");
+        clipboard.writeText = async (text) => {
           if (probe.failCopy) throw new Error("Clipboard unavailable");
-          writeText.call(clipboard, text, type);
+          await writeText.call(clipboard, text);
         };
         shell.openExternal = async (url) => {
-          probe.opened.push({ url, text: clipboard.readText() });
+          probe.opened.push({ url, text: await clipboard.readText() });
         };
       });
       await page.getByRole("button", { name: "Settings", exact: true }).click();
@@ -122,8 +122,8 @@ test(
         .poll(() => app.evaluate(({ clipboard }) => clipboard.readText()))
         .toBe("ABCD-1234");
 
-      await app.evaluate(({ clipboard }) => {
-        clipboard.writeText("previous clipboard");
+      await app.evaluate(async ({ clipboard }) => {
+        await clipboard.writeText("previous clipboard");
         (
           globalThis as typeof globalThis & { deviceCopyProbe: { failCopy: boolean } }
         ).deviceCopyProbe.failCopy = true;

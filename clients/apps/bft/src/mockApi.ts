@@ -226,6 +226,7 @@ function context(slug: string) {
       triage: slug !== "globex",
       information_flow: true,
       meetings: slug !== "globex",
+      daily_brief: slug !== "globex",
       settings: true,
     },
     projects: slug === "globex" ? globexProjects : projects,
@@ -1156,11 +1157,8 @@ function cloudVmData(projectId: string, state: DeviceState, admin: boolean) {
     manageable: admin,
     vm,
     runner: state.runner,
-    next_location:
-      state.runner?.status === "ready"
-        ? { kind: "runner", name: state.runner.name }
-        : { kind: "cloudflare" },
-    runner_choosable: admin && vm === null && state.runner === null,
+    next_location: { kind: "cloudflare" },
+    runner_choosable: admin && state.runner === null,
     runner_removable: admin && state.runner !== null && vm?.location.kind !== "runner",
   };
 }
@@ -1215,7 +1213,7 @@ function devicesReply(
           "This Agent Swarm already has a runner. Remove it before you choose another runner."
         );
       state.runner = { name: "Lab Mac mini", status: "processing" };
-      return ok({ notice: "The runner was asked to get ready for the Cloud VM." });
+      return ok({ notice: "The runner was asked to prepare the VMM Station." });
     case "DELETE /devices/cloud-vm/runner":
       if (!admin) return forbidden();
       state.runner = null;
@@ -2951,6 +2949,7 @@ const meetingSettings: Record<string, unknown> = {
   research_enabled: true,
   calendar_writeback: false,
   personal_preparation: false,
+  channel_notice: true,
   series: [],
 };
 
@@ -3062,6 +3061,89 @@ const dataPolicy = {
     },
   ],
 };
+
+/*
+ * Daily brief: saved settings on the first Agent Swarm's Slack bot, a few
+ * linked members, today's state and the latest runs.
+ */
+const dailyBrief = {
+  settings: {
+    project_id: "prj_support",
+    slack_connect_id: "slack-main",
+    enabled: true,
+    retention_days: 30,
+    team_names: "hidden",
+    off_days: [],
+    work_days: [],
+    team_channel_id: null,
+    team_post_at: "10:20:00",
+  } as Record<string, unknown>,
+  members: [
+    ["Maya Patel", "maya@acme.test", "U01MAYA", "America/Los_Angeles", "09:00:00"],
+    ["Jun Wang", "jun@acme.test", "U02JUN", "Asia/Shanghai", "08:30:00"],
+    [null, "ops@acme.test", "U03OPS", "Etc/UTC", "09:00:00"],
+  ].map(([name, email, slack_user_id, timezone, deliver_at], index) => ({
+    id: `dbm-${index + 1}`,
+    name,
+    email,
+    slack_user_id,
+    enabled: true,
+    timezone,
+    deliver_at,
+    last_brief_at: index === 2 ? null : minutesAgo((5 + index) * 60),
+    requested_at: null as string | null,
+  })),
+  today: {
+    team_pass: { status: "completed", at: minutesAgo(5 * 60), error: null },
+    sent: 2,
+    pending: 0,
+    failed: 1,
+    requested: 0,
+    members: 3,
+    next_brief_at: minutesAgo(-19 * 60),
+  },
+  runs: [
+    ["team_brief", "completed", null, 31_200, null, true, 5],
+    ["personal_brief", "completed", "dbm-1", 18_400, null, true, 5],
+    ["personal_brief", "failed", "dbm-3", 9_100, "rate_limited", false, 5],
+  ].map(([kind, status, member_id, tokens, error, complete, hours], index) => ({
+    id: `dbr-${index + 1}`,
+    kind,
+    status,
+    member_id,
+    member: member_id === "dbm-1" ? "Maya Patel" : member_id ? "ops@acme.test" : null,
+    tokens,
+    error,
+    complete,
+    retryable: status === "failed",
+    at: minutesAgo(Number(hours) * 60),
+  })),
+};
+
+function dailyBriefReply(method: string, rest: string, body: Record<string, unknown>) {
+  const send = /^\/members\/([^/]+)\/send$/.exec(rest);
+  if (method === "POST" && send) {
+    const asked = dailyBrief.members.find((candidate) => candidate.id === send[1]);
+    if (!asked) return reply(404, { ok: false, error: { code: "not_found" } });
+    asked.requested_at = new Date().toISOString();
+    dailyBrief.today.requested += 1;
+    return reply(200, {
+      ok: true,
+      data: { id: asked.id, requested_at: asked.requested_at },
+    });
+  }
+  if (method === "PUT" && rest === "/settings") {
+    Object.assign(dailyBrief.settings, body);
+    return reply(200, { ok: true, data: { ...dailyBrief.settings } });
+  }
+  if (method === "POST" && rest === "/members/sync") {
+    return reply(200, {
+      ok: true,
+      data: { linked: dailyBrief.members.length, unresolved: ["contractor@acme.test"] },
+    });
+  }
+  return reply(200, { ok: true, data: dailyBrief });
+}
 
 function meetingsReply(
   method: string,
@@ -4466,6 +4548,7 @@ function agentsReply(
         agent: { id: found.id, name: found.name, role: found.role },
         model_key: found.model_key,
         system_prompt: found.system_prompt ?? "",
+        prompt_editable: true,
         available: true,
         models: [
           {
@@ -4556,6 +4639,17 @@ export const mockFetch: typeof fetch = async (input, init) => {
       url,
       body
     );
+  }
+  const brief = /^\/dashboard\/api\/v1\/orgs\/([^/]+)\/daily-brief(\/.*)?$/.exec(
+    url.pathname
+  );
+  if (brief) {
+    if (!context(decodeURIComponent(brief[1] ?? ""))) return notFound();
+    const body =
+      typeof init?.body === "string"
+        ? (JSON.parse(init.body) as Record<string, unknown>)
+        : {};
+    return dailyBriefReply(method, brief[2] ?? "", body);
   }
   const adminPage =
     /^\/dashboard\/api\/v1\/orgs\/([^/]+)\/(meetings|data-policy)\/[^/]+(\/.*)?$/.exec(

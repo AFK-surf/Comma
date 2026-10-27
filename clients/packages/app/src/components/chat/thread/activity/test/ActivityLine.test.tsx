@@ -46,6 +46,11 @@ const reviewer = {
   name: "Reviewer",
 };
 
+// The Task's Worker as one on Comma's own model.
+function onComma(task: ActivityFocusTask, avatarId: string): ActivityFocusTask {
+  return { ...task, worker: { ...task.worker!, avatarId, vendor: "comma" } };
+}
+
 function statusView(
   participants: ChatParticipantStatus[],
   locale: "en" | "zh-CN" = "en",
@@ -108,6 +113,18 @@ describe("Task activity summary", () => {
 
     view.rerender(statusView([{ ...router, state: "stopped", status: "" }]));
     expect(view.container.querySelector(".comma-chat-activity-avatar")).toBeNull();
+  });
+
+  it("draws the Comma mark once when the Worker runs Comma's own model", () => {
+    const view = render(statusView([router, worker], "en", "comma"));
+    const avatars = view.container.querySelectorAll(".comma-chat-activity-avatar");
+    expect(avatars).toHaveLength(1);
+    expect(avatars[0]).toHaveAttribute("data-actor-role", "router");
+
+    view.rerender(statusView([worker], "en", "comma"));
+    const alone = view.container.querySelectorAll(".comma-chat-activity-avatar");
+    expect(alone).toHaveLength(1);
+    expect(alone[0]).toHaveAttribute("data-model-vendor", "comma");
   });
 
   it.each([
@@ -181,6 +198,32 @@ describe("Task activity summary", () => {
       "data-active",
       "false"
     );
+  });
+});
+
+describe("a Task the viewer may switch to another model", () => {
+  it("offers another model as a way out of its Worker's model stops", async () => {
+    const onSwitchRun = vi.fn();
+    render(
+      <CommaI18nProvider locale="en">
+        <ParticipantStatusSlot
+          participantStatus={undefined}
+          participantStatuses={[
+            { ...worker, issue: "model_unavailable", state: "error", status: "error" },
+          ]}
+          onSwitchRun={onSwitchRun}
+        />
+      </CommaI18nProvider>
+    );
+    const actions = within(screen.getByTestId("chat-funding-actions")).getAllByRole(
+      "button"
+    );
+    expect(actions.map((button) => button.textContent)).toEqual([
+      "Model & API",
+      "Switch model",
+    ]);
+    await userEvent.click(actions[1]!);
+    expect(onSwitchRun).toHaveBeenCalledOnce();
   });
 });
 
@@ -401,6 +444,75 @@ describe("ParticipantStatusSlot", () => {
       );
     });
 
+    it("says a waited Task's Worker stopped with an error, not that it is finishing", async () => {
+      const waiting = { ...router, waiting: true };
+      const failed = { ...weekly, worker: { ...codex, active: false, failed: true } };
+      const view = render(
+        slotView({ participantStatus: waiting, focus: focusOf("waiting", [failed]) })
+      );
+      expect(currentSummary(view.container)).toHaveTextContent(
+        "「整理本周周报」出错停下了"
+      );
+
+      view.rerender(
+        slotView({
+          participantStatus: waiting,
+          focus: focusOf("waiting", [failed, billing]),
+        })
+      );
+      await vi.waitFor(() =>
+        expect(currentSummary(view.container)).toHaveTextContent("有个任务出错停下了")
+      );
+
+      // Once the Worker runs again, the wait reads as before.
+      view.rerender(
+        slotView({ participantStatus: waiting, focus: focusOf("waiting", [weekly]) })
+      );
+      await vi.waitFor(() =>
+        expect(currentSummary(view.container)).toHaveTextContent(
+          "正在等「整理本周周报」完成"
+        )
+      );
+    });
+
+    it("says how long a wait has lasted once it is longer than a step", () => {
+      const waiting = {
+        ...router,
+        waiting: true,
+        waitStartedAt: Date.now() - 3_000,
+      };
+      const view = render(slotView({ participantStatus: waiting }));
+      expect(currentSummary(view.container)).toHaveTextContent(/^正在等进展$/);
+
+      act(() => vi.advanceTimersByTime(3_000));
+      expect(currentSummary(view.container)).toHaveTextContent(
+        "正在等进展 · 已等 6 秒"
+      );
+
+      view.rerender(
+        slotView({ participantStatus: waiting, focus: focusOf("waiting", [weekly]) })
+      );
+      act(() => vi.advanceTimersByTime(60_000));
+      expect(currentSummary(view.container)).toHaveTextContent(
+        "正在等「整理本周周报」完成 · 已等 1 分钟"
+      );
+
+      // Following up on a Worker's report is not waiting, however long the wait.
+      view.rerender(
+        slotView({
+          participantStatus: {
+            ...waiting,
+            workingConversationIds: [weekly.conversationId],
+          },
+          focus: focusOf("following", [weekly]),
+        })
+      );
+      expect(currentSummary(view.container)).toHaveTextContent(
+        /^正在处理「整理本周周报」的新进展$/
+      );
+      view.unmount();
+    });
+
     it("counts several Tasks and shows at most two Worker avatars", () => {
       const third = {
         ...billing,
@@ -422,6 +534,37 @@ describe("ParticipantStatusSlot", () => {
       expect(
         bubbleOf(view.container).querySelectorAll("[data-worker-avatar]")
       ).toHaveLength(2);
+    });
+
+    it("draws a Worker on Comma's own model only where no Comma mark is beside it", () => {
+      const view = render(
+        slotView({
+          activity: waitFrame,
+          participantStatus: { ...router, workingConversationIds: ["task_weekly"] },
+          focus: focusOf("following", [onComma(weekly, "actor_comma"), billing]),
+        })
+      );
+      const following = bubbleOf(view.container);
+      expect(following.querySelector(".comma-chat-thinking-logo")).not.toBeNull();
+      const marks = following.querySelectorAll("[data-worker-avatar]");
+      expect(marks).toHaveLength(1);
+      expect(marks[0]).toHaveAttribute("data-model-vendor", "anthropic");
+
+      view.rerender(
+        slotView({
+          participantStatus: { ...router, state: "stopped", status: "" },
+          focus: focusOf("working", [
+            onComma(weekly, "actor_comma"),
+            onComma(billing, "actor_comma_2"),
+          ]),
+          hasResponse: true,
+        })
+      );
+      const working = bubbleOf(view.container);
+      expect(working.querySelector(".comma-chat-thinking-logo")).toBeNull();
+      const workers = working.querySelectorAll("[data-worker-avatar]");
+      expect(workers).toHaveLength(1);
+      expect(workers[0]).toHaveAttribute("data-model-vendor", "comma");
     });
 
     it("shows Workers that work while the Router is idle, never over an error", async () => {
@@ -837,6 +980,90 @@ describe("ParticipantStatusSlot", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("names a running tool call from its wait, and keeps bookkeeping on the line before", () => {
+    // The tool's frame expired; the Participant still waits on its call.
+    const view = render(
+      slotView({ participantStatus: { ...router, waitTool: "cloud_vm.start" } })
+    );
+    expect(currentSummary(view.container)).toHaveTextContent("正在启动云电脑");
+    expect(view.container).not.toHaveTextContent("cloud_vm");
+
+    view.rerender(
+      slotView({
+        participantStatus: { ...router, waitTool: "im_api.internal.send_message" },
+      })
+    );
+    expect(currentSummary(view.container)).toHaveTextContent(/^思考中$/);
+
+    view.rerender(
+      slotView({
+        activity: {
+          phase: "execution",
+          status: "running",
+          summaryClass: "public",
+          toolName: "agent.models",
+        },
+        participantStatus: router,
+      })
+    );
+    expect(currentSummary(view.container)).toHaveTextContent(/^思考中$/);
+
+    view.rerender(
+      slotView({ participantStatus: { ...router, waitTool: "recommendation.publish" } })
+    );
+    expect(currentSummary(view.container)).toHaveTextContent(/^思考中$/);
+
+    view.unmount();
+
+    const remote = render(
+      slotView({ participantStatus: { ...router, waitTool: "ssh.exec" } })
+    );
+    expect(currentSummary(remote.container)).toHaveTextContent("正在操作远程服务器");
+    remote.unmount();
+  });
+
+  it("names what a call works on: the query, the site or the file", () => {
+    for (const [toolName, target, line] of [
+      ["web.search", "北京天气", "正在搜索：北京天气"],
+      ["web.read_pages", "example.com", "正在阅读 example.com"],
+      ["fs.read_file", "report.pdf", "正在读取 report.pdf"],
+      // A tool without a worded target keeps its kind of work.
+      ["fs.list_files", "docs", "正在查看文件"],
+    ] as const) {
+      const view = render(
+        slotView({
+          activity: {
+            phase: "execution",
+            status: "running",
+            summaryClass: "public",
+            target,
+            toolName,
+          },
+          participantStatus: router,
+        })
+      );
+      expect(currentSummary(view.container)).toHaveTextContent(line);
+      view.unmount();
+    }
+  });
+
+  it("says how long a tool call has run once it is longer than a step", () => {
+    const running = {
+      ...router,
+      waitTool: "cloud_vm.start",
+      waitStartedAt: Date.now() - 3_000,
+    };
+    const view = render(slotView({ participantStatus: running }));
+    expect(currentSummary(view.container)).toHaveTextContent(/^正在启动云电脑$/);
+
+    act(() => vi.advanceTimersByTime(3_000));
+    expect(currentSummary(view.container)).toHaveTextContent("正在启动云电脑 · 6 秒");
+
+    act(() => vi.advanceTimersByTime(60_000));
+    expect(currentSummary(view.container)).toHaveTextContent("正在启动云电脑 · 1 分钟");
+    view.unmount();
+  });
+
   it("words a tool call after a reply in the reader's language, never as its identifier", () => {
     const slotView = (activity: ChatActivity) => (
       <CommaI18nProvider locale="zh-CN">
@@ -970,14 +1197,17 @@ describe("ParticipantStatusSlot", () => {
     parked.unmount();
 
     // An external runtime's own message stays out of the chat; the Router
-    // relays provider details such as a reset time in its reply.
+    // relays provider details such as a reset time in its reply. The card
+    // says what to do and offers the fix.
     const limited = zhErrorView(
       "quota_exhausted",
       "error: You've hit your usage limit. Resets at 5pm."
     );
-    expect(limited.getByRole("alert")).toHaveTextContent(
-      "已达到用量上限，请在额度恢复后再试。"
+    expect(limited.getByRole("alert")).toHaveTextContent("你的订阅已达用量上限");
+    expect(limited.container).toHaveTextContent(
+      "这个助手用的是你自己的订阅，额度会自动重置。重置后再发送，或现在换一个模型。"
     );
+    expect(limited.getByRole("button", { name: "换模型" })).toBeVisible();
     expect(limited.container).not.toHaveTextContent("usage limit");
     limited.unmount();
 

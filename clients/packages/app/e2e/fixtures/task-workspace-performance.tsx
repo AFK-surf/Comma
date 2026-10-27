@@ -32,7 +32,6 @@ const makeTask = (index: number): TaskWorkspaceTask => ({
   updatedAt: 1_720_000_000_000,
   statusBucket: statuses[index % statuses.length]!,
   activityStatus: "idle",
-  freshness: "fresh",
   messages: [],
 });
 const noop = () => undefined;

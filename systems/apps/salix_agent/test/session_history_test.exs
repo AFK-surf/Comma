@@ -149,7 +149,9 @@ defmodule SalixAgent.SessionHistoryTest do
         Codec.encode_snapshot(source)
       )
 
-    refute search(ctx)["complete"]
+    result = search(ctx)
+    refute result["complete"]
+    assert result["reason"] == "unsupported_storage_format"
     assert {:error, :unsupported_storage_format} = Source.read(agent, @session)
   end
 
@@ -182,5 +184,10 @@ defmodule SalixAgent.SessionHistoryTest do
     assert String.ends_with?(tail["text"], "original tail")
     assert is_nil(tail["next_offset"])
     refute (History.list(%{"session_id" => "other"}, ctx) |> Jason.decode!())["complete"]
+
+    assert (History.list(%{"cursor" => "bogus"}, ctx) |> Jason.decode!())["reason"] ==
+             "invalid_cursor"
+
+    assert (History.get(%{"seq" => 0}, ctx) |> Jason.decode!())["reason"] == "invalid_arguments"
   end
 end

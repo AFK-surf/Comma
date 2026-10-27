@@ -1,6 +1,7 @@
 import { uiClock } from "@comma/ui/clock";
 import { formatDate, type CommaLocale } from "@comma/i18n";
 import { asksRouter, type ChatMessage } from "@comma/core/chat";
+import { startOfLocalDay } from "./calendarDay";
 
 const CONVERSATION_TIMESTAMP_INTERVAL_MS = 60_000;
 
@@ -15,7 +16,8 @@ export function normalizeMessageTimestamp(createdAt: number | undefined) {
 
 export function formatConversationTimestamp(
   createdAt: number | undefined,
-  locale: CommaLocale
+  locale: CommaLocale,
+  now = uiClock.now()
 ) {
   const normalized = normalizeMessageTimestamp(createdAt);
   if (normalized === undefined) {
@@ -27,11 +29,7 @@ export function formatConversationTimestamp(
     return undefined;
   }
 
-  const now = new Date(uiClock.now());
-  const isToday =
-    date.getFullYear() === now.getFullYear() &&
-    date.getMonth() === now.getMonth() &&
-    date.getDate() === now.getDate();
+  const isToday = startOfLocalDay(normalized) === startOfLocalDay(now);
 
   return {
     isToday,

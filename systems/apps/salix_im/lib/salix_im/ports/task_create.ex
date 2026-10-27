@@ -25,10 +25,8 @@ defmodule SalixIM.Ports.TaskCreate do
   @doc """
   Check where the Router asked the Task to run and answer the value its Worker
   Participant stores: `%{"kind" => "station" | "cloud_vm", "device_id" => id}`.
-  `scope` carries `tenant_id`, `group_id`, the Worker's `agent_id` and `loop`,
-  true for a Loop Task (`SalixIM.TaskLoop`): its Loop must run while every app
-  is closed, so a person's own computer is refused for it
-  (`:personal_station_for_loop`).
+  `scope` carries `tenant_id`, `group_id` and the Worker's `agent_id`. A Loop
+  Task never asks: it runs inside Salix (`SalixIM.TaskPlacement`).
   """
   @callback runs_on(scope :: map(), request :: map()) :: {:ok, map()} | {:error, term()}
   @doc """

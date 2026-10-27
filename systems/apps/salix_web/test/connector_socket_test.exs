@@ -789,7 +789,8 @@ defmodule SalixWeb.ConnectorSocketTest do
           writes: %{},
           reads: %{},
           label: label,
-          reply_heartbeat: Map.get(query, "reply_heartbeat", true)
+          reply_heartbeat: Map.get(query, "reply_heartbeat", true),
+          report_connected: Map.get(query, "report_connected", false)
         },
         extra_headers:
           [{"authorization", "Bearer " <> token}] ++
@@ -807,6 +808,10 @@ defmodule SalixWeb.ConnectorSocketTest do
       case msg["type"] do
         "connected" ->
           SystemsRuntime.Proc.send(state.test, {:connected, msg["connector_run_id"]})
+
+          if state.report_connected,
+            do: SystemsRuntime.Proc.send(state.test, {:connected_frame, msg})
+
           {:ok, state}
 
         "heartbeat" ->
@@ -2084,6 +2089,86 @@ defmodule SalixWeb.ConnectorSocketTest do
 
     settle_refute_receive({:connected, _run_id}, 500)
     assert {:error, :not_found} = SalixEnv.Registry.get_device(tenant_id(), group_id, device_id)
+  end
+
+  # Electron mints the device's next credential before the current one expires,
+  # and the station presents it on its live socket. The connection is never out
+  # of service, keeps its run, and ends when the credential it holds expires.
+  test "a device connection that renews its credential serves across the old credential's expiry",
+       %{group_id: group_id, agent_id: agent_id} do
+    {:ok, first} = desktop_credential(group_id, 600)
+    device_id = first["device_id"]
+    {pid, run_id, connected} = connect_desktop(first["token"])
+    target = %{device_id: device_id, environment_id: command_environment_id!(run_id)}
+    assert_serving(agent_id, target, group_id, device_id, run_id)
+
+    {:ok, second} = desktop_credential(group_id, 1_200, device_id)
+    assert_serving(agent_id, target, group_id, device_id, run_id)
+
+    assert connected["credential_renewal"] == true
+    renew_credential(pid, "renew-1", second["token"])
+    settle_receive({:connector_frame, %{"id" => "renew-1", "type" => "response"}})
+
+    SystemsClock.run_for(601_000)
+    assert_serving(agent_id, target, group_id, device_id, run_id)
+
+    # Electron revokes the replaced credential once it expired: the run holds the new one.
+    :ok =
+      SalixEnv.ConnectorTokens.revoke_group_connector_token(group_id, tenant_id(), first["token"])
+
+    assert_serving(agent_id, target, group_id, device_id, run_id)
+
+    SystemsClock.run_for(600_000)
+
+    assert eventually(fn ->
+             match?(
+               {:ok, %{"status" => "disconnected"}},
+               SalixEnv.Registry.get_device(tenant_id(), group_id, device_id)
+             )
+           end)
+  end
+
+  test "a connection renews only to its device's newest credential, and revoking that one ends it",
+       %{group_id: group_id, agent_id: agent_id} do
+    {:ok, first} = desktop_credential(group_id, 600)
+    device_id = first["device_id"]
+    {pid, run_id, _connected} = connect_desktop(first["token"])
+    target = %{device_id: device_id, environment_id: command_environment_id!(run_id)}
+    {:ok, other_device} = desktop_credential(group_id, 600)
+    {:ok, superseded} = desktop_credential(group_id, 600, device_id)
+    {:ok, newest} = desktop_credential(group_id, 600, device_id)
+
+    renew_credential(pid, "renew-other", other_device["token"])
+    settle_receive({:connector_frame, %{"id" => "renew-other", "type" => "error"}})
+    renew_credential(pid, "renew-superseded", superseded["token"])
+    settle_receive({:connector_frame, %{"id" => "renew-superseded", "type" => "error"}})
+    assert_serving(agent_id, target, group_id, device_id, run_id)
+
+    renew_credential(pid, "renew-newest", newest["token"])
+    settle_receive({:connector_frame, %{"id" => "renew-newest", "type" => "response"}})
+    [{socket, :connector}] = Registry.lookup(SalixEnv.Bridges, run_id)
+    ref = SystemsRuntime.Proc.monitor(socket)
+
+    :ok =
+      SalixEnv.ConnectorTokens.revoke_group_connector_token(
+        group_id,
+        tenant_id(),
+        newest["token"]
+      )
+
+    settle_receive({:DOWN, ^ref, :process, ^socket, _reason})
+  end
+
+  test "a newer credential takes service from the live connection of one that never expires",
+       %{group_id: group_id, agent_id: agent_id} do
+    {:ok, lasting} = desktop_credential(group_id, nil)
+    device_id = lasting["device_id"]
+    {_pid, run_id, _connected} = connect_desktop(lasting["token"])
+    target = %{device_id: device_id, environment_id: command_environment_id!(run_id)}
+    assert_serving(agent_id, target, group_id, device_id, run_id)
+
+    {:ok, _newer} = desktop_credential(group_id, 600, device_id)
+    assert {:error, :disconnected} = EnvDispatch.exec(agent_id, target, "date", %{})
   end
 
   test "a sent Cloud VM exec with an unknown result is not replayed on same-process reconnect",
@@ -3968,6 +4053,54 @@ defmodule SalixWeb.ConnectorSocketTest do
 
   defp restore_app_env(app, key, nil), do: SystemsRuntime.delete_env(app, key)
   defp restore_app_env(app, key, value), do: SystemsRuntime.put_env(app, key, value)
+
+  # A desktop's credential, as Electron Main mints it: short-lived, for one
+  # owner, and on the same stable device once it has one. A nil lifetime
+  # mints one that never expires.
+  defp desktop_credential(group_id, ttl_seconds, device_id \\ nil) do
+    attrs = %{
+      "name" => "desktop",
+      "alias" => "desktop",
+      "meta" => %{"owner_user_id" => "usr_desktop"}
+    }
+
+    attrs = if ttl_seconds, do: Map.put(attrs, "expires_in_seconds", ttl_seconds), else: attrs
+    attrs = if device_id, do: Map.put(attrs, "stable_device_id", device_id), else: attrs
+    SalixEnv.ConnectorTokens.create_group_connector_token(group_id, tenant_id(), attrs)
+  end
+
+  defp connect_desktop(token) do
+    query = %{
+      "name" => "desktop",
+      "alias" => "desktop",
+      "os" => "darwin",
+      "report_connected" => true
+    }
+
+    {:ok, pid} = FakeConnector.start_query(ws_base(), query, token, SystemsRuntime.Proc.self())
+    track(pid)
+    settle_receive({:connected_frame, %{"connector_run_id" => run_id} = connected})
+    {pid, run_id, connected}
+  end
+
+  defp renew_credential(pid, id, token) do
+    SystemsRuntime.Proc.send(pid, {
+      :send_frame,
+      %{
+        "id" => id,
+        "type" => "request",
+        "method" => "connector_credential_renew",
+        "params" => %{"token" => token}
+      }
+    })
+  end
+
+  defp assert_serving(agent_id, target, group_id, device_id, run_id) do
+    assert {:ok, %{"stdout" => "ran: date"}} = EnvDispatch.exec(agent_id, target, "date", %{})
+
+    assert {:ok, %{"status" => "connected", "connector_run_id" => ^run_id}} =
+             SalixEnv.Registry.get_device(tenant_id(), group_id, device_id)
+  end
 
   defp environment_device_for_run(connector_run_id) do
     case SalixEnv.Registry.get_by_connector_run_id(connector_run_id) do

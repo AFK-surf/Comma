@@ -9,7 +9,9 @@
 // - allowances: every 5 minutes, and only while someone follows the events (`following`), as admin/events.rs does; the
 //   providers do not tell when an allowance moves. `followed()` asks the stale ones at once when the first follower comes.
 // - every profile checked 3 s after start (what changed while the station was off: keys revoked, logins expired).
-// - the machine's logins: read again when the overview is read with a reading over 2 minutes old (machine.ts).
+// - the machine's logins: read again when the overview is read with a reading over 2 minutes old (machine.ts), and only
+//   those of runtimes some Workspace chose the local sign-in for (sources.ts): nothing of them is read, checked, asked
+//   or used otherwise.
 // - a sign-in times out after 15 minutes; a finished sign-in for a new profile is kept 15 minutes for its page.
 import type { Clock } from "effect";
 import { randomBytes } from "node:crypto";
@@ -21,8 +23,10 @@ import { type AccessKind, accessKind, accessOf, isMachine, keyOf, profileVia, ty
 import { cleanEndpoint, endpoints, find, groupOf, LEGACY, runtimesOf as runtimesOfEndpoints, SOURCES } from "../agents/providers.ts";
 import type { Viewer } from "../mesh/credential.ts";
 import type { ConfigFile } from "../ops/config.ts";
+import { ownerOf } from "../device/access.ts";
 import { type Lang, stationLang, tr } from "../ops/i18n.ts";
 import { log } from "../ops/log.ts";
+import { platform } from "../platform/index.ts";
 import { joinPath } from "../ops/paths.ts";
 import { hubConfig, type Profile } from "../sessions/config.ts";
 import { type Capability, discover as discoverDecisions, fingerprint, resolvedModel } from "../sessions/decision.ts";
@@ -38,6 +42,7 @@ import { codexClaims, type MachineLogin, MachineLogins } from "./machine.ts";
 import { claudeOAuthToken } from "./oauth.ts";
 import { accessKinds, checkProfile, keyed, loginCommand, needsKey, type ProfileCheck, type ProfileQuota, runtimesFor, runtimesOf, URLS, type Urls } from "./profiles.ts";
 import { checkQuota, machineUsage } from "./quota.ts";
+import { AccountSources, localModelId, RUNTIMES, type Source, sourceOf } from "./sources.ts";
 
 export { checkConfig } from "./check.ts";
 export type { LoginJob, MachineLogin, ProfileCheck, ProfileQuota };
@@ -48,6 +53,10 @@ type Json = any;
 const QUOTA_EVERY_MS = 5 * 60_000;
 const CHECK_ON_START_MS = 3_000;
 const PENDING_KEPT_MS = 15 * 60_000;
+/// The login job id of a machine sign-in, before its runtime.
+const MACHINE_LOGIN = "machine-login-";
+/// Who the local admin interface's choices are recorded as: the person at this computer (local-admin.ts).
+export const LOCAL_ADMIN = "local-admin";
 /// The checks the policy page counts: of the last days, and the chats it names for each option at most.
 const POLICY_DAYS = 7;
 const POLICY_CHATS = 20;
@@ -55,9 +64,12 @@ const POLICY_CHATS = 20;
 /// What the pages are refused, and with which status (admin/mod.rs `http_error`).
 export class Refusal extends Error {
   readonly status: number;
-  constructor(status: number, message: string) {
+  /// What a caller tells apart, where it needs to (the local admin interface's `error`).
+  readonly code: string | undefined;
+  constructor(status: number, message: string, code?: string) {
     super(message);
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -85,6 +97,8 @@ export type AccountsDeps = {
   following?: () => boolean;
   /// The station's environment (where the machine's logins are, and the CLIs found); process.env by default.
   env?: Env;
+  /// A Compute Workload's station, which runs on the accounts Salix lends only (accounts/sources.ts).
+  managed?: boolean;
   loginCommands?: LoginCommands;
   urls?: Urls;
   /// Tests: how a profile is checked, its allowance read (null: nobody can ask), its reset asked, its decisions found.
@@ -98,6 +112,10 @@ export type AccountsDeps = {
   checkOnStart?: boolean;
   /// Its time (a TestClock in tests).
   clock?: Clock.Clock;
+  /// Which account each Workspace's runtimes run on (made from `config` when not given).
+  sources?: AccountSources;
+  /// The Workspace the station enrolled in (cloud.json), whose source the machine-account routes set; null: none.
+  workspace?: () => string | null;
   /// Profiles other stations share with this one (share/index.ts): how they are doing is their host's to say, and
   /// what the overview says of each profile's sharing.
   shared?: {
@@ -119,16 +137,33 @@ const accessKindOf = (v: unknown): AccessKind | undefined => (ACCESS_KINDS.inclu
 /// admin/mod.rs Input::text: JavaScript's String(x ?? "").
 const text = (v: unknown) => (v === undefined || v === null ? "" : typeof v === "string" ? v : JSON.stringify(v));
 const named = (runtime: Runtime) => (runtime === "claude" ? "Claude Code" : "Codex");
+/// A model server's address as a runtime is pointed at it: Anthropic's protocol at its root (the runtime adds `/v1`),
+/// Responses under `/v1` (added when the address has no path). Undefined unless it is an http(s) address.
+function serverAddress(given: string, protocol: "anthropic" | "responses"): string | undefined {
+  const clean = cleanEndpoint(given);
+  if (clean === undefined) return undefined;
+  if (protocol === "anthropic") return clean.endsWith("/v1") ? clean.slice(0, -"/v1".length) : clean;
+  let path: string;
+  try {
+    path = new URL(clean).pathname;
+  } catch {
+    return undefined;
+  }
+  return path === "" || path === "/" ? `${clean}/v1` : clean;
+}
 /// A copy of a profile another station shares (share/index.ts): edited, checked and signed in only there.
 export const borrowed = (p: Json): boolean => isObject(p?.share) && p.share.borrowed === true;
 
 export class Accounts {
   readonly logins: LoginManager;
   readonly machine: MachineLogins | null;
+  readonly sources: AccountSources;
   private checks = new Map<string, ProfileCheck>();
   private quotas = new Map<string, ProfileQuota>();
   private quotaBusy = new Map<string, Promise<void>>();
   private pending = new Map<string, Pending>();
+  /// Sign-ins of the machine's own logins (`POST /machine-logins`), by runtime: who asked, and why it was not taken up.
+  private machineSignIns = new Map<Runtime, { by: string; error: string | null }>();
   private listeners = new Set<() => void>();
   private background: Fibers;
   private stops: (() => void)[] = [];
@@ -147,8 +182,10 @@ export class Accounts {
     this.env = deps.env ?? (process.env as Env);
     this.urls = deps.urls ?? URLS;
     this.logins = new LoginManager(deps.data, deps.loginCommands, undefined, deps.clock);
+    this.sources = deps.sources ?? new AccountSources({ config: deps.config, data: deps.data, now: () => this.background.now(), managed: deps.managed });
     this.machine =
-      deps.machine !== undefined ? deps.machine : new MachineLogins(this.env, (runtime, env) => machineUsage(runtime, env, this.urls), undefined, deps.clock);
+      deps.machine !== undefined ? deps.machine : new MachineLogins(this.env, (runtime, env) => this.profiles().some((p) => isMachine(p) && p.runtime === runtime) ? machineUsage(runtime, env, this.urls) : Promise.resolve(null), undefined, deps.clock);
+    this.machine?.allow((runtime) => this.machineAllowed(runtime));
     this.checkFn =
       deps.check ?? ((request, lang) => checkProfile({ ...request, env: this.env, machineToken: (env) => this.machineToken(env), urls: this.urls, lang }));
     this.quotaFn =
@@ -181,6 +218,10 @@ export class Accounts {
     // A finished sign-in changes what the profile can do; it is checked again right away.
     this.stops.push(
       this.logins.changes((id) => {
+        if (id.startsWith(MACHINE_LOGIN)) {
+          this.machineSignInChanged(id.slice(MACHINE_LOGIN.length) as Runtime);
+          return this.changed();
+        }
         const pending = this.pending.has(id);
         if (pending) this.pendingChanged(id);
         this.changed();
@@ -189,11 +230,11 @@ export class Accounts {
     );
     if (this.machine) {
       this.stops.push(this.machine.changes(() => this.changed()));
-      this.background.spawn(() => this.machine!.refresh());
+      if (RUNTIMES.some((r) => this.machineAllowed(r))) this.background.spawn(() => this.machine!.refresh());
     }
     if (this.deps.checkOnStart !== false) {
       this.background.after(CHECK_ON_START_MS, () => {
-        for (const p of this.profiles()) this.background.spawn(() => this.check(p.id));
+        for (const p of this.profiles()) if (this.inUse(p)) this.background.spawn(() => this.check(p.id));
       });
     }
     this.background.every(QUOTA_EVERY_MS, () => {
@@ -232,6 +273,16 @@ export class Accounts {
     return this.profiles().find((p) => p.id === id);
   }
 
+  /// Whether the machine's own login of a runtime may be read and used: some Workspace chose the local sign-in for it.
+  machineAllowed(runtime: Runtime): boolean {
+    return this.sources.localActive(runtime);
+  }
+
+  /// Whether a profile may be checked, asked about and used: one on the machine's login only while that is allowed.
+  private inUse(p: Profile): boolean {
+    return !isMachine(p) || this.machineAllowed(p.runtime);
+  }
+
   /// How a profile is doing, for the pool: its last check and allowance.
   health(id: string): ProfileHealth {
     return { check: this.checks.get(id) ?? null, quota: this.quotas.get(id) ?? null };
@@ -239,6 +290,7 @@ export class Accounts {
 
   /// The machine login's current Claude token, renewed when about to run out (the Claude driver's `machineToken`).
   async machineToken(env: Env = this.env): Promise<MachineToken> {
+    if (!this.machineAllowed("claude")) throw new Refusal(409, tr(stationLang(), "station.source.machineOff"));
     const [token, expiresAt] = await claudeOAuthToken(env, null, null, this.urls.claudeToken);
     return { token, expiresAt };
   }
@@ -257,6 +309,12 @@ export class Accounts {
     if (p && borrowed(p)) throw new Refusal(409, tr(lang, "station.share.borrowedEdit"));
   }
 
+  private machineOwner(viewer: Viewer) {
+    const owner = ownerOf(this.deps.config.raw());
+    if (owner !== null ? viewer.sub !== owner : !manages(viewer))
+      throw new Refusal(403, "Only this computer's owner can change its machine accounts.");
+  }
+
   // ── edits ──
 
   /// Edits config.json (refused as 400 when the result does not pass), said in the log as `what`.
@@ -272,6 +330,7 @@ export class Accounts {
   /// PUT /profiles/:id: a profile made or edited. Its new state is checked after (in the background).
   putProfile(id: string, given: Record<string, unknown>, viewer: Viewer, lang: Lang = stationLang()) {
     this.own(id, lang);
+    if (this.profile(id) && isMachine(this.profile(id)!)) this.machineOwner(viewer);
     this.save(viewer, `profile ${id}`, (raw) => {
       const list: Json[] = Array.isArray(raw.profiles) ? raw.profiles : [];
       const existing: Json | undefined = list.find((p) => p?.id === id);
@@ -364,6 +423,7 @@ export class Accounts {
   /// DELETE /profiles/:id. Its home stays.
   deleteProfile(id: string, viewer: Viewer, lang: Lang = stationLang()) {
     this.own(id, lang);
+    if (this.profile(id) && isMachine(this.profile(id)!)) this.machineOwner(viewer);
     this.save(viewer, `delete profile ${id}`, (raw) => {
       const list: Json[] = Array.isArray(raw.profiles) ? raw.profiles : [];
       const profile = list.find((p) => p?.id === id);
@@ -444,20 +504,255 @@ export class Accounts {
   /// POST /profiles/machine: a profile on the machine's own login of a runtime, when that login is one a profile can
   /// use (kept in a file). Named by its account. Its id.
   async newMachineProfile(input: Record<string, unknown>, viewer: Viewer, lang: Lang = stationLang()): Promise<string> {
+    this.machineOwner(viewer);
     const t = (key: string, args?: Record<string, unknown>) => tr(lang, key, args);
     const runtime = runtimeOf(input.runtime);
     if (!runtime) throw new Refusal(400, `unknown runtime ${text(input.runtime)}`);
     const id = `machine-${runtime}`;
-    if (this.profiles().some((p) => p.id === id)) throw new Refusal(409, t("station.machine.alreadyUsed"));
+    // Asking for it is choosing the local sign-in for the station's Workspace: one kept from before is used again.
+    const wasAllowed = this.machineAllowed(runtime);
+    this.chooseLocal(runtime, viewer.email, lang);
+    if (this.profiles().some((p) => p.id === id)) {
+      if (wasAllowed) throw new Refusal(409, t("station.machine.alreadyUsed"));
+      this.afterSignIn(id);
+      return id;
+    }
     const machine = this.machine;
     if (!machine) throw new Refusal(400, t("station.machine.unreadable"));
     await machine.refresh();
     const login = machine.get().find((l) => l.runtime === runtime);
     if (!login?.loggedIn) throw new Refusal(400, t("station.machine.notSignedIn", { runtime: named(runtime) }));
     if (!login.usable) throw new Refusal(400, t("station.machine.keychain"));
+    this.machineOwner(viewer);
+    if (this.profile(id)) throw new Refusal(409, t("station.machine.alreadyUsed"));
     this.saveMachineProfile(login, viewer.email, lang);
     this.afterSignIn(id);
     return id;
+  }
+
+  /// POST /machine-logins: the machine's own Codex or Claude Code signed in, by the person on this computer (the
+  /// desktop app's station): its login command opens the authorization page in their browser. Once it succeeds, the
+  /// machine's login is used (the `machine-<runtime>` profile), as the person asked by signing in from here.
+  async newMachineLogin(input: Record<string, unknown>, viewer: Viewer, lang: Lang = stationLang()): Promise<LoginJob> {
+    this.machineOwner(viewer);
+    const runtime = runtimeOf(input.runtime);
+    if (!runtime) throw new Refusal(400, `unknown runtime ${text(input.runtime)}`);
+    this.chooseLocal(runtime, viewer.email, lang);
+    return this.startMachineSignIn(runtime, viewer.email, lang);
+  }
+
+  /// The machine's login of a runtime signed in by its own login command (in the person's browser).
+  private startMachineSignIn(runtime: Runtime, by: string, lang: Lang): Promise<LoginJob> {
+    const home = platform.home(this.env);
+    if (!home) throw new Refusal(400, tr(lang, "station.machine.unreadable"));
+    this.machineSignIns.set(runtime, { by, error: null });
+    log.info("accounts", "machine sign-in started", { runtime, by });
+    return this.logins.start({ id: `${MACHINE_LOGIN}${runtime}`, runtime, home, machine: true }, lang);
+  }
+
+  /// The machine-account routes (over the mesh, of an enrolled station): the local sign-in chosen for its Workspace.
+  private chooseLocal(runtime: Runtime, by: string, lang: Lang) {
+    if (this.machineAllowed(runtime)) return;
+    const workspace = this.deps.workspace?.() ?? null;
+    if (workspace === null) throw new Refusal(409, tr(lang, "station.source.noWorkspace"));
+    this.setSource(workspace, runtime, "local", by, false);
+  }
+
+  /// A Workspace's source of a runtime recorded; the machine's login read once it is in use (and made its profile,
+  /// `takeUp`), and no sign-in of it left running once it is not.
+  private setSource(workspace: string, runtime: Runtime, source: Source, by: string, takeUp: boolean) {
+    try {
+      this.sources.set(workspace, runtime, source, by);
+    } catch (e) {
+      throw new Refusal(400, (e as Error).message);
+    }
+    log.info("accounts", "account source chosen", { workspace, runtime, source, by });
+    if (this.machineAllowed(runtime)) {
+      if (takeUp) {
+        this.background.spawn(async () => {
+          await this.machine?.refreshNew();
+          this.takeUpMachine(runtime);
+        });
+      }
+    } else if (this.machineSignIns.has(runtime)) {
+      this.logins.cancel(`${MACHINE_LOGIN}${runtime}`);
+      this.machineSignIns.delete(runtime);
+    }
+    this.changed();
+  }
+
+  /// The machine's login of each runtime in use, signed in and kept in a file, made the `machine-<runtime>` profile
+  /// when there is none: choosing the local sign-in is what asks for it.
+  private takeUpMachine(runtime: Runtime) {
+    const login = this.machine?.get().find((l) => l.runtime === runtime);
+    const id = `machine-${runtime}`;
+    if (!login?.loggedIn || !login.usable || this.profile(id)) return;
+    this.saveMachineProfile(login, this.machineSignIns.get(runtime)?.by ?? LOCAL_ADMIN, stationLang());
+    this.afterSignIn(id);
+  }
+
+  /// A machine sign-in moved on: once it succeeds, the machine's login is read again and used.
+  private machineSignInChanged(runtime: Runtime) {
+    const asked = this.machineSignIns.get(runtime);
+    if (!asked || this.logins.get(`${MACHINE_LOGIN}${runtime}`)?.state !== "done") return;
+    this.background.spawn(async () => {
+      const lang = stationLang();
+      const t = (key: string, args?: Record<string, unknown>) => tr(lang, key, args);
+      await this.machine?.refreshNew();
+      const login = this.machine?.get().find((l) => l.runtime === runtime);
+      const id = `machine-${runtime}`;
+      const error = !login?.loggedIn
+        ? t("station.machine.notSignedIn", { runtime: named(runtime) })
+        : !login.usable
+          ? t("station.machine.keychain")
+          : null;
+      this.machineSignIns.set(runtime, { by: asked.by, error });
+      if (error === null && !this.profile(id)) {
+        this.saveMachineProfile(login!, asked.by, lang);
+        this.afterSignIn(id);
+      }
+      this.changed();
+    });
+  }
+
+  // ── the local admin interface (local-admin.ts, RFC43 §3.3) ──
+
+  /// GET /local/accounts: each Workspace this computer is connected to (or chose a source for), each runtime's source,
+  /// whether the Workspace lent it accounts, and, only under `local`, the machine's own login.
+  async localAccounts(lang: Lang = stationLang()): Promise<Json> {
+    const known = new Map<string, string | null>();
+    for (const i of this.sources.instances()) if (!known.has(i.workspaceId) || known.get(i.workspaceId) === null) known.set(i.workspaceId, i.name);
+    for (const w of this.sources.chosenWorkspaces()) if (!known.has(w)) known.set(w, null);
+    const workspaces: Json[] = [];
+    for (const [workspaceId, name] of known) {
+      const runtimes: Json = {};
+      for (const runtime of RUNTIMES) runtimes[runtime] = await this.localRuntime(workspaceId, runtime, lang);
+      workspaces.push({ workspaceId, name: name ?? workspaceId, runtimes });
+    }
+    return { workspaces };
+  }
+
+  private async localRuntime(workspace: string, runtime: Runtime, _lang: Lang): Promise<Json> {
+    const source = this.sources.source(workspace, runtime);
+    const lent = this.sources.lent(this.profiles(), this.sources.hostOf(workspace)).filter((p) => p.runtimes.includes(runtime));
+    let local: Json = null;
+    if (source === "local") {
+      if (this.machine && !this.machine.has(runtime)) await this.machine.refresh().catch(() => undefined);
+      // Signed in since it was chosen (in a terminal, say): used as the choice asked.
+      this.takeUpMachine(runtime);
+      const login = this.machine?.get().find((l) => l.runtime === runtime);
+      local = {
+        installed: login?.installed ?? false,
+        loggedIn: login?.loggedIn ?? false,
+        email: login?.loggedIn ? login.email : null,
+        usable: login?.usable ?? false,
+        signIn: this.localSignInView(runtime),
+      };
+    }
+    // Only what would run: a Workspace whose accounts run another runtime only is not offered for this one.
+    // `chosen`: a person recorded a choice (an explicit none too); false while it is none only by default.
+    const chosen = this.sources.choice(workspace, runtime) !== null;
+    return { source, chosen, workspaceAvailable: lent.length > 0, workspaceAccounts: lent.map((p) => ({ name: p.name })), local, endpoint: this.localModelView(runtime) };
+  }
+
+  /// The model server this computer runs a runtime on under `endpoint`: its address, whether it has a key, how its last
+  /// check went and the models it serves; null until an address is given.
+  private localModelView(runtime: Runtime): Json {
+    const profile = this.profile(localModelId(runtime));
+    if (!profile) return null;
+    const check = this.checks.get(profile.id);
+    return { address: String(profile.endpoint ?? ""), keyed: keyOf(profile) !== "", state: check?.state ?? "unknown", detail: check?.detail ?? "", models: profile.models };
+  }
+
+  /// The model server at `given` taken for a runtime under `endpoint` (its `local-model-<runtime>` profile), at the
+  /// protocol the runtime speaks: Claude Code Anthropic's, Codex Responses. Its models are what it lists, its default
+  /// the first unless the one it had is still there. Its key, for a server that asks for one (a proxy such as
+  /// CLIProxyAPI or LiteLLM), is the one given (an empty one removes it), else the one it had. Kept even when it does
+  /// not answer: its check says why. No address given keeps the one there is, and is refused while there is none.
+  private async saveLocalModel(runtime: Runtime, given: unknown, givenKey: unknown, lang: Lang) {
+    const id = localModelId(runtime);
+    if (given === undefined || given === null) {
+      if (this.profile(id)) return;
+      throw new Refusal(409, tr(lang, "station.source.endpointNeeded"), "endpoint_missing");
+    }
+    const protocol = runtime === "claude" ? "anthropic" : "responses";
+    const endpoint = typeof given === "string" ? serverAddress(given, protocol) : undefined;
+    if (endpoint === undefined) throw new Refusal(400, tr(lang, "station.profile.addressNeeded"), "invalid_endpoint");
+    const had = this.profile(id);
+    const key = typeof givenKey === "string" ? givenKey.trim() : had ? keyOf(had) : "";
+    const via: Via = { provider: "custom", endpoint, protocol };
+    // Its models are read from the OpenAI-style list every such server has under /v1 (Ollama, LM Studio, CLIProxyAPI,
+    // LiteLLM), with a bearer key: asked with Anthropic's headers, a proxy answers with a catalog of its own.
+    const listed: Via = { provider: "custom", endpoint: serverAddress(given as string, "responses"), protocol: "responses" };
+    const check = await this.checkFn({ runtime, kind: "api-provider", key, via: listed, home: join(this.deps.data, "homes", id), machine: false }, lang);
+    const found = check.state === "ok" ? (check.models ?? []) : [];
+    this.save(LOCAL_ADMIN, `profile ${id}`, (raw) => {
+      const list: Json[] = Array.isArray(raw.profiles) ? raw.profiles : [];
+      const existing: Json | undefined = list.find((p) => p?.id === id);
+      const models: string[] = found.length > 0 ? found : existing?.endpoint === endpoint && Array.isArray(existing.models) ? existing.models : [];
+      const model = models.includes(existing?.model) ? existing.model : models[0];
+      const made: Json = { id, name: tr(lang, "station.source.endpointName", { address: endpoint }), ...storedAccess(runtime, "api-provider", { ...via, key }), home: `homes/${id}`, env: {} };
+      if (models.length > 0) made.models = models;
+      if (model !== undefined) made.model = model;
+      raw.profiles = existing ? list.map((p) => (p?.id === id ? made : p)) : [...list, made];
+    });
+    mkdirSync(join(this.deps.data, "homes", id), { recursive: true });
+    this.keepCheck(id, check);
+  }
+
+  private localSignInView(runtime: Runtime): Json {
+    const asked = this.machineSignIns.get(runtime);
+    const job = this.logins.get(`${MACHINE_LOGIN}${runtime}`);
+    if (!asked || !job) return null;
+    const failed = job.state === "failed" || job.state === "cancelled" || (job.state === "done" && asked.error !== null);
+    const state = failed ? "failed" : job.state === "done" ? "done" : "running";
+    return { state, url: job.url, error: failed ? (asked.error ?? job.error ?? null) : null };
+  }
+
+  /// The Workspace named, refused when this computer neither is connected to it nor chose a source for it.
+  private localWorkspace(workspace: string, runtime: string, lang: Lang): Runtime {
+    const known = this.sources.instances().some((i) => i.workspaceId === workspace) || this.sources.chosenWorkspaces().includes(workspace);
+    if (!known) throw new Refusal(404, tr(lang, "station.source.unknownWorkspace"), "unknown_workspace");
+    const r = runtimeOf(runtime);
+    if (!r) throw new Refusal(400, `unknown runtime ${runtime}`, "unknown_runtime");
+    return r;
+  }
+
+  /// PUT /local/accounts/<workspace>/<runtime>: the source chosen. The Workspace's accounts only once it lent some; a
+  /// model server with its address (`endpoint`, and its `key` if it asks for one), or once one was given.
+  async localSetSource(workspace: string, runtime: string, input: Record<string, unknown>, lang: Lang = stationLang()): Promise<Json> {
+    const r = this.localWorkspace(workspace, runtime, lang);
+    const source = sourceOf(input.source);
+    if (!source) throw new Refusal(400, `unknown source ${text(input.source)}`, "unknown_source");
+    if (source === "workspace" && !this.sources.lent(this.profiles(), this.sources.hostOf(workspace)).some((p) => p.runtimes.includes(r))) {
+      throw new Refusal(409, tr(lang, "station.source.workspaceUnavailable"), "workspace_accounts_unavailable");
+    }
+    if (source === "endpoint") await this.saveLocalModel(r, input.endpoint, input.key, lang);
+    this.setSource(workspace, r, source, LOCAL_ADMIN, true);
+    return this.localAccounts(lang);
+  }
+
+  /// POST /local/accounts/<workspace>/<runtime>/sign-in: the machine's login signed in, under `local` only.
+  async localSignIn(workspace: string, runtime: string, lang: Lang = stationLang()): Promise<Json> {
+    const r = this.localWorkspace(workspace, runtime, lang);
+    if (this.sources.source(workspace, r) !== "local") throw new Refusal(409, tr(lang, "station.source.notLocal"), "source_not_local");
+    await this.startMachineSignIn(r, LOCAL_ADMIN, lang);
+    return this.localAccounts(lang);
+  }
+
+  /// DELETE /local/accounts/<workspace>/<runtime>/sign-in: that sign-in stopped.
+  async localStopSignIn(workspace: string, runtime: string, lang: Lang = stationLang()): Promise<Json> {
+    const r = this.localWorkspace(workspace, runtime, lang);
+    if (this.machineSignIns.delete(r)) {
+      this.logins.cancel(`${MACHINE_LOGIN}${r}`);
+      this.changed();
+    }
+    return this.localAccounts(lang);
+  }
+
+  /// The overview's `machineSignIns`: each machine sign-in's job, and why it was not taken up.
+  machineSignInsView(): Json[] {
+    return [...this.machineSignIns.entries()].map(([runtime, s]) => ({ runtime, job: this.logins.get(`${MACHINE_LOGIN}${runtime}`), error: s.error }));
   }
 
   /// A profile `machine-<runtime>` on the machine's login, saved (its models none yet). Its id.
@@ -477,29 +772,6 @@ export class Accounts {
     return id;
   }
 
-  /// The desktop app's station runs what the machine is signed in to, as the app's connector did before the station:
-  /// each runtime whose login a profile can use, and that no profile runs, gets a profile on that login. A profile on the
-  /// machine's login has every model its checks find (at each start, say), as the app's connector ran any. Looked at
-  /// now and whenever the machine's logins change.
-  useMachineLogins() {
-    if (this.machineAdopted !== null || !this.machine) return;
-    this.machineAdopted = Promise.resolve();
-    this.stops.push(this.machine.changes(() => void this.adoptMachineLogins()));
-    this.background.spawn(async () => {
-      await this.machine!.refresh();
-      await this.adoptMachineLogins();
-    });
-  }
-
-  private machineAdopted: Promise<void> | null = null;
-
-  /// One look at a time: a look asked while one runs follows it.
-  private adoptMachineLogins(): Promise<void> {
-    const next = this.machineAdopted!.then(() => this.adoptNow());
-    this.machineAdopted = next.catch((e) => log.warn("accounts", "a machine login was not taken up", { error: (e as Error).message }));
-    return this.machineAdopted;
-  }
-
   /// The models a check of a profile on the machine's login found, enabled beside those it has.
   private enableFound(id: string, check: ProfileCheck) {
     const found = check.state === "ok" ? (check.models ?? []) : [];
@@ -511,26 +783,6 @@ export class Accounts {
       const models: string[] = Array.isArray(made.models) ? made.models : [];
       made.models = [...models, ...found.filter((m) => !models.includes(m))];
     });
-  }
-
-  private async adoptNow() {
-    const lang = stationLang();
-    for (const login of this.machine!.get()) {
-      if (!login.loggedIn || !login.usable) continue;
-      // One on the machine's login with no model yet (its check could not list them, offline say) is checked again.
-      const id = `machine-${login.runtime}`;
-      const own = this.profile(id);
-      if (own ? own.models.length > 0 : this.profiles().some((p) => p.runtimes.includes(login.runtime))) continue;
-      try {
-        if (!own) this.saveMachineProfile(login, "station", lang);
-        await this.check(id, lang);
-        await this.refreshQuota(id);
-      } catch (e) {
-        // Another check (the one after start, say) enabled its models meanwhile: what this one found is that one's.
-        if (e instanceof Refusal && e.status === 409) continue;
-        log.warn("accounts", "the machine's login was not taken up", { runtime: login.runtime, error: (e as Error).message });
-      }
-    }
   }
 
   // ── sign-ins ──
@@ -645,6 +897,7 @@ export class Accounts {
   async check(id: string, lang: Lang = stationLang()): Promise<ProfileCheck> {
     const profile = this.profile(id);
     if (!profile) throw new Refusal(404, `unknown profile ${id}`);
+    if (!this.inUse(profile)) throw new Refusal(409, tr(lang, "station.source.machineOff"));
     const kind = accessKind(profile);
     if (borrowed(profile) && kind === "subscription" && this.deps.shared) return this.checkBorrowed(profile, lang);
     const check = await this.checkFn(
@@ -675,7 +928,7 @@ export class Accounts {
     const now = this.profile(id);
     if (!now || fingerprint(now) !== fingerprint(profile)) throw new Refusal(409, "Profile 已修改，请重新检查");
     this.keepCheck(id, check);
-    if (this.machineAdopted !== null && isMachine(now)) this.enableFound(id, check);
+    if (isMachine(now)) this.enableFound(id, check);
     // One never asked yet (just made, however): its allowance now, not at the next round.
     if (check.state === "ok" && !this.quotas.has(id)) this.background.spawn(() => this.refreshQuota(id));
     return check;
@@ -732,7 +985,7 @@ export class Accounts {
       await this.checkBorrowed(profile, stationLang()).catch(() => {});
       return this.quotas.get(id) ?? null;
     }
-    if (!this.quotaFn) return this.quotas.get(id) ?? null;
+    if (!this.quotaFn || !this.inUse(profile)) return this.quotas.get(id) ?? null;
     const read = { ...(await this.quotaFn(profile)), checkedAt: this.background.now() };
     this.quotas.set(id, read);
     this.deps.store.setProfileQuota(id, read);
@@ -745,6 +998,7 @@ export class Accounts {
     if (!this.quotaFn) return;
     const now = this.background.now();
     for (const p of this.profiles()) {
+      if (!this.inUse(p)) continue;
       const q = this.quotas.get(p.id);
       const fresh = q !== undefined && now - q.checkedAt < QUOTA_EVERY_MS - 1000;
       if (fresh && !all) continue;
@@ -786,6 +1040,7 @@ export class Accounts {
   decisionModels(): { id: string; name: string; profiles: string[] }[] {
     const models = new Map<string, string[]>();
     for (const profile of this.profiles()) {
+      if (!this.inUse(profile)) continue;
       const health = this.deps.hub?.accounts.healthOf(profile.id) ?? this.health(profile.id);
       if (!usable(health, this.background.clock.currentTimeMillisUnsafe())) continue;
       const capability: Capability | undefined = health.check?.decision;
@@ -832,7 +1087,7 @@ export class Accounts {
   /// POST /automatic-decisions/refresh: every profile checked again (four at a time).
   async refreshDecisionModels(viewer: Viewer, lang: Lang = stationLang()) {
     if (!manages(viewer)) throw new Refusal(403, "只有 workspace 管理员能刷新决策模型");
-    const ids = this.profiles().map((p) => p.id);
+    const ids = this.profiles().filter((p) => this.inUse(p)).map((p) => p.id);
     const errors: unknown[] = [];
     let next = 0;
     const worker = async () => {

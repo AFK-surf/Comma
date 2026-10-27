@@ -1,3 +1,5 @@
+import { realMainClock, type MainClock } from "../../clock";
+
 /** Main-owned observation of supported meeting pages; no page gets a native bridge. */
 export interface BrowserMeetingPage {
   id: string;
@@ -49,12 +51,18 @@ export const googleMeetJoinedSource = `(() => {
  * a full per-tab RPC scan. The visible page gets one slot; others rotate fairly.
  */
 export class BrowserMeetingProbe {
+  readonly #clock: MainClock;
   #cursor = 0;
   readonly #observed = new Map<string, BrowserMeeting>();
   readonly #pending = new WeakMap<
     BrowserMeetingPage["contents"],
     { room: string | undefined; result: Promise<unknown> }
   >();
+
+  /** `clock`: Main's clock, which times the 750ms wait. */
+  constructor({ clock = realMainClock }: { clock?: MainClock } = {}) {
+    this.#clock = clock;
+  }
 
   async read(pages: readonly BrowserMeetingPage[]): Promise<BrowserMeeting[]> {
     const candidates = pages.filter(
@@ -89,12 +97,12 @@ export class BrowserMeetingProbe {
           this.#pending.set(page.contents, pending);
           void pending.result.finally(() => this.#pending.delete(page.contents));
         }
-        let timer: ReturnType<typeof setTimeout> | undefined;
+        let cancelTimer: (() => void) | undefined;
         try {
           const joined = await Promise.race([
             pending.result,
             new Promise<false>((resolve) => {
-              timer = setTimeout(() => resolve(false), 750);
+              cancelTimer = this.#clock.setTimer(750, () => resolve(false));
             }),
           ]);
           const processId = page.contents.isDestroyed()
@@ -115,7 +123,7 @@ export class BrowserMeetingProbe {
             });
           } else this.#observed.delete(page.id);
         } finally {
-          if (timer) clearTimeout(timer);
+          cancelTimer?.();
         }
       })
     );

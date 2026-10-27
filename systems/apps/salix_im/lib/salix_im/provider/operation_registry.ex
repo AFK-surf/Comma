@@ -242,7 +242,8 @@ defmodule SalixIM.Provider.OperationRegistry do
         "channel" =>
           "Required Slack channel ID, for example C123. Use source context, user instruction, or slack.list_channels to choose it.",
         "text" =>
-          "Required standard Markdown. Preserve the intended document structure. Use <@USER_ID> to address a resolved Slack user and <#CHANNEL_ID> to refer to a resolved Slack channel; plain @name text is not a mention. Lead with the conclusion and let the provider adapter own native presentation."
+          "Required standard Markdown. Preserve the intended document structure. Use <@USER_ID> to address a resolved Slack user and <#CHANNEL_ID> to refer to a resolved Slack channel; plain @name text is not a mention. Lead with the conclusion and let the provider adapter own native presentation.",
+        "question" => SalixIM.QuestionCard.parameter()
       }
     },
     %{
@@ -260,7 +261,8 @@ defmodule SalixIM.Provider.OperationRegistry do
         "text" =>
           "Required standard Markdown. Preserve the intended document structure. Use <@USER_ID> to address a resolved Slack user and <#CHANNEL_ID> to refer to a resolved Slack channel; plain @name text is not a mention. Lead with the conclusion and let the provider adapter own native presentation.",
         "thread_ts" =>
-          "Required original source thread timestamp (or source message_ts for a top-level request). For Task results use task_reply_source.thread_ts."
+          "Required original source thread timestamp (or source message_ts for a top-level request). For Task results use task_reply_source.thread_ts.",
+        "question" => SalixIM.QuestionCard.parameter()
       }
     },
     %{
@@ -777,7 +779,8 @@ defmodule SalixIM.Provider.OperationRegistry do
         "mentions" =>
           "Optional list of {user_id, name} entries. Resolve named people with list_chat_members or directory tools before sending.",
         "mention_all" =>
-          "Optional boolean. Prepends an @all tag; the bot must be allowed to @all by the target chat's settings."
+          "Optional boolean. Prepends an @all tag; the bot must be allowed to @all by the target chat's settings.",
+        "question" => SalixIM.QuestionCard.parameter()
       }
     },
     %{
@@ -798,7 +801,8 @@ defmodule SalixIM.Provider.OperationRegistry do
         "chat_type" => "Source chat type (group or p2p), used for the safe thread default.",
         "thread_id" => "Existing source thread ID when replying inside a thread.",
         "mentions" => "Optional list of {user_id, name} entries to mention in the reply.",
-        "mention_all" => "Optional boolean to mention all members when the chat permits it."
+        "mention_all" => "Optional boolean to mention all members when the chat permits it.",
+        "question" => SalixIM.QuestionCard.parameter()
       }
     },
     %{
@@ -1444,12 +1448,15 @@ defmodule SalixIM.Provider.OperationRegistry do
   ]
 
   @feishu_account_param "Optional signed-in Feishu account (alias or open_id from feishu.list_accounts) to read as that person instead of as the bot."
-  @feishu_meeting_account_param "Optional signed-in Feishu account (alias or open_id from feishu.list_accounts). Omit to use every signed-in account."
+  @feishu_meeting_account_param "Optional: app for the app's own identity, or a signed-in Feishu account (alias or open_id from feishu.list_accounts). Omit to use the app and then every signed-in account."
+
+  @feishu_accounts_from_param "Optional: the accounts_from of the result before. A call reads as at most 10 identities; more_accounts names where the next call starts."
 
   # Reads that can run as a signed-in person when the request names an
   # `account` (`SalixIM.Provider.Feishu.Meetings.as_account/3`).
   @feishu_account_apis ~w(feishu.fetch_doc feishu.list_doc_comments feishu.fetch_doc_media
-                          feishu.get_minute feishu.list_minutes feishu.fetch_minute_media)
+                          feishu.get_minute feishu.list_minutes feishu.fetch_minute_media
+                          feishu.list_wiki_spaces feishu.list_wiki_nodes)
 
   @feishu_document_operations Enum.map(@feishu_document_operations, fn operation ->
                                 if operation["name"] in @feishu_account_apis,
@@ -1473,28 +1480,57 @@ defmodule SalixIM.Provider.OperationRegistry do
                                  else: operation
                              end)
 
-  # Meetings as a person who signed in for the Group
-  # (`SalixIM.Provider.Feishu.Meetings`): Feishu shows a meeting, its notes
-  # and its recording only to people.
+  # Discovery and meetings, as the app or a person who signed in for the
+  # Group (`SalixIM.Provider.Feishu.Meetings`).
   @feishu_meeting_operations [
     %{
       "name" => "feishu.list_accounts",
       "method" => "OAuth Bindings of provider feishu",
       "safety" => "read",
       "description" =>
-        "List the Feishu people who signed in for this Agent Swarm: alias, open_id, name and status. The bot reads meetings, meeting notes, recordings and documents as one of them.",
+        "List the Feishu people who signed in for this Agent Swarm: alias, open_id, name, status, and account (what to pass as account to read as them). The bot reads meetings, meeting notes, recordings and documents as one of them.",
       "required_params" => [],
       "parameters" => %{}
+    },
+    %{
+      "name" => "feishu.search_docs",
+      "method" => "POST /search/v2/doc_wiki/search",
+      "safety" => "read",
+      "description" =>
+        "Search Feishu documents and wiki pages by keyword (title and content), as the app and as the signed-in accounts: each hit with title, type, url, token, owner and the account that found it. A person finds what they may open, so search before asking anyone for a link. Read a hit with feishu.fetch_doc (docx and wiki pages) passing its url and the same account. next_pages names a page_token per account; pass it with that account.",
+      "required_params" => ["query"],
+      "parameters" => %{
+        "query" => "Keyword, at most 30 characters.",
+        "account" => @feishu_meeting_account_param,
+        "accounts_from" => @feishu_accounts_from_param,
+        "page_size" => "Optional, at most 20.",
+        "page_token" => "Optional page_token from next_pages, with its account."
+      }
+    },
+    %{
+      "name" => "feishu.list_drive_files",
+      "method" => "GET /drive/v1/files",
+      "safety" => "read",
+      "description" =>
+        "List one folder of a Feishu cloud space, as the app and as the signed-in accounts: name, type, token and url of each file and folder, and the account it belongs to. Without folder, the root of each identity's own space. Open a folder by passing its token as folder with the same account; read a docx with feishu.fetch_doc.",
+      "required_params" => [],
+      "parameters" => %{
+        "folder" => "Optional folder token; omit for the root of the space.",
+        "account" => @feishu_meeting_account_param,
+        "accounts_from" => @feishu_accounts_from_param,
+        "page_token" => "Optional page_token from next_pages, with its account."
+      }
     },
     %{
       "name" => "feishu.search_meetings",
       "method" => "POST /vc/v1/meetings/search",
       "safety" => "read",
       "description" =>
-        "Search finished Feishu meetings, newest first, as the signed-in accounts: each meeting the account took part in or can see, with meeting id, topic and times, and the account that found it. Pass at least one filter. For a recurring meeting such as a daily stand-up, search its topic with start and end. next_pages names a page_token per account; pass it with that account.",
+        "Search finished Feishu meetings, newest first, as the app and as the signed-in accounts: each meeting the identity took part in or can see, with meeting id, topic and times, and the account that found it. Pass at least one filter. For a recurring meeting such as a daily stand-up, search its topic with start and end. next_pages names a page_token per account; pass it with that account.",
       "required_params" => [],
       "parameters" => %{
         "account" => @feishu_meeting_account_param,
+        "accounts_from" => @feishu_accounts_from_param,
         "query" => "Optional keyword or 9-digit meeting number, at most 50 characters.",
         "organizer_ids" => "Optional list of organizer open_ids (any of them).",
         "participant_ids" => "Optional list of participant open_ids (any of them).",
@@ -1509,12 +1545,13 @@ defmodule SalixIM.Provider.OperationRegistry do
       "method" => "GET /vc/v1/meetings/:meeting_id + GET /vc/v1/meetings/:meeting_id/recording",
       "safety" => "read",
       "description" =>
-        "Read one finished Feishu meeting as a signed-in account: topic, times, host and participants, its note_id (AI meeting notes) and the minute_token of its recording. Read the notes with feishu.get_note and the recording with feishu.get_minute, passing the same account.",
+        "Read one finished Feishu meeting as the app or a signed-in account (each in turn until one may see it): topic, times, host and participants, its note_id (AI meeting notes) and the minute_token of its recording. Read the notes with feishu.get_note and the recording with feishu.get_minute, passing the same account.",
       "required_params" => ["meeting_id"],
       "parameters" => %{
         "meeting_id" =>
           "The meeting id from feishu.search_meetings (a long number, not the 9-digit meeting number).",
-        "account" => @feishu_meeting_account_param
+        "account" => @feishu_meeting_account_param,
+        "accounts_from" => @feishu_accounts_from_param
       }
     },
     %{
@@ -1522,14 +1559,15 @@ defmodule SalixIM.Provider.OperationRegistry do
       "method" => "GET /vc/v1/notes/:note_id + GET /vc/v1/notes/:note_id/unified_note_transcript",
       "safety" => "read",
       "description" =>
-        "Read the AI meeting notes of a Feishu meeting as a signed-in account: note_doc_token (the notes document), verbatim_doc_token (the transcript document) and shared_doc_tokens. Read each document with feishu.fetch_doc, passing its token and the same account. A unified note (display_type unified) has no transcript document: pass include_transcript=true to get its transcript.",
+        "Read the AI meeting notes of a Feishu meeting as the app or a signed-in account: note_doc_token (the notes document), verbatim_doc_token (the transcript document) and shared_doc_tokens. Read each document with feishu.fetch_doc, passing its token and the same account. A unified note (display_type unified) has no transcript document: pass include_transcript=true to get its transcript, which Feishu gives only to a signed-in account.",
       "required_params" => ["note_id"],
       "parameters" => %{
         "note_id" => "The note_id from feishu.get_meeting.",
         "include_transcript" =>
           "Optional true: for a unified note, read its whole transcript as Markdown (a long one is put in your workspace).",
         "locale" => "Optional transcript language, such as zh_cn (default) or en_us.",
-        "account" => @feishu_meeting_account_param
+        "account" => @feishu_meeting_account_param,
+        "accounts_from" => @feishu_accounts_from_param
       }
     }
   ]

@@ -276,6 +276,14 @@ export class Store {
     return (this.#topics.get(topicKey(topic))?.subscribers.length ?? 0) > 0;
   }
 
+  /// Evicts now every topic within its eviction grace (no subscriber, no watcher): its source stops, and the next
+  /// subscriber starts it again. What the topics showed is no longer true for anyone (the account changed), so none is
+  /// kept for a subscriber who may come back, nor followed meanwhile.
+  evictIdle(): void {
+    for (const entry of this.#topics.values())
+      if (entry.idle !== null) this.#evict(entry.topic, entry.idle);
+  }
+
   /// Topics live now (subscribed, watched, or within their eviction grace).
   liveTopics(): Topic[] {
     return [...this.#topics.values()].map((e) => e.topic);

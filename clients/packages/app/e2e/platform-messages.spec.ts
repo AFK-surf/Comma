@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { installBrowserTestSession } from "../../../e2e/helpers/browser-auth";
+import { waitForSettledMotion } from "../../../e2e/helpers/motion";
 import { startChatSmokeStub } from "../../../e2e/p0/chat-stub";
 
 test.use({ locale: "en-US", viewport: { width: 1280, height: 900 } });
@@ -177,6 +178,9 @@ test("Home retains platform colors, hover source icons, and reply relationships 
       .click();
     await page.getByRole("button", { name: "Appearance", exact: true }).click();
     await page.getByRole("button", { name: /Select theme/ }).click();
+    // The list enters with motion and aligns its chosen row to the button; a
+    // click during that lands on whatever row is passing under the pointer.
+    await waitForSettledMotion(page.locator('[data-slot="dropdown-popover"]'));
     await page.getByRole("option", { name: "Dark", exact: true }).click();
     await expect(page.locator("html")).toHaveAttribute("data-theme", "Dark mode");
     await page.keyboard.press("Escape");

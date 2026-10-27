@@ -72,12 +72,13 @@ test(
       const editor = conversation.getByRole("textbox", { name: "AI prompt" });
 
       await editor.fill("Preserve this draft");
-      await app.evaluate(({ clipboard, nativeImage }) => {
+      await app.evaluate(async ({ clipboard, ClipboardItem, nativeImage }) => {
         const image = nativeImage.createFromBitmap(Buffer.from([0, 0, 255, 255]), {
           width: 1,
           height: 1,
         });
-        clipboard.writeImage(image);
+        const png = new Blob([new Uint8Array(image.toPNG())], { type: "image/png" });
+        await clipboard.write([new ClipboardItem({ "image/png": png })]);
       });
       await editor.click({ button: "right" });
       await appWindow.getByRole("menuitem", { name: "Paste", exact: true }).click();

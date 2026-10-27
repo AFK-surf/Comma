@@ -3,6 +3,13 @@ package surf.comma.android.chat.live
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.ColorFilter
+import android.graphics.Paint
+import android.graphics.PixelFormat
+import android.graphics.drawable.Drawable
+import android.os.Handler
+import android.os.Looper
+import android.view.PixelCopy
 import androidx.activity.ComponentActivity
 import androidx.core.graphics.Insets
 import androidx.core.view.ViewCompat
@@ -21,6 +28,7 @@ import surf.comma.android.auth.AuthGraph
 import surf.comma.android.chat.render.ChatTimelineView
 import surf.comma.android.ui.composer.ComposerView
 import surf.comma.android.ui.widget.BackdropBlurLayout
+import kotlin.math.abs
 
 /** Native canvas checks the same band's fallback and clipping, without depending on a GPU's blur kernel. */
 @RunWith(RobolectricTestRunner::class)
@@ -87,6 +95,80 @@ class ChatBottomBackdropTest {
             } finally {
                 screen.release()
             }
+        }
+    }
+
+    /**
+     * The last reply rests in the ramp above the composer. The frost over it comes and goes with how far the
+     * content is under the composer, never at once at the first or the last pixel. Drawn by the hardware
+     * renderer, so the blur is real.
+     */
+    @Test fun `the frost above the composer comes in with the content that goes under it`() {
+        Robolectric.buildActivity(ComponentActivity::class.java).use { controller ->
+            val activity = controller.get()
+            activity.setTheme(R.style.Theme_Chat)
+            controller.setup()
+            val screen = LiveChatScreen(activity, ChatGraph.conversations(activity), AuthGraph.get(activity).state,
+                retrySession = {}, onOpenAccount = {}, router = true)
+            activity.setContentView(screen.root)
+            ShadowLooper.idleMainLooper()
+            try {
+                val body = (0 until screen.root.childCount).map(screen.root::getChildAt).filterIsInstance<BackdropBlurLayout>().single()
+                val timeline = activity.findViewById<ChatTimelineView>(R.id.conversation_timeline)
+                val composer = (0 until screen.root.childCount).map(screen.root::getChildAt).filterIsInstance<ComposerView>().single()
+                val top = (0 until screen.root.childCount).map(screen.root::getChildAt).filterIsInstance<HomeTopBar>().single()
+                // Lines of text, as far as the blur and the tint can tell: crisp, they keep their full contrast.
+                timeline.background = Stripes()
+                ShadowLooper.idleMainLooper()
+                val location = IntArray(2)
+                body.getLocationInWindow(location)
+                val y = location[1] + (composer.capsuleTop - body.y).toInt() - (30 * activity.resources.displayMetrics.density).toInt()
+                val ramp = top.frostBottom - top.frostSolid
+                val contrasts = ((0 until ramp step 12) + ramp).map { overflow ->
+                    timeline.onBottomOverflowChanged?.invoke(overflow)
+                    val shot = screenshot(activity)
+                    val greens = (y until y + 2 * Stripes.LINE_PX).map { Color.green(shot.getPixel(shot.width / 2, it)) }
+                    shot.recycle()
+                    greens.max() - greens.min()
+                }
+                assertEquals("the resting reply is not frosted: $contrasts", 255, contrasts.first())
+                contrasts.zipWithNext().forEach { (before, after) ->
+                    assertTrue("the frost changes a little with each step under the composer: $contrasts", abs(after - before) <= 64)
+                }
+                assertTrue("all the way under, it is frosted: $contrasts", contrasts.last() < 64)
+            } finally {
+                screen.release()
+            }
+        }
+    }
+
+    private fun screenshot(activity: ComponentActivity): Bitmap {
+        val decor = activity.window.decorView
+        val bitmap = Bitmap.createBitmap(decor.width, decor.height, Bitmap.Config.ARGB_8888)
+        var result = -1
+        PixelCopy.request(activity.window, bitmap, { result = it }, Handler(Looper.getMainLooper()))
+        ShadowLooper.idleMainLooper()
+        assertEquals(PixelCopy.SUCCESS, result)
+        return bitmap
+    }
+
+    private class Stripes : Drawable() {
+        private val paint = Paint()
+
+        override fun draw(canvas: Canvas) {
+            for (line in 0 until bounds.height() / LINE_PX) {
+                paint.color = if (line % 2 == 0) Color.BLACK else Color.WHITE
+                canvas.drawRect(0f, (line * LINE_PX).toFloat(), bounds.width().toFloat(), ((line + 1) * LINE_PX).toFloat(), paint)
+            }
+        }
+
+        override fun setAlpha(alpha: Int) = Unit
+        override fun setColorFilter(colorFilter: ColorFilter?) = Unit
+        @Deprecated("Deprecated in Java")
+        override fun getOpacity() = PixelFormat.OPAQUE
+
+        companion object {
+            const val LINE_PX = 12
         }
     }
 }

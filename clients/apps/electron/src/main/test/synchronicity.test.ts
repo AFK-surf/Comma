@@ -695,7 +695,11 @@ describe("SynchronicityNodeService", () => {
 
       const starting = service.start();
       await entered.promise;
-      await vi.advanceTimersByTimeAsync(20_000);
+      // A start slower than synch's own bound is still starting, not failed.
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(commandSignal?.aborted).toBe(false);
+      expect(await service.state()).toMatchObject({ status: "starting" });
+      await vi.advanceTimersByTimeAsync(10_000);
       await starting;
 
       expect(commandSignal?.aborted).toBe(true);
@@ -1172,6 +1176,23 @@ describe("SynchronicityNodeService space management", () => {
     });
     return { bootstrapTable, commands, control, service, table };
   }
+
+  it("rejects a failed read of a running node instead of reporting it could not start", async () => {
+    let failing = false;
+    const { service } = readyService({
+      spaces: () => {
+        if (failing) throw new Error("control unreachable");
+        return spaces();
+      },
+    });
+    await service.start();
+    expect((await service.state()).status).toBe("ready");
+    failing = true;
+    await expect(service.state()).rejects.toThrow("control unreachable");
+    failing = false;
+    expect((await service.state()).status).toBe("ready");
+    await service.close();
+  });
 
   it("pauses the default source, preserves its binding, and skips queued automatic adoption", async () => {
     let paused = false;

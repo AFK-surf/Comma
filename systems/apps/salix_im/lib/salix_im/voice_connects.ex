@@ -16,6 +16,10 @@ defmodule SalixIM.VoiceConnects do
   holder no longer lists the number never routes a call, and another Group
   may take it over after a short grace period for an in-flight binding.
 
+  The connect also holds the Group's call preferences (`voice_preferences`):
+  the voice the calls speak with and whether calls speak as the Router.
+  `SalixVoice` reads them when a call starts.
+
   Number verification (an SMS code) belongs to the caller of
   `confirm_voice_number/5`; this module takes an already verified number.
   PINs are stored only as salted PBKDF2-SHA256 hashes. `public/1` never
@@ -33,6 +37,8 @@ defmodule SalixIM.VoiceConnects do
   # A reservation whose holder does not list the number yet may belong to a
   # binding that is between its reserve and its connect write.
   @stale_grace_ms 60_000
+  @voice_id ~r/\A[A-Za-z0-9_-]{1,128}\z/
+  @max_voice_text 1_000
   @pbkdf2_iterations 100_000
   @default_pin_max_failures 5
   @default_pin_lockout_seconds 900
@@ -530,6 +536,114 @@ defmodule SalixIM.VoiceConnects do
 
   defp pin_matches?(_hash, _pin), do: false
 
+  # ---- call preferences ----
+
+  @doc """
+  Changes the Group's call preferences and returns `public/1` of the
+  connect, creating the connect once. `changes` holds any of `"voice"`,
+  `"custom_voice"` and `"router_calls"`, merged over the stored preferences
+  in one compare-and-swap write: `voice` is nil, `%{"kind" => "preset",
+  "name" => name}` or `%{"kind" => "custom"}`, which speaks with
+  `custom_voice` (`%{"id" => id, "name" => name, "description" => text}`).
+  Which preset names exist, and where a custom voice comes from, are the
+  caller's checks (`Salix.Control.VoiceNumbers`).
+  """
+  def update_voice_preferences(tenant_id, group_id, changes) when is_map(changes) do
+    changes = Map.take(changes, ["voice", "custom_voice", "router_calls"])
+
+    with {:ok, connect} <- ensure_voice_im_connect(tenant_id, group_id) do
+      update_live(group_id, connect["connect_id"], fn rec ->
+        with {:ok, prefs} <- validate_preferences(Map.merge(preferences(rec), changes)),
+             do: Map.put(rec, "voice_preferences", prefs)
+      end)
+      |> case do
+        {:ok, rec} -> {:ok, public(rec)}
+        other -> other
+      end
+    end
+  end
+
+  def update_voice_preferences(_tenant_id, _group_id, _changes),
+    do: {:error, {:bad_request, "preferences must be an object"}}
+
+  @doc """
+  The call preferences of the connect `connect_id` of `group_id`, defaults
+  when it has none or cannot be read: a call never fails on them.
+  """
+  def voice_preferences(group_id, connect_id) do
+    case CasRecord.get(Keys.ctl_im_connect(group_id, trim(connect_id))) do
+      {:ok, rec} when is_map(rec) ->
+        if voice_record?(rec, group_id, trim(connect_id)),
+          do: preferences(rec),
+          else: default_preferences()
+
+      _ ->
+        default_preferences()
+    end
+  end
+
+  defp default_preferences, do: %{"voice" => nil, "custom_voice" => nil, "router_calls" => false}
+
+  defp preferences(rec) do
+    case validate_preferences(rec["voice_preferences"] || %{}) do
+      {:ok, prefs} -> prefs
+      _ -> default_preferences()
+    end
+  end
+
+  defp validate_preferences(prefs) when is_map(prefs) do
+    with {:ok, router_calls} <- router_calls(Map.get(prefs, "router_calls", false)),
+         {:ok, custom} <- validate_custom(prefs["custom_voice"]),
+         {:ok, voice} <- validate_voice(prefs["voice"], custom) do
+      {:ok, %{"voice" => voice, "custom_voice" => custom, "router_calls" => router_calls}}
+    end
+  end
+
+  defp validate_preferences(_prefs), do: {:error, {:bad_request, "preferences must be an object"}}
+
+  defp router_calls(value) when is_boolean(value), do: {:ok, value}
+  defp router_calls(_value), do: {:error, {:bad_request, "router_calls must be a boolean"}}
+
+  defp validate_voice(nil, _custom), do: {:ok, nil}
+
+  defp validate_voice(%{"kind" => "preset", "name" => name}, _custom) when is_binary(name) do
+    if Regex.match?(@voice_id, name),
+      do: {:ok, %{"kind" => "preset", "name" => name}},
+      else: {:error, {:bad_request, "invalid voice name"}}
+  end
+
+  defp validate_voice(%{"kind" => "custom"}, %{}), do: {:ok, %{"kind" => "custom"}}
+
+  defp validate_voice(%{"kind" => "custom"}, nil),
+    do: {:error, {:bad_request, "no custom voice was created"}}
+
+  defp validate_voice(_voice, _custom),
+    do: {:error, {:bad_request, "voice must be a preset or the custom voice"}}
+
+  defp validate_custom(nil), do: {:ok, nil}
+
+  defp validate_custom(%{"id" => id} = voice) when is_binary(id) do
+    name = voice_text(voice["name"])
+    description = voice_text(voice["description"])
+
+    cond do
+      not Regex.match?(@voice_id, id) -> {:error, {:bad_request, "invalid voice id"}}
+      name == :error or description == :error -> {:error, {:bad_request, "voice text too long"}}
+      true -> {:ok, %{"id" => id, "name" => name, "description" => description}}
+    end
+  end
+
+  defp validate_custom(_voice), do: {:error, {:bad_request, "invalid custom voice"}}
+
+  defp voice_text(nil), do: ""
+
+  defp voice_text(text) when is_binary(text) do
+    text = String.trim(text)
+    if byte_size(text) <= @max_voice_text, do: text, else: :error
+  end
+
+  defp voice_text(_text), do: :error
+
   # ---- projection ----
 
   @doc "Credential-free projection of a voice connect record."
@@ -538,6 +652,7 @@ defmodule SalixIM.VoiceConnects do
     |> Map.take(~w(connect_id tenant_id group_id provider status last_error connected_at
       disabled_at created_at updated_at))
     |> Map.put("numbers", Enum.map(numbers(rec), &number_public/1))
+    |> Map.put("preferences", preferences(rec))
   end
 
   defp number_public(entry) do

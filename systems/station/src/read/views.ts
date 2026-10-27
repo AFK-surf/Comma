@@ -428,6 +428,9 @@ export function chats(station: Store, viewer: Viewer, archived: boolean): Json[]
       people: people_,
     };
     row.archiveReminderDismissed = kept.has(t.thread.id);
+    // Its Task runs on another station (tasks.ts moveTo): there, and what its agents here last needed is not current.
+    const elsewhere = store.runsElsewhere(s, t.thread.id);
+    if (elsewhere !== null) row.runsOn = elsewhere;
     // The decision looked at it (after its agent said all done) and found nothing left to do; with the review on, only
     // such a chat is shown as one to archive (`archiveReviewed`), not every one whose agents are done.
     row.archiveRecommended = !archived && store.archiveSuggested(s, t.thread.id);
@@ -449,7 +452,7 @@ export function chats(station: Store, viewer: Viewer, archived: boolean): Json[]
         row.decision = decision;
       }
       row.card = card;
-    } else if (!archived) {
+    } else if (!archived && elsewhere === null) {
       // With no card waiting: what an agent needs a person for all the same, the message that asks.
       const need = needView(api, t.thread.id, agents, dismissed, names);
       if (need !== null) row.need = need;
@@ -561,15 +564,23 @@ function entryJson(e: EntryRow): Json {
   if (e.options !== undefined) v.options = e.options;
   if (e.card !== undefined) v.card = e.card;
   v.at = e.at;
+  if (e.milestones !== undefined) v.milestones = e.milestones;
   return v;
 }
 
-/// Entries with their authors' names.
+/// Entries with their authors' names; `request` on what Salix's Router wrote, a request made elsewhere; `answers` on an
+/// agent's post, the message it answers (the last its session was handed before it).
 function entryViews(api: Api, thread: number, entries: EntryRow[]): Json[] {
   const names = authorNames(api, thread);
+  const requests = entries.length > 0 ? store.routerRequests(api.store, thread) : new Set<number>();
+  const posts = entries.filter((e) => e.kind === "message" && e.authorKind === "agent");
+  const answers = posts.length > 0 ? store.answered(api.store, thread, posts) : new Map<number, number>();
   return entries.map((e) => {
     const v = entryJson(e);
     v.authorName = names(e.authorKind, e.author);
+    if (requests.has(e.n)) v.request = true;
+    const answer = answers.get(e.n);
+    if (answer !== undefined) v.answers = answer;
     declaredView(v, e.declared);
     // Its card, a post's options from before cards as an options card (EntryRow::card).
     const card = e.card !== undefined ? e.card : e.options !== undefined ? store.optionsCard(e.options) : undefined;

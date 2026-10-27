@@ -718,6 +718,10 @@ function getGeneratedBridgeMember(bridge: unknown, namespace: string, method: st
 
 function sampleCommandInput(id: string) {
   switch (id) {
+    case "voiceCall.microphone":
+      return new Uint8Array(960);
+    case "voiceCall.played":
+      return { name: "m1" };
     case "onboarding.presentWindow":
       return { session: TEST_SESSION_PRODUCT_LEASE };
     case "onboarding.closeWindow":
@@ -788,6 +792,11 @@ function sampleCommandInput(id: string) {
       return { workspaceId: "workspace-1" };
     case "connectorRuntime.setScope":
       return { scope: "", workspaceId: "workspace-1" };
+    case "localStation.setAccountSource":
+      return { runtime: "codex", source: "local", workspaceId: "workspace-1" };
+    case "localStation.signIn":
+    case "localStation.stopSignIn":
+      return { runtime: "codex", workspaceId: "workspace-1" };
     case "notch.update":
       return { title: "Focus" };
     case "notch.preview":
@@ -1028,6 +1037,14 @@ function sampleCommandInput(id: string) {
       return { url: "https://media.example/image.png" };
     case "peers.connect":
       return { target: { windowId: "win_peer" } };
+    case "macApps.setEnabled":
+      return { app: "calendar", enabled: true };
+    case "macApps.openPrivacySettings":
+      return { requirement: "calendars" };
+    case "macApps.openItem":
+      return { app: "reminders", title: "Send the weekly report" };
+    case "macApps.calendarEvents":
+      return { from: "2026-10-01T00:00:00Z", to: "2026-10-08T00:00:00Z" };
     case "windows.create":
       return { route: "/inbox" };
     case "windows.focus":

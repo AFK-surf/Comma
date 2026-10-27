@@ -20,7 +20,7 @@ struct WorkerAvatar: View {
     }
 
     @ViewBuilder private var mark: some View {
-        let glyph = size * 0.7
+        let glyph = size * 0.85
         if vendor == "comma" {
             CommaMark(size: glyph)
         } else if let vendor, Self.logos.contains(vendor) {

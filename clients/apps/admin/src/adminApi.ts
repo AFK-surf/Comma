@@ -62,6 +62,7 @@ export type AdminWorkspaceResult = typeof S.AdminWorkspaceResult.Type;
 export type AdminWorkspaceVm = typeof S.AdminWorkspaceVm.Type;
 export type AdminWorkspaceBilling = typeof S.AdminWorkspaceBilling.Type;
 export type AdminWorkspaceSignalNumber = typeof S.AdminWorkspaceSignalNumber.Type;
+export type AdminWorkspaceSandboxLimit = typeof S.AdminWorkspaceSandboxLimit.Type;
 export type AdminWorkspaceAgentRole = typeof S.AdminWorkspaceAgentRole.Type;
 export type AdminWorkspaceAgentModel = typeof S.AdminWorkspaceAgentModel.Type;
 export type AdminWorkspaceAgentModelChange =
@@ -244,6 +245,12 @@ export interface AdminApiShape {
     userId: string,
     input: AdminCommandMetadata & { number: string }
   ): Request<AdminWorkspaceSignalNumber>;
+  getUserWorkspaceSandboxLimit(userId: string): Request<AdminWorkspaceSandboxLimit>;
+  /** Sets the Workspace's own coding sandbox limit; null uses the deployment default. */
+  updateUserWorkspaceSandboxLimit(
+    userId: string,
+    input: AdminCommandMetadata & { maxSandboxes: number | null }
+  ): Request<AdminWorkspaceSandboxLimit>;
   getUserWorkspaceAgentModels(id: string): Request<AdminWorkspaceAgentModels>;
   issueUserWorkspaceCredits(
     userId: string,
@@ -550,6 +557,20 @@ export const AdminApiLive = Layer.effect(
           S.AdminWorkspaceSignalNumber,
           {
             body: { ...commandBody(input), number: input.number },
+            method: "PUT",
+          }
+        ),
+      getUserWorkspaceSandboxLimit: (userId) =>
+        lenient(
+          `${user(userId)}/workspaces/sandbox-limit`,
+          S.AdminWorkspaceSandboxLimit
+        ),
+      updateUserWorkspaceSandboxLimit: (userId, input) =>
+        lenient(
+          `${user(userId)}/workspaces/sandbox-limit`,
+          S.AdminWorkspaceSandboxLimit,
+          {
+            body: { ...commandBody(input), max_sandboxes: input.maxSandboxes },
             method: "PUT",
           }
         ),

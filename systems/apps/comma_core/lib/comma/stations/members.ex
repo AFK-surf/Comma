@@ -3,7 +3,7 @@ defmodule Comma.Stations.Members do
   `SalixStore.StationMembers` for Comma: a Comma Workspace is a Salix Group,
   and the user's role in it is their active Membership role in the active
   Workspace. Owners and admins manage the Group's stations, as in
-  `Comma.Stations`. Only an active Workspace has stations: those of a
+  `Comma.Stations`; a viewer is read-only. Only an active Workspace has stations: those of a
   suspended or deleted one are refused as removed ones are.
   """
 
@@ -15,6 +15,46 @@ defmodule Comma.Stations.Members do
   alias Comma.Repo
 
   @managers ~w(owner admin)
+  @read_only ~w(viewer)
+
+  @impl true
+  def requester(
+        _tenant,
+        group,
+        %{"provider" => "telegram", "managed_by" => "comma_product", "connect_id" => connect},
+        subject
+      ) do
+    case Comma.TelegramLinks.resolve_sender(subject) do
+      {:ok,
+       %{link: %{connect_id: ^connect}, user: user, workspace: %{"default_group_id" => ^group}}} ->
+        {:ok, user["id"]}
+
+      _ ->
+        :none
+    end
+  end
+
+  def requester(
+        _tenant,
+        group,
+        %{
+          "provider" => "wechat",
+          "managed_by" => "comma_product",
+          "connect_id" => connect,
+          "wechat_id" => subject,
+          "owner_user_id" => owner
+        },
+        subject
+      ) do
+    with {:ok, workspace} <- Comma.Workspaces.authorize_group(%{"id" => owner}, %{}, group),
+         {:ok, %{current: ^connect}} <- Comma.WeChatLinks.references(workspace["id"]) do
+      {:ok, owner}
+    else
+      _ -> :none
+    end
+  end
+
+  def requester(_, _, _, _), do: :none
 
   @impl true
   def role(tenant_id, group_id, user_id) do
@@ -36,6 +76,9 @@ defmodule Comma.Stations.Members do
 
   @impl true
   def manager_role?(role), do: role in @managers
+
+  @impl true
+  def read_only_role?(role), do: role in @read_only
 
   @impl true
   def workspace_active?(tenant_id, group_id) do

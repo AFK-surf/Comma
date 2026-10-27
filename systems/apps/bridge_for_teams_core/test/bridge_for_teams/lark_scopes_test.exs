@@ -35,17 +35,33 @@ defmodule BridgeForTeams.LarkScopesTest do
     # the two retrieve scopes.
     documents = ~w(
       docx:document docx:document:readonly docx:document:create docx:document:write_only
+      wiki:wiki wiki:wiki:readonly
       wiki:node:read wiki:space:read wiki:space:retrieve wiki:node:retrieve
       docs:document.comment:read docs:document.comment:create docs:document.comment:write_only
       docs:document.media:download docs:document.media:upload
       docs:permission.member:retrieve docs:permission.member:create
-      docs:permission.member:delete docs:permission.setting:read drive:drive
-      space:document:delete minutes:minutes.basic:read minutes:minutes.artifacts:read
-      minutes:minutes.media:export minutes:minutes.search:read minutes:permission:apply
+      docs:permission.member:delete docs:permission.setting:read
+      drive:drive drive:drive:readonly drive:drive:version drive:drive:version:readonly
+      drive:drive.metadata:readonly drive:drive.search:readonly
+      space:document:delete space:document:retrieve minutes:minutes.basic:read minutes:minutes.artifacts:read
+      minutes:minutes.media:export minutes:minutes.search:read minutes:minutes:readonly
+      minutes:permission:apply search:docs:read
+      vc:meeting.search:read vc:meeting.meetingevent:read vc:note:read vc:record:readonly
     )
 
     assert Enum.sort(LarkScopes.document_scope_ids()) == Enum.sort(documents)
     assert documents -- tenant == []
+
+    # Cloud space and wiki access is granted to both identities.
+    drive_and_wiki = ~w(
+      drive:drive drive:drive:readonly drive:drive:version drive:drive:version:readonly
+      drive:drive.metadata:readonly drive:drive.search:readonly
+      wiki:wiki wiki:wiki:readonly wiki:node:read wiki:node:retrieve
+      wiki:space:read wiki:space:retrieve search:docs:read space:document:retrieve
+    )
+
+    assert drive_and_wiki -- tenant == []
+    assert drive_and_wiki -- user == []
   end
 
   test "the one preset carries the same JSON" do

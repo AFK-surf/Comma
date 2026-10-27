@@ -3,6 +3,10 @@ defmodule SalixMeet.CalendarPreparation do
 
   @block_begin "<!-- comma:meeting-preparation:begin -->"
   @block_end "<!-- comma:meeting-preparation:end -->"
+  # Blocks written before the Cue → Comma rename (#2210) carry these markers.
+  # They are still ours: the next writeback replaces them.
+  @legacy_block_begin "<!-- cue:meeting-preparation:begin -->"
+  @legacy_block_end "<!-- cue:meeting-preparation:end -->"
   @max_report_bytes 16_000
   @max_description_bytes 128_000
 
@@ -41,7 +45,13 @@ defmodule SalixMeet.CalendarPreparation do
   def human_description(_description), do: {:error, :invalid_calendar_description}
 
   defp split(description) do
-    case {:binary.matches(description, @block_begin), :binary.matches(description, @block_end)} do
+    with {:ok, before, after_block} <- split(description, @legacy_block_begin, @legacy_block_end) do
+      split(before <> after_block, @block_begin, @block_end)
+    end
+  end
+
+  defp split(description, block_begin, block_end) do
+    case {:binary.matches(description, block_begin), :binary.matches(description, block_end)} do
       {[], []} ->
         {:ok, description, ""}
 

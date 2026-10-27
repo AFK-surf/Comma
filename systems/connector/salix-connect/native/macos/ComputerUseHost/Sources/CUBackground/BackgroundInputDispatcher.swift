@@ -612,4 +612,17 @@ private let namedKeyCodes: [String: CGKeyCode] = [
     "end": CGKeyCode(kVK_End),
     "pageup": CGKeyCode(kVK_PageUp),
     "pagedown": CGKeyCode(kVK_PageDown),
+    // Punctuation, for shortcuts such as cmd+, (an app's Settings).
+    ",": CGKeyCode(kVK_ANSI_Comma),
+    "comma": CGKeyCode(kVK_ANSI_Comma),
+    ".": CGKeyCode(kVK_ANSI_Period),
+    "/": CGKeyCode(kVK_ANSI_Slash),
+    ";": CGKeyCode(kVK_ANSI_Semicolon),
+    "'": CGKeyCode(kVK_ANSI_Quote),
+    "[": CGKeyCode(kVK_ANSI_LeftBracket),
+    "]": CGKeyCode(kVK_ANSI_RightBracket),
+    "-": CGKeyCode(kVK_ANSI_Minus),
+    "=": CGKeyCode(kVK_ANSI_Equal),
+    "`": CGKeyCode(kVK_ANSI_Grave),
+    "\\": CGKeyCode(kVK_ANSI_Backslash),
 ]

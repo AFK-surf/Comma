@@ -16,7 +16,6 @@ struct TaskSummary: Identifiable, Equatable, Sendable {
     let labels: [String]
     let origin: String?
     let clientPlatform: String?
-    let freshness: String?
     /// When it last changed, epoch milliseconds.
     let updatedAt: Double
     /// The version an archive or unarchive names (the server's `updated_at`).
@@ -26,6 +25,10 @@ struct TaskSummary: Identifiable, Equatable, Sendable {
     let reviewVersion: Int?
     /// Its Loop: set on a Loop Task, while the Loop runs it and after it ended.
     let loop: TaskLoop?
+    /// Where a Task a station hosts runs; nil for any other.
+    let host: TaskHost?
+    /// What the core says this Task cannot take (`archive`, `pin`, `share`): not offered.
+    let unsupported: Set<String>
 
     var isTask: Bool { kind == "agent_task" }
     /// Its Loop still runs it: it never waits for a review to accept.
@@ -45,8 +48,8 @@ struct TaskSummary: Identifiable, Equatable, Sendable {
     init(placeholder id: String, title: String) {
         self.id = id
         groupID = ""; workspaceID = ""; self.title = title; status = ""; bucket = .inProgress; listBucket = .inProgress
-        failed = false; kind = "agent_task"; labels = []; origin = nil; clientPlatform = nil; freshness = nil; updatedAt = 0
-        archiveVersion = nil; archiveAvailability = nil; reviewVersion = nil; loop = nil
+        failed = false; kind = "agent_task"; labels = []; origin = nil; clientPlatform = nil; updatedAt = 0
+        archiveVersion = nil; archiveAvailability = nil; reviewVersion = nil; loop = nil; host = nil; unsupported = []
     }
 
     init?(_ item: NSDictionary) {
@@ -62,7 +65,6 @@ struct TaskSummary: Identifiable, Equatable, Sendable {
         labels = item.strings("labels")
         origin = item.string("origin")
         clientPlatform = item.string("clientPlatform")
-        freshness = item.string("freshness")
         updatedAt = item.double("updatedAt") ?? 0
         archiveVersion = item.int("archiveVersion")
         archiveAvailability = item.object("archiveAvailability").map {
@@ -70,6 +72,8 @@ struct TaskSummary: Identifiable, Equatable, Sendable {
         }
         reviewVersion = item.int("reviewVersion")
         loop = TaskLoop(item.object("loop"))
+        host = item.object("host").map(TaskHost.init)
+        unsupported = Set(item.strings("unsupported"))
         listBucket = bucket
     }
 
@@ -90,7 +94,6 @@ struct TaskSummary: Identifiable, Equatable, Sendable {
         labels = item.strings("labels")
         origin = item.string("origin")
         clientPlatform = item.string("client_platform")
-        freshness = nil
         updatedAt = item.double("updated_at") ?? 0
         archiveVersion = item.int("updated_at")
         archiveAvailability = item.object("archive_availability").map {
@@ -98,6 +101,22 @@ struct TaskSummary: Identifiable, Equatable, Sendable {
         }
         reviewVersion = nil
         loop = TaskLoop(item.object("loop"))
+        host = nil
+        unsupported = []
+    }
+}
+
+/// Where a Task a station hosts runs: its machine as this device knows it.
+struct TaskHost: Equatable, Sendable {
+    /// The machine's name; nil where this device knows none.
+    let machine: String?
+    /// Whether the machine is online; nil where this device knows none.
+    let online: Bool?
+
+    init(_ host: NSDictionary) {
+        let machine = host.object("machine")
+        self.machine = machine?.string("name")
+        online = machine?["online"] as? Bool
     }
 }
 

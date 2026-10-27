@@ -572,6 +572,17 @@ const groupChat = (group: string) => ({
   messages: [],
 });
 
+/** The workspace's Task create as the server keeps it: one Task per request id, or a refusal. */
+function makingTasks(api: ReturnType<typeof setup>["api"], refusal?: string) {
+  const made = new Map<string, string>();
+  api.on("POST", "/v1/comma/workspaces/wsp_1/tasks", (request) => {
+    if (refusal) return json(409, { error: "refused", message: refusal });
+    const id = (request.body as { client_request_id: string }).client_request_id;
+    if (!made.has(id)) made.set(id, `cnv_task_${made.size + 1}`);
+    return json(201, { task_id: made.get(id), group_id: "grp_1" });
+  });
+}
+
 describe("the workspace's chat", () => {
   const workspaces = [
     { group_id: "grp_1", id: "wsp_1", name: "Main", status: "ready" },
@@ -595,6 +606,147 @@ describe("the workspace's chat", () => {
     };
     return { ...t, resolve };
   }
+
+  it("starts a Task in the cloud with its model and answers the Task, posting nothing to the chat", async () => {
+    const t = resolving();
+    makingTasks(t.api);
+    const started = t.client.call("chat.startTask", {
+      workspaceId: "wsp_1",
+      key: "task-key-1",
+      model: { id: "claude-opus-5-5", name: "Claude Opus 5.5" },
+      text: " fix the build ",
+    });
+    await t.time.pass(500);
+    // The Task, for the window to open at once.
+    await expect(started).resolves.toEqual({
+      groupId: "grp_1",
+      conversationId: "cnv_task_1",
+    });
+    expect(
+      t.api
+        .seen("POST", "/v1/comma/workspaces/wsp_1/tasks")
+        .map((request) => request.body)
+    ).toEqual([
+      {
+        client_request_id: "task-key-1",
+        text: "fix the build",
+        model: { id: "claude-opus-5-5" },
+      },
+    ]);
+    expect(
+      t.api
+        .seen("POST", "/v1/comma/groups/*")
+        .filter((request) => request.path.endsWith("/messages"))
+    ).toEqual([]);
+  });
+
+  it("makes a cloud Task once under its key, however often it is asked", async () => {
+    const t = resolving();
+    makingTasks(t.api);
+    const start = () =>
+      t.client.call("chat.startTask", {
+        workspaceId: "wsp_1",
+        key: "task-key-1",
+        model: { id: "claude-opus-5-5", name: "Claude Opus 5.5" },
+        text: "fix the build",
+      });
+    const first = start();
+    await t.time.pass(500);
+    const again = start();
+    await t.time.pass(500);
+    // The server kept one Task: both answers name it.
+    expect(await Promise.all([first, again])).toMatchObject([
+      { conversationId: "cnv_task_1" },
+      { conversationId: "cnv_task_1" },
+    ]);
+    expect(
+      t.api
+        .seen("POST", "/v1/comma/workspaces/wsp_1/tasks")
+        .map((request) => request.body)
+        .map((body) => (body as { client_request_id: string }).client_request_id)
+    ).toEqual(["task-key-1", "task-key-1"]);
+  });
+
+  it("starts a cloud Task with the files uploaded for it, listed as the composer lists them", async () => {
+    const t = resolving();
+    makingTasks(t.api);
+    const path = `/uploads/${"f".repeat(22)}-spec.pdf`;
+    t.api.on("POST", "/v1/comma/groups/grp_1/files", {
+      path,
+      name: "spec.pdf",
+      size: 3,
+    });
+    const uploaded = t.client.call("chat.uploadTaskFile", {
+      workspaceId: "wsp_1",
+      name: "spec.pdf",
+      bytes: new Uint8Array([1, 2, 3]),
+    });
+    await t.time.pass(500);
+    await expect(uploaded).resolves.toEqual({ name: "spec.pdf", path, size: 3 });
+
+    // The files alone are its first message.
+    const started = t.client.call("chat.startTask", {
+      workspaceId: "wsp_1",
+      key: "task-key-2",
+      model: { id: "claude-opus-5-5", name: "Claude Opus 5.5" },
+      text: "",
+      uploads: [{ name: "spec.pdf", path }],
+    });
+    await t.time.pass(500);
+    await expect(started).resolves.toMatchObject({ conversationId: "cnv_task_1" });
+    expect(
+      t.api
+        .seen("POST", "/v1/comma/workspaces/wsp_1/tasks")
+        .map((request) => request.body)
+    ).toEqual([
+      {
+        client_request_id: "task-key-2",
+        text: `I've attached some files:\n\nAttached files in your workspace:\n- spec.pdf (workspace file: ${path})`,
+        model: { id: "claude-opus-5-5" },
+      },
+    ]);
+  });
+
+  it("fails a cloud Task the server refused with why, in its words", async () => {
+    const t = resolving();
+    makingTasks(t.api, "no plan serves claude-opus-5-5");
+    const refused = t.client
+      .call("chat.startTask", {
+        workspaceId: "wsp_1",
+        key: "task-key-3",
+        model: { id: "claude-opus-5-5", name: "Claude Opus 5.5" },
+        text: "fix the build",
+      })
+      .then(
+        () => undefined,
+        (failure: unknown) => failure
+      );
+    await t.time.pass(500);
+    expect(await refused).toMatchObject({
+      code: "refused",
+      message: "no plan serves claude-opus-5-5",
+    });
+  });
+
+  it("turns away a file for a cloud Task the composer would not take, before it uploads", async () => {
+    const t = resolving();
+    const refused = t.client
+      .call("chat.uploadTaskFile", {
+        workspaceId: "wsp_1",
+        name: "setup.exe",
+        bytes: new Uint8Array([1, 2, 3]),
+      })
+      .then(
+        () => undefined,
+        (failure: unknown) => failure
+      );
+    await t.time.pass(500);
+    expect(await refused).toMatchObject({
+      code: "invalid_params",
+      message: "This file type is not supported",
+    });
+    expect(t.api.seen("POST", "/v1/comma/groups/grp_1/files")).toHaveLength(0);
+  });
 
   it("is resolved for a window that asks before the core heard of its sign-in", async () => {
     const t = setup();

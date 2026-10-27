@@ -426,7 +426,8 @@ export class Remote {
     this.inbox = inbox;
   }
 
-  /// Where Tasks' requests go (task.invite/put/post/hello, tasks/tasks.ts): any station of the workspace may send them;
+  /// Where Tasks' requests go (task.invite/put/post/post_file/hello/file/leave/status, tasks/tasks.ts): any station of the
+  /// workspace may send them;
   /// whether its Session takes part in the Task is checked there.
   setTasks(tasks: Inbox): void {
     this.tasks = tasks;
@@ -472,7 +473,7 @@ export class Remote {
       if (!inbox) throw new Error("station is starting");
       return inbox(peer, request);
     }
-    if (method === "task.invite" || method === "task.put" || method === "task.post" || method === "task.hello") {
+    if (["task.invite", "task.put", "task.post", "task.post_file", "task.hello", "task.file", "task.leave", "task.status"].includes(method)) {
       const tasks = this.tasks;
       if (!tasks) throw new Error("station is starting");
       return tasks(peer, request);

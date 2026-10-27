@@ -19,6 +19,7 @@ import {
   MenuTrigger,
 } from "@comma/ui/components/menu";
 import { useState } from "react";
+import { nativePlatformClipboard } from "../../nativePlatformActions";
 import type {
   RouterKey as CommaRouterApiKey,
   RouterKeyCreated as CommaRouterApiKeyCreated,
@@ -85,6 +86,7 @@ function CreatedKeyPanel({
       example={routerApiKeyExample(created)}
       label={messages.settings_inbound_api_created_title()}
       name={created.name}
+      onCopy={nativePlatformClipboard.writeText}
       onDismiss={onDismiss}
       secret={created.key}
       testIds={{ root: "inbound-api-created", secret: "inbound-api-secret" }}

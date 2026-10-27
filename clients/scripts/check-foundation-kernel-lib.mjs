@@ -46,6 +46,46 @@ export function findNativeSessionAdmissionViolations(capabilities) {
 }
 
 /**
+ * Looping animations that would move on every display refresh: an `animation`
+ * (CSS, or a style object's) or a Web Animation that repeats forever without
+ * `steps()` or a `--motion-loop-*` timing function. A 240 Hz display redraws
+ * such a loop four times as often as a 60 Hz one, for motion that looks the
+ * same. A paused loop passes; so does one whose declaration says why it may
+ * not be capped, in a `motion-loop: exempt <reason>` comment. Each finding is
+ * `line N: <declaration>`.
+ */
+export function findUncappedLoops(source) {
+  const found = [];
+  let offset = 0;
+  // Declarations end at `;`, `{` or `}`; a style object's entries and a
+  // Web Animation's options sit in one such stretch too.
+  for (const stretch of source.split(/(?<=[;{}])/)) {
+    const start = offset;
+    offset += stretch.length;
+    const code = stretch.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+    const loops =
+      /\banimation\s*:[^;{}]*\binfinite\b/i.test(code) ||
+      /\banimation-iteration-count\s*:\s*infinite\b/i.test(code) ||
+      /\banimationIterationCount\s*:\s*["'`]infinite/.test(code) ||
+      /\biterations\s*:\s*Infinity\b/.test(code);
+    if (!loops) continue;
+    if (/steps\(|--motion-loop-|\bpaused\b/.test(code)) continue;
+    if (/motion-loop:\s*exempt\s+\S/.test(stretch)) continue;
+    const line =
+      source.slice(0, start).split("\n").length +
+      (stretch.match(/^\s*/)?.[0].split("\n").length ?? 1) -
+      1;
+    found.push(
+      `line ${line}: ${code
+        .trim()
+        .replace(/\s+/g, " ")
+        .replace(/[;{}]$/, "")}`
+    );
+  }
+  return found;
+}
+
+/**
  * Style rules whose subject is universal (`*`, or a compound without a type,
  * class, id or attribute) while a compound left of it holds a `:has()`, as in
  * `.a:has(.b) *` or `:is(.a:has(.b)) { &, & * {} }`. Chromium keeps one

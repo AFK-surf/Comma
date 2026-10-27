@@ -636,6 +636,36 @@ describe("Electron app protocol", () => {
     vi.useRealTimers();
   });
 
+  it("sends a streamed upload body as given, with Main's bearer, and never sends it twice", async () => {
+    const { authority } = fakeCredentialAuthority();
+    electronMocks.fetch.mockRejectedValue(new Error("net::ERR_CONNECTION_RESET"));
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("file bytes"));
+        controller.close();
+      },
+    });
+
+    const response = await proxyCommaApiRequest(
+      new Request(commaApiRequest(), { method: "PUT" }),
+      new URL("assets://./v1/comma/groups/grp_1/files?name=a.bin&size=10"),
+      authority,
+      electronMocks.fetch,
+      body
+    );
+
+    expect(response.status).toBe(502);
+    expect(electronMocks.fetch).toHaveBeenCalledOnce();
+    const init = electronMocks.fetch.mock.calls[0]?.[1] as {
+      body: unknown;
+      headers: Headers;
+      method: string;
+    };
+    expect(init.method).toBe("PUT");
+    expect(init.body).toBe(body);
+    expect(init.headers.get("authorization")).toBe("Bearer main_secret");
+  });
+
   it("never replays a write that got no response", async () => {
     const { authority } = fakeCredentialAuthority();
     electronMocks.fetch.mockRejectedValue(new Error("net::ERR_CONNECTION_RESET"));

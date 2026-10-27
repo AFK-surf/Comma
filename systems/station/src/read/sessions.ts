@@ -212,6 +212,9 @@ function threadView(s: Store, t: ThreadSummary): Json {
   // A Slack channel's name, as far as known.
   v.channelName = t.thread.surface === store.STILLFAIL_SURFACE ? null : knownChannel(s, t.sessions.map((m) => m.connect).find((c) => c !== INTERNAL_CONNECT) ?? null, t.thread.channel);
   v.creator = creator(s, t.thread.createdBy);
+  // A Task here that runs on another station (tasks.ts moveTo): there, its Session, its runtime and model.
+  const elsewhere = t.thread.surface === store.STILLFAIL_SURFACE ? store.runsElsewhere(s, t.thread.id) : null;
+  if (elsewhere !== null) v.runsOn = elsewhere;
   return v;
 }
 
@@ -253,12 +256,11 @@ export function timeline(s: Store, key: string, beforeParam: string | undefined,
   const before = parseUsize(beforeParam) ?? 0;
   const limit = Math.min(Math.max(parseUsize(limitParam) ?? 200, 1), 1000);
   const profile = configOf(s).profiles.find((p) => p.id === row.profile);
-  const runtime = row.runtime === "claude" || row.runtime === "codex" ? row.runtime : null;
-  if (!profile || runtime === null || row.runtimeSessionId === null) return { start: 0, entries: [] };
-  // Those of the runtime sessions it ran in before come first (sessions/afresh.ts).
+  if (!profile || row.runtimeSessionId === null) return { start: 0, entries: [] };
+  // Those of the runtime sessions it ran in before come first, each read as its runtime wrote it (sessions/afresh.ts).
   const homes = [profile.home, ...configOf(s).profiles.map((p) => p.home).filter((h) => h !== profile.home)];
-  const { paths } = transcriptPaths(runtime, homes, store.runtimeSessions(s, key));
-  const entries = paths.flatMap((path) => readTimeline(runtime, path));
+  const { paths } = transcriptPaths(homes, store.runtimeSessions(s, key));
+  const entries = paths.flatMap(({ runtime, path }) => readTimeline(runtime, path));
   const end = Math.min(before, entries.length);
   const start = Math.max(0, end - limit);
   return { start, entries: entries.slice(start, end) };

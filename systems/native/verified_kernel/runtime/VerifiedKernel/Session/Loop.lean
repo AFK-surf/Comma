@@ -214,6 +214,10 @@ private def noticeText (binding : Term) : String :=
     "I stopped because this workspace is out of Comma credits. Add credits in Settings > Usage & billing, then send your message again."
   else if billing == b "provider_quota_exhausted" then
     "I stopped because the model provider account behind your own API key or subscription has run out, and Comma credits do not cover it. Add funds with that provider or wait for its limit to reset (Settings > Model & API shows which account this assistant uses), then send your message again."
+  else if billing == b "quota_exhausted" then
+    "I stopped because your own subscription that serves this assistant's model has reached its usage limit. It resets on its own: send your message again after that, or choose another model in Settings > Model & API now."
+  else if billing == b "model_unavailable" then
+    "I stopped because the model chosen for this assistant cannot be used right now. Choose another model in Settings > Model & API, or enable an account there that serves this one, then send your message again."
   else if billing == b "account_inactive" || billing == b "missing_account" then
     "Billing is unavailable for this request. Ask your workspace administrator to check the billing account, then try again."
   else if key binding "failure_reason" == b "model" then modelSummary else failureSummary

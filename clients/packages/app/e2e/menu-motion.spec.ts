@@ -80,7 +80,8 @@ for (const trigger of ["Left menu", "Right menu"] as const) {
 for (const { name, triggerName, popupSelector, triggerSelector } of [
   {
     name: "selection",
-    triggerName: "Selection",
+    // An empty dropdown is named by its placeholder and its label.
+    triggerName: "Select option Selection",
     popupSelector: '[data-slot="dropdown-popover"]',
     triggerSelector: '[data-slot="dropdown-trigger"][aria-label="Selection"]',
   },
@@ -180,7 +181,10 @@ test("a closing selection cannot capture input while the next selection opens", 
   // Hold a real exit transition open so the assertion cannot miss the short
   // overlap on a fast machine. The normal 80ms duration is covered above.
   await page.addStyleTag({ content: ":root { --motion-duration-menu-exit: 1s; }" });
-  const trigger = page.getByRole("button", { name: "Selection", exact: true });
+  const trigger = page.getByRole("button", {
+    name: "Select option Selection",
+    exact: true,
+  });
   await trigger.click();
   const popup = page.getByRole("dialog", { name: "Selection", exact: true });
   const oldPopup = await popup.elementHandle();
@@ -222,7 +226,9 @@ test("a closing selection cannot capture input while the next selection opens", 
   };
   try {
     expect(await accessibleDialogs()).toEqual([]);
-    await page.getByRole("button", { name: "Next selection", exact: true }).click();
+    await page
+      .getByRole("button", { name: "Select option Next selection", exact: true })
+      .click();
     expect(await accessibleDialogs()).toEqual(["Next selection"]);
   } finally {
     await cdp.detach();

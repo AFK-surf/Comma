@@ -44,11 +44,22 @@ extension PhoneConversationView {
         } catch { pane.showError(error.localizedDescription) }
     }
 
+    /// Files from Files: an image is read and attached as a photo is; any other file waits on disk and uploads from
+    /// there as it is read, of any size the server takes.
     func uploadFiles(_ result: Result<[URL], any Error>) async {
         preparing = true
         defer { preparing = false }
         do {
             for url in try result.get().prefix(pane.attachmentRoom) {
+                if let localFiles = store.localFiles, !AttachmentFile.isImage(url) {
+                    guard let kept = try await localFiles.keep(url) else {
+                        pane.showError(String(localized: "Choose a file smaller than 512 MB."))
+                        continue
+                    }
+                    pane.attachLocalFile(ref: kept.ref, name: kept.name, size: kept.size,
+                                         mediaType: AttachmentFile.mediaType(url))
+                    continue
+                }
                 guard let file = try await AttachmentFile.read(url) else {
                     pane.showError(String(localized: "Choose a file smaller than 10 MB."))
                     continue
@@ -58,25 +69,23 @@ extension PhoneConversationView {
         } catch { pane.showError(error.localizedDescription) }
     }
 
+    /// Downloads the attachment to the device, of any size, and opens the kept file in Quick Look.
     func download(messageID: String, index: Int, name: String) async {
         guard let target = pane.target, !downloading, previewURL == nil else { return }
         let sessionID = store.session?.id
         downloading = true
         defer { downloading = false }
         do {
-            let answer = try await store.core.object("files.read", ["source": "attachment", "group": target.groupID,
-                                                                    "conversation": target.conversationID,
-                                                                    "message": messageID, "index": index])
+            let path = try await AttachmentDownload.path(
+                core: store.core,
+                source: ["source": "attachment", "group": target.groupID, "conversation": target.conversationID,
+                         "message": messageID, "index": index],
+                name: name)
+            // The conversation or account may have changed while the file arrived.
             guard pane.target == target, store.session?.id == sessionID, sessionID != nil,
-                  let data = CoreBytes.read(answer["bytes"]) else { return }
-            let preview = try await AttachmentFile.writePreview(data, name: name)
-            // The conversation or account may have changed while the file was written.
-            guard pane.target == target, store.session?.id == sessionID else {
-                await AttachmentFile.remove(preview.directory)
-                return
-            }
-            previewDirectory = preview.directory
-            previewURL = preview.file
+                  let file = store.downloadedFile(path) else { return }
+            previewURL = file
+        } catch is CancellationError {
         } catch { pane.showError(error.localizedDescription) }
     }
 }
@@ -89,6 +98,14 @@ enum AttachmentFile {
     }
 
     static let maxSize = 10_000_000
+
+    /// Whether the file is an image, by its name's type.
+    static func isImage(_ url: URL) -> Bool { UTType(filenameExtension: url.pathExtension)?.conforms(to: .image) == true }
+
+    /// The file's media type, by its name's type.
+    static func mediaType(_ url: URL) -> String {
+        UTType(filenameExtension: url.pathExtension)?.preferredMIMEType ?? "application/octet-stream"
+    }
 
     /// The file's name, type and contents, with a thumbnail when it is an image; nil when it is not a regular file
     /// of at most 10 MB.
@@ -126,20 +143,6 @@ enum AttachmentFile {
         }
         return (AttachmentPayload(filename: "Photo.jpg", contentType: "image/jpeg", data: jpeg),
                 AttachmentPhoto.thumbnail(jpeg))
-    }
-
-    /// Writes a downloaded attachment into a folder of its own for Quick Look, under its own name.
-    @concurrent static func writePreview(_ data: Data, name: String) async throws -> (directory: URL, file: URL) {
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("comma-preview-" + UUID().uuidString)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let filename = String((name as NSString).lastPathComponent.prefix(150))
-        let file = directory.appendingPathComponent(filename.isEmpty ? "Attachment" : filename)
-        try data.write(to: file, options: .atomic)
-        return (directory, file)
-    }
-
-    @concurrent static func remove(_ directory: URL) async {
-        try? FileManager.default.removeItem(at: directory)
     }
 }
 

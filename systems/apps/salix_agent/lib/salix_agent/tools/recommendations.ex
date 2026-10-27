@@ -9,6 +9,10 @@ defmodule SalixAgent.Tools.Recommendations do
        "Read the current owner Routine snapshot and freshness state without fetching sources or starting a run. Missing or stale evidence is not proof of no work. Reuse selected items; do not repeat source relevance filtering.",
        read_schema(), &__MODULE__.read/2, @normal_auto_wait_seconds,
        [safety: "read", roles: ["router"], runtimes: [:internal]]},
+      {"recommendation.dismiss",
+       "Remove one matter from the user's Routine when the user says they do not want to hear about it. Pass the source_id and url of one attention_items entry from recommendation.read. Later briefings and automatic messages leave it out; Routine keeps the user's 200 most recent dismissals. The user's open apps show the change at their next briefing read.",
+       dismiss_schema(), &__MODULE__.dismiss/2, @normal_auto_wait_seconds,
+       [safety: "write", roles: ["router"], runtimes: [:internal]]},
       {"recommendation.begin",
        "Begin the scheduled Comma Center recommendation run and return its run id, source revision, enabled sources, and catalog contract. If status is skipped, no run exists. End the turn with outcome=blocked and a short reason. Do not retry or call recommendation.fail.",
        empty_schema(), &__MODULE__.begin_run/2, @normal_auto_wait_seconds},
@@ -25,6 +29,13 @@ defmodule SalixAgent.Tools.Recommendations do
     case adapter().read(args, ctx) do
       {:ok, result} -> SalixAgent.IFC.ConnectorLabels.group_audience(Jason.encode!(result), ctx)
       {:error, reason} -> raise "recommendation read rejected: #{inspect(reason)}"
+    end
+  end
+
+  def dismiss(args, ctx) do
+    case adapter().dismiss(args, ctx) do
+      {:ok, result} -> Jason.encode!(result)
+      {:error, reason} -> raise "recommendation dismissal rejected: #{inspect(reason)}"
     end
   end
 
@@ -88,6 +99,18 @@ defmodule SalixAgent.Tools.Recommendations do
       },
       "description" =>
         "Use {} for the bounded published overview, {scope: status} for a current failure, or source_id and source_url from an attention_items read recipe for that exact selected matter. This reads published Routine evidence, not live provider state."
+    }
+  end
+
+  defp dismiss_schema do
+    %{
+      "type" => "object",
+      "additionalProperties" => false,
+      "required" => ["source_id", "source_url"],
+      "properties" => %{
+        "source_id" => bounded_string(128),
+        "source_url" => bounded_string(65_536)
+      }
     }
   end
 

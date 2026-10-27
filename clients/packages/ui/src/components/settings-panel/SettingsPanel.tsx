@@ -24,7 +24,7 @@ import {
   SharedSubmenu,
   SharedSubmenuScope,
 } from "../menu";
-import { ArrowUpRightIcon, ChevronDownIcon } from "../icons";
+import { ArrowUpRightIcon, BellIcon, ChevronDownIcon } from "../icons";
 import { ModelVendorIcon } from "../model-icons/ModelVendorIcon";
 import { ScrollArea } from "../scroll-area";
 import { Tooltip } from "../tooltip";
@@ -168,7 +168,8 @@ export interface SettingsPanelItem {
   onPressTitle?: () => void;
   /** Names the title button when the title alone repeats another control's name. */
   onPressTitleLabel?: string;
-  density?: "compact";
+  /** `dense` is for a list of like rows, as an app's Versions: md above and below. */
+  density?: "compact" | "dense";
   /** Decorative identity beside the row's searchable text. */
   icon?: ReactNode;
   /** Identity, state and account facts for a connected-service card. */
@@ -218,6 +219,10 @@ export interface SettingsPanelSection {
   title: string;
   titleAction?: ReactNode;
   items: SettingsPanelItem[];
+  /** A caution at the foot of the section's card, in the warning colour. */
+  note?: ReactNode;
+  /** A plain explanation under the section's card. */
+  description?: string;
 }
 
 export type SettingsPanelSurface = "embedded" | "standalone";
@@ -274,7 +279,8 @@ const defaultSections: SettingsPanelSection[] = [
   },
 ];
 
-const Control = ({
+/** A settings row's control, for a surface that lays its own rows out (Devices). */
+export const SettingsControlView = ({
   control,
   label,
   fullWidth = false,
@@ -536,7 +542,7 @@ const Control = ({
   if (control.type === "button") {
     return (
       <Button
-        hierarchy={control.tone === "danger" ? "secondary-color" : "secondary-gray"}
+        hierarchy={control.tone === "danger" ? "destructive" : "secondary-gray"}
         size="sm"
         {...definedProps({
           disabled: control.disabled,
@@ -729,7 +735,7 @@ const SettingsRowView = ({
                 hasIcon && "@max-[360px]/integration:col-start-2"
               )}
             >
-              <Control control={item.control} label={item.title} />
+              <SettingsControlView control={item.control} label={item.title} />
             </div>
           ) : null}
           <div
@@ -789,13 +795,15 @@ const SettingsRowView = ({
   return (
     <div
       className={cx(
-        "flex w-full scroll-m-7xl border-b-[0.5px] border-primary bg-main-panel-item-bg outline-none last:border-b-0",
+        "group/settings-row flex w-full scroll-m-7xl border-b-[0.5px] border-primary bg-main-panel-item-bg outline-none last:border-b-0",
         // A field row shares a card with plain rows, so it keeps their inset.
         field
           ? "flex-col items-stretch gap-md px-xl py-xl"
           : stacked
             ? "flex-col items-stretch gap-md px-lg py-lg"
-            : "min-h-[calc(var(--spacing-7xl)+var(--spacing-lg))] items-center gap-xl px-xl py-xl",
+            : item.density === "dense"
+              ? "items-center gap-xl px-xl py-md"
+              : "min-h-[calc(var(--spacing-7xl)+var(--spacing-lg))] items-center gap-xl px-xl py-xl",
         // The slot's own padding opens with it, so a shut slot adds no gap.
         hasContent && !stacked && "flex-wrap gap-y-0",
         fixedDropdown &&
@@ -891,7 +899,11 @@ const SettingsRowView = ({
           ) : null}
           {item.controlLeading}
           {item.control ? (
-            <Control control={item.control} label={item.title} fullWidth={field} />
+            <SettingsControlView
+              control={item.control}
+              label={item.title}
+              fullWidth={field}
+            />
           ) : null}
         </div>
       ) : null}
@@ -955,7 +967,21 @@ export const SettingsSectionView = ({
             latestItem={latestItem}
           />
         ))}
+        {section.note ? (
+          <p
+            className="m-0 flex items-start gap-sm px-xl py-lg text-pretty text-xs text-warning-primary"
+            data-slot="settings-section-note"
+          >
+            <BellIcon aria-hidden className="mt-px size-4 shrink-0" />
+            <span>{section.note}</span>
+          </p>
+        ) : null}
       </div>
+      {section.description ? (
+        <p className="m-0 px-xl text-xs text-pretty text-tertiary">
+          {section.description}
+        </p>
+      ) : null}
     </section>
   );
 };

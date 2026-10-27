@@ -21,6 +21,7 @@ defmodule CommaWeb.TaskShareTest do
             {:salix_agent, :llm},
             {:comma_core, :salix_client},
             {:comma_core, :task_share_rate_limit},
+            {:salix_im, :station_hosted_tasks_mod},
             {:comma_web, :api_token},
             {:salix_im, :conversation_notifier}
           ],
@@ -152,6 +153,96 @@ defmodule CommaWeb.TaskShareTest do
     user_req(session["token"], :delete, share_url) |> expect_status(200)
     public_req(:get, "/v1/comma/public/shares/#{new_token}") |> expect_status(404)
     public_req(:get, "/v1/comma/public/shares/#{new_token}/messages") |> expect_status(404)
+  end
+
+  # A station's own chat, as its Connector answers `task.read`.
+  defmodule FakeStationTasks do
+    @behaviour SalixIM.Ports.StationHostedTasks
+
+    @messages [
+      %{
+        "seq" => 1,
+        "author_kind" => "person",
+        "author" => "o@x",
+        "text" => "Fix the build",
+        "at" => 1_000
+      },
+      %{
+        "seq" => 2,
+        "author_kind" => "agent",
+        "author" => "s_1",
+        "text" => "Fixed it.",
+        "at" => 2_000
+      },
+      %{
+        "seq" => 4,
+        "author_kind" => "agent",
+        "author" => "s_1",
+        "text" => "",
+        "at" => 3_000,
+        "milestones" => ["Fixed the build"]
+      }
+    ]
+
+    @impl true
+    def read(_scope, "st_share", "7", opts) do
+      after_seq = opts["after"] || 0
+
+      {:ok,
+       %{
+         "title" => "Fix the build",
+         "messages" =>
+           @messages |> Enum.filter(&(&1["seq"] > after_seq)) |> Enum.take(opts["limit"] || 100),
+         "through" => 4
+       }}
+    end
+
+    def read(_scope, "st_share", "8", _opts), do: {:error, :device_offline}
+    def read(_scope, _station_id, _thread, _opts), do: {:error, :not_found}
+
+    @impl true
+    def say(_scope, _station_id, _thread, _text, _key, _requester), do: {:error, :unsupported}
+  end
+
+  test "a station-hosted Task's link shows its chat, read from its station while it is connected" do
+    %{workspace: workspace, session: session} = shared_task_fixture("station")
+    SystemsRuntime.put_env(:salix_im, :station_hosted_tasks_mod, FakeStationTasks)
+    group_id = workspace["default_group_id"]
+    share_url = &"/v1/comma/groups/#{group_id}/conversations/#{&1}/share"
+
+    shared =
+      user_req(session["token"], :put, share_url.("station:st_share:7")) |> expect_status(200)
+
+    assert %{"artifact_count" => 0, "has_newer_messages" => false, "message_count" => 2} =
+             shared.body
+
+    "http://127.0.0.1:5174/s/" <> token = shared.body["url"]
+
+    summary = public_req(:get, "/v1/comma/public/shares/#{token}") |> expect_status(200)
+    assert summary.body["title"] == "Fix the build"
+    assert summary.body["artifacts"] == []
+
+    page = public_req(:get, "/v1/comma/public/shares/#{token}/messages") |> expect_status(200)
+    assert public_texts(page) == ["Fix the build", "Fixed it."]
+    assert Enum.map(page.body["messages"], & &1["role"]) == ["user", "assistant"]
+    assert page.body["next_after_seq"] == nil
+
+    # The owner's list names it as its share read it.
+    listed =
+      user_req(session["token"], :get, "/v1/comma/groups/#{group_id}/task-shares")
+      |> expect_status(200)
+
+    assert Enum.any?(
+             listed.body["data"],
+             &match?(
+               %{"conversation" => %{"id" => "station:st_share:7", "title" => "Fix the build"}},
+               &1
+             )
+           )
+
+    # One the Group's Task index has not is no Task to share; one whose station is offline cannot be read now.
+    user_req(session["token"], :put, share_url.("station:st_other:1")) |> expect_status(404)
+    user_req(session["token"], :put, share_url.("station:st_share:8")) |> expect_status(503)
   end
 
   test "the owner lists the Group's active shares, most recently shared first" do

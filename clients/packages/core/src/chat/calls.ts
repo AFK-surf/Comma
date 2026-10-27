@@ -20,6 +20,8 @@ export function asCoreError(error: unknown): CoreError {
       : new CoreError(
           "chat_refused",
           error instanceof Error ? error.message : String(error),
-          (error as { status?: number }).status
+          (error as { status?: number }).status,
+          // What the server said, for a UI that words it (a refused Task run's `reason`).
+          (error as { body?: unknown }).body
         );
 }

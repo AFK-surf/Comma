@@ -71,6 +71,13 @@ service Control {
   // column rather than to the data.
   rpc ListSpaces(ListSpacesRequest) returns (stream SpaceInfo);
 
+  // This node's home relays and whether each is connected now.
+  //
+  // `daemon status` prints the same for a person. A desktop client reads it to
+  // tell its user that the network cannot reach the relays — and so nothing
+  // behind a NAT — instead of leaving them waiting on peers that never answer.
+  rpc RelayStatus(RelayStatusRequest) returns (RelayStatusResponse);
+
   // Reads a config value from the `s3.*` namespace.
   rpc GetConfig(GetConfigRequest) returns (GetConfigResponse);
 
@@ -129,6 +136,26 @@ service Control {
 
   // Every part recorded for one upload, in part-number order.
   rpc ListParts(ListPartsRequest) returns (stream PartInfo);
+
+  // ---- cluster locks (docs/LOCKS.md §9.3) -----------------------------------
+
+  // Takes a cluster lock, retrying within the request's wait.
+  //
+  // The first event answers: `acquired`, or the call fails with a lock code.
+  // A `session` hold lives as long as this stream: the daemon renews it while
+  // the stream is open, sends `lost` if a heal or a break ends it, and
+  // releases it when the client goes away. `lease` and `sticky` holds outlive
+  // the call, so for them the stream ends after `acquired`.
+  rpc Lock(LockRequest) returns (stream LockEvent);
+
+  // Extends a lease-mode hold, optionally replacing its payload.
+  rpc LockRenew(LockRenewRequest) returns (LockHold);
+
+  // Releases this node's hold, or with `force` breaks other nodes' claims.
+  rpc LockRelease(LockReleaseRequest) returns (LockReleased);
+
+  // This node's view of its locks, or of one lock with every peer's beside it.
+  rpc LockStatus(LockStatusRequest) returns (LockStatusResponse);
 }
 
 // ---- the CLI surface (§9.2) -------------------------------------------------
@@ -650,6 +677,10 @@ message PutHeader {
   string space = 1;
   // The path within the space.
   string path = 2;
+  // A fenced write (docs/LOCKS.md §7): commit only while this node holds the
+  // lock `<space>/<name>` with this token. Empty means unfenced.
+  string lock = 3;
+  string lock_token = 4;
 }
 
 // The result of a completed write.
@@ -674,6 +705,22 @@ message SpaceInfo {
   optional string source_kind = 8;
   optional string checkout_path = 9;
   optional bool source_paused = 10;
+}
+
+message RelayStatusRequest {}
+
+message RelayStatusResponse {
+  // One per home relay whose URL is known; empty while relays are disabled or
+  // before the endpoint has picked one.
+  repeated HomeRelay relays = 1;
+}
+
+// One home relay of this node.
+message HomeRelay {
+  string url = 1;
+  bool connected = 2;
+  // The most recent connection error while it is disconnected.
+  optional string last_error = 3;
 }
 
 message GetConfigRequest {
@@ -783,6 +830,9 @@ message CompleteUploadRequest {
   // The parts to assemble, ascending. Parts the client leaves out are
   // discarded, which is what S3 promises.
   repeated CompletionPart parts = 2;
+  // A fenced completion, as on PutHeader. Empty means unfenced.
+  string lock = 3;
+  string lock_token = 4;
 }
 
 // One part a completion named.
@@ -957,4 +1007,121 @@ message ConnectClosed {
   int32 exit_code = 1;
   // How it ended, in words.
   string status = 2;
+}
+
+// ---- cluster locks (docs/LOCKS.md §9.3) -----------------------------------
+
+// Who renews a hold (docs/LOCKS.md §5).
+enum LockMode {
+  // The daemon, while the Lock stream is open.
+  LOCK_MODE_SESSION = 0;
+  // The client, with LockRenew before its deadline.
+  LOCK_MODE_LEASE = 1;
+  // The daemon, until release or break.
+  LOCK_MODE_STICKY = 2;
+}
+
+message LockRequest {
+  string space = 1;
+  string name = 2;
+  // The lease observers keep without a renewal; 0 means the default (30 s).
+  uint64 ttl_ms = 3;
+  // How long to keep retrying while another claim holds the lock.
+  uint64 wait_ms = 4;
+  // Display only: who on this node asks.
+  string owner = 5;
+  // Opaque, at most 16 KiB: an S3 lock key's body.
+  bytes payload = 6;
+  LockMode mode = 7;
+  // Report the lock acquired before the last holder's writes are here.
+  bool allow_behind = 8;
+}
+
+message LockEvent {
+  oneof kind {
+    LockHold acquired = 1;
+    LockLost lost = 2;
+  }
+}
+
+// A hold, as its client sees it.
+message LockHold {
+  // The fencing token.
+  string token = 1;
+  // How long the client may use the lock before renewing.
+  uint64 valid_for_ms = 2;
+  // Peers that did not answer within the claim window.
+  repeated string waited_on = 3;
+  // The last holders' heads waited for, as `<origin>@<seq>`.
+  repeated string handoff = 4;
+}
+
+message LockLost {
+  string reason = 1;
+}
+
+message LockRenewRequest {
+  string space = 1;
+  string name = 2;
+  string token = 3;
+  optional uint64 ttl_ms = 4;
+  optional bytes payload = 5;
+}
+
+message LockReleaseRequest {
+  string space = 1;
+  string name = 2;
+  // Only this claim; empty for this node's hold, whatever its token.
+  string token = 3;
+  // Break other nodes' claims rather than release this node's own.
+  bool force = 4;
+  // With force: only this origin's claims.
+  string holder = 5;
+}
+
+message LockReleased {
+  // The tokens that were ended.
+  repeated string tokens = 1;
+}
+
+message LockStatusRequest {
+  // Every lock in this space, or every lock when empty.
+  string space = 1;
+  // One lock in the space; then `peers` may be asked as well.
+  string name = 2;
+  // Ask every reachable peer for its view of the one lock.
+  bool peers = 3;
+}
+
+// One claim on a lock, as a node reports it.
+message LockClaim {
+  string space = 1;
+  string name = 2;
+  string token = 3;
+  string origin = 4;
+  string owner = 5;
+  // `held`, `live`, `expired`, or `contending` for this node's own claim
+  // that is still waiting for answers.
+  string state = 6;
+  // For this node's own claim: `session`, `lease` or `sticky`.
+  string mode = 7;
+  uint64 remaining_ms = 8;
+  bytes payload = 9;
+  uint32 ttl_ms = 10;
+  repeated string supersedes = 11;
+}
+
+// One peer's view of a lock.
+message PeerLocks {
+  string peer = 1;
+  // Why the peer did not answer, if it did not.
+  string error = 2;
+  repeated LockClaim claims = 3;
+}
+
+message LockStatusResponse {
+  repeated LockClaim claims = 1;
+  repeated PeerLocks peers = 2;
+  // Handoff watermarks this node knows, as `<origin>@<seq>`.
+  repeated string watermarks = 3;
 }

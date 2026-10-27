@@ -178,4 +178,8 @@ defmodule Comma.Salix.Runtime do
   @impl true
   def read_agent_blob(_workspace, _agent_id, _ref, _max_bytes),
     do: {:error, :salix_client_not_configured}
+
+  @impl true
+  def stream_agent_blob(_workspace, _agent_id, _ref, _range),
+    do: {:error, :salix_client_not_configured}
 end

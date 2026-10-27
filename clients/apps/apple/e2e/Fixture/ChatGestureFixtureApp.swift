@@ -11,15 +11,21 @@ import CommaCore
     var profileSaves: [String] = []
     /// The server answers the reads a `--fail-…` switch refused (`PerfSignal.recover` arrived).
     var recovered = false
+    /// Reads of earlier router messages that `--hold-earlier` holds.
+    var earlierHeld = 0
+    /// The `--perf-stream` reply streamed to its end and the server committed it.
+    var replyCommitted = false
 }
 /// Runs the production shell on the client core the app carries, with a session kept in memory and the fixture
 /// server in place of the backend; no backend is contacted.
 @main struct ChatGestureFixtureApp: App {
     @State private var store: CommaStore
     @State private var metrics: Metrics
+    @State private var call: CallController?
     @StateObject private var activity = TaskActivityCoordinator()
     /// Only for `--perf-probe` launches; see `PerfOptions` for the other perf switches.
     @State private var probe: FramePacingProbe?
+    @State private var geometry = ProcessInfo.processInfo.arguments.contains("--transcript-probe") ? TranscriptGeometryProbe() : nil
     @MainActor private static var started = false
     init() {
         let metrics = Metrics()
@@ -46,6 +52,8 @@ import CommaCore
             store.router.reportUnread(unread)
         }
         _store = State(initialValue: store)
+        _call = State(initialValue: ProcessInfo.processInfo.arguments.contains("--call-controls")
+                      ? CallController(store: store) : nil)
         _metrics = State(initialValue: metrics)
         _probe = State(initialValue: perf.probe ? FramePacingProbe() : nil)
     }
@@ -59,6 +67,7 @@ import CommaCore
                 // `--launch-in-chat` opens on the chat as the app does; the other tests start on Home.
                 AppShellView(store: store, activity: activity, navigation: AppNavigation(
                     routerOpen: ProcessInfo.processInfo.arguments.contains("--launch-in-chat")))
+                    .environment(call)
                     .overlay(alignment: .top) {
                         HStack {
                             Text("\(metrics.listLoads)").accessibilityIdentifier("listLoads")
@@ -70,6 +79,11 @@ import CommaCore
                             Text(verbatim: metrics.profileSaves.joined(separator: "|")).lineLimit(1)
                                 .accessibilityIdentifier("profileSaves")
                             Text(verbatim: metrics.recovered ? "recovered" : "failing").accessibilityIdentifier("serverRecovered")
+                            Text("\(metrics.earlierHeld)").accessibilityIdentifier("earlierHeld")
+                            Text(verbatim: metrics.replyCommitted ? "committed" : "none").accessibilityIdentifier("replyCommitted")
+                            if let geometry {
+                                Text(verbatim: geometry.summary).accessibilityIdentifier("transcriptGeometry")
+                            }
                             if let probe {
                                 Text("\(probe.completed)").accessibilityIdentifier("framePacing").accessibilityValue(probe.summary)
                             }
@@ -96,4 +110,5 @@ final class FixtureCredentials: CredentialRecord, @unchecked Sendable {
     private var data: Data?
     func read() throws -> Data? { lock.withLock { data } }
     func write(_ data: Data) throws { lock.withLock { self.data = data } }
+    func delete() throws { lock.withLock { data = nil } }
 }

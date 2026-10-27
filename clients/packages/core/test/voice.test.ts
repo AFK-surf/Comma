@@ -132,6 +132,78 @@ describe("Settings › Voice", () => {
     await refused;
   });
 
+  it("sets the call voice, makes a custom voice and turns Router calls on", async () => {
+    const t = setup();
+    let preferences: unknown = { voice: null, custom_voice: null, router_calls: false };
+    const answer = () =>
+      json(200, { ...status(), preferences, voices: ["quartz", "gleam"] });
+    t.api.on("GET", line, answer);
+    t.api.on("GET", keys, []);
+    t.api.on("PUT", `${line}/preferences`, (request) => {
+      const body = request.body as { voice?: unknown; router_calls?: boolean };
+      preferences = {
+        ...(preferences as object),
+        ...("voice" in body ? { voice: body.voice } : {}),
+        ...(body.router_calls === undefined ? {} : { router_calls: body.router_calls }),
+      };
+      return answer();
+    });
+    t.api.on("POST", `${line}/custom-voice`, (request) => {
+      const body = request.body as { description: string };
+      preferences = {
+        ...(preferences as object),
+        voice: { kind: "custom" },
+        custom_voice: { name: "", description: body.description },
+      };
+      return answer();
+    });
+    const shown = t.watch<VoiceValue>({ topic: "voice" });
+    await t.time.pass(100);
+    expect(shown().integration?.voices).toEqual(["quartz", "gleam"]);
+
+    const preset = t.client.call("voice.setPreferences", {
+      workspace: "wsp_1",
+      voice: { kind: "preset", name: "gleam" },
+    });
+    await t.time.pass(100);
+    await preset;
+    // Only the changed field is sent: the other keeps its stored value.
+    expect(t.api.seen("PUT", `${line}/preferences`)[0]!.body).toEqual({
+      voice: { kind: "preset", name: "gleam" },
+    });
+
+    const router = t.client.call("voice.setPreferences", {
+      workspace: "wsp_1",
+      routerCalls: true,
+    });
+    await t.time.pass(100);
+    await router;
+    expect(t.api.seen("PUT", `${line}/preferences`)[1]!.body).toEqual({
+      router_calls: true,
+    });
+
+    const custom = t.client.call("voice.createCustomVoice", {
+      workspace: "wsp_1",
+      description: "  A warm voice speaking Mandarin.  ",
+    });
+    await t.time.pass(100);
+    await custom;
+    expect(t.api.seen("POST", `${line}/custom-voice`)[0]!.body).toEqual({
+      description: "A warm voice speaking Mandarin.",
+    });
+    expect(shown().integration?.preferences).toEqual({
+      voice: { kind: "custom" },
+      custom_voice: { name: "", description: "A warm voice speaking Mandarin." },
+      router_calls: true,
+    });
+
+    const nothing = expect(
+      t.client.call("voice.setPreferences", { workspace: "wsp_1" })
+    ).rejects.toMatchObject({ code: "invalid_params" });
+    await t.time.pass(100);
+    await nothing;
+  });
+
   it("answers a new key's plaintext to its caller only, and lists keys without it", async () => {
     const t = setup();
     let list = [key];

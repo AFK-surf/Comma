@@ -1,0 +1,412 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+/* Comma's runtime sets data-theme="light" or "dark" on <html>. */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+/*
+ * The app's look is Comma's design system. Inside Comma, the runtime sets
+ * Comma's tokens on <html> as --comma-* variables (src/comma/sdk.ts,
+ * MiniAppInit.tokens): colors, radius, type and shadows. Every shadcn/ui and
+ * Tailwind token below reads its Comma value. The second value is Comma's own
+ * value, for `npm run dev` and tests.
+ *
+ * Keep this mapping. Only when the user asks for their own look (in the
+ * request, a screenshot or a style file) replace the values that look sets,
+ * here, and nowhere in the components.
+ */
+:root {
+  --background: var(--comma-background, oklch(1 0 0));
+  --foreground: var(--comma-foreground, oklch(0.2223 0 0));
+  --card: var(--comma-background, oklch(1 0 0));
+  --card-foreground: var(--comma-foreground, oklch(0.2223 0 0));
+  --popover: var(--comma-background, oklch(1 0 0));
+  --popover-foreground: var(--comma-foreground, oklch(0.2223 0 0));
+  --primary: var(--comma-primary, rgb(32 91 255));
+  --primary-foreground: var(--comma-primary-foreground, rgb(255 255 255));
+  --secondary: var(--comma-surface, oklch(0.9851 0 0));
+  --secondary-foreground: var(--comma-foreground, oklch(0.2223 0 0));
+  --muted: var(--comma-surface, oklch(0.9851 0 0));
+  --muted-foreground: var(--comma-subtle, oklch(0.481 0 0));
+  --accent: var(--comma-surface-strong, oklch(0.9701 0 0));
+  --accent-foreground: var(--comma-foreground, oklch(0.2223 0 0));
+  --destructive: var(--comma-danger, rgb(217 45 32));
+  --success: var(--comma-success, rgb(7 148 85));
+  --warning: var(--comma-warning, rgb(247 144 9));
+  --border: var(--comma-border, oklch(0.9065 0 0));
+  --border-subtle: var(--comma-border-subtle, oklch(0.9581 0 0));
+  --input: var(--comma-border, oklch(0.9065 0 0));
+  --ring: var(--comma-primary, rgb(32 91 255));
+  --font-sans: var(
+    --comma-font,
+    "Inter Variable",
+    "SF Pro Display",
+    -apple-system,
+    system-ui,
+    sans-serif
+  );
+  --elevation-xs: var(--comma-shadow-xs, 0 1px 2px 0 rgb(16 24 40 / 0.05));
+  --elevation-sm: var(
+    --comma-shadow-sm,
+    0 1px 2px 0 rgb(16 24 40 / 0.06),
+    0 1px 3px 0 rgb(16 24 40 / 0.1)
+  );
+  --elevation-md: var(
+    --comma-shadow-md,
+    0 2px 4px -2px rgb(16 24 40 / 0.06),
+    0 4px 8px -2px rgb(16 24 40 / 0.1)
+  );
+  --elevation-lg: var(
+    --comma-shadow-lg,
+    0 4px 6px -2px rgb(16 24 40 / 0.03),
+    0 12px 16px -4px rgb(16 24 40 / 0.08)
+  );
+}
+
+/*
+ * Type roles (DESIGN.md §6): the app sets text by role, as an iOS or macOS app
+ * does, never by size. A role's size follows the pointer, as the two platforms
+ * differ: with a mouse it is Comma's desktop scale (13px body); on a touch
+ * screen (a phone, an iPad) it is iOS's default Dynamic Type scale (17px body).
+ */
+:root {
+  --type-large-title: var(--comma-text-2xl, 1.5rem);
+  --type-large-title-leading: var(--comma-text-2xl-leading, 2rem);
+  --type-title-1: var(--comma-text-xl, 1.25rem);
+  --type-title-1-leading: var(--comma-text-xl-leading, 1.875rem);
+  --type-title-2: var(--comma-text-lg, 1.125rem);
+  --type-title-2-leading: var(--comma-text-lg-leading, 1.75rem);
+  --type-title-3: var(--comma-text-md, 0.9375rem);
+  --type-title-3-leading: var(--comma-text-md-leading, 1.5rem);
+  --type-body: var(--comma-text-sm, 0.8125rem);
+  --type-body-leading: var(--comma-text-sm-leading, 1.25rem);
+  --type-callout: var(--comma-text-sm, 0.8125rem);
+  --type-callout-leading: var(--comma-text-sm-leading, 1.25rem);
+  --type-subheadline: var(--comma-text-xs, 0.75rem);
+  --type-subheadline-leading: var(--comma-text-xs-leading, 1.125rem);
+  --type-footnote: var(--comma-text-xs, 0.75rem);
+  --type-footnote-leading: var(--comma-text-xs-leading, 1.125rem);
+  --type-caption-1: var(--comma-text-xs, 0.75rem);
+  --type-caption-1-leading: var(--comma-text-xs-leading, 1.125rem);
+  --type-caption-2: 0.6875rem;
+  --type-caption-2-leading: 0.875rem;
+}
+
+@media (pointer: coarse) {
+  :root {
+    --type-large-title: 2.125rem;
+    --type-large-title-leading: 2.5625rem;
+    --type-title-1: 1.75rem;
+    --type-title-1-leading: 2.125rem;
+    --type-title-2: 1.375rem;
+    --type-title-2-leading: 1.75rem;
+    --type-title-3: 1.25rem;
+    --type-title-3-leading: 1.5625rem;
+    --type-body: 1.0625rem;
+    --type-body-leading: 1.375rem;
+    --type-callout: 1rem;
+    --type-callout-leading: 1.3125rem;
+    --type-subheadline: 0.9375rem;
+    --type-subheadline-leading: 1.25rem;
+    --type-footnote: 0.8125rem;
+    --type-footnote-leading: 1.125rem;
+    --type-caption-1: 0.75rem;
+    --type-caption-1-leading: 1rem;
+    --type-caption-2: 0.6875rem;
+    --type-caption-2-leading: 0.8125rem;
+  }
+}
+
+[data-theme="dark"] {
+  --background: var(--comma-background, oklch(0.1689 0 0));
+  --foreground: var(--comma-foreground, oklch(0.9731 0 0));
+  --card: var(--comma-background, oklch(0.1689 0 0));
+  --card-foreground: var(--comma-foreground, oklch(0.9731 0 0));
+  --popover: var(--comma-background, oklch(0.1689 0 0));
+  --popover-foreground: var(--comma-foreground, oklch(0.9731 0 0));
+  --secondary: var(--comma-surface, oklch(0.2132 0 0));
+  --secondary-foreground: var(--comma-foreground, oklch(0.9731 0 0));
+  --muted: var(--comma-surface, oklch(0.2132 0 0));
+  --muted-foreground: var(--comma-subtle, oklch(0.7223 0 0));
+  --accent: var(--comma-surface-strong, oklch(0.277 0 0));
+  --accent-foreground: var(--comma-foreground, oklch(0.9731 0 0));
+  --destructive: var(--comma-danger, rgb(249 112 102));
+  --success: var(--comma-success, rgb(71 205 137));
+  --warning: var(--comma-warning, rgb(253 176 34));
+  --border: var(--comma-border, oklch(0.3291 0 0));
+  --border-subtle: var(--comma-border-subtle, oklch(0.277 0 0));
+  --input: var(--comma-border, oklch(0.3291 0 0));
+  --elevation-xs: var(--comma-shadow-xs, 0 1px 2px 0 rgb(0 0 0 / 0.32));
+  --elevation-sm: var(
+    --comma-shadow-sm,
+    0 1px 2px 0 rgb(0 0 0 / 0.36),
+    0 1px 3px 0 rgb(0 0 0 / 0.48)
+  );
+  --elevation-md: var(
+    --comma-shadow-md,
+    0 2px 4px -2px rgb(0 0 0 / 0.36),
+    0 4px 8px -2px rgb(0 0 0 / 0.48)
+  );
+  --elevation-lg: var(
+    --comma-shadow-lg,
+    0 4px 6px -2px rgb(0 0 0 / 0.24),
+    0 12px 16px -4px rgb(0 0 0 / 0.4)
+  );
+}
+
+@theme inline {
+  --font-sans: var(--font-sans);
+
+  /* Comma's radius scale. */
+  --radius-sm: var(--comma-radius-sm, 6px);
+  --radius-md: var(--comma-radius-md, 8px);
+  --radius-lg: var(--comma-radius-lg, 10px);
+  --radius-xl: var(--comma-radius-xl, 12px);
+  --radius-2xl: var(--comma-radius-2xl, 16px);
+
+  /* Comma's type scale: 13px body (`text-sm`), 15px `text-base` and `text-md`. */
+  --text-xs: var(--comma-text-xs, 0.75rem);
+  --text-xs--line-height: var(--comma-text-xs-leading, 1.125rem);
+  --text-sm: var(--comma-text-sm, 0.8125rem);
+  --text-sm--line-height: var(--comma-text-sm-leading, 1.25rem);
+  --text-base: var(--comma-text-md, 0.9375rem);
+  --text-base--line-height: var(--comma-text-md-leading, 1.5rem);
+  --text-md: var(--comma-text-md, 0.9375rem);
+  --text-md--line-height: var(--comma-text-md-leading, 1.5rem);
+  --text-lg: var(--comma-text-lg, 1.125rem);
+  --text-lg--line-height: var(--comma-text-lg-leading, 1.75rem);
+  --text-xl: var(--comma-text-xl, 1.25rem);
+  --text-xl--line-height: var(--comma-text-xl-leading, 1.875rem);
+  --text-2xl: var(--comma-text-2xl, 1.5rem);
+  --text-2xl--line-height: var(--comma-text-2xl-leading, 2rem);
+  /* Large text is set tighter, as Comma sets it. */
+  --text-lg--letter-spacing: -0.01em;
+  --text-xl--letter-spacing: -0.01em;
+  --text-2xl--letter-spacing: -0.02em;
+
+  /* Type roles (the `--type-*` values above): `text-body`, `text-headline`... */
+  --text-large-title: var(--type-large-title);
+  --text-large-title--line-height: var(--type-large-title-leading);
+  --text-large-title--font-weight: 700;
+  --text-large-title--letter-spacing: -0.02em;
+  --text-title-1: var(--type-title-1);
+  --text-title-1--line-height: var(--type-title-1-leading);
+  --text-title-1--font-weight: 700;
+  --text-title-1--letter-spacing: -0.02em;
+  --text-title-2: var(--type-title-2);
+  --text-title-2--line-height: var(--type-title-2-leading);
+  --text-title-2--font-weight: 600;
+  --text-title-2--letter-spacing: -0.01em;
+  --text-title-3: var(--type-title-3);
+  --text-title-3--line-height: var(--type-title-3-leading);
+  --text-title-3--font-weight: 600;
+  --text-title-3--letter-spacing: -0.01em;
+  --text-headline: var(--type-body);
+  --text-headline--line-height: var(--type-body-leading);
+  --text-headline--font-weight: 600;
+  --text-body: var(--type-body);
+  --text-body--line-height: var(--type-body-leading);
+  --text-callout: var(--type-callout);
+  --text-callout--line-height: var(--type-callout-leading);
+  --text-subheadline: var(--type-subheadline);
+  --text-subheadline--line-height: var(--type-subheadline-leading);
+  --text-footnote: var(--type-footnote);
+  --text-footnote--line-height: var(--type-footnote-leading);
+  --text-caption-1: var(--type-caption-1);
+  --text-caption-1--line-height: var(--type-caption-1-leading);
+  --text-caption-2: var(--type-caption-2);
+  --text-caption-2--line-height: var(--type-caption-2-leading);
+
+  /* Comma's shadows. */
+  --shadow-xs: var(--elevation-xs);
+  --shadow-sm: var(--elevation-sm);
+  --shadow-md: var(--elevation-md);
+  --shadow-lg: var(--elevation-lg);
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-border: var(--border);
+  --color-border-subtle: var(--border-subtle);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+  /* The app is the frame's whole height: its screens scroll, its bars stay. */
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    @apply bg-background font-sans text-body text-foreground antialiased;
+    /* A scroll at a screen's end stays in the app. */
+    overscroll-behavior: contain;
+  }
+  /* Touch: a control is at least 44px, a 7 to 9 mm target (DESIGN.md §9). A pointer keeps shadcn's 36px. */
+  @media (pointer: coarse) {
+    [data-slot="button"]:not([data-size^="icon"]),
+    [data-slot="input"],
+    [data-slot="select-trigger"],
+    [data-slot="textarea"] {
+      min-height: 2.75rem;
+    }
+    [data-slot="button"][data-size^="icon"] {
+      min-width: 2.75rem;
+      min-height: 2.75rem;
+    }
+  }
+  /* Touch: list rows are 44px; a mouse lists denser rows (DESIGN.md §9). */
+  @media (pointer: coarse) {
+    [data-slot="list-row"] {
+      min-height: 2.75rem;
+    }
+  }
+  /* Reduced motion keeps opacity changes and drops movement (DESIGN.md §11). */
+  @media (prefers-reduced-motion: reduce) {
+    .animate-in,
+    .animate-out {
+      animation: none;
+    }
+  }
+}
+
+/*
+ * Navigation motion (DESIGN.md §11). A pushed screen slides in from the
+ * trailing edge over its parent, which moves a third of the way back, and a
+ * popped one slides out the same way: the path tells the person where they
+ * are. Only the compact class slides; wider classes swap at once. A sheet
+ * rises from the bottom on compact and scales in elsewhere.
+ */
+@keyframes screen-push {
+  from {
+    transform: translateX(100%);
+  }
+}
+@keyframes screen-pop {
+  to {
+    transform: translateX(100%);
+  }
+}
+@keyframes screen-under-push {
+  to {
+    transform: translateX(-30%);
+  }
+}
+@keyframes sheet-rise {
+  from {
+    transform: translateY(100%);
+  }
+}
+@keyframes sheet-scale {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+}
+@keyframes sheet-sink {
+  to {
+    transform: translateY(100%);
+  }
+}
+@keyframes sheet-fade {
+  to {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+}
+@keyframes backdrop-in {
+  from {
+    opacity: 0;
+  }
+}
+
+[data-motion="push"] {
+  animation: screen-push 350ms cubic-bezier(0.32, 0.72, 0, 1) both;
+  box-shadow: var(--elevation-lg);
+}
+[data-motion="pop"] {
+  animation: screen-pop 300ms cubic-bezier(0.32, 0.72, 0, 1) both;
+  box-shadow: var(--elevation-lg);
+}
+[data-motion="under"] {
+  animation: screen-under-push 350ms cubic-bezier(0.32, 0.72, 0, 1) both;
+}
+
+/* A toast rises above the tab bar, not over it. */
+body:has([data-slot="tab-bar"]) [data-slot="toast-region"] {
+  bottom: 3rem;
+}
+
+/* A pop uncovers the screen under it from where the push left it. */
+@keyframes screen-uncover {
+  from {
+    transform: translateX(-30%);
+  }
+}
+[data-motion="uncover"] {
+  animation: screen-uncover 300ms cubic-bezier(0.32, 0.72, 0, 1) both;
+}
+
+/* A sheet: a bottom sheet on compact, a centered form sheet from 640px. */
+dialog[data-slot="sheet"] {
+  margin: auto auto 0;
+  width: 100%;
+  max-width: 100%;
+  max-height: calc(100% - 2.75rem);
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-2xl) var(--radius-2xl) 0 0;
+  background: var(--background);
+  color: var(--foreground);
+  box-shadow: var(--elevation-lg);
+  animation: sheet-rise 350ms cubic-bezier(0.32, 0.72, 0, 1) both;
+}
+dialog[data-slot="sheet"][data-closing] {
+  animation: sheet-sink 200ms ease-out both;
+}
+dialog[data-slot="sheet"]::backdrop {
+  background: rgb(0 0 0 / 0.32);
+  animation: backdrop-in 200ms ease-out both;
+}
+@media (min-width: 640px) {
+  dialog[data-slot="sheet"] {
+    margin: auto;
+    max-width: 32rem;
+    max-height: calc(100% - 4rem);
+    border-radius: var(--radius-2xl);
+    animation: sheet-scale 200ms cubic-bezier(0.23, 1, 0.32, 1) both;
+  }
+  dialog[data-slot="sheet"][data-closing] {
+    animation: sheet-fade 150ms ease-out both;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-motion],
+  dialog[data-slot="sheet"],
+  dialog[data-slot="sheet"][data-closing] {
+    animation: none;
+  }
+}

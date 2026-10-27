@@ -13,6 +13,7 @@ import {
   type SessionProductLease,
 } from "@comma/session-contract";
 import type { StatusMenuRow } from "@comma/chat-contract";
+import { realMainClock, type MainClock } from "./clock";
 import type { StatusMenu } from "./native-status-menu";
 import type { StatusTrayUsageSnapshot } from "./status-tray-usage";
 import { shortcutAccelerator } from "./open-comma-shortcut";
@@ -43,7 +44,7 @@ export interface StatusTrayContent {
   inProgressTasks: readonly StatusTrayTask[];
   /** Main's language, when the app language changed after the tray was created. */
   locale?: CommaLocale | undefined;
-  /** Quick Chat runs: a left click on the item starts it, and the menu opens on a right click. */
+  /** Quick Chat runs: the menu has a row that starts it. */
   quickChat?: boolean | undefined;
   /** Comma's credits and the person's own plans, for a signed-in session. */
   usage?: StatusTrayUsageSnapshot | undefined;
@@ -80,10 +81,7 @@ export interface StatusTrayMenuLike {
 
 export interface StatusTrayLike {
   destroy(): void;
-  on(
-    event: "click" | "right-click",
-    listener: (event?: { ctrlKey?: boolean }) => void
-  ): unknown;
+  on(event: "click" | "right-click" | "mouse-enter", listener: () => void): unknown;
   popUpContextMenu(menu?: unknown): void;
   setContextMenu(menu: unknown): void;
   setToolTip(toolTip: string): void;
@@ -95,10 +93,9 @@ export interface StatusTrayHost {
   taskLabel(title: string): string;
   /**
    * Shows these rows; rows that land while the menu is open wait until it
-   * closes. With `click`, a left click on the item runs it instead of opening
-   * the menu, which opens on a right click. `open` runs as the menu opens.
+   * closes. `open` runs as the menu opens.
    */
-  setMenu(items: StatusTrayMenuItem[], click?: () => void, open?: () => void): void;
+  setMenu(items: StatusTrayMenuItem[], open?: () => void): void;
   destroy(): void;
 }
 
@@ -106,8 +103,6 @@ export const statusTrayTaskLimit = 5;
 // The macOS menu is this many points wide. It has no key-equivalent column,
 // so a Task title runs to the right edge, where every shortcut ends.
 export const statusMenuWidth = 260;
-/** The id a left click on the helper's item arrives with, when it runs an action; no row has it. */
-const statusItemClickId = "status-item";
 /** The ids the helper reports as the menu opens and once it has closed. */
 const statusMenuOpenId = "status-menu:open";
 const statusMenuCloseId = "status-menu:close";
@@ -244,7 +239,8 @@ export function createCommaStatusTray({
   onMenuOpened,
   onQuickChat,
   onRefreshUsage,
-  now = Date.now,
+  clock = realMainClock,
+  platform = process.platform,
   productName,
 }: {
   content: StatusTrayContent;
@@ -263,20 +259,18 @@ export function createCommaStatusTray({
   onOpenUsageSettings(): void;
   /** The menu opened: the usage it shows may be read again. */
   onMenuOpened(): void;
-  /** A left click while `content.quickChat`: Quick Chat listens. */
+  /** The Quick Chat row, shown while `content.quickChat`: Quick Chat listens. */
   onQuickChat(): void;
   /** Refresh: the usage is read again now. */
   onRefreshUsage(): void;
-  now?: () => number;
+  clock?: MainClock;
+  platform?: NodeJS.Platform;
   productName: string;
 }) {
-  const host = createHost(
-    messages.electron_tray_running({ productName }, { locale }),
-    () => {
-      installedKey = undefined;
-      install();
-    }
-  );
+  const host = createHost(productName, () => {
+    installedKey = undefined;
+    install();
+  });
   let current = content;
   let destroyed = false;
   let installedKey: string | undefined;
@@ -300,14 +294,17 @@ export function createCommaStatusTray({
         label: messages.electron_tray_open({ productName }, language),
         ...shortcut(next.openCommaAccelerator),
       },
-      // ⌘ held alone starts it, as does a left click on the item.
+      // A double tap of ⌘ (Ctrl on Windows) starts it too.
       ...(next.quickChat
         ? [
             {
               click: onQuickChat,
               id: "quick-chat",
               label: messages.electron_tray_quick_chat({}, language),
-              shortcutText: messages.electron_tray_quick_chat_shortcut({}, language),
+              shortcutText:
+                platform === "win32"
+                  ? messages.electron_tray_quick_chat_shortcut_windows({}, language)
+                  : messages.electron_tray_quick_chat_shortcut({}, language),
             },
           ]
         : []),
@@ -333,7 +330,7 @@ export function createCommaStatusTray({
             { type: "separator" as const },
             ...usageRows(next.usage, {
               locale: next.locale ?? locale,
-              now: now(),
+              now: clock.now(),
               onOpenUsageSettings,
               onRefreshUsage,
               productName,
@@ -360,10 +357,10 @@ export function createCommaStatusTray({
   function install() {
     if (destroyed) return;
     const items = template(current);
-    const key = JSON.stringify([items, current.quickChat === true]);
+    const key = JSON.stringify(items);
     if (key === installedKey) return;
     installedKey = key;
-    host.setMenu(items, current.quickChat ? onQuickChat : undefined, opened);
+    host.setMenu(items, opened);
   }
 
   // Times are said from now as the menu opens; its usage may be read again.
@@ -616,7 +613,6 @@ function capitalized(plan: string, locale: CommaLocale) {
 /** The helper process that draws the macOS menu-bar item. */
 export interface StatusMenuHelper {
   hideStatusMenu(): void;
-  /** `menu.clickId`, when set, arrives at `onSelect` as a left click on the item. */
   showStatusMenu(
     menu: StatusMenu,
     onSelect: (id: string) => void,
@@ -649,7 +645,7 @@ export function fallbackStatusTrayHost({
   current = primary;
   return {
     taskLabel: (title) => current.taskLabel(title),
-    setMenu: (items, click, open) => current.setMenu(items, click, open),
+    setMenu: (items, open) => current.setMenu(items, open),
     destroy() {
       destroyed = true;
       current.destroy();
@@ -690,12 +686,11 @@ export function helperStatusTrayHost({
   };
   return {
     // The helper ends a long title at the menu's right edge.
-    taskLabel: (title) => Array.from(title).slice(0, statusMenuTitleLength).join(""),
-    setMenu(items, itemClick, open) {
+    taskLabel: (title) => graphemes(title).slice(0, statusMenuTitleLength).join(""),
+    setMenu(items, open) {
       if (openClicks) for (const [id, click] of clicks) openClicks.set(id, click);
       previousClicks = clicks;
       clicks = new Map();
-      if (itemClick) clicks.set(statusItemClickId, itemClick);
       if (open) clicks.set(statusMenuOpenId, open);
       const rows = items.map((item, index): StatusMenuRow => {
         if (item.type === "separator") return { kind: "separator" };
@@ -732,7 +727,6 @@ export function helperStatusTrayHost({
       });
       helper.showStatusMenu(
         {
-          ...(itemClick ? { clickId: statusItemClickId } : {}),
           ...(open ? { closeId: statusMenuCloseId, openId: statusMenuOpenId } : {}),
           iconPath,
           rows,
@@ -752,7 +746,8 @@ export function electronStatusTrayHost({
   buildMenu,
   createTray,
   platform = process.platform,
-  schedule = (task) => setTimeout(task, 0),
+  // The next turn of the event loop, not a time: a test clock that stands still does not hold it.
+  schedule = (task) => setImmediate(task),
   toolTip,
 }: {
   buildMenu(template: StatusTrayElectronItem[]): StatusTrayMenuLike;
@@ -764,33 +759,37 @@ export function electronStatusTrayHost({
   const tray = createTray();
   tray.setToolTip(toolTip);
   let destroyed = false;
+  if (platform === "win32") {
+    // Electron 42 loses the tooltip when Explorer rebuilds the tray (#54624).
+    // Restore it before Windows shows the tooltip on hover.
+    tray.on("mouse-enter", () => {
+      if (!destroyed) tray.setToolTip(toolTip);
+    });
+  }
   let menuOpen = false;
   let pending:
     | {
         items: StatusTrayMenuItem[];
-        click: (() => void) | undefined;
         open: (() => void) | undefined;
       }
     | undefined;
   let open: (() => void) | undefined;
   let menu: StatusTrayMenuLike | undefined;
-  let click: (() => void) | undefined;
   // macOS and Windows report the item's clicks, and the menu pops up from
   // here with its rows built as it opens (times are said from then). Linux
-  // shows the tray's context menu itself, unless a click action takes the
-  // left click; its rows were built when they last changed.
+  // shows the tray's context menu itself; its rows were built when they last
+  // changed.
   const popsUp = platform !== "linux";
   const popUp = () => {
     open?.();
     if (menu) tray.popUpContextMenu(menu);
   };
-  // Control-click is a right click on macOS, where a left click opens the menu.
-  tray.on("click", (event) => {
-    if (click && !event?.ctrlKey) click();
-    else if (click || platform === "darwin") popUp();
+  // Either click opens the menu, as a menu-bar item does.
+  tray.on("click", () => {
+    if (popsUp) popUp();
   });
   tray.on("right-click", () => {
-    if (click || popsUp) popUp();
+    if (popsUp) popUp();
   });
 
   function install() {
@@ -798,13 +797,12 @@ export function electronStatusTrayHost({
     // change that lands then is installed once the menu closes.
     if (destroyed || menuOpen || !pending) return;
     const next = buildMenu(pending.items.map(electronItem));
-    click = pending.click;
     open = pending.open;
     pending = undefined;
     next.on("menu-will-show", () => {
       menuOpen = true;
       // A menu popped up from here was told already.
-      if (!popsUp && !click) open?.();
+      if (!popsUp) open?.();
     });
     next.on("menu-will-close", () => {
       menuOpen = false;
@@ -813,14 +811,14 @@ export function electronStatusTrayHost({
       schedule(install);
     });
     menu = next;
-    tray.setContextMenu(popsUp || click ? null : next);
+    tray.setContextMenu(popsUp ? null : next);
   }
 
   return {
     // Electron reads a single "&" as a Windows mnemonic marker and drops it.
     taskLabel: (title) => fittedTaskTitle(title).replaceAll("&", "&&"),
-    setMenu(items, onClick, onOpen) {
-      pending = { items, click: onClick, open: onOpen };
+    setMenu(items, onOpen) {
+      pending = { items, open: onOpen };
       install();
     },
     destroy() {

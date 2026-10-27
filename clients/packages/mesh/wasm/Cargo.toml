@@ -1,0 +1,41 @@
+[package]
+name = "comma-mesh-wasm"
+edition = "2024"
+version = "0.1.0"
+publish = false
+description = "The client core's iroh in the browser (clients/packages/core/src/hosts/web-mesh.ts): a client's endpoint on the relays alone (a browser has no UDP), its connections and streams, and Salix as the relay of last resort, exported with wasm-bindgen as the station's addon exports them to Node. Built once per change of it, shipped prebuilt (systems/station/scripts/native.ts, part client-mesh, target wasm32)."
+
+[lib]
+crate-type = ["cdylib"]
+name = "comma_mesh_wasm"
+
+[dependencies]
+iroh = { version = "=1.0.3", default-features = false, features = ["tls-ring", "unstable-custom-transports"] }
+iroh-base = "=1.0.3"
+n0-watcher = "1"
+noq-proto = { version = "1", default-features = false }
+noq-udp = { version = "1", default-features = false }
+tokio = { version = "1", default-features = false, features = ["sync"] }
+# Must match the wasm-bindgen CLI that native.ts runs.
+wasm-bindgen = "=0.2.129"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde-wasm-bindgen = "0.6"
+futures = "0.3"
+hex = "0.4"
+console_error_panic_hook = "0.1"
+
+# A workspace of its own, as the station's addon is.
+[workspace]
+
+# Small over fast: what a page downloads.
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+
+# The station's vendored crates (systems/station/vendor/README.md): the same iroh as the station and the apps.
+[patch.crates-io]
+noq-udp = { path = "../../../../systems/station/vendor/noq-udp" }
+iroh = { path = "../../../../systems/station/vendor/iroh" }

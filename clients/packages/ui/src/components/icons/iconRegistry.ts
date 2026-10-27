@@ -4,7 +4,7 @@ import {
   filledMediaIconVariant,
   outlinedAiInputIconVariant,
   outlinedAppIconVariant,
-  preThinnedAppIconVariant,
+  realStrokeAppIconVariant,
 } from "./centralIconVariants";
 
 export type IconRegistryEntry = {
@@ -21,7 +21,7 @@ const outlined = outlinedAppIconVariant;
 const outlinedAiInput = outlinedAiInputIconVariant;
 const filledMedia = filledMediaIconVariant;
 const filled = filledAppIconVariant;
-const preThinned = preThinnedAppIconVariant;
+const realStroke = realStrokeAppIconVariant;
 
 /** A content brand mark, loaded on first use from `./brandMarks`. */
 const brandMark = <Key extends string>(
@@ -212,6 +212,13 @@ export const iconRegistry = [
     figmaSource: "Comma App / Recommendations / footer action (circle-plus, add)",
   },
   {
+    exportName: "CircleMinusOutlineIcon",
+    centralName: "IconCircleMinus",
+    variant: outlined,
+    source: "central",
+    figmaSource: "Comma App / Routines / card dismiss (circle-minus, remove)",
+  },
+  {
     exportName: "LoadingCircleIcon",
     centralName: "IconLoadingCircle",
     variant: outlinedAiInput,
@@ -305,6 +312,13 @@ export const iconRegistry = [
     source: "figma",
     figmaNodeId: "7593:390;7592:7072;3471:601890",
     figmaSource: "AI Input / fill / send",
+  },
+  {
+    exportName: "ArrowDownIcon",
+    centralName: "IconArrowDown",
+    variant: outlined,
+    source: "central",
+    figmaSource: "Task detail / header / navigate down",
   },
   {
     exportName: "ArrowUpRightIcon",
@@ -526,8 +540,7 @@ export const iconRegistry = [
   {
     exportName: "PanelLeftIcon",
     centralName: "IconLayoutAlignLeft",
-    // Central ships this one fill-only; taken pre-thinned (see preThinnedAppIconVariant).
-    variant: preThinned,
+    variant: outlined,
     source: "figma",
     figmaNodeId: "7621:1033;7781:25190",
     figmaSource: "Chat panel / panel-header / device",
@@ -535,8 +548,7 @@ export const iconRegistry = [
   {
     exportName: "PanelRightIcon",
     centralName: "IconLayoutAlignRight",
-    // Central ships this one fill-only; taken pre-thinned (see preThinnedAppIconVariant).
-    variant: preThinned,
+    variant: outlined,
     source: "figma",
     figmaNodeId: "7621:1033;7545:21858",
     figmaSource: "Chat panel / panel-header / collapse",
@@ -544,8 +556,7 @@ export const iconRegistry = [
   {
     exportName: "ColumnWideAddIcon",
     centralName: "IconColumnWideAdd",
-    // Central ships this one fill-only; taken pre-thinned (see preThinnedAppIconVariant).
-    variant: preThinned,
+    variant: outlined,
     source: "central",
     figmaSource: "Comma App / window bar / Chat Sidebar new tab",
   },
@@ -765,9 +776,10 @@ export const iconRegistry = [
   {
     exportName: "Cursor1Icon",
     centralName: "IconCursor1",
-    // Central draws this one at 2.05556, which `[stroke-width="2"]` cannot
-    // thin, so it comes pre-thinned (see preThinnedAppIconVariant).
-    variant: preThinned,
+    // The stroke-2 package draws this one at 2.05556, which the shared stroke
+    // rule does not match; the 1.5 package draws a real 1.5 stroke (see
+    // realStrokeAppIconVariant).
+    variant: realStroke,
     source: "central",
     figmaSource: "Comma App / Drive / selection bar Ask Comma agent (cursor-1, arrow)",
   },
@@ -992,6 +1004,13 @@ export const iconRegistry = [
     figmaSource: "Task page header / expand task details (list-bullets)",
   },
   {
+    exportName: "LayoutGridIcon",
+    centralName: "IconLayoutGrid2",
+    variant: outlined,
+    source: "central",
+    figmaSource: "Apps page view toggle / gallery (layout-grid-2)",
+  },
+  {
     exportName: "FlashcardsIcon",
     centralName: "IconFlashcards",
     variant: outlined,
@@ -1001,8 +1020,9 @@ export const iconRegistry = [
   {
     exportName: "BookIcon",
     centralName: "IconBook",
-    // Central ships this one fill-only; taken pre-thinned (see preThinnedAppIconVariant).
-    variant: preThinned,
+    // The stroke-2 package ships this one fill-only; the 1.5 package draws it
+    // as a stroke (see realStrokeAppIconVariant).
+    variant: realStroke,
     source: "figma",
     figmaNodeId: "7538:17946",
     figmaSource: "Left Sidebar / home / Books nav",
@@ -1111,6 +1131,38 @@ export const iconRegistry = [
       "Comma App (P0HbtMUd3lTy0FcGn0ojxT) / Task properties / macbook, laptop, computer",
   },
   {
+    exportName: "PhoneDynamicIslandIcon",
+    centralName: "IconPhoneDynamicIsland",
+    variant: outlined,
+    source: "central",
+    figmaSource: "Chat message source / phone",
+  },
+  {
+    exportName: "Smartwatch2Icon",
+    centralName: "IconSmartwatch2",
+    // The stroke-2 package ships this one fill-only; the 1.5 package draws it
+    // as a stroke (see realStrokeAppIconVariant).
+    variant: realStroke,
+    source: "central",
+    figmaSource: "Chat message source / Apple Watch",
+  },
+  {
+    exportName: "MacbookAirIcon",
+    centralName: "IconMacbookAir",
+    // The stroke-2 package ships this one fill-only; the 1.5 package draws it
+    // as a stroke (see realStrokeAppIconVariant).
+    variant: realStroke,
+    source: "central",
+    figmaSource: "Chat message source / computer",
+  },
+  {
+    exportName: "WindowAppIcon",
+    centralName: "IconWindowApp",
+    variant: outlined,
+    source: "central",
+    figmaSource: "Comma App / Right panel / Mini App running in its own window",
+  },
+  {
     exportName: "WindowCursorIcon",
     centralName: "IconWindowCursor",
     variant: outlined,
@@ -1155,8 +1207,7 @@ export const iconRegistry = [
   {
     exportName: "LayoutColumnIcon",
     centralName: "IconLayoutColumn",
-    // Central ships this one fill-only; taken pre-thinned (see preThinnedAppIconVariant).
-    variant: preThinned,
+    variant: outlined,
     source: "central",
     figmaSource: "Comma App / Tasks view picker / layout-column, grid, column",
   },
@@ -1350,6 +1401,21 @@ export const iconRegistry = [
       "Left Sidebar / pinned loading; Comma App (P0HbtMUd3lTy0FcGn0ojxT) / Status Indicator / In progress / loader, spinner",
   },
   {
+    exportName: "DifferenceModifiedIcon",
+    centralName: "IconDifferenceModified",
+    variant: outlined,
+    source: "central",
+    figmaSource: "Task panel / coding changes / Central Icons catalog",
+  },
+  {
+    exportName: "MergeConflictIcon",
+    centralName: "IconMergeConflict",
+    variant: outlined,
+    source: "central",
+    figmaSource:
+      "Task panel / coding pull request with conflicts / Central Icons catalog",
+  },
+  {
     exportName: "BubbleAlertIcon",
     centralName: "IconBubbleAlert",
     variant: outlined,
@@ -1477,18 +1543,17 @@ export const iconRegistry = [
   {
     exportName: "ShapesPlusXSquareCircleIcon",
     centralName: "IconShapesPlusXSquareCircle",
-    // Fill-only upstream, so it is taken pre-thinned rather than thinned by CSS.
-    variant: preThinned,
+    variant: outlined,
     source: "central",
     figmaSource: "Settings / Recommendations category",
   },
   {
     exportName: "SquareGridCircleIcon",
     centralName: "IconSquareGridCircle",
-    // Central draws this one at 1.995 in the stroke-2 package, which the
-    // global `[stroke-width="2"]` token cannot thin; the 1.5 package is a
-    // real 1.5 stroke, so it is taken pre-thinned.
-    variant: preThinned,
+    // The stroke-2 package draws this one at 1.995, which the shared stroke
+    // rule does not match; the 1.5 package draws a real 1.5 stroke (see
+    // realStrokeAppIconVariant).
+    variant: realStroke,
     source: "central",
     figmaSource:
       "Comma App / Tasks filter / Platform / square-grid-circle, layout, grid, list, category, categories",

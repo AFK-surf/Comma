@@ -1,7 +1,10 @@
 import { CoreClient, topicKey, type Topic } from "@comma/core-kernel/client";
+import { NodeSql } from "@comma/core-kernel/node-sql";
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
+import { accountDbName } from "../src/account.ts";
 import type { DownloadValue, FileSource } from "../src/contract.ts";
+import { fileKey } from "../src/downloads.ts";
 import {
   FakeDownloads,
   FakeHost,
@@ -35,9 +38,23 @@ const blob: FileSource = {
   },
 };
 
-function setup() {
-  const host = new FakeHost();
-  const downloads = new FakeDownloads(host.api);
+/** The session while the core still finds out who is signed in. */
+const starting = {
+  authority: { authorityInstanceId: "authority-1", kind: "electron_main" },
+  cleanup: { revocation: "idle" },
+  contractVersion: 1,
+  generation: 0,
+  revision: 0,
+  phase: "initializing",
+  principal: null,
+  session: null,
+};
+
+function setup(
+  host = new FakeHost(),
+  downloads = new FakeDownloads(host.api),
+  sessions: unknown[] = [signedIn()]
+) {
   host.downloads = downloads;
   const core = startTestCore(host);
   const client = new CoreClient(inProcessOpener(core, host), {
@@ -62,11 +79,27 @@ function setup() {
     await host.time!.pass(100);
     return done;
   };
-  core.observeSession(signedIn());
+  for (const session of sessions) core.observeSession(session);
   return { host, core, downloads, time: host.time!, api: host.api, watch, call };
 }
 
 describe("a file downloaded to the device", () => {
+  it("goes out for the session as it is now, a new generation of the same one", async () => {
+    const t = setup();
+    t.api.on("GET", attachmentPath, () => ({ status: 200, headers: [], body: clip }));
+    const shown = t.watch(attachment);
+    await t.time.pass(100);
+    t.core.observeSession(signedIn("user-1", { generation: 2 }));
+    await t.time.pass(100);
+
+    await t.call("downloads.start", { source: attachment, name: "clip.mp4" });
+    await t.time.pass(100);
+    expect(t.downloads.requests.map((request) => request.lease.generation)).toEqual([
+      2,
+    ]);
+    expect(shown().status).toBe("ready");
+  });
+
   it("is downloaded once into the account's directory, and is ready there for every surface", async () => {
     const t = setup();
     t.api.on("GET", attachmentPath, () => ({ status: 200, headers: [], body: clip }));
@@ -140,6 +173,50 @@ describe("a file downloaded to the device", () => {
     await t.time.pass(100);
     expect(shown().status).toBe("idle");
     expect(t.downloads.files.size).toBe(0);
+  });
+
+  it("keeps the account's files when the core starts again: before it knows who is signed in, and while their data opens", async () => {
+    const t = setup();
+    t.api.on("GET", attachmentPath, () => ({ status: 200, headers: [], body: clip }));
+    const before = t.watch(attachment);
+    await t.call("downloads.start", { source: attachment, name: "clip.mp4" });
+    const path = before().path!;
+    t.core.close();
+    t.host.openDbMs = 20;
+    const again = setup(t.host, t.downloads, [starting, signedIn()]);
+    const shown = again.watch(attachment);
+    await again.time.pass(100);
+    expect(again.downloads.files.get(path)).toEqual(clip);
+    expect(shown()).toMatchObject({ status: "ready", path });
+  });
+
+  it("drops the index an earlier core kept for files it had removed: they download again when shown", async () => {
+    const host = new FakeHost();
+    const name = accountDbName("https://api.comma.test", "user-1");
+    const db = NodeSql.memory(true);
+    db.exec(`
+      CREATE TABLE doc (name TEXT PRIMARY KEY, json TEXT NOT NULL, read_at INTEGER NOT NULL);
+      CREATE TABLE meta (key TEXT PRIMARY KEY, json TEXT NOT NULL);
+      PRAGMA user_version = 1;
+    `);
+    const key = fileKey(attachment);
+    const kept = {
+      [key]: { path: `${name}/${key}/clip.mp4`, size: clip.length, usedAt: 1_000 },
+    };
+    db.run("INSERT INTO doc (name, json, read_at) VALUES (?, ?, ?)", [
+      "downloads",
+      JSON.stringify(kept),
+      1_000,
+    ]);
+    host.dbs.set(name, db);
+    const t = setup(host);
+    t.api.on("GET", attachmentPath, () => ({ status: 200, headers: [], body: clip }));
+    const shown = t.watch(attachment);
+    await t.time.pass(100);
+    expect(shown().status).toBe("idle");
+    await t.call("downloads.start", { source: attachment, name: "clip.mp4" });
+    expect(shown()).toMatchObject({ status: "ready", path: `${name}/${key}/clip.mp4` });
+    expect(t.downloads.files.get(shown().path!)).toEqual(clip);
   });
 
   it("removes another account's files when the session changes, and every file once signed out", async () => {

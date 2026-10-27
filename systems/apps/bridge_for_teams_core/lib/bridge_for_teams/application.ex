@@ -60,6 +60,25 @@ defmodule BridgeForTeams.Application do
         slack_history_reconciler_enabled?(),
         BridgeForTeams.SlackHistoryOnboarding.Reconciler
       )
+      |> maybe_add(
+        SystemsRuntime.get_env(:bridge_for_teams_core, BridgeForTeams.DailyBrief.Retention, [])
+        |> Keyword.get(:enabled, true),
+        BridgeForTeams.DailyBrief.Retention
+      )
+      |> maybe_add(
+        SystemsRuntime.get_env(:bridge_for_teams_core, BridgeForTeams.ContextLifecycle.Worker, [])
+        |> Keyword.get(:enabled, true),
+        BridgeForTeams.ContextLifecycle.Worker
+      )
+      |> maybe_add(
+        SystemsRuntime.get_env(
+          :bridge_for_teams_core,
+          BridgeForTeams.DailyBrief.DeliveryWorker,
+          []
+        )
+        |> Keyword.get(:enabled, true),
+        BridgeForTeams.DailyBrief.DeliveryWorker
+      )
 
     opts = [strategy: :one_for_one, name: BridgeForTeams.Supervisor]
     SystemsRuntime.Supervisor.start_link(children, opts)

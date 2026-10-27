@@ -4,6 +4,8 @@
 //   say:<text>    a reply                       fail:auth|rate|model   turn/completed failed with codexErrorInfo
 //   slow:<n>      n deltas, 50 ms apart          cmd                    a command with output, then a reply
 //   again         a reply, then a turn of its own                      ask   asks the client something first
+//   mcp           a reply of the thread's MCP status: failed when it was loaded with an MCP url on port 1 (closed), kept
+//                 while it stays loaded (thread/resume rejoins it), loaded again after thread/unsubscribe
 //   exit          exits 4 in the middle of the turn
 //   hold:<k>      k deltas, then waits until steered (the steers its deltas) or interrupted
 //   gate:<n>:<k>:<name>   k of n deltas; the rest once FAKE_DUMP.<name>.a (a fifo) is written, then FAKE_DUMP.<name>.said
@@ -43,8 +45,14 @@ const threads = new Map();
 const answers = new Map();
 
 function thread(id) {
-  if (!threads.has(id)) threads.set(id, { turn: null, interrupted: false, steers: [] });
+  if (!threads.has(id)) threads.set(id, { turn: null, interrupted: false, steers: [], mcp: null });
   return threads.get(id);
+}
+
+/// Loads thread `id` with `config`'s MCP url, unless it is loaded.
+function load(id, config) {
+  const t = thread(id);
+  t.mcp ??= String(config?.["mcp_servers.stillfail.url"] ?? "").includes(":1/") ? "failed" : "connected";
 }
 
 /// A reply of `texts`, `gap` ms apart; `before(i)`, if given, waited for before the i-th (and before its end, at i =
@@ -115,6 +123,8 @@ async function runTurn(threadId, text) {
         await gate(`${at}.b`);
       }
     });
+  } else if (text === "mcp") {
+    await agentMessage(threadId, t, [t.mcp], 0);
   } else {
     await agentMessage(threadId, t, [text.startsWith("say:") ? text.slice(4) : text], 0);
   }
@@ -144,11 +154,11 @@ function handle(msg) {
   if (!initialized) return fail("Not initialized");
   if (method === "thread/start") {
     const threadId = `th-${++n}`;
-    thread(threadId);
+    load(threadId, params.config);
     return reply({ thread: { id: threadId } });
   }
   if (method === "thread/resume") {
-    thread(params.threadId);
+    load(params.threadId, params.config);
     return reply({ thread: { id: params.threadId } });
   }
   if (method === "turn/start") {
@@ -172,7 +182,11 @@ function handle(msg) {
     wakes.get(params.threadId)?.();
     return reply({});
   }
-  if (method === "thread/unsubscribe") return reply({ status: "unsubscribed" });
+  if (method === "thread/unsubscribe") {
+    thread(params.threadId).mcp = null;
+    return reply({ status: "unsubscribed" });
+  }
+  if (method === "mcpServerStatus/list") return reply({ data: [{ name: "stillfail", runtimeStatus: thread(params.threadId).mcp, tools: {} }], nextCursor: null });
   if (method === "account/rateLimits/read") return reply({ rateLimits: { primary: { usedPercent: 5 } } });
   if (method === "model/list") {
     if (!params.cursor)

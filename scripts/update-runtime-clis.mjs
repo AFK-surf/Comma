@@ -1,9 +1,8 @@
 #!/usr/bin/env node
 // Moves the Claude Code and Codex CLIs that Compute runtime images install to
-// their latest npm releases: systems/runtime-images/runtime-dependencies.lock.json
-// and the Claude version the Connector accepts for native login and import
-// (runtimeAuthClaudeVersion). Pi is left alone; its releases change the SDK the
-// Connector drives and need a reviewed upgrade.
+// their latest npm releases (systems/runtime-images/runtime-dependencies.lock.json).
+// Pi is left alone; its releases change the SDK the Connector drives and need a
+// reviewed upgrade.
 //
 // Prints a JSON summary of what changed. `--check` changes nothing and exits 1
 // when a newer release exists. The weekly Runtime CLI updates workflow runs this
@@ -15,7 +14,6 @@ import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const lockPath = join(root, "systems/runtime-images/runtime-dependencies.lock.json");
-const claudeAuthPath = join(root, "systems/connector/salix-connect/runtime_auth_claude.go");
 const registry = "https://registry.npmjs.org";
 
 /** The lock entries of one CLI: its main package and per-platform packages. */
@@ -55,13 +53,6 @@ export function updateLock(lock, name, version, dists) {
   return next;
 }
 
-/** The Go source with runtimeAuthClaudeVersion set to `version`. */
-export function updateClaudeAuthVersion(source, version) {
-  const pattern = /^const runtimeAuthClaudeVersion = "[^"]+"$/m;
-  if (!pattern.test(source)) throw new Error("runtimeAuthClaudeVersion not found");
-  return source.replace(pattern, `const runtimeAuthClaudeVersion = "${version}"`);
-}
-
 async function npm(path) {
   const response = await fetch(`${registry}/${path}`);
   if (!response.ok) throw new Error(`npm ${path}: ${response.status}`);
@@ -71,7 +62,6 @@ async function npm(path) {
 async function main() {
   const check = process.argv.includes("--check");
   let lock = JSON.parse(readFileSync(lockPath, "utf8"));
-  let claudeAuth = readFileSync(claudeAuthPath, "utf8");
   const changes = [];
   for (const [name, cli] of Object.entries(clis)) {
     const latest = (await npm(`${cli.package}/latest`)).version;
@@ -85,12 +75,8 @@ async function main() {
       dists[pkg] = (await npm(`${pkg}/${latest}`)).dist;
     }
     lock = updateLock(lock, name, latest, dists);
-    if (name === "claude") claudeAuth = updateClaudeAuthVersion(claudeAuth, latest);
   }
-  if (!check && changes.length) {
-    writeFileSync(lockPath, JSON.stringify(lock, null, 2) + "\n");
-    writeFileSync(claudeAuthPath, claudeAuth);
-  }
+  if (!check && changes.length) writeFileSync(lockPath, JSON.stringify(lock, null, 2) + "\n");
   process.stdout.write(JSON.stringify(changes) + "\n");
   if (check && changes.length) process.exitCode = 1;
 }

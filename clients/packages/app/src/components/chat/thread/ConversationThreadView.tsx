@@ -75,7 +75,6 @@ export function ConversationThreadView({
                 freezeContentInlineSizeOnWindowResize={
                   freezeContentInlineSizeOnWindowResize
                 }
-                locale={locale}
                 overlay={
                   replyThread.onExit ? (
                     <ReplyThreadOverlay

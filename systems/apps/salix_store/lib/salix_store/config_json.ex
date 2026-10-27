@@ -55,7 +55,8 @@ defmodule SalixStore.ConfigJson do
                  (explicitly enabled, bounded worker settings and a non-empty
                  list of tenant/group ownership pairs),
                  runtime_source (connected_runtime | compute_workload |
-                 native_runtime for new Meetings),
+                 native_runtime for the explicit HTTP driver only.
+                 SalixConnect selects new Meeting runtimes automatically),
                  master_token_factory.{base_url,secret,profile} (native
                  Meet Google account join), guest_factory.{url,secret}
                  (native Meet guest handoff Worker), live_asr.{provider,config}
@@ -237,7 +238,7 @@ defmodule SalixStore.ConfigJson do
         {:salix_meet, :meeting_lark_activation_enabled,
          boolean(json, ~w(meetings lark_action_activation_enabled))},
         {:salix_web, :meeting_asr_template, str(json, ~w(meetings asr_template))},
-        {:salix_meet, :default_runtime_source, str(json, ~w(meetings runtime_source))},
+        {:salix_meet, :http_runtime_source, str(json, ~w(meetings runtime_source))},
         {:salix_meet_native, :master_token_factory, master_token_factory(json)},
         {:salix_meet_native, :token_factory, guest_factory(json)},
         {:salix_meet_native, :live_asr, live_asr(json)},

@@ -109,6 +109,7 @@ export function useConversationThread({
     anchoredTails,
     assistantDraft,
     assistantResponseSlotId,
+    cancelHistoryRequest: history.cancelHistoryRequest,
     historyReveal: history.historyReveal,
     historyScope,
     layout,

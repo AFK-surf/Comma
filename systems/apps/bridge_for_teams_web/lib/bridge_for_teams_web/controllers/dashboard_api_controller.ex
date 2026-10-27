@@ -27,6 +27,7 @@ defmodule BridgeForTeamsWeb.DashboardAPIController do
 
   alias BridgeForTeamsWeb.{
     DashboardCLILogin,
+    DashboardDailyBrief,
     DashboardDataPolicy,
     DashboardHealth,
     DashboardMeetings,
@@ -76,6 +77,7 @@ defmodule BridgeForTeamsWeb.DashboardAPIController do
           "triage" => admin?,
           "information_flow" => admin?,
           "meetings" => admin?,
+          "daily_brief" => admin?,
           "settings" => admin?
         },
         "projects" =>
@@ -279,8 +281,8 @@ defmodule BridgeForTeamsWeb.DashboardAPIController do
 
   def project_agent_config(conn, %{"org" => slug, "id" => id, "agent_id" => agent}),
     do:
-      swarm_action(conn, slug, id, fn org, _user, project, role ->
-        DashboardSwarmAgents.config(org, project, role, agent)
+      swarm_action(conn, slug, id, fn org, user, project, role ->
+        DashboardSwarmAgents.config(org, user, project, role, agent)
       end)
 
   def configure_project_agent(conn, %{"org" => slug, "id" => id, "agent_id" => agent} = params),
@@ -835,6 +837,23 @@ defmodule BridgeForTeamsWeb.DashboardAPIController do
       DashboardDataPolicy.change(org, id, change, params)
     end)
   end
+
+  # ---- Daily brief (owner/admin) ----
+
+  def daily_brief(conn, %{"org" => slug}),
+    do: admin_action(conn, slug, fn org, _user -> DashboardDailyBrief.overview(org) end)
+
+  def save_daily_brief(conn, %{"org" => slug} = params),
+    do: admin_action(conn, slug, fn org, _user -> DashboardDailyBrief.save(org, params) end)
+
+  def request_daily_brief(conn, %{"org" => slug, "member" => member_id}),
+    do:
+      admin_action(conn, slug, fn org, _user ->
+        DashboardDailyBrief.request_brief(org, member_id)
+      end)
+
+  def sync_daily_brief_members(conn, %{"org" => slug}),
+    do: admin_action(conn, slug, fn org, _user -> DashboardDailyBrief.sync_members(org) end)
 
   # ---- Slack triage (owner/admin; members get the non-member 404) ----
 

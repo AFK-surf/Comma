@@ -1,5 +1,6 @@
 const COMMA_CONTEXT_MARKER = "[[comma-context]]";
-const COMMA_PROTOCOL_MARKER = "[[comma-protocol]]";
+/** What follows it in a message is for the model alone: no page shows it (`stripCommaProtocolMarkers`). */
+export const COMMA_PROTOCOL_MARKER = "[[comma-protocol]]";
 // A private fence is fail-closed: if transport truncation drops its closing
 // marker, everything from the opener to EOF remains non-display content.
 const COMMA_FENCE_PATTERN = /```comma:[\s\S]*?(?:```|$)/g;

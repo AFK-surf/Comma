@@ -1,4 +1,4 @@
-import type { RefObject } from "react";
+import { memo, type RefObject } from "react";
 import { Menu, MenuItem, MenuPopover, MenuSeparator } from "./Menu";
 import type { MenuPointerOffsets } from "./pointerPosition";
 import { menuCompactClasses } from "./styles";
@@ -6,7 +6,7 @@ import { menuCompactClasses } from "./styles";
 export type MediaContextMenuAction = "add-to-context" | "copy" | "copy-frame" | "save";
 
 /* oxlint-disable jsx-a11y/no-autofocus -- Context menus receive keyboard focus when opened. */
-export function MediaContextMenu({
+export const MediaContextMenu = memo(function MediaContextMenu({
   triggerRef,
   isOpen,
   onOpenChange,
@@ -73,4 +73,4 @@ export function MediaContextMenu({
       </Menu>
     </MenuPopover>
   );
-}
+});

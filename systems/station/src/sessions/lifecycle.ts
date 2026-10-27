@@ -29,6 +29,8 @@ export type NewChat = {
   createdBy: string;
   /// The key the asking client knows it by until it is made (`clientKey`): the sidebar's rows say it for a while.
   clientKey?: string | null;
+  /// The Station whose Task it takes part in (tasks.ts), whose Workspace's account source it keeps to.
+  host?: string | null;
 };
 
 const trimmed = (v: string | null | undefined) => {
@@ -99,7 +101,8 @@ export function say(hub: Hub, thread: number, user: string, text: string, attach
 export function newSession(hub: Hub, options: NewChat, lang: Lang = stationLang(), open?: (key: string) => ThreadRow): [string, ThreadRow] {
   const config = hub.config();
   const runtime = options.runtime;
-  const profiles = config.profiles.filter((p) => p.runtimes.includes(runtime));
+  // Refused with the reason when the Workspace it comes from chose no account for the runtime here.
+  const profiles = hub.accounts.candidates(runtime, options.host ?? null, lang);
   if (profiles.length === 0) throw new Error(`no ${runtime} profile configured`);
   const model = trimmed(options.model);
   const pinned = options.profile ?? null;
@@ -154,7 +157,19 @@ export function newSession(hub: Hub, options: NewChat, lang: Lang = stationLang(
 /// with all it had; its idle process ends first so the change takes. Not while a turn runs. Another model starts over
 /// what went with the old one: its effort back to the runtime's default, its profile back to the station's choice
 /// (picked here, among those with the model enabled), unless given with it.
+/// Another runtime (Claude Code for Codex, say) is that runtime's model, effort and profile as given, else its defaults
+/// and the pool's pick; its next turn goes on afresh in a new runtime session there (afresh.ts), and its history reads
+/// on from what it ran before. Its chats and files stay as they are.
 export async function configure(hub: Hub, key: string, change: SessionChange, lang: Lang = stationLang()) {
+  const rerun = hub.accounts.rerun(key, change, lang);
+  if (rerun !== null) {
+    if (hub.processState(key) === "running") throw new Error(tr(lang, "station.session.busy"));
+    const was = hub.store.getSession(key)?.runtime ?? "";
+    await hub.evict(key);
+    hub.store.setSessionRuntime(key, rerun.runtime, rerun.profile, rerun.pinned, rerun.model, rerun.effort, rerun.fast);
+    log.info("hub", "session moved to another runtime", { session: key, was, runtime: rerun.runtime, profile: rerun.profile, model: rerun.model });
+    return goOnAfterAllowance(hub, key);
+  }
   const { row, model, effort, profile } = hub.accounts.change(key, change, lang);
   if (hub.processState(key) === "running") throw new Error(tr(lang, "station.session.busy"));
   await hub.evict(key);
@@ -163,9 +178,14 @@ export async function configure(hub: Hub, key: string, change: SessionChange, la
   if (change.fast !== undefined) hub.store.setSessionFast(key, change.fast);
   if (profile === null) hub.accounts.runOn(key);
   log.info("hub", "session changed", { session: key, profile: hub.store.getSession(key)?.profile ?? "", model, effort });
-  // Its last turn stopped at the allowance: changed, it goes on by itself.
+  goOnAfterAllowance(hub, key);
+}
+
+/// Its last turn stopped at the allowance: changed, it goes on by itself.
+function goOnAfterAllowance(hub: Hub, key: string): void {
+  const row = hub.store.getSession(key);
   const last = hub.store.lastTurn(key);
-  if (last?.outcome === "failed" && (last.detail ?? "").startsWith("rate_limit")) void hub.actor(row).goOn();
+  if (row && last?.outcome === "failed" && (last.detail ?? "").startsWith("rate_limit")) void hub.actor(row).goOn();
 }
 
 /// Where an archived session's transcript copy is.
@@ -271,6 +291,7 @@ export async function deleteSession(hub: Hub, key: string) {
 /// the thread in. The originals are not touched. Where the transcript read is.
 function copyTranscript(roots: Roots, session: MachineSession, shared: string): string {
   const root = session.runtime === "claude" ? roots.claude : roots.codex;
+  if (root === null) throw new Error(`${session.path} is not the machine's`);
   const files = [session.path];
   if (session.runtime === "codex") {
     const rollouts: string[] = [];
@@ -301,7 +322,7 @@ export function continueMachineSession(hub: Hub, roots: Roots, found: MachineSes
   const { store } = hub;
   const runtime = found.runtime;
   // One it went on in (a runtime session left for a new one included).
-  const going = store.listSessions().find((r) => r.runtime === runtime && store.runtimeSessions(r.key).includes(found.id));
+  const going = store.listSessions().find((r) => store.runtimeSessions(r.key).some((ran) => ran.runtime === runtime && ran.id === found.id));
   if (going) {
     const thread = store.homeChat(going.key);
     if (thread) {
@@ -317,7 +338,7 @@ export function continueMachineSession(hub: Hub, roots: Roots, found: MachineSes
   if (!(statSync(found.cwd, { throwIfNoEntry: false })?.isDirectory() ?? false)) throw new Error(tr(lang, "station.session.cwdGone", { cwd: found.cwd }));
   if (unreadableDir(found.cwd)) throw new Error(unreadableDirMessage(lang, found.cwd));
   const config = hub.config();
-  const profiles = config.profiles.filter((p) => p.runtimes.includes(runtime));
+  const profiles = hub.accounts.candidates(runtime, null, lang);
   if (profiles.length === 0) throw new Error(tr(lang, "station.session.noProfile", { runtime: runtimeTitle(runtime) }));
   // The model it ran, where a profile has it enabled; else the one picked runs its own.
   const keptModel = found.model !== null && profiles.some((p) => p.models.includes(found.model!)) ? found.model : null;

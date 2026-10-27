@@ -158,6 +158,47 @@ defmodule SalixAgent.AgentControlTest do
              SalixAgent.AgentControl.configure(id, %{"reply_style" => "default"})
   end
 
+  test "a conditional write checks the record it replaces, also after a write lands in between" do
+    agent = create_agent!()
+    {id, tenant} = {agent["agent_id"], agent["tenant_id"]}
+
+    unchanged = fn record ->
+      if record["name"] == agent["name"], do: :ok, else: {:error, :changed}
+    end
+
+    # Another write lands after this one read the record and before it stores
+    # its own: the retry sees it, and the precondition refuses.
+    interleaved = fn record ->
+      if record["name"] == agent["name"] do
+        {:ok, _} = SalixAgent.AgentControl.configure(id, %{"name" => "Renamed elsewhere"})
+      end
+
+      unchanged.(record)
+    end
+
+    assert {:error, :changed} =
+             SalixAgent.AgentControl.configure_if(
+               id,
+               %{"router_system_prompt" => "Mine."},
+               tenant,
+               interleaved
+             )
+
+    assert {:ok, record} = SalixAgent.AgentControl.get_record(id)
+    assert record["name"] == "Renamed elsewhere"
+    refute record["router_system_prompt"] == "Mine."
+
+    assert {:ok, %{"router_system_prompt" => "Mine."}} =
+             SalixAgent.AgentControl.configure_if(
+               id,
+               %{"router_system_prompt" => "Mine."},
+               tenant,
+               fn _ ->
+                 :ok
+               end
+             )
+  end
+
   test "list reads each control record once and no related resource" do
     internal = create_agent!()
     sibling = create_agent!(internal["tenant_id"])

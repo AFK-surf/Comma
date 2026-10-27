@@ -9,6 +9,7 @@ import {
 } from "@comma/session-contract";
 import type { CommaLocale } from "@comma/i18n";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { realMainClock } from "../clock";
 import { QuickChatService, type QuickChatServiceOptions } from "../quick-chat";
 
 vi.mock("electron-log/main", () => ({
@@ -134,7 +135,7 @@ function createFixture(overrides: Partial<QuickChatServiceOptions> = {}) {
     isTestRun: () => false,
     locale: () => locale,
     notch,
-    now: () => 1_787_563_260_000,
+    clock: { ...realMainClock, now: () => 1_787_563_260_000 },
     openRoute,
     osRelease: () => "25.6.0",
     pathExists: () => true,
@@ -207,6 +208,44 @@ describe("QuickChatService", () => {
     expect(older.hosts).toHaveLength(0);
     expect(guest.hosts).toHaveLength(0);
     expect(testRun.hosts).toHaveLength(0);
+  });
+
+  it("starts Windows' native helper from Windows 10 2004 and tells it Comma's AppUserModelID", async () => {
+    const started: Array<{
+      path: string;
+      args: readonly string[];
+      env: NodeJS.ProcessEnv;
+      host: FakeQuickChatHost;
+    }> = [];
+    const windows = (osRelease: string) =>
+      createFixture({
+        hostPath: "C:/Comma/resources/native/win32/x64/QuickChatHost.exe",
+        appUserModelId: "surf.comma.desktop",
+        osRelease: () => osRelease,
+        platform: "win32",
+        spawnHost: (path, env, args) => {
+          const host = new FakeQuickChatHost();
+          started.push({ path, args, env, host });
+          return host as unknown as ChildProcessWithoutNullStreams;
+        },
+      });
+    windows("10.0.18363").service.sessionChanged(signedIn(1));
+    expect(started).toHaveLength(0);
+
+    windows("10.0.26100").service.sessionChanged(signedIn(1));
+    expect(started).toHaveLength(1);
+    expect(started[0]).toMatchObject({
+      path: "C:/Comma/resources/native/win32/x64/QuickChatHost.exe",
+      args: [],
+    });
+    // What a Windows program needs to start, and nothing of Main's own.
+    expect(Object.keys(started[0]!.env)).not.toContain("LANG");
+    const host = started[0]!.host;
+    host.emitEvent({ type: "ready" });
+    await expect(host.nextCommand()).resolves.toMatchObject({
+      type: "configure",
+      appUserModelId: "surf.comma.desktop",
+    });
   });
 
   it("shows a send immediately, then opens its acknowledged Home without inventing a Task", async () => {
@@ -687,6 +726,33 @@ describe("QuickChatService", () => {
     fixture.service.close();
   });
 
+  it("gives the helper a live dictation ticket, or none when the server has no live dictation", async () => {
+    const dictationTicket = vi
+      .fn<() => Promise<{ url: string; ticket: string }>>()
+      .mockResolvedValueOnce({
+        url: "wss://api.comma.test/v1/comma/dictation",
+        ticket: "t.s",
+      })
+      .mockRejectedValueOnce(new Error("dictation_unavailable"));
+    const fixture = createFixture({ dictationTicket });
+    const host = await readyHost(fixture);
+
+    host.emitEvent({ requestId, type: "dictationTicket" });
+    expect(await host.nextCommand()).toEqual({
+      requestId,
+      ticket: "t.s",
+      type: "dictationTicket",
+      url: "wss://api.comma.test/v1/comma/dictation",
+    });
+    const next = "1b4e28ba-2fa1-11d2-883f-0016d3cca427";
+    host.emitEvent({ requestId: next, type: "dictationTicket" });
+    expect(await host.nextCommand()).toEqual({
+      requestId: next,
+      type: "dictationTicket",
+    });
+    fixture.service.close();
+  });
+
   it("keeps a send that could not be made in the Notch, and a click sends it again as it was", async () => {
     const fixture = createFixture();
     const created = deferred<QuickChatMessage>();
@@ -1002,7 +1068,9 @@ describe("QuickChatService", () => {
 
   it("keeps the newest five failed sends, and the newest twenty sent messages", async () => {
     let clock = 1_787_563_260_000;
-    const fixture = createFixture({ now: () => (clock += 1_000) });
+    const fixture = createFixture({
+      clock: { ...realMainClock, now: () => (clock += 1_000) },
+    });
     const host = await readyHost(fixture);
     const titles = () => fixture.lastShown()?.items.map((item) => item.title);
 

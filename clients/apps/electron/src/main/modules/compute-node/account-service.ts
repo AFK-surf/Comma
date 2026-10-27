@@ -59,6 +59,19 @@ export class AccountComputeNodeService {
   ) {
     this.snapshot = this.emptyState();
     this.sessionChanged(session);
+    // Main's own Host reset deleted the local registrations: the current account replaces its stale installation now.
+    this.maintenance?.onHostReset((): void => {
+      const key = this.key;
+      if (!key) return;
+      void this.services
+        .get(key)
+        ?.then((service) => (this.key === key ? service.hostDataReset() : undefined))
+        .catch(() => undefined);
+    });
+    // Main's own pending Host maintenance continues, or a stuck one recovers, after a restart, signed in or not.
+    void this.maintenance
+      ?.continuePending(() => this.workActive())
+      .catch(() => undefined);
   }
 
   sessionChanged(session: SessionLifecycleSnapshot) {
@@ -96,8 +109,7 @@ export class AccountComputeNodeService {
   configure(input: ComputeNodeConfigureInput) {
     const generation = this.generation;
     return this.call(async (service) => {
-      if (input.desiredEnabled) await this.maintenance?.assertInstallationAllowed();
-      if (generation !== this.generation) throw new ComputeNodeSessionChangedError();
+      // The service checks local Host maintenance itself, so continuation can update an idle Host.
       try {
         return await service.configure(input);
       } catch (error) {
@@ -136,10 +148,19 @@ export class AccountComputeNodeService {
   remove(expected?: ComputeNodeExpectedBinding) {
     return this.call((service) => service.remove(expected));
   }
+  /** The server reports running work for the current account's node. */
+  private workActive() {
+    return this.snapshot.facets.workActivity === "active";
+  }
+  /** Repair and rebuild first let Main finish or recover local Host maintenance. */
+  private async settleMaintenance() {
+    await this.maintenance?.continuePending(() => this.workActive());
+    await this.maintenance?.assertInstallationAllowed();
+  }
   repair() {
     const generation = this.generation;
     return this.call(async (service) => {
-      await this.maintenance?.assertInstallationAllowed();
+      await this.settleMaintenance();
       if (generation !== this.generation) throw new ComputeNodeSessionChangedError();
       return service.repair();
     });
@@ -147,10 +168,27 @@ export class AccountComputeNodeService {
   rebuild() {
     const generation = this.generation;
     return this.call(async (service) => {
-      await this.maintenance?.assertInstallationAllowed();
+      await this.settleMaintenance();
       if (generation !== this.generation) throw new ComputeNodeSessionChangedError();
       return service.rebuild();
     });
+  }
+
+  /** Archives Main's unreadable local compute records (intent, maintenance receipt) and starts them clean. */
+  async resetLocalRecord() {
+    await this.maintenance?.resetRecord();
+    return this.call((service) => service.resetLocalRecord());
+  }
+  /** The network came back: the current account's continuation runs its next step now. */
+  networkRecovered() {
+    const key = this.key;
+    if (!key) return;
+    void this.services
+      .get(key)
+      ?.then((service) => {
+        if (this.key === key) service.networkRecovered();
+      })
+      .catch(() => undefined);
   }
 
   hostMaintenanceState() {
@@ -163,7 +201,7 @@ export class AccountComputeNodeService {
   }
   resumeHostMaintenance(input: { requestId: string }) {
     if (!this.maintenance) throw new Error("Local Host maintenance is unavailable.");
-    return this.maintenance.resume(input.requestId);
+    return this.maintenance.resume(input.requestId, () => this.workActive());
   }
 
   async recoveryCandidates(input: { workspaceId: string; cursor?: string }) {
@@ -414,6 +452,8 @@ export class AccountComputeNodeService {
       workloads: result.workloads.map((row) => ({
         label: `${row.kind} ${row.id.slice(-8)}`,
         state: row.phase ?? "unknown",
+        ...(row.location?.device_id ? { deviceId: row.location.device_id } : {}),
+        ...(row.problem ? { problem: row.problem } : {}),
       })),
       ...(result.next_cursor ? { nextCursor: result.next_cursor } : {}),
     };
@@ -473,6 +513,9 @@ export class AccountComputeNodeService {
                 this.maintenance!.installationBlocked(id),
               assertInstallationAllowed: () =>
                 this.maintenance!.assertInstallationAllowed(),
+              updateHost: () => this.maintenance!.automaticUpdate(),
+              resumeMaintenance: (workActive: () => boolean) =>
+                this.maintenance!.continuePending(workActive),
             }
           : {}),
         filePath: join(

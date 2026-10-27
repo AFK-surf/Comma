@@ -20,6 +20,12 @@
   ],
   "references": [
     {
+      "path": "../../packages/chat-contract"
+    },
+    {
+      "path": "../../packages/miniapp-sdk"
+    },
+    {
       "path": "../../packages/config"
     },
     {

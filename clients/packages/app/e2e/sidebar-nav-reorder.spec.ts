@@ -96,7 +96,14 @@ test("a dragged rail item settles where it was dropped, without navigating, and 
   await installSession(page);
   await page.goto("/");
   await expect(page.getByRole("complementary", { name: "App sidebar" })).toBeVisible();
-  expect(await railOrder(page)).toEqual(["home", "inbox", "tasks", "drive", "plugins"]);
+  expect(await railOrder(page)).toEqual([
+    "home",
+    "inbox",
+    "tasks",
+    "drive",
+    "apps",
+    "plugins",
+  ]);
 
   const drag = await dragRow(page, "tasks", "home", "above");
   // Mid-drag the lifted row carries the pointer and the rows it passed step aside.
@@ -112,7 +119,7 @@ test("a dragged rail item settles where it was dropped, without navigating, and 
 
   await expect
     .poll(() => railOrder(page))
-    .toEqual(["tasks", "home", "inbox", "drive", "plugins"]);
+    .toEqual(["tasks", "home", "inbox", "drive", "apps", "plugins"]);
   expect(new URL(page.url()).hash).toMatch(/^(#\/)?$/);
   await expect(page.locator('[data-nav-id="tasks"]')).not.toHaveAttribute(
     "data-pointer-dragging",
@@ -120,11 +127,18 @@ test("a dragged rail item settles where it was dropped, without navigating, and 
   );
   await expect
     .poll(() => storedOrder(page))
-    .toEqual(["tasks", "home", "inbox", "drive", "plugins"]);
+    .toEqual(["tasks", "home", "inbox", "drive", "apps", "plugins"]);
 
   await page.reload();
   await expect(page.getByRole("complementary", { name: "App sidebar" })).toBeVisible();
-  expect(await railOrder(page)).toEqual(["tasks", "home", "inbox", "drive", "plugins"]);
+  expect(await railOrder(page)).toEqual([
+    "tasks",
+    "home",
+    "inbox",
+    "drive",
+    "apps",
+    "plugins",
+  ]);
 
   // A plain press is still the link's own click.
   await page.getByRole("link", { name: "Tasks" }).click();
@@ -156,7 +170,14 @@ test("Escape cancels navigation until the held pointer is released over its link
   await page.mouse.move(source.x + source.width / 2, source.y + source.height / 2);
   await drag.release();
 
-  expect(await railOrder(page)).toEqual(["home", "inbox", "tasks", "drive", "plugins"]);
+  expect(await railOrder(page)).toEqual([
+    "home",
+    "inbox",
+    "tasks",
+    "drive",
+    "apps",
+    "plugins",
+  ]);
   expect(await storedOrder(page)).toEqual([]);
   await expect(page).toHaveURL(/(?:\/#\/?|\/)$/);
 
@@ -183,7 +204,14 @@ test("a cancelled drag released outside the rail leaves keyboard navigation usab
   await page.clock.install();
   await page.clock.pauseAt(new Date(Date.now() + 1000));
   await drag.release();
-  expect(await railOrder(page)).toEqual(["home", "inbox", "tasks", "drive", "plugins"]);
+  expect(await railOrder(page)).toEqual([
+    "home",
+    "inbox",
+    "tasks",
+    "drive",
+    "apps",
+    "plugins",
+  ]);
   expect(await storedOrder(page)).toEqual([]);
   await expect(page).toHaveURL(/(?:\/#\/?|\/)$/);
 

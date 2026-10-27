@@ -34,6 +34,10 @@ const preparing = (w: ComputeWorkload) =>
   (w.desired_state === "ready" &&
     ["waiting_connection", "allocating", "starting"].includes(w.phase ?? ""));
 
+const currentWorkload = (w: ComputeWorkload) =>
+  !["deleted", "cloud_retired"].includes(w.phase ?? "") &&
+  !["complete", "cloud_retired"].includes(w.deletion?.phase ?? "");
+
 type Shown = ComputeValue & { reads: number; lock: Semaphore.Semaphore };
 
 const params = {
@@ -141,16 +145,12 @@ export class Compute {
         run: (p) => {
           const workspace = params.string(p, "workspace");
           const id = params.string(p, "id");
-          const revision = params.int(p, "revision");
           const generation = params.int(p, "generation");
           return this.#change(
             workspace,
             "POST",
             `${workloadPath(workspace, id)}/retry`,
-            {
-              revision,
-              generation,
-            }
+            { generation }
           );
         },
       },
@@ -159,10 +159,9 @@ export class Compute {
         run: (p) => {
           const workspace = params.string(p, "workspace");
           const id = params.string(p, "id");
-          const revision = params.int(p, "revision");
           const name = params.string(p, "name", 80).trim();
+          // The last rename wins: the server compares no revision.
           return this.#change(workspace, "PATCH", workloadPath(workspace, id), {
-            revision,
             name,
           });
         },
@@ -172,7 +171,6 @@ export class Compute {
         run: (p) => {
           const workspace = params.string(p, "workspace");
           const id = params.string(p, "id");
-          const revision = params.int(p, "revision");
           const generation = params.int(p, "generation");
           const given = (p as { request?: unknown }).request;
           return Effect.suspend(() => {
@@ -189,11 +187,7 @@ export class Compute {
               workspace,
               "POST",
               `${workloadPath(workspace, id)}/deletion`,
-              {
-                revision,
-                generation,
-                request_id: requestId,
-              }
+              { generation, request_id: requestId }
             );
           });
         },
@@ -338,7 +332,9 @@ export class Compute {
               return;
             account.value.setMeta(creationKey(workspace), null);
             shown.creation = null;
-            shown.accepted = answer.success.workload;
+            shown.accepted = currentWorkload(answer.success.workload)
+              ? answer.success.workload
+              : null;
           } else if (answer.failure.status !== 404) {
             // A not-found read can race the original commit: keep the same id and ask again.
             shown.error = true;
@@ -348,8 +344,8 @@ export class Compute {
           const listed = projection.value.workloads.find(
             (w) => w.id === shown.accepted?.id
           );
-          if (listed) shown.accepted = listed;
-          else if (preparing(shown.accepted)) {
+          if (listed) shown.accepted = null;
+          else {
             // The recovered workload may be outside the current list page.
             const current = yield* ctx.api
               .request(
@@ -359,7 +355,10 @@ export class Compute {
                 answerSchema
               )
               .pipe(Effect.option);
-            if (Option.isSome(current)) shown.accepted = current.value.workload;
+            if (Option.isSome(current))
+              shown.accepted = currentWorkload(current.value.workload)
+                ? current.value.workload
+                : null;
             else shown.error = true;
           }
         }
@@ -406,7 +405,9 @@ export class Compute {
             account.setMeta(creationKey(workspace), null);
             this.#each(workspace, (shown) => {
               shown.creation = null;
-              shown.accepted = answer.workload;
+              shown.accepted = currentWorkload(answer.workload)
+                ? answer.workload
+                : null;
               shown.reads = 0;
             });
             this.#restart(workspace);
@@ -425,9 +426,15 @@ export class Compute {
     body: unknown
   ): Effect.Effect<ComputeWorkload, CoreError> {
     return this.#send(method, path, body).pipe(
-      Effect.tap(() =>
+      Effect.tap((answer) =>
         Effect.sync(() => {
-          this.#each(workspace, (shown) => (shown.reads = 0));
+          this.#each(workspace, (shown) => {
+            shown.reads = 0;
+            if (shown.accepted?.id === answer.workload.id)
+              shown.accepted = currentWorkload(answer.workload)
+                ? answer.workload
+                : null;
+          });
           this.#restart(workspace);
         })
       ),

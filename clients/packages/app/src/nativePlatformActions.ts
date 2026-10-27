@@ -1,3 +1,4 @@
+import { openMiniAppRunLink } from "./miniAppRunLink";
 import { getNativeBridge } from "@comma/native-bridge";
 
 export function supportsDynamicUiWidgets(): boolean {
@@ -83,8 +84,9 @@ export const nativePlatformClipboard: TextClipboardAdapter = {
   },
 };
 
-/** Opens an external URL after an explicit user action; Main validates its scheme. */
+/** Opens a URL after a user action. App run links use the current router. Main validates external schemes. */
 export async function openNativePlatformExternalUrl(url: string): Promise<void> {
+  if (openMiniAppRunLink(url)) return;
   const bridge = getNativeBridge();
   if (bridge.platform === "electron") {
     await bridge.shell.openExternal({ url });
@@ -114,7 +116,12 @@ export async function openNativePlatformExternalUrlFromUserAction(
   popup.opener = null;
 
   try {
-    popup.location.href = await resolveUrl();
+    const url = await resolveUrl();
+    if (openMiniAppRunLink(url)) {
+      popup.close();
+      return;
+    }
+    popup.location.href = url;
     return popup;
   } catch (error) {
     popup.close();

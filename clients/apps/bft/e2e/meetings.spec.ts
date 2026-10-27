@@ -254,6 +254,7 @@ test("settings save the chosen calendars, then pause", async ({ page }) => {
       calendar_writeback: false,
       autojoin: true,
       personal_preparation: false,
+      channel_notice: true,
       series: [],
     },
   });

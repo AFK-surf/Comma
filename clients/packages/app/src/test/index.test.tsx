@@ -62,6 +62,7 @@ import { motionDuration } from "@comma/ui/tokens";
 import type { ReactElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { COMMA_SURFACE_PAUSED_ATTRIBUTE } from "../components/commaSurfacePause";
+import { TaskPanelApp } from "../task-panel";
 import { createProductInboxProjectionHarness } from "./productInboxProjectionHarness";
 import { stubProperty } from "@comma/test-utils/stub-property";
 
@@ -775,7 +776,8 @@ describe("CommaApp", () => {
     const newestTask = screen.getByRole("option", {
       name: /Newest history task/,
     });
-    expect(screen.getAllByRole("option")).toHaveLength(20);
+    const taskGroup = screen.getByRole("group", { name: "Tasks" });
+    expect(within(taskGroup).getAllByRole("option")).toHaveLength(20);
     expect(
       screen.queryByRole("option", { name: /^History task 1(?:\s|$)/ })
     ).toBeNull();
@@ -789,6 +791,85 @@ describe("CommaApp", () => {
     await settle();
 
     expect(window.location.hash).toBe("#/tasks/wsp-history/grp-history/cnv-history-21");
+  });
+
+  it("lists app actions after the recent Tasks with their shortcuts", async () => {
+    seedCommaSession();
+    renderCommaApp();
+    await settle();
+
+    dispatchCommandPaletteShortcut();
+    await settle();
+
+    const actions = screen.getByRole("group", { name: "Actions" });
+    expect(
+      within(actions)
+        .getAllByRole("option")
+        .map(
+          (option) =>
+            option.querySelector('[data-slot="command-palette-item-title"]')
+              ?.textContent
+        )
+    ).toEqual([
+      "Go to Comma assistant",
+      "Go to Inbox",
+      "Go to Tasks",
+      "Go to Drive",
+      "Go to Plugin",
+      "Go to Settings",
+      "Toggle left sidebar",
+      "Toggle right sidebar",
+    ]);
+    const inbox = within(actions).getByRole("option", { name: /Go to Inbox/ });
+    expect(
+      Array.from(inbox.querySelectorAll("kbd"), (keycap) => keycap.textContent)
+    ).toEqual(["G", "I"]);
+  });
+
+  it("puts the actions a query names first and runs the chosen one", async () => {
+    seedCommaSession();
+    window.location.hash = "#/settings";
+    scriptTaskSearch({});
+    renderCommaApp();
+    await settle();
+
+    dispatchCommandPaletteShortcut();
+    await settle();
+    await user.type(screen.getByRole("combobox", { name: "Search Comma" }), "inbox");
+    await settle();
+
+    const inbox = screen.getByRole("option", { name: /Go to Inbox/ });
+    expect(screen.getAllByRole("option")).toEqual([inbox]);
+    expect(inbox).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByText("Inbox", { selector: "mark" })).toBeVisible();
+
+    await user.keyboard("{Enter}");
+    await settle();
+
+    expect(screen.queryByRole("dialog", { name: "Search Comma" })).toBeNull();
+    expect(window.location.hash).toBe("#/inbox");
+  });
+
+  it("toggles the right sidebar from the palette", async () => {
+    seedCommaSession();
+    scriptTaskSearch({});
+    renderCommaApp();
+    await settle();
+    const chatSidebar = screen.getByTestId("chat-sidebar");
+    expect(chatSidebar).toHaveAttribute("data-open", "false");
+
+    dispatchCommandPaletteShortcut();
+    await settle();
+    await user.type(
+      screen.getByRole("combobox", { name: "Search Comma" }),
+      "right sidebar"
+    );
+    await settle();
+    await user.click(screen.getByRole("option", { name: /Toggle right sidebar/ }));
+    await settle();
+
+    expect(screen.queryByRole("dialog", { name: "Search Comma" })).toBeNull();
+    expect(chatSidebar).toHaveAttribute("data-open", "true");
   });
 
   it("loads a Task preview after confirmed pointer intent, and shows only the Task now selected", async () => {
@@ -1322,8 +1403,13 @@ describe("CommaApp", () => {
     await settle();
     expect(window.location.hash).toBe("#/tasks");
     expect(home).toBe(screen.getByTestId("home-responsive-layout"));
-    expect(home).not.toBeVisible();
-    expect(home.closest(`[${COMMA_SURFACE_PAUSED_ATTRIBUTE}="true"]`)).not.toBeNull();
+    // The browser skips the retained Home's rendering (jsdom does not render,
+    // so it cannot say Home is unseen).
+    const pausedHome = home.closest<HTMLElement>(
+      `[${COMMA_SURFACE_PAUSED_ATTRIBUTE}="true"]`
+    );
+    expect(pausedHome).not.toBeNull();
+    expect(pausedHome!.style.contentVisibility).toBe("hidden");
 
     await user.click(screen.getByRole("link", { name: "Home" }));
     await settle();
@@ -1331,6 +1417,32 @@ describe("CommaApp", () => {
     expect(screen.getByTestId("home-responsive-layout")).toBe(home);
     expect(home).toBeVisible();
     expect(home.closest("[inert]")).toBeNull();
+  });
+
+  it("runs the session's owners only in the window that shows the product", async () => {
+    seedCommaSession();
+    window.location.hash = "#/apps/wsp_app_window/app_window/window";
+    const tasks = createProductInboxProjectionHarness({
+      initial: { items: [], source: "live-sync" },
+    });
+    // The app itself stays loading: this window is about what runs beside it.
+    app.answer("miniApps.session.open", () => new Promise(() => undefined));
+
+    renderCommaApp(tasks.controller);
+    await settle();
+
+    // A window that shows one app follows no Tasks (the Notch's list and its
+    // Workers' feeds) and reads no plugin notices.
+    expect(screen.getByTestId("app-window-route")).toBeInTheDocument();
+    expect(tasks.retain).not.toHaveBeenCalled();
+    expect(app.subscribed()).not.toContain("pluginNotices");
+
+    window.location.hash = "#/";
+    await settle();
+
+    expect(screen.getByTestId("home-responsive-layout")).toBeInTheDocument();
+    expect(tasks.retain).toHaveBeenCalled();
+    expect(app.subscribed()).toContain("pluginNotices");
   });
 
   it("opens Settings directly without mounting or bootstrapping Home", async () => {
@@ -1587,6 +1699,86 @@ describe("CommaApp", () => {
     expect(screen.getByRole("button", { name: "Back" })).toBeInTheDocument();
   });
 
+  it("runs an app alone in its own window, without the product shell", async () => {
+    seedCommaSession();
+    app.answer("miniApps.session.open", () => ({
+      session: "mas-1",
+      app: {
+        id: "a1",
+        name: "Habit tracker",
+        author: { name: "Ada" },
+        status: "active",
+        capabilities: [],
+        egress: [],
+        grants: [],
+      },
+      version: 2,
+      digest: "d",
+      guest: false,
+      viewer: { id: "v", name: "Ada", avatarUrl: null, guest: false },
+      capabilities: [],
+      grants: [],
+      storage: [],
+    }));
+    window.location.hash = "#/apps/ws-1/a1/window";
+    renderCommaApp();
+    await settle();
+
+    expect(screen.getByTestId("app-window-route")).toBeInTheDocument();
+    // The app's own bar is the window's title bar: no second bar above it.
+    expect(
+      within(screen.getByTestId("app-window-route"))
+        .getByTestId("mini-app-chrome")
+        .querySelector("header")
+    ).toHaveClass("comma-window-titlebar-region");
+    expect(await screen.findByText("Habit tracker")).toBeInTheDocument();
+    expect(screen.queryByTestId("comma-window-bar")).toBeNull();
+    expect(screen.queryByRole("complementary", { name: "App sidebar" })).toBeNull();
+  });
+
+  it("runs an app alone in a Telegram panel that a Telegram app button opened", async () => {
+    seedCommaSession();
+    const opened: unknown[] = [];
+    app.answer("miniApps.session.open", (params) => {
+      opened.push(params);
+      return {
+        session: "mas-1",
+        app: {
+          id: "a1",
+          name: "Habit tracker",
+          author: { name: "Ada" },
+          status: "active",
+          capabilities: [],
+          egress: [],
+          grants: [],
+        },
+        version: 2,
+        digest: "d",
+        guest: false,
+        viewer: { id: "v", name: "Ada", avatarUrl: null, guest: false },
+        capabilities: [],
+        grants: [],
+        storage: [],
+      };
+    });
+    renderWithSessionHost(
+      app.wrap(
+        <TaskPanelApp target={{ groupId: "grp-1", workspaceId: "ws-1", appId: "a1" }} />
+      )
+    );
+    await settle();
+
+    expect(screen.getByTestId("mini-app-panel")).toBeInTheDocument();
+    expect(await screen.findByText("Habit tracker")).toBeInTheDocument();
+    expect(opened).toEqual([
+      expect.objectContaining({
+        app: "a1",
+        via: { workspace: "ws-1" },
+        platform: "web",
+      }),
+    ]);
+  });
+
   it("renders the icon rail as primary navigation with Settings at its foot", async () => {
     seedCommaSession();
     renderCommaApp();
@@ -1597,8 +1789,8 @@ describe("CommaApp", () => {
     const links = within(nav).getAllByRole("link");
 
     // The web reads the Workspace's Drive too, so its rail has Drive.
-    expect(links).toHaveLength(5);
-    ["Home", "Inbox", "Tasks", "Drive", "Plugins"].forEach((name, index) => {
+    expect(links).toHaveLength(6);
+    ["Home", "Inbox", "Tasks", "Drive", "Apps", "Plugins"].forEach((name, index) => {
       expect(links[index]).toHaveAccessibleName(name);
       expect(links[index]).toHaveAttribute("data-slot", "left-rail-item");
       expect(links[index]).toHaveClass("comma-sidebar-link");
@@ -1608,6 +1800,7 @@ describe("CommaApp", () => {
       "#/inbox",
       "#/tasks",
       "#/drive",
+      "#/apps",
       "#/plugins",
     ]);
     expect(links.map((link) => link.getAttribute("aria-current"))).toEqual([
@@ -1616,9 +1809,11 @@ describe("CommaApp", () => {
       null,
       null,
       null,
+      null,
     ]);
     expect(links.map((link) => link.getAttribute("data-selected"))).toEqual([
       "true",
+      "false",
       "false",
       "false",
       "false",

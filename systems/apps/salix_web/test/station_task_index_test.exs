@@ -195,4 +195,79 @@ defmodule SalixWeb.StationTaskIndexTest do
     assert {:error, :rate_limited} = StationTaskIndex.admit(window, 999)
     assert {:ok, %{count: 1}} = StationTaskIndex.admit(window, 1_000)
   end
+
+  test "an asynchronous page from a replaced physical run cannot overwrite the index",
+       %{tenant_id: tenant, group_id: group} do
+    {public, private, station} = station_key()
+    {:ok, _station, nil} = Stations.admit(tenant, group, station)
+    conn = connect(tenant, group)
+    register(conn, {public, private})
+
+    assert %{"type" => "response"} =
+             request(conn, "current", "task.index", reset_page([row("EMBER/1", 1)]))
+
+    {:ok, device} = SalixEnv.Registry.get_device(tenant, group, conn.device_id)
+    context = SalixStore.ComputeStation.connection(tenant, group, device)
+
+    {:ok, _, _replacement} =
+      SalixEnv.Registry.connect(
+        to_string(node()),
+        %{
+          "tenant_id" => tenant,
+          "group_id" => group,
+          "device_id" => conn.device_id,
+          "connector_id" => device["connector_id"]
+        },
+        transport_id: "index-replacement-" <> SystemsRuntime.Proc.uuid()
+      )
+
+    assert {:error, _} =
+             StationTaskIndex.receive_page(station, context, reset_page([row("EMBER/1", 2)]))
+
+    assert [%Row{rev: 1}] = Repo.all(from(r in Row, where: r.station_id == ^station))
+  end
+
+  test "a managed page uses its proved generation instead of the Device's newer Workload",
+       %{tenant_id: tenant, group_id: group} do
+    {_public, _private, station} = station_key()
+    {:ok, _station, nil} = Stations.admit(tenant, group, station)
+    conversation = "index-" <> SystemsRuntime.Proc.uuid()
+
+    {:ok, workload} =
+      SalixStore.CodingSandboxes.create(%{
+        tenant_id: tenant,
+        group_id: group,
+        conversation_id: conversation,
+        workspace: "comma:" <> group,
+        repo: %{"owner" => "acme", "name" => "api"}
+      })
+
+    {:ok, _, device} =
+      SalixEnv.Registry.connect(to_string(node()), %{
+        "tenant_id" => tenant,
+        "group_id" => group,
+        "device_id" => workload.spec["device_id"],
+        "connector_id" => workload.spec["connector_id"],
+        "workload_id" => workload.id,
+        "workload_generation" => workload.generation,
+        "managed_compute" => true
+      })
+
+    context = SalixStore.ComputeStation.connection(tenant, group, device)
+
+    assert {:ok, _held} =
+             StationTaskIndex.receive_page(station, context, reset_page([row("EMBER/1", 1)]))
+
+    assert {:ok, _stopped} =
+             SalixStore.CodingSandboxes.update(workload.id, fn current ->
+               {:ok, Map.put(current.spec, "state", "stopped")}
+             end)
+
+    assert {:ok, _next} = SalixStore.CodingSandboxes.advance(workload.id)
+
+    assert {:error, _} =
+             StationTaskIndex.receive_page(station, context, reset_page([row("EMBER/1", 2)]))
+
+    assert [%Row{rev: 1}] = Repo.all(from(r in Row, where: r.station_id == ^station))
+  end
 end

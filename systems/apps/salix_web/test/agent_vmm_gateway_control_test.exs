@@ -187,15 +187,53 @@ defmodule SalixWeb.AgentVMMGatewayControlTest do
              "renewal_b64" => encode_json(put_in(renewal["connectionEpoch"], "7"))
            }).status == 409
 
-    oversized_observation =
+    # Observation is disposable health data: unknown or out-of-bound fields
+    # degrade one by one instead of rejecting the whole observation.
+    skewed = SystemsClock.utc_now() |> DateTime.add(-3600) |> DateTime.to_unix(:millisecond)
+
+    degraded_observation =
       renewal
       |> put_in(["observation", "sequence"], "3")
       |> put_in(["observation", "supportedFeatures"], Enum.map(1..65, &"feature-#{&1}"))
+      |> put_in(["observation", "observedUnixMillis"], Integer.to_string(skewed))
+      |> put_in(["observation", "capacity"], %{"maxEgressMode" => "EGRESS_MODE_FUTURE"})
+      |> put_in(["observation", "health", "components"], [
+        %{"component" => "vmmd", "status" => "healthy"},
+        %{"component" => "future-component", "status" => "healthy"}
+      ])
 
     assert request("/v1/compute/connections/observation", %{
              "registration_id" => "registration",
-             "renewal_b64" => encode_json(oversized_observation)
-           }).status == 422
+             "renewal_b64" => encode_json(degraded_observation)
+           }).status == 200
+
+    degraded = Repo.get!(AgentVMM.RegistrationObservation, "registration")
+    assert degraded.observation_sequence == 3
+    assert length(degraded.supported_features) == 32
+    assert degraded.health_components == %{"vmmd" => "healthy"}
+    assert degraded.capacity["max_egress_mode"] == nil
+    assert degraded.observed_at == degraded.received_at
+
+    # An unusable observation is not stored, but the live connection still
+    # renews authorization.
+    Repo.update_all(AgentVMM.Registration,
+      set: [authorization_expires_at: DateTime.add(SystemsClock.utc_now(), 60, :second)]
+    )
+
+    unusable =
+      request("/v1/compute/connections/observation", %{
+        "registration_id" => "registration",
+        "renewal_b64" => encode_json(put_in(renewal, ["observation", "sequence"], "0"))
+      })
+
+    assert unusable.status == 422
+    assert Jason.decode!(unusable.resp_body)["error"] == "invalid_observation"
+    assert Repo.get!(AgentVMM.RegistrationObservation, "registration").observation_sequence == 3
+
+    assert DateTime.diff(
+             Repo.get!(AgentVMM.Registration, "registration").authorization_expires_at,
+             SystemsClock.utc_now()
+           ) > 86_400
 
     assert request("/v1/compute/connections/observe", %{
              "hello_b64" => encode_json(replacement)
@@ -213,6 +251,31 @@ defmodule SalixWeb.AgentVMMGatewayControlTest do
                "hello_b64" => encode_json(invalid_hello)
              }).status == 422
     end
+
+    # Inactive authority keeps its own error code instead of invalid_observation.
+    inactive_error = fn epoch ->
+      response =
+        request("/v1/compute/connections/observe", %{
+          "hello_b64" => encode_json(put_in(hello["connectionEpoch"], epoch))
+        })
+
+      {response.status, Jason.decode!(response.resp_body)["error"]}
+    end
+
+    Repo.update_all(AgentVMM.Registration,
+      set: [authorization_expires_at: DateTime.add(SystemsClock.utc_now(), -1, :second)]
+    )
+
+    assert inactive_error.("11") == {403, "authorization_expired"}
+
+    Repo.update_all(AgentVMM.Registration,
+      set: [
+        authorization_expires_at: DateTime.add(SystemsClock.utc_now(), 60, :second),
+        desired_enabled: false
+      ]
+    )
+
+    assert inactive_error.("12") == {403, "registration_inactive"}
   end
 
   test "managed enrollment reports a finite signer failure without consuming the token" do
@@ -970,9 +1033,11 @@ defmodule SalixWeb.AgentVMMGatewayControlTest do
 
     reconnect = put_in(hello["connectionEpoch"], "8")
 
-    assert request("/v1/compute/connections/observe", %{
-             "hello_b64" => encode_json(reconnect)
-           }).status == 422
+    revoked_hello =
+      request("/v1/compute/connections/observe", %{"hello_b64" => encode_json(reconnect)})
+
+    assert revoked_hello.status == 403
+    assert Jason.decode!(revoked_hello.resp_body)["error"] == "registration_inactive"
 
     assert Repo.get!(AgentVMM.Registration, "registration").status == "revoked"
 

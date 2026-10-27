@@ -42,7 +42,13 @@ defmodule SalixIM.ConversationActor do
 
   @task_completion_outcomes ~w(succeeded failed cancelled)
   @call_timeout :infinity
-  @inactive_schedule_statuses ~w(archived canceled cancelled terminal)
+  # A Task in one of these statuses has ended: a due Schedule window is
+  # `inactive` and the Task receiver unbinds and deletes the definition. Any
+  # other status that is not `active` (escalated, failed, ready_for_review)
+  # only pauses the Schedule: the window is skipped and the next one asks
+  # again. `failed` is not an end: the Router sets it after one failed run
+  # and sets `active` again when the work resumes.
+  @inactive_schedule_statuses ~w(archived canceled cancelled terminal completed)
   @generated_id_retries 8
   @participant_limit SalixIM.ConversationLimits.participant_limit()
   @participant_create_retries 8
@@ -62,6 +68,9 @@ defmodule SalixIM.ConversationActor do
   # The appended Message, handed to the station Task watch with the reply and
   # never returned to a caller.
   @appended_message_key :appended_message
+  # A Message the Worker of a coding Task in review is given: the Task is
+  # active again once it is committed (`reopen_coding_task/1`).
+  @coding_reopen_key :coding_reopen
   @egress_archive_request_tag :salix_egress_archive_reserve
   @egress_archive_reply_tag :salix_egress_archive_reserved
   @egress_archive_reserve_timeout_ms 50
@@ -360,6 +369,29 @@ defmodule SalixIM.ConversationActor do
     {:reply, public, state}
   end
 
+  # Whether the Agent is the Task's station Worker
+  # (`SalixIM.TaskConversationInput.station_worker?/1`), and nothing else of
+  # its Participant: a Loop runs only inside Salix, so such a Task gets no
+  # new Loop.
+  def handle_call(
+        {:conversation_api, {:station_worker?, agent_id}},
+        _from,
+        %{deleted?: false} = state
+      ) do
+    {reply, state} = lookup_agent_participant(state, agent_id)
+
+    reply =
+      case reply do
+        {:ok, participant} ->
+          {:ok, SalixIM.TaskConversationInput.station_worker?(participant)}
+
+        {:error, _} = error ->
+          error
+      end
+
+    {:reply, reply, state}
+  end
+
   # The Conversation API is private to the Task's two watches.
   def handle_call(
         {:conversation_api, _request},
@@ -582,6 +614,29 @@ defmodule SalixIM.ConversationActor do
       error ->
         {:reply, error, state}
     end
+  end
+
+  # `SalixIM.TaskRun`: where the Task runs and its Worker participant change
+  # together, in this owner, and the Worker is told after both. The Worker's
+  # identity slot keeps its participant id; its delivery, Session and model
+  # change (`ensure_agent_identity_slot/2`, which marks its source changed).
+  # A Worker delivered nothing before is delivered from the tail on, and a new
+  # Session reads the Task from its source start, as a Worker always does.
+  def handle_call({:switch_task_run, run}, _from, state) do
+    {reply, state} = switch_task_run(state, run)
+    {reply, state} = reply_and_wake_participants(reply, state)
+
+    state =
+      case reply do
+        {:ok, _conversation} ->
+          reconcile_task_watches(state)
+          notify_conversation_change(state, reply, :upsert)
+
+        _error ->
+          state
+      end
+
+    {:reply, reply, state}
   end
 
   def handle_call({:accept_task_review, review_version}, _from, state) do
@@ -819,6 +874,56 @@ defmodule SalixIM.ConversationActor do
   def handle_call({:task_loop_ended, loop, fact}, _from, state) do
     {reply, state} = task_loop_ended(state, loop, fact)
     {:reply, reply, state}
+  end
+
+  # A coding Task is in review once its sandbox Session's turn ends: no Router
+  # turn decides it. A Message after the one that ended the turn (a follow-up
+  # on its way) leaves the Task as it is.
+  def handle_call({:coding_turn_ended, seq}, _from, state) do
+    result =
+      ConversationStore.update_with_previous(state.store_pid, fn
+        %{
+          "kind" => "agent_task",
+          "runs_on" => %{"kind" => "sandbox"},
+          "status" => "active",
+          "message_tail_seq" => ^seq
+        } = record ->
+          if scheduled_task?(record),
+            do: record,
+            else:
+              record
+              |> SalixIM.TaskManualStatus.clear_on_status_change(%{
+                "status" => "ready_for_review"
+              })
+              |> Map.put("status", "ready_for_review")
+              |> Map.put("updated_at", next_updated_at(record))
+
+        record ->
+          record
+      end)
+
+    case result do
+      {:ok, previous, updated} ->
+        state =
+          if previous != updated do
+            publish_conversation_status(state, updated)
+            notify_status_subscribers(state, updated["status"])
+            reconcile_task_watches(state)
+
+            notify_conversation_change(
+              state,
+              {:ok, conversation_record_for_api(updated)},
+              :upsert
+            )
+          else
+            state
+          end
+
+        {:reply, {:ok, updated["status"]}, state}
+
+      {:error, _reason} = error ->
+        {:reply, error, state}
+    end
   end
 
   def handle_call({:replace_task_schedule, current, replacement}, _from, state) do
@@ -1656,7 +1761,8 @@ defmodule SalixIM.ConversationActor do
          "wakeup_participant_ids",
          "participant_upserts",
          "participant_cursor_advance",
-         @appended_message_key
+         @appended_message_key,
+         @coding_reopen_key
        ])}
 
   defp strip_internal_result_fields(reply), do: reply
@@ -2154,6 +2260,7 @@ defmodule SalixIM.ConversationActor do
           "urgency" => command["urgency"],
           "assessment" => command["assessment"],
           "continues" => command["continues"],
+          "relationship" => command["relationship"],
           "linked" => command["linked"]
         }
 
@@ -2871,7 +2978,8 @@ defmodule SalixIM.ConversationActor do
     # every caller publishes the same durable status and idempotency key.
     with {:ok, current} <- ConversationStore.load_raw(state.store_pid),
          :ok <- observe_task_status(current),
-         :ok <- SalixIM.TaskLoop.converge(current) do
+         :ok <- SalixIM.TaskLoop.converge(current),
+         :ok <- sandbox_converge(current) do
       append_conversation_status(state, current)
     end
   end
@@ -2899,6 +3007,20 @@ defmodule SalixIM.ConversationActor do
   end
 
   defp observe_task_status(_conversation), do: :ok
+
+  # A coding Task that ended or was archived gives up its sandbox
+  # (`SalixIM.Ports.TaskStations.task_status/3`); the product only records it.
+  defp sandbox_converge(%{
+         "kind" => "agent_task",
+         "runs_on" => %{"kind" => "sandbox"},
+         "agent_group_id" => group,
+         "conversation_id" => conversation,
+         "status" => status
+       }) do
+    SalixIM.Ports.TaskStations.task_status(group, conversation, status)
+  end
+
+  defp sandbox_converge(_conversation), do: :ok
 
   defp append_conversation_status(state, conversation) do
     targets =
@@ -3993,6 +4115,49 @@ defmodule SalixIM.ConversationActor do
     end
   end
 
+  defp switch_task_run(state, %{"worker" => desired, "notice" => notice} = run) do
+    runs_on = run["runs_on"]
+
+    with {:ok, state} <- ensure_participants_loaded(state),
+         {:ok, conversation} <- ConversationStore.load(state.store_pid),
+         :ok <- switchable_task(conversation, desired),
+         {{:ok, worker}, state} <- ensure_agent_identity_slot(state, desired),
+         {:ok, updated} <-
+           ConversationStore.update(state.store_pid, fn current ->
+             current
+             |> then(
+               &if(is_map(runs_on),
+                 do: Map.put(&1, "runs_on", runs_on),
+                 else: Map.delete(&1, "runs_on")
+               )
+             )
+             |> Map.put("updated_at", next_updated_at(current))
+           end),
+         {{:ok, _message}, state} <-
+           send_owned_system_message(state, worker["participant_id"], notice) do
+      {{:ok, conversation_record_for_api(updated)}, state}
+    else
+      {:error, reason, state} -> {{:error, {:participant_state_unavailable, reason}}, state}
+      {{:error, _reason} = error, state} -> {error, state}
+      {:error, _reason} = error -> {error, state}
+    end
+  end
+
+  defp switch_task_run(state, _run),
+    do: {{:error, {:bad_request, "invalid Task run"}}, state}
+
+  defp switchable_task(
+         %{"kind" => "agent_task", "task_worker_agent_id" => worker_agent_id},
+         %{"agent_id" => worker_agent_id, "role_label" => "worker"}
+       )
+       when is_binary(worker_agent_id),
+       do: :ok
+
+  defp switchable_task(%{"kind" => "agent_task"}, _desired),
+    do: {:error, {:bad_request, "the Task's Worker changed"}}
+
+  defp switchable_task(_conversation, _desired), do: {:error, :not_found}
+
   defp send_owned_system_message(state, participant_id, attrs)
        when is_binary(participant_id) and is_map(attrs) do
     participant_id = participant_id_string(participant_id)
@@ -4310,6 +4475,7 @@ defmodule SalixIM.ConversationActor do
 
     if state.conversation_kind == "agent_task" do
       # Stations whose Sessions take part in the Task are given it (`SalixIM.Ports.TaskStations`); never waited for.
+      state = if committed[@coding_reopen_key], do: reopen_coding_task(state), else: state
       SalixIM.Ports.TaskStations.appended(state.group_id, state.conversation_id)
       # The station Task watch is handed the Message itself, so a Message
       # costs it no read.
@@ -4321,6 +4487,59 @@ defmodule SalixIM.ConversationActor do
   end
 
   defp notify_message_created(state, _reply, _sender_agent_id), do: state
+
+  # A Message the Worker is given (not one it wrote) in a coding Task in
+  # review: its Session takes up the work again.
+  defp put_coding_reopen(
+         committed,
+         %{
+           "kind" => "agent_task",
+           "runs_on" => %{"kind" => "sandbox"},
+           "status" => "ready_for_review",
+           "task_worker_agent_id" => worker
+         },
+         %{"kind" => "message"} = message,
+         :inserted
+       ) do
+    if message["agent_id"] == worker,
+      do: committed,
+      else: Map.put(committed, @coding_reopen_key, true)
+  end
+
+  defp put_coding_reopen(committed, _conversation, _message, _status), do: committed
+
+  defp reopen_coding_task(state) do
+    result =
+      ConversationStore.update_with_previous(state.store_pid, fn
+        %{
+          "kind" => "agent_task",
+          "runs_on" => %{"kind" => "sandbox"},
+          "status" => "ready_for_review"
+        } = record ->
+          record
+          |> SalixIM.TaskManualStatus.clear_on_status_change(%{"status" => "active"})
+          |> Map.put("status", "active")
+          |> Map.put("updated_at", next_updated_at(record))
+
+        record ->
+          record
+      end)
+
+    case result do
+      {:ok, previous, updated} when previous != updated ->
+        publish_conversation_status(state, updated)
+        notify_status_subscribers(state, updated["status"])
+        reconcile_task_watches(state)
+        notify_conversation_change(state, {:ok, conversation_record_for_api(updated)}, :upsert)
+
+      {:ok, _previous, _updated} ->
+        state
+
+      {:error, reason} ->
+        Logger.warning("a coding Task in review was not made active: #{inspect(reason)}")
+        state
+    end
+  end
 
   defp notify_conversation_change(state, reply, kind, opts \\ [])
 
@@ -4809,7 +5028,7 @@ defmodule SalixIM.ConversationActor do
       {:ok, %{"trigger" => %{}}} ->
         {:error,
          {:bad_request,
-          "this Task is a Loop Task and runs on its Loop, so it takes no schedule. To " <>
+          "this Task is a Loop Task: its Loop holds its cadence, so it takes no schedule. To " <>
             "change its cadence, end the Task and use task.update with loop and command"}}
 
       {:ok, _view} ->
@@ -5565,7 +5784,8 @@ defmodule SalixIM.ConversationActor do
              rec,
              participant_identity_state,
              request_disposition
-           ) do
+           ),
+         {:ok, rec} <- bind_task_uploads(conversation, rec, request_disposition) do
       with {:ok, rec} <-
              ConversationStore.reserve_message(store_pid, rec),
            rec = assign_standalone_thread(rec),
@@ -5594,6 +5814,7 @@ defmodule SalixIM.ConversationActor do
                     @appended_message_key => message
                   }
                   |> put_egress_archive_reservation(egress_archive_reservation)
+                  |> put_coding_reopen(updated_conversation, message, status)
 
                 case SalixIM.SendTiming.measure("im_send_delivery", fn ->
                        memberships =
@@ -5782,6 +6003,17 @@ defmodule SalixIM.ConversationActor do
        ) do
     {:error_after_commit, reason, put_egress_archive_reservation(committed, reservation)}
   end
+
+  # Bind after request comparison. An accepted retry keeps its stored references,
+  # even if the upload path has changed or disappeared since the first send.
+  defp bind_task_uploads(
+         %{"kind" => "agent_task", "agent_group_id" => group_id},
+         rec,
+         :uncommitted
+       ),
+       do: SalixIM.ConversationAttachments.bind_user_uploads(group_id, rec)
+
+  defp bind_task_uploads(_conversation, rec, _disposition), do: {:ok, rec}
 
   # A reservation fixes the exact message id and fingerprint before any route
   # is bound. A bound route remains inert until the same message commits; an
@@ -6252,9 +6484,17 @@ defmodule SalixIM.ConversationActor do
        |> Map.put("task_schedule_status", "fired")
        |> Map.put("scheduled_for", scheduled_for_ms)}
     else
-      {:ok, :settled} -> {:ok, %{"task_schedule_status" => "settled"}}
-      {:ok, :inactive} -> {:ok, %{"task_schedule_status" => "inactive"}}
-      other -> other
+      {:ok, :settled} ->
+        {:ok, %{"task_schedule_status" => "settled"}}
+
+      {:ok, :inactive} ->
+        {:ok, %{"task_schedule_status" => "inactive"}}
+
+      {:ok, {:paused, status}} ->
+        {:ok, %{"task_schedule_status" => "paused", "task_status" => status}}
+
+      other ->
+        other
     end
   end
 
@@ -6343,7 +6583,10 @@ defmodule SalixIM.ConversationActor do
     source_refs
     schedule
   )
-  @conversation_create_map_fields @conversation_map_fields
+  # `runs_on` is written once, when a Task is made (where it runs, resolved
+  # to a device: `SalixIM.TaskConversationInput`); no update changes it. So
+  # are a coding Task's `repo` and a Mini App build's `mini_app`.
+  @conversation_create_map_fields @conversation_map_fields ++ ~w(runs_on repo mini_app)
 
   defp put_conversation_create_extras(conversation, attrs) do
     conversation
@@ -6750,12 +6993,10 @@ defmodule SalixIM.ConversationActor do
 
   defp due_task_schedule(conversation, schedule_id) do
     schedule = conversation["schedule"]
+    status = conversation["status"]
 
     cond do
-      conversation["status"] in @inactive_schedule_statuses ->
-        {:ok, :inactive}
-
-      conversation["status"] != "active" ->
+      status in @inactive_schedule_statuses ->
         {:ok, :inactive}
 
       not is_map(schedule) ->
@@ -6766,6 +7007,9 @@ defmodule SalixIM.ConversationActor do
 
       schedule["schedule_id"] != schedule_id ->
         {:ok, :settled}
+
+      status != "active" ->
+        {:ok, {:paused, status}}
 
       true ->
         {:ok, schedule}

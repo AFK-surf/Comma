@@ -3,12 +3,14 @@ import type {
   ChatCommandReceipt,
   ChatLeasedAcknowledgeIntakeFailuresInput,
   ChatLeasedAttachInput,
+  ChatLeasedAttachConversationFilesInput,
   ChatLeasedAttachLocalFilesInput,
   ChatLeasedAttachmentIdInput,
   ChatLeasedBeginSendIntentInput,
   ChatLeasedClientRequestInput,
   ChatLeasedSendInput,
   ChatLeasedSetDraftInput,
+  ChatLeasedSetTaskRunInput,
   ChatLeasedSetTaskStatusInput,
   ChatLeasedTarget,
   ChatReadGroupImageInput,
@@ -22,6 +24,8 @@ import type {
   ChatWorkspaceSkillsInput,
 } from "@comma/chat-contract";
 import type { Effect } from "effect";
+import type { CommaGroupFile } from "../../comma/api-schemas";
+import type { AttachmentUploadInput } from "../model/conversationChannel";
 import { ConversationCommands } from "./ConversationCommands";
 import { DraftEditor } from "./DraftEditor";
 import { ChatEntries } from "./entries/ChatEntries";
@@ -146,6 +150,12 @@ export class ChatCoordinator implements ChatProvider {
     return this.#drafts.attachLocalFiles(input);
   }
 
+  attachConversationFiles(
+    input: ChatLeasedAttachConversationFilesInput
+  ): ChatCommandReceipt {
+    return this.#drafts.attachConversationFiles(input);
+  }
+
   claimAttachmentIntake(input: ChatAttachmentIntakeTarget): ChatAttachmentIntakeClaim {
     return this.#intake.claim(input);
   }
@@ -158,8 +168,23 @@ export class ChatCoordinator implements ChatProvider {
     return this.#drafts.retryAttachment(input);
   }
 
+  uploadDetachedFile(
+    groupId: string,
+    file: AttachmentUploadInput
+  ): Effect.Effect<CommaGroupFile, Error> {
+    return this.#sends.uploadDetached(groupId, file);
+  }
+
   sendDetachedMessage(target: ChatTarget, text: string): Effect.Effect<void, Error> {
     return this.#sends.sendDetached(target, text);
+  }
+
+  sendDetachedRequest(
+    target: ChatTarget,
+    text: string,
+    requestId: string
+  ): Effect.Effect<string, Error> {
+    return this.#sends.sendDetachedRequest(target, text, requestId);
   }
 
   /** `onAccepted`: told once the message is pending (its draft consumed), before its server has it. */
@@ -216,6 +241,12 @@ export class ChatCoordinator implements ChatProvider {
     input: ChatLeasedSetTaskStatusInput
   ): Effect.Effect<ChatCommandReceipt, Error> {
     return this.#commands.setTaskStatus(input);
+  }
+
+  setTaskRun(
+    input: ChatLeasedSetTaskRunInput
+  ): Effect.Effect<ChatCommandReceipt, Error> {
+    return this.#commands.setTaskRun(input);
   }
 
   older(input: ChatLeasedTarget): ChatCommandReceipt {

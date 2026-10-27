@@ -5,8 +5,8 @@ defmodule BridgeForTeams.Compute do
 
   alias BridgeForTeams.Environments
   alias BridgeForTeams.Repo, as: BFTRepo
-  alias BridgeForTeams.Schema.{MacMiniProvisioner, Organization, Project}
-  alias SalixStore.{AgentVMM, AgentVMMInstallations, Compute, Repo}
+  alias BridgeForTeams.Schema.{MacMiniProvisioner, Organization, Project, User}
+  alias SalixStore.{AgentVMMInstallations, Compute, Repo}
 
   @permissions ~w(runtime workspace service_route hosting)
 
@@ -136,12 +136,51 @@ defmodule BridgeForTeams.Compute do
     end
   end
 
+  def request_agent_vmm_headless_install(
+        %Organization{} = org,
+        %Project{} = project,
+        %User{} = user,
+        attrs,
+        authorize
+      )
+      when is_function(authorize, 0) do
+    with :ok <- scope_matches(org, project),
+         {:ok, request_id} <- id(attrs["request_id"]),
+         {:ok, pool} <- Compute.ensure_managed_default_pool(org.salix_tenant_id, "agent_vmm") do
+      AgentVMMInstallations.request(
+        %{
+          tenant_id: org.salix_tenant_id,
+          group_id: project.salix_group_id,
+          surface: "bft",
+          scope_key: project.id,
+          client_request_id: request_id,
+          provider: "agent-vmm",
+          delivery_target_type: "headless",
+          delivery_target_id: user.id,
+          authorizing_subject_id: user.id
+        },
+        one_per_scope: true,
+        authorize: authorize,
+        create_environment: fn ->
+          Compute.ensure_environment(%{
+            id: new_id("env"),
+            tenant_id: org.salix_tenant_id,
+            owner_type: "project",
+            owner_id: project.id,
+            pool_id: pool.id,
+            retention: %{"mode" => "retain"}
+          })
+        end
+      )
+    end
+  end
+
   @doc """
   Bind the Project to one online org Runner: ask the Runner to install an
   Agent VMM Host for the Project's Group. A Project has at most one live
-  Runner binding; while one is live, a request for another answers
-  `{:error, :project_runner_bound}`. The Group's new Cloud VM goes to that
-  Host (`SalixWeb.CloudVM.placement/2`).
+  Runner binding. While one is live, another request answers
+  `{:error, :project_runner_bound}`. Its Host prepares the Group's reusable
+  VMM Station independently of the Cloudflare VM.
   """
   def request_agent_vmm_install(%Organization{} = org, %Project{} = project, attrs) do
     with :ok <- scope_matches(org, project),
@@ -189,10 +228,8 @@ defmodule BridgeForTeams.Compute do
   The org Runner `stable_id` of the organization of Salix tenant `tenant_id`,
   with its status as the Runners and devices pages show it
   (`Environments.effective_mac_mini_provisioner_status/1`: `"online"` only
-  while its last heartbeat is recent). Salix names the Runner with it when
-  it refuses a Cloud VM on the Runner's Agent VMM Host
-  (`SalixWeb.CloudVM.host_runner_online/2`); whether the Host is connected is
-  Salix's own fact, not this heartbeat.
+  while its last heartbeat is recent). Host command connectivity remains
+  Salix's own fact, separate from this product heartbeat.
   """
   @spec runner_status(String.t(), String.t()) ::
           {:ok, %{String.t() => term()}} | {:error, :not_found}
@@ -226,20 +263,15 @@ defmodule BridgeForTeams.Compute do
     * `"vm"`: `nil` before the VM exists, `"unavailable"` when Compute
       cannot be read, else its `"status"` and `"location"` (where it runs:
       `%{"kind" => "cloudflare"}` or `%{"kind" => "runner", ...}`);
-    * `"runner"`: the Project's live Runner binding (newest), or `nil`;
-    * `"next_location"`: where a new VM would go now, as
-      `SalixWeb.CloudVM.placement/2` decides: the Group's one Agent VMM
-      registration, else Cloudflare; `%{"kind" => "conflict"}` with more
-      than one.
+    * `"runner"`: the Project's live Compute Host binding (newest), or `nil`;
+    * `"next_location"`: Cloudflare for new Cloud VMs.
 
-  Placement is fixed when the VM is created. A Runner chosen later does
-  not move an existing VM.
+  A bound Runner owns the separate VMM Station. Existing VMs keep their
+  provider and device identity.
   """
   def cloud_vm(%Organization{} = org, %Project{salix_group_id: group} = project)
       when is_binary(group) do
     with :ok <- scope_matches(org, project) do
-      tenant = org.salix_tenant_id
-
       vm =
         case Compute.group_workload(group) do
           {:ok, record} -> %{"status" => record["status"], "location" => vm_location(org, record)}
@@ -247,12 +279,7 @@ defmodule BridgeForTeams.Compute do
           {:error, _reason} -> "unavailable"
         end
 
-      next_location =
-        case AgentVMM.group_registration_ids(tenant, group) do
-          [] -> %{"kind" => "cloudflare"}
-          [registration_id] -> runner_location(org, registration_id)
-          [_ | _] -> %{"kind" => "conflict"}
-        end
+      next_location = %{"kind" => "cloudflare"}
 
       {:ok,
        %{"vm" => vm, "runner" => project_runner(org, project), "next_location" => next_location}}
@@ -265,9 +292,8 @@ defmodule BridgeForTeams.Compute do
   end
 
   @doc """
-  Choose the org Runner (by its id) for the Project's Cloud VM. The choice
-  applies only before the VM exists: with a VM it answers
-  `{:error, :cloud_vm_exists}`. `request_id` makes a retried request
+  Bind the Project to an org Runner for its VMM Station. An existing
+  Cloudflare VM keeps its data and identity. `request_id` makes retries
   idempotent.
   """
   def choose_cloud_vm_runner(%Organization{} = org, %Project{} = project, runner_id, request_id) do
@@ -275,8 +301,7 @@ defmodule BridgeForTeams.Compute do
          {:ok, runner_id} <- Ecto.UUID.cast(runner_id) |> uuid(),
          %MacMiniProvisioner{} = runner <-
            BFTRepo.get_by(MacMiniProvisioner, org_id: org.id, id: runner_id) ||
-             {:error, :runner_not_found},
-         :ok <- no_cloud_vm(project) do
+             {:error, :runner_not_found} do
       request_agent_vmm_install(org, project, %{
         "request_id" => request_id,
         "runner_id" => runner.stable_id
@@ -300,14 +325,21 @@ defmodule BridgeForTeams.Compute do
   defp project_runner(org, project) do
     case AgentVMMInstallations.live_for_scope("bft", project.id, 1) do
       [operation] ->
-        runner = runner_by_stable_id(org, operation.delivery_target_id)
+        runner =
+          if operation.delivery_target_type == "bft_runner",
+            do: runner_by_stable_id(org, operation.delivery_target_id)
+
+        name =
+          if operation.delivery_target_type == "headless",
+            do: "Linux Compute Host",
+            else: runner_name(runner, operation.delivery_target_id)
 
         %{
           "operation_id" => operation.id,
           "registration_id" => operation.registration_id,
           "status" => operation.status,
           "runner_id" => runner && runner.id,
-          "name" => runner_name(runner, operation.delivery_target_id)
+          "name" => name
         }
 
       [] ->
@@ -356,16 +388,6 @@ defmodule BridgeForTeams.Compute do
     do: runner.name || runner.stable_id
 
   defp runner_name(nil, stable_id), do: stable_id
-
-  defp no_cloud_vm(%Project{salix_group_id: nil}), do: {:error, :unavailable}
-
-  defp no_cloud_vm(project) do
-    case Compute.group_workload(project.salix_group_id) do
-      {:error, :not_found} -> :ok
-      {:ok, _record} -> {:error, :cloud_vm_exists}
-      {:error, _reason} -> {:error, :unavailable}
-    end
-  end
 
   defp vm_not_on(%Project{salix_group_id: nil}, _registration_id), do: :ok
 

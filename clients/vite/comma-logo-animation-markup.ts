@@ -16,9 +16,8 @@ type CommaLogoAnimationModule = {
   CommaLogoAnimation: ComponentType<{
     "aria-hidden": boolean;
     cutout: boolean;
-    height: string;
+    size: string;
     style: { color: string };
-    width: string;
   }>;
 };
 
@@ -43,9 +42,8 @@ export function commaLogoAnimationMarkupPlugin(): Plugin {
         createElement(module.CommaLogoAnimation, {
           "aria-hidden": true,
           cutout: true,
-          height: "100%",
+          size: "100%",
           style: { color: "inherit" },
-          width: "100%",
         })
       );
       return `export default ${JSON.stringify(markup)};`;

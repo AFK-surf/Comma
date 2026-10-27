@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { memo, useMemo, useState } from "react";
 import { useActiveWorkspaceId } from "../activeWorkspace";
 import {
   screenPageId,
@@ -18,14 +18,16 @@ import { ScreenStreamWindow } from "./ScreenStreamWindow";
 import { useDeviceScreenSource } from "./useDeviceScreenSource";
 
 /** The screen an Agent drives, on surfaces that may read its Session history, when the setting is on. */
-export function FocusComputerUseScreen(history: SessionHistoryInput) {
+export const FocusComputerUseScreen = memo(function FocusComputerUseScreen(
+  history: SessionHistoryInput
+) {
   const lease = useChatProductLease();
   // Off unless the person turned it on in Settings.
   const settings = useOptionalCommaClientSettings();
   return lease && settings?.computerUseScreenEnabled ? (
     <WorkerComputerUseScreen history={history} />
   ) : null;
-}
+});
 
 /**
  * While an Agent drives an app on a computer through computer use, shows that

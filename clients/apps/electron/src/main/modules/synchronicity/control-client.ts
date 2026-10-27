@@ -5,9 +5,10 @@ import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
 import { blake3 } from "@noble/hashes/blake3.js";
 import { parse } from "protobufjs";
+import { realMainClock } from "../../clock";
 import controlProto from "./control.proto?raw";
 
-export const synchControlWireVersion = "6";
+export const synchControlWireVersion = "8";
 const CONTROL_VERSION = synchControlWireVersion;
 const TOKEN_FILE = "control.token";
 const TOKEN_BYTES = 32;
@@ -514,12 +515,13 @@ export class SynchControlClient implements SynchControlClientLike {
     return metadata;
   }
 
+  // grpc-js judges a deadline against the real time, so it is read from the real clock even under a test clock.
   #options(): grpc.CallOptions {
-    return { deadline: Date.now() + this.#callTimeoutMs };
+    return { deadline: realMainClock.now() + this.#callTimeoutMs };
   }
 
   #streamOptions(): grpc.CallOptions {
-    return { deadline: Date.now() + this.#streamTimeoutMs };
+    return { deadline: realMainClock.now() + this.#streamTimeoutMs };
   }
 
   #createClient(): RawControlClient {

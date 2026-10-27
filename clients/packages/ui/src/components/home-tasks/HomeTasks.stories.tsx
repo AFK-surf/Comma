@@ -12,7 +12,6 @@ import { HomeTasks } from "./HomeTasks";
 const storyTasks: TaskSummaryViewModel[] = [
   {
     activityStatus: "running",
-    freshness: "fresh",
     id: "task-summarize",
     statusBucket: "in_progress",
     title: "Summarizing recent OpenAI's update and create a HTML",
@@ -21,7 +20,6 @@ const storyTasks: TaskSummaryViewModel[] = [
   },
   {
     activityStatus: "running",
-    freshness: "fresh",
     id: "task-ui-library",
     statusBucket: "in_progress",
     title: "Implement UI library to Comma repo",
@@ -29,7 +27,6 @@ const storyTasks: TaskSummaryViewModel[] = [
   },
   {
     activityStatus: "ready_for_review",
-    freshness: "fresh",
     id: "task-refraction",
     statusBucket: "needs_review",
     title: "Start on refraction UI library",
@@ -37,7 +34,6 @@ const storyTasks: TaskSummaryViewModel[] = [
   },
   {
     activityStatus: "ready_for_review",
-    freshness: "fresh",
     id: "task-review",
     statusBucket: "needs_review",
     title: "Review the launch checklist for the mobile beta",
@@ -46,7 +42,6 @@ const storyTasks: TaskSummaryViewModel[] = [
   },
   {
     activityStatus: "done",
-    freshness: "fresh",
     id: "task-done",
     statusBucket: "done",
     title: "Collect design tokens for the marketing site refresh",
@@ -68,7 +63,6 @@ function HomeTasksPlayground({
     setTasks((current) => [
       {
         activityStatus: "queued",
-        freshness: "fresh" as const,
         id: `task-new-${current.length}`,
         statusBucket: status,
         title: "Draft a follow-up plan for the workspace review",
@@ -182,7 +176,6 @@ function NewCardPlayground({
       counterRef.current += count;
       const created = Array.from({ length: count }, (_, index) => ({
         activityStatus: "running",
-        freshness: "fresh" as const,
         id: `task-live-${base + index}`,
         statusBucket: status,
         title: LIVE_TITLES[(base + index) % LIVE_TITLES.length]!,
@@ -223,6 +216,7 @@ function NewCardPlayground({
 }
 
 export const NewCardArrival: Story = {
+  globals: { motionPreference: "full" },
   args: {
     onOpenTask: fn(),
     onStatusChange: fn(),

@@ -330,7 +330,7 @@ defmodule SalixStore.ConfigJsonTest do
     assert {:salix_meet_native, :master_token_factory, [base_url: base_url, secret: "mtf-secret"]} in env
 
     assert {:salix_meet_native, :google_profile, "Default"} in env
-    assert {:salix_meet, :default_runtime_source, "native_runtime"} in env
+    assert {:salix_meet, :http_runtime_source, "native_runtime"} in env
     refute Enum.any?(ConfigJson.app_env(%{}), fn {_a, k, _v} -> k == :master_token_factory end)
   end
 

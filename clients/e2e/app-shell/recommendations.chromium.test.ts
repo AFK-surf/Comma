@@ -5,7 +5,7 @@ import {
   source,
 } from "./fixtures/web-app/routes/recommendations-data";
 import { waitForSettledMotion } from "./support/motion";
-import { expect, test, type Locator } from "./support/page";
+import { expect, test, type Locator, type Page } from "./support/page";
 import { stepUntil, testClock, testPage } from "./support/virtual-time";
 import { useWebApp } from "./support/web-app";
 
@@ -110,12 +110,11 @@ type RoutineDragFrame = {
   tops: Record<string, number>;
 };
 
-// Only where the card sits: its box still carries the enter transform while the
-// card settles, so width and height are not stable to compare against.
-const hoverCardOrigin = async (card: Locator) => {
-  const box = await card.boundingBox();
-  return { x: box?.x, y: box?.y };
-};
+/** The text-list routines on the rail, in order, by the source each names. */
+const routineCardTitles = (page: Page) =>
+  page
+    .locator('.comma-recommendation-card[data-template="text-list@1"]')
+    .evaluateAll((cards) => cards.map((card) => card.getAttribute("aria-label")));
 
 const readIconControlVisual = (control: Locator) =>
   control.evaluate((element) => {
@@ -178,147 +177,51 @@ test("a rejected real refresh replaces stale mock recommendations with canonical
 
   await expect(page.getByRole("heading", { name: greetingHeading })).toBeVisible();
   await expect(page.getByText("Old mock briefing.")).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Old mock card" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Next mock card" })).toBeVisible();
+  await expect(page.getByRole("group", { name: "Old mock card" })).toBeVisible();
+  await expect(page.getByRole("group", { name: "Next mock card" })).toBeVisible();
   await expect(page.locator(".comma-recommendations-heading")).toHaveCSS(
     "padding-bottom",
     "0px"
   );
-  await expect(
-    page.locator('article.comma-recommendation-card[data-template="text-list@1"]')
-  ).toHaveCount(6);
-  const firstCard = page
-    .locator('article.comma-recommendation-card[data-template="text-list@1"]')
-    .filter({
-      has: page.locator("h3").filter({ hasText: "Old mock card" }),
-    });
-  await expect(firstCard).toHaveCSS("border-radius", "12px");
-  await expect(firstCard).toHaveCSS("border-top-style", "solid");
-  await expect(firstCard.locator("h3")).toHaveCSS("font-size", "13px");
-  await expect(firstCard.locator("h3")).toHaveCSS("line-height", "20px");
-  await expect(firstCard.locator(".comma-recommendation-items")).toHaveCSS(
-    "row-gap",
-    "1px"
+  const textCards = page.locator(
+    '.comma-recommendation-card[data-template="text-list@1"]'
+  );
+  await expect(textCards).toHaveCount(6);
+  const firstCard = page.getByRole("group", { name: "Old mock card" });
+  // Each row is a card of its own: the task, then its source.
+  const firstItem = firstCard.locator(".comma-recommendation-text-item").first();
+  await expect(firstItem).toHaveCSS("border-radius", "12px");
+  await expect(firstItem).toHaveCSS("border-top-style", "solid");
+  await expect(firstItem).toHaveCSS("padding-top", "12px");
+  await expect(firstItem.locator(".comma-recommendation-source-origin")).toHaveText(
+    "Old mock card"
   );
   await expect(
-    firstCard.locator(
-      '.comma-recommendation-card-logo svg[data-provider-logo="linear"]'
+    firstItem.locator(
+      '.comma-recommendation-source-origin-mark svg[data-provider-logo="linear"]'
     )
   ).toBeVisible();
-  const firstItem = firstCard.locator(".comma-recommendation-text-item").first();
-  await expect(firstItem).toHaveCSS("border-radius", "8px");
-  const hoverIcon = firstItem.locator(".comma-recommendation-row-icon");
-  await expect(hoverIcon).toHaveCSS("opacity", "0");
-  await firstItem
-    .getByRole("button", { name: "Review old mock issue" })
-    .hover({ position: { x: 8, y: 18 } });
-  await expect(hoverIcon).toHaveCSS("opacity", "1");
-  const promptHoverCard = page.getByRole("tooltip");
-  await expect(promptHoverCard).toContainText("Review COMMA-MOCK");
-  await expect(promptHoverCard).toHaveCSS("padding-top", "6px");
-  await expect(promptHoverCard).toHaveCSS("padding-right", "8px");
-  await expect(promptHoverCard).toHaveCSS("padding-bottom", "6px");
-  await expect(promptHoverCard).toHaveCSS("padding-left", "8px");
-  const rowHoverCardOrigin = await hoverCardOrigin(promptHoverCard);
+  // The card shows the whole task; it wraps instead of truncating.
+  const itemContent = firstItem.locator(".comma-recommendation-text-item-content");
+  await expect(itemContent).toContainText(
+    "Prevent socket exhaustion recurrence and review COMMA-143 and COMMA-144"
+  );
+  await expect(itemContent.locator("p").first()).toHaveCSS("white-space", "normal");
 
-  // Inline chips take their own pointer events back, so the row's full-bleed
-  // action button never sees a hover there. A chip with no preview of its own
-  // stands in for the row, anchored to the row so the card does not move as
-  // the pointer crosses onto it. Each hover starts from rest, or the outgoing
-  // card would still be inside its close delay and answer for the new one.
+  // The card is the press target, with no preview to hover first.
   const liveHoverCard = page.locator(".comma-hover-card:not([data-exiting])");
-  const restHover = async () => {
-    await page.locator(".comma-home-chat").hover();
-    await expect(page.locator(".comma-hover-card")).toHaveCount(0);
-  };
+  const rowAction = firstItem.getByRole("button", { name: "Review old mock issue" });
+  await rowAction.hover({ position: { x: 8, y: 8 } });
+  await testClock().advance(600);
+  await expect(liveHoverCard).toHaveCount(0);
 
-  await restHover();
-  await firstItem.getByRole("button", { name: "COMMA-144" }).hover();
-  await expect(liveHoverCard).toContainText("Review COMMA-MOCK");
-  expect(await hoverCardOrigin(liveHoverCard)).toEqual(rowHoverCardOrigin);
-
-  // A chip that does have its own preview still owns its hover.
-  await restHover();
+  // A chip with a preview of its own still owns its hover.
   await firstItem.getByRole("button", { name: "COMMA-143" }).hover();
   await expect(liveHoverCard).toContainText(
     "Linear · linear.app/comma/issue/COMMA-143"
   );
-  expect(
-    await hoverIcon.evaluate((icon) => {
-      const reference = document.createElement("span");
-      reference.style.color = "var(--color-sidebar-icon-primary)";
-      document.body.append(reference);
-      const matches =
-        getComputedStyle(icon).color === getComputedStyle(reference).color;
-      reference.remove();
-      return matches;
-    })
-  ).toBe(true);
-  const itemContent = firstItem.locator(".comma-recommendation-text-item-content");
-  await expect(itemContent).toHaveCSS("column-gap", "4px");
-  await expect(itemContent).toHaveCSS("overflow", "hidden");
-  await expect(itemContent).toHaveCSS("white-space", "nowrap");
-  const prose = itemContent.locator("p > span").first();
-  await expect(prose).toHaveCSS("text-overflow", "ellipsis");
-  expect(
-    await prose.evaluate(
-      (element) =>
-        element.scrollWidth > element.clientWidth &&
-        element.scrollHeight <= element.clientHeight + 1
-    )
-  ).toBe(true);
-  const inlineLink = itemContent.locator(".comma-recommendation-inline-source");
-  // Was min-width: max-content — an unshrinkable chip hard-clipped at the
-  // row's overflow edge whenever it alone exceeded the row. Chips now yield
-  // after the prose (the shrink-factor gap in styles.css) and truncate
-  // through their own label span.
-  await expect(inlineLink).toHaveCSS("min-width", "0px");
-  const inlineGeometry = await inlineLink.evaluate((element) => {
-    const content = element.closest(".comma-recommendation-text-item-content");
-    const icon = element.querySelector("svg, img");
-    const label = element.querySelector("span");
-    const proseElement = content?.querySelector("p > span");
-    if (!content || !icon || !label || !proseElement) return null;
-    const contentRect = content.getBoundingClientRect();
-    const linkRect = element.getBoundingClientRect();
-    return {
-      contentRight: contentRect.right,
-      gapFromProse: linkRect.left - proseElement.getBoundingClientRect().right,
-      iconWidth: icon.getBoundingClientRect().width,
-      labelWidth: label.getBoundingClientRect().width,
-      linkRight: linkRect.right,
-      linkWidth: linkRect.width,
-    };
-  });
-  expect(inlineGeometry).not.toBeNull();
-  expect(inlineGeometry!.linkRight).toBeLessThanOrEqual(
-    inlineGeometry!.contentRight + 1
-  );
-  expect(inlineGeometry!.linkWidth).toBeGreaterThanOrEqual(
-    inlineGeometry!.iconWidth + inlineGeometry!.labelWidth
-  );
-  expect(inlineGeometry!.gapFromProse).toBeCloseTo(4, 0);
-  const inlineTask = itemContent.locator(".comma-recommendation-inline", {
-    hasText: "COMMA-144",
-  });
-  await expect(inlineTask).toHaveCount(1);
-  await expect(inlineTask).toHaveCSS("min-width", "0px");
-  const inlineTaskBounds = await inlineTask.evaluate((element) => {
-    const content = element.closest(".comma-recommendation-text-item-content");
-    if (!content) return null;
-    const contentRect = content.getBoundingClientRect();
-    const inlineRect = element.getBoundingClientRect();
-    return {
-      contentRight: contentRect.right,
-      inlineRight: inlineRect.right,
-      inlineWidth: inlineRect.width,
-    };
-  });
-  expect(inlineTaskBounds).not.toBeNull();
-  expect(inlineTaskBounds!.inlineWidth).toBeGreaterThan(0);
-  expect(inlineTaskBounds!.inlineRight).toBeLessThanOrEqual(
-    inlineTaskBounds!.contentRight + 1
-  );
+  await page.locator(".comma-home-chat").hover();
+  await expect(page.locator(".comma-hover-card")).toHaveCount(0);
   const refreshControl = page.getByRole("button", {
     exact: true,
     name: "Refresh",
@@ -700,9 +603,15 @@ test("a rejected real refresh replaces stale mock recommendations with canonical
     Math.abs(selectedHiddenLabelBounds.bottom - hiddenTriggerLabelBounds.bottom)
   ).toBeLessThan(0.5);
   await page.getByRole("option", { name: "Show" }).click();
-  await expect(
-    page.locator('article.comma-recommendation-card[data-template="text-list@1"] h3')
-  ).toHaveText(["Old mock card", "Next mock card", ...additionalMockCardTitles]);
+  await eventually(
+    () => routineCardTitles(page),
+    (titles) =>
+      expect(titles).toEqual([
+        "Old mock card",
+        "Next mock card",
+        ...additionalMockCardTitles,
+      ])
+  );
 
   const bottomRoutineTitle = additionalMockCardTitles.at(-1)!;
   const bottomRoutineRow = routinesDialog.getByRole("row", {
@@ -743,10 +652,10 @@ test("a rejected real refresh replaces stale mock recommendations with canonical
   await page.mouse.up();
   await expect(page).toHaveURL(routeBeforeBottomVisibilityChange);
   await expect(routinesDialog).toBeVisible();
-  await expect(page.getByRole("heading", { name: bottomRoutineTitle })).toHaveCount(0);
+  await expect(page.getByRole("group", { name: bottomRoutineTitle })).toHaveCount(0);
   await bottomVisibilityTrigger.click();
   await page.getByRole("option", { name: "Show" }).click();
-  await expect(page.getByRole("heading", { name: bottomRoutineTitle })).toBeVisible();
+  await expect(page.getByRole("group", { name: bottomRoutineTitle })).toBeVisible();
 
   const oldRoutineRow = routinesDialog.getByRole("row", {
     exact: true,
@@ -1004,9 +913,15 @@ test("a rejected real refresh replaces stale mock recommendations with canonical
     "opacity",
     "1"
   );
-  await expect(
-    page.locator('article.comma-recommendation-card[data-template="text-list@1"] h3')
-  ).toHaveText(["Next mock card", "Old mock card", ...additionalMockCardTitles]);
+  await eventually(
+    () => routineCardTitles(page),
+    (titles) =>
+      expect(titles).toEqual([
+        "Next mock card",
+        "Old mock card",
+        ...additionalMockCardTitles,
+      ])
+  );
   await eventually(
     () =>
       page.evaluate(
@@ -1261,7 +1176,7 @@ test("a rejected real refresh replaces stale mock recommendations with canonical
   await refreshControl.click();
 
   await expect(page.getByText("No routines created yet")).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Old mock card" })).toHaveCount(0);
+  await expect(page.getByRole("group", { name: "Old mock card" })).toHaveCount(0);
 
   // Empty Routines puts its heading first in the rail, where it must share a
   // centre line with the Tasks rail heading even though only Routines carries
@@ -1689,6 +1604,15 @@ test("dragging the Chat Sidebar squeezes the Home chat, then reflows Tasks and G
     async () => (await readLayout()).sidebar,
     (value) => expect(value).toBe(440)
   );
+  // The aside takes its width in one step; its surface, with the resize
+  // handle on its edge, then slides in over that edge.
+  await eventually(
+    () =>
+      chatSidebar
+        .locator(":scope > .comma-chat-sidebar-surface")
+        .evaluate((element) => new DOMMatrix(getComputedStyle(element).transform).m41),
+    (value) => expect(value).toBe(0)
+  );
 
   const greetRail = page.getByTestId("home-greet-rail");
   const tasksRail = page.getByTestId("home-tasks-rail");
@@ -1726,7 +1650,7 @@ test("dragging the Chat Sidebar squeezes the Home chat, then reflows Tasks and G
   );
 });
 
-test("source-only task labels scroll on hover and focus without changing mixed prose rows", async ({
+test("a source-only routine shows its task, quoted context and source on its card and stages the task from it", async ({
   page,
 }) => {
   const envelope = structuredClone(oldMockEnvelope);
@@ -1801,22 +1725,19 @@ test("source-only task labels scroll on hover and focus without changing mixed p
   await page.setViewportSize({ width: 1100, height: 900 });
   await app.open(page);
   await page.getByRole("heading", { name: greetingHeading }).click();
-  const row = page.locator('[data-source-only="true"]');
+  // The row's card shows what its hover card used to: the task its prompt
+  // names, the quoted source words, then the source.
+  const row = page.locator(".comma-recommendation-text-item", {
+    has: page.locator(".comma-recommendation-source-detail"),
+  });
   await expect(row).toHaveCount(1);
-  await expect(row.locator("[data-provider-logo]")).toHaveCount(0);
-  const label = row.locator(".comma-recommendation-inline-source > span");
-  await expect(label).toBeVisible();
-  const detail = page.locator(".comma-recommendation-source-detail");
-  await expect(detail).toBeHidden();
-  await expect(row.locator(".comma-recommendation-inline-source")).toHaveAttribute(
-    "data-source-detail",
-    "true"
-  );
-  await waitForSettledMotion(row);
-  await row.locator(".comma-recommendation-inline-source").hover();
+  await expect(row.locator(".comma-recommendation-inline-link")).toHaveCount(0);
+  const objective = row.locator(".comma-recommendation-task-objective");
+  await expect(objective).toHaveText("Verify reconnect behavior.");
+  const detail = row.locator(".comma-recommendation-source-detail");
   await expect(detail).toBeVisible();
-  await expect(page.locator(".comma-recommendation-task-objective")).toHaveText(
-    "Verify reconnect behavior."
+  await expect(row.locator(".comma-recommendation-source-origin")).toHaveText(
+    "Old mock card"
   );
   await expect(
     detail.getByRole("link", { name: "@Alex", exact: true })
@@ -1851,88 +1772,35 @@ test("source-only task labels scroll on hover and focus without changing mixed p
   expect(clamp.height).toBeLessThanOrEqual(clamp.line * 4 + 1);
   expect(clamp.scroll).toBeGreaterThan(clamp.height);
   const contextBox = await detail.boundingBox();
-  const promptBox = await page
-    .locator(".comma-recommendation-task-objective")
-    .boundingBox();
+  const promptBox = await objective.boundingBox();
   // The task leads; the quoted context under it is its evidence.
   expect(promptBox!.y).toBeLessThan(contextBox!.y);
-  await expect(page.locator(".comma-recommendation-source-detail")).toHaveCount(1);
   await expect(page.locator(".comma-recommendation-source-detail script")).toHaveCount(
     0
   );
-  await page.mouse.move(1050, 850);
-  await expect(detail).toBeHidden();
-  await page.keyboard.press("Tab");
-  await row.locator(".comma-recommendation-inline-source").focus();
-  await expect(detail).toBeVisible();
-  await page.keyboard.press("Escape");
-  await expect(detail).toBeHidden();
-  const geometry = await label.evaluate((node) => ({
-    height: node.getBoundingClientRect().height,
-    line: parseFloat(getComputedStyle(node).lineHeight),
-    width: node.clientWidth,
-    scroll: node.scrollWidth,
-  }));
-  expect(geometry.height).toBeLessThanOrEqual(geometry.line + 1);
-  expect(geometry.scroll).toBeGreaterThan(geometry.width + 1);
-  await page.getByRole("heading", { name: greetingHeading }).click();
-  await eventually(
-    () => label.evaluate((node) => node.scrollLeft),
-    (value) => expect(value).toBe(0)
+  // The dismiss control shows only while the pointer is over its card.
+  const dismiss = row.getByRole("button", { name: "Don’t remind me" });
+  await expect(dismiss).toHaveCSS("opacity", "0");
+  // Nothing opens on a hover any more: the card already shows it all.
+  await row.hover({ position: { x: 8, y: 8 } });
+  await testClock().advance(600);
+  await expect(page.locator(".comma-hover-card")).toHaveCount(0);
+  await expect(dismiss).toHaveCSS("opacity", "1");
+  // It sits in the card's top-trailing corner.
+  const rowBox = await row.boundingBox();
+  const dismissBox = await dismiss.boundingBox();
+  expect(rowBox!.x + rowBox!.width - (dismissBox!.x + dismissBox!.width)).toBeLessThan(
+    12
   );
-  await row.hover();
-  await eventually(
-    () => label.evaluate((node) => node.scrollLeft),
-    (value) => expect(value).toBeGreaterThan(10)
-  );
-  await eventually(
-    () =>
-      label.evaluate((node) => node.scrollWidth - node.clientWidth - node.scrollLeft),
-    (value) => expect(value).toBeLessThanOrEqual(1),
-    // The marquee moves 0.04 px/ms: 445 px take about 11 s.
-    1200
-  );
-  await page.mouse.move(1050, 850);
-  await eventually(
-    () => label.evaluate((node) => node.scrollLeft),
-    (value) => expect(value).toBe(0)
-  );
-  await page.keyboard.press("Tab");
-  await row.locator(".comma-recommendation-inline-source").focus();
-  await eventually(
-    () => label.evaluate((node) => node.scrollLeft),
-    (value) => expect(value).toBeGreaterThan(10)
-  );
-  await page.emulateMedia({ reducedMotion: "reduce" });
-  await eventually(
-    () => label.evaluate((node) => node.scrollLeft),
-    (value) => expect(value).toBe(0)
-  );
-  await expect(row).not.toHaveAttribute("data-scrolling", "true");
-  await page.getByRole("heading", { name: greetingHeading }).click();
-  await page.emulateMedia({ reducedMotion: "no-preference" });
-  const shortLabel = "Short request";
-  await label.evaluate((node, text) => {
-    node.textContent = text;
-  }, shortLabel);
-  await row.hover();
-  await expect(row).not.toHaveAttribute("data-scrolling", "true");
-  await eventually(
-    () => label.evaluate((node) => node.scrollLeft),
-    (value) => expect(value).toBe(0)
-  );
-  await expect(
-    page
-      .locator(".comma-recommendation-text-item:not([data-source-only])")
-      .first()
-      .locator(".comma-recommendation-text-item-content")
-  ).toHaveCSS("white-space", "nowrap");
+  expect(dismissBox!.y - rowBox!.y).toBeLessThan(12);
   // What the app asks the server from here on: no message, Task or conversation is written.
   const requestsBefore = ((await app.stub().call("requests")) as string[]).length;
   const beforeUrl = page.url();
-  await row.locator(".comma-recommendation-inline-source").click();
+  await row
+    .getByRole("button", { name: "Use prompt" })
+    .click({ position: { x: 8, y: 8 } });
   // The member asks Comma for help with the task, staged above the prompt as
-  // one tile. The quoted context stays in the hover.
+  // one tile. The quoted context stays on the card.
   const home = page.locator('.comma-chat-route[data-variant="home"]');
   const snippet = home.locator('[data-slot="snippet-attachment"]');
   await expect(snippet).toContainText("Help me verify reconnect behavior.");

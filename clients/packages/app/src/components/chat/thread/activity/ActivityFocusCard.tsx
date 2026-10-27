@@ -274,7 +274,10 @@ function TaskRow({
       </span>
       <span className="comma-chat-activity-card-title">{task.title}</span>
       <span className="comma-chat-activity-card-step">
-        <span className="comma-chat-activity-step-text">
+        <span
+          className="comma-chat-activity-step-text"
+          data-step={view && shown ? "true" : undefined}
+        >
           {view && shown ? (
             <StepLine step={shown} clock={view.clock} shimmer={view.working} />
           ) : (
@@ -307,7 +310,12 @@ function StepLine({
     <>
       {step.at === undefined ? null : <time>{clock.format(step.at)}</time>}
       <span className="comma-chat-activity-step-words">
-        <span data-shimmer={shimmer ? "true" : undefined}>{step.words}</span>
+        <span
+          className={shimmer ? "comma-shine" : undefined}
+          data-shimmer={shimmer ? "true" : undefined}
+        >
+          {step.words}
+        </span>
       </span>
     </>
   );

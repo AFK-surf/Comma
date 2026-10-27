@@ -1,4 +1,8 @@
-import type { ManualTaskStatus } from "@comma/chat-contract";
+import type {
+  ChatConversationFile,
+  ChatTaskRunChoice,
+  ManualTaskStatus,
+} from "@comma/chat-contract";
 import type {
   AttachmentUploadInput,
   ChatImagePreviewRef,
@@ -29,6 +33,8 @@ export interface ChatChannel {
   acceptTaskReview(reviewVersion: number): unknown;
   /** Files for the draft, or with `questionMessageId` for that question card's other answer. */
   attachFiles(files: AttachmentUploadInput[], questionMessageId?: string): unknown;
+  /** Message attachments for the draft, by reference: the server stores each one's blob as a composer file. */
+  attachConversationFiles?(files: ChatConversationFile[]): unknown;
   /** Whether this host re-encodes HEIC/HEIF into JPEG before upload. */
   readonly transcodesImages?: boolean;
   clearPresentation?(): unknown;
@@ -44,6 +50,8 @@ export interface ChatChannel {
   readTaskActivity?(): unknown;
   removeAttachment(id: string, questionMessageId?: string): void;
   setTaskStatus(status: ManualTaskStatus, expectedUpdatedAt: number): unknown;
+  /** Runs the Task on another model (`chatView.setTaskRun`); fails with why not. */
+  setTaskRun?(run: ChatTaskRunChoice): Promise<unknown>;
   retry(clientRequestId: string): unknown;
   retryAttachment(id: string, questionMessageId?: string): void;
   /**

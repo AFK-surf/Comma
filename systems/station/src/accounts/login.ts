@@ -39,8 +39,11 @@ const SCRUBBED = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_U
 /// The login commands, by runtime.
 export type LoginCommands = { claude: string; codex: string };
 
-/// What a sign-in is for: a profile's id, the runtime it signs in to, and its home.
-export type LoginProfile = { id: string; runtime: Runtime; home: string };
+/// What a sign-in is for: a profile's id, the runtime it signs in to, and its home. `machine`: the machine's own login,
+/// in the person's own home on their own computer: the command keeps its usual place (no config directory of a
+/// profile), opens the authorization page in their browser itself and hears the approval on its own local callback,
+/// so nothing is relayed or pasted.
+export type LoginProfile = { id: string; runtime: Runtime; home: string; machine?: boolean };
 
 type Running = { run: number; job: LoginJob; child: ChildProcess; output: string; cancelTimer: () => void; exited: boolean; lang: Lang };
 
@@ -80,18 +83,22 @@ export class LoginManager {
     this.cancel(profile.id);
     this.finished.delete(profile.id);
     mkdirSync(profile.home, { recursive: true });
-    const [noBrowser, open] = this.noBrowser();
-    const env = platform.prependPath(this.env(), noBrowser) as Record<string, string>;
-    env.BROWSER = open;
+    let env = this.env();
+    if (profile.machine === true) env.HOME = profile.home;
+    else {
+      const [noBrowser, open] = this.noBrowser();
+      env = platform.prependPath(env, noBrowser) as Record<string, string>;
+      env.BROWSER = open;
+    }
     let command: string;
     let args: string[];
     if (profile.runtime === "claude") {
-      env.CLAUDE_CONFIG_DIR = profile.home;
+      if (profile.machine !== true) env.CLAUDE_CONFIG_DIR = profile.home;
       fileCredentials(env);
       [command, args] = [this.commands.claude, ["auth", "login", "--claudeai"]];
     } else {
-      env.CODEX_HOME = profile.home;
-      [command, args] = [this.commands.codex, ["login", "--device-auth"]];
+      if (profile.machine !== true) env.CODEX_HOME = profile.home;
+      [command, args] = [this.commands.codex, profile.machine === true ? ["login"] : ["login", "--device-auth"]];
     }
     const now = this.background.now();
     const job: LoginJob = { profile: profile.id, runtime: profile.runtime, state: "starting", url: null, userCode: null, error: null, startedAt: now, expiresAt: now + TIMEOUT_MS };

@@ -113,17 +113,16 @@ Failure handling:
 - If a newer Comma release succeeds before that retry, its image job takes over the fence. It still runs the drain check and full deploy before it clears the fence. The older run can no longer clear it.
 
 The operator investigates only the affected Group Workloads, their claims, and their associated instances.
-Automatic restore retries share one 45-minute deadline. An expired deadline parks the operation and stops more restore writes.
+Automatic restore retries share one 45-minute deadline. The reconciler checks for an exact completed restore before disposal.
+After that deadline, it seals and discards the failed carrier through the Workload owner.
+The bounded selector also admits old waking records parked with an expired restore or provider recovery budget.
+An incomplete destroy retains its operation and generation. Reconciliation resumes that exact disposal before the provider retry budget check.
+Only a confirmed stopped carrier advances the generation. New demand can start an empty VM.
+The previous archive stays stored. Unknown input outcomes remain unresolved and cannot resume automatically.
 
-To open one new bounded restore episode, call `ComputeReconciler.retry_group_restore(group_id, expected)`:
+Image release drains include stopped waking Workloads, even when no Container runs.
+Their owner uses the same restore deadline and confirmed disposal before the final claim and inventory checks.
 
-1. Read the current Workload and claim.
-2. Pass the exact Workload ID, generation, wake ID, restore deadline, target, profile, archive operation, control permit, and claim error.
-
-The owner rejects changed facts, a live claim lease, and a sealed target. The same request cannot renew twice.
-The call keeps the wake, archive, target, permit, queues, and Gateway claims. It does not clear a restore receipt.
-A Container whose restore did not finish is replaced, never restored a second time.
-`retry_runtime_recovery` does not renew a waking Group's restore budget.
 A connected station's restore receipt can confirm completion after its transfer deadline. It does not authorize target deletion.
 A restore runs only before a station starts. A running station accepts no archive.
 

@@ -164,9 +164,11 @@ defmodule SalixAgent.InternalAgentRuntime do
   end
 
   # The Profile named by the latest provider-funding refusal, so the member can
-  # see which of their own keys ran out. Only the newest model failure counts.
-  defp put_funding(%{"issue" => "provider_quota_exhausted"} = json, session),
-    do: Map.put(json, "funding", funding_failure(session))
+  # see which of their own keys or subscriptions ran out (and when a
+  # subscription refills). Only the newest model failure counts.
+  @funding_issues ["provider_quota_exhausted", "quota_exhausted"]
+  defp put_funding(%{"issue" => issue} = json, session) when issue in @funding_issues,
+    do: Map.put(json, "funding", funding_failure(session, issue))
 
   defp put_funding(json, _session), do: json
 
@@ -215,7 +217,7 @@ defmodule SalixAgent.InternalAgentRuntime do
     end
   end
 
-  defp funding_failure(session) do
+  defp funding_failure(session, issue) do
     session
     |> InternalSession.get(:events)
     |> List.wrap()
@@ -228,8 +230,7 @@ defmodule SalixAgent.InternalAgentRuntime do
       fact ->
         payload = event_value(fact, "event")
 
-        if is_map(payload) and payload["reason"] == "provider_quota_exhausted",
-          do: payload["funding"]
+        if is_map(payload) and payload["reason"] == issue, do: payload["funding"]
     end
   end
 

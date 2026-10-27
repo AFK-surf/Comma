@@ -34,6 +34,10 @@ defmodule Comma.Admin.AuditEvent do
     update_workspace_agent_model
     update_guest_policy
     create_guest_tenant
+    disable_mini_app
+    enable_mini_app
+    update_workspace_sandbox_limit
+    update_workspace_signal_number
   )
 
   @primary_key {:id, :binary_id, autogenerate: true}

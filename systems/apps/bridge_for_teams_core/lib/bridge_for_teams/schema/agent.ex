@@ -90,6 +90,20 @@ defmodule BridgeForTeams.Schema.Agent do
   def lifecycle(%__MODULE__{salix: record}),
     do: if(Map.has_key?(record, "archived_at"), do: "archived", else: "active")
 
+  @doc """
+  The instructions the agent runs with, or nil: a Router's own
+  `router_system_prompt`, else the shared `system_prompt`
+  (`SalixAgent.ToolPolicy.system_prompt/2`).
+  """
+  @spec instructions(t()) :: String.t() | nil
+  def instructions(%__MODULE__{role: "router", salix: record}),
+    do: present(record["router_system_prompt"]) || present(record["system_prompt"])
+
+  def instructions(%__MODULE__{salix: record}), do: present(record["system_prompt"])
+
+  defp present(value) when is_binary(value) and value != "", do: value
+  defp present(_value), do: nil
+
   defp reject_identity_update(%Ecto.Changeset{data: %{id: nil}} = changeset, _attrs, _field),
     do: changeset
 

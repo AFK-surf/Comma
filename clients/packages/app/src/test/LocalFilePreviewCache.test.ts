@@ -150,6 +150,104 @@ describe("LocalFilePreviewCache", () => {
     cache.dispose();
   });
 
+  it("serves a path aliased to a held draft upload from the same URL through the send handoff", async () => {
+    const load = vi.fn(async () => pngBytes());
+    const cache = new LocalFilePreviewCache({ load });
+    const draftRef = "draft-upload:att_1";
+    const path = "/uploads/AAAAAAAAAAAAAAAAAAAAAA-photo.png";
+
+    // The Composer previews the upload from the bytes the core holds; once it
+    // uploaded, its path names the same image.
+    const composerLease = await cache.acquire(draftRef);
+    cache.alias(path, draftRef);
+
+    // At send the Composer's tile leaves and the message mounts in one commit,
+    // reading the image by its path.
+    composerLease?.release();
+    const messageLease = await cache.acquire(path);
+    await flushMicrotasks();
+
+    expect(messageLease?.url).toBe(composerLease?.url);
+    expect(load).toHaveBeenCalledOnce();
+    expect(revokeObjectURL).not.toHaveBeenCalled();
+
+    // The alias goes with the entry: a later read of the path loads it itself.
+    messageLease?.release();
+    await flushMicrotasks();
+    expect(revokeObjectURL).toHaveBeenCalledOnce();
+    const reenteredLease = await cache.acquire(path);
+    expect(load).toHaveBeenCalledTimes(2);
+    expect(load).toHaveBeenLastCalledWith(path);
+    expect(reenteredLease?.url).not.toBe(composerLease?.url);
+
+    reenteredLease?.release();
+    await flushMicrotasks();
+    cache.dispose();
+  });
+
+  it("reads a path itself while the draft upload it names is still loading", async () => {
+    // The core forgets an upload's bytes once its message takes it, so a
+    // read of them still waiting can come back empty; the path must not wait on it.
+    const draftLoad = deferred<Uint8Array | undefined>();
+    const load = vi.fn((ref: ChatImagePreviewRef) =>
+      ref === "draft-upload:att_1" ? draftLoad.promise : Promise.resolve(pngBytes())
+    );
+    const cache = new LocalFilePreviewCache({ load });
+    const path = "/uploads/AAAAAAAAAAAAAAAAAAAAAA-photo.png";
+
+    const composerLease = cache.acquire("draft-upload:att_1");
+    cache.alias(path, "draft-upload:att_1");
+    const messageLease = cache.acquire(path);
+    draftLoad.resolve(undefined);
+
+    expect(await composerLease).toBeUndefined();
+    const shown = await messageLease;
+    expect(shown?.url).toMatch(/^blob:/);
+    expect(load).toHaveBeenLastCalledWith(path);
+    shown?.release();
+    await flushMicrotasks();
+    cache.dispose();
+  });
+
+  it("serves a path aliased while its draft upload loaded once that load is ready", async () => {
+    // The Composer's thumbnail can still be loading when its upload finishes:
+    // the alias made then serves the message the thumbnail it shows by send.
+    const draftLoad = deferred<Uint8Array | undefined>();
+    const load = vi.fn((ref: ChatImagePreviewRef) =>
+      ref === "draft-upload:att_1" ? draftLoad.promise : Promise.resolve(pngBytes())
+    );
+    const cache = new LocalFilePreviewCache({ load });
+    const path = "/uploads/AAAAAAAAAAAAAAAAAAAAAA-photo.png";
+
+    const composerLease = cache.acquire("draft-upload:att_1");
+    cache.alias(path, "draft-upload:att_1");
+    draftLoad.resolve(pngBytes());
+    const thumbnail = await composerLease;
+    const shown = await cache.acquire(path);
+
+    expect(shown?.url).toBe(thumbnail?.url);
+    expect(load).toHaveBeenCalledOnce();
+    thumbnail?.release();
+    shown?.release();
+    await flushMicrotasks();
+    cache.dispose();
+  });
+
+  it("keeps no alias to an image it does not hold", async () => {
+    const load = vi.fn(async () => pngBytes());
+    const cache = new LocalFilePreviewCache({ load });
+    const path = "/uploads/AAAAAAAAAAAAAAAAAAAAAA-photo.png";
+
+    cache.alias(path, "draft-upload:att_1");
+    const lease = await cache.acquire(path);
+
+    expect(load).toHaveBeenCalledOnce();
+    expect(load).toHaveBeenCalledWith(path);
+    lease?.release();
+    await flushMicrotasks();
+    cache.dispose();
+  });
+
   it("runs at most four distinct preview loads at once", async () => {
     const gates = new Map<string, Deferred<Uint8Array | undefined>>();
     let activeLoads = 0;

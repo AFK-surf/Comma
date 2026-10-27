@@ -1,0 +1,16 @@
+[Unit]
+Description=Comma station of a coding sandbox
+After=sbx-firstboot.service network-online.target
+Wants=network-online.target
+ConditionPathExists=/run/sbx/secrets/SALIX_WORKLOAD_CREDENTIAL
+
+[Service]
+User=comma
+Group=comma
+EnvironmentFile=-/etc/sbx/env
+ExecStart=/usr/local/bin/comma-station-start
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

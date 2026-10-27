@@ -15,7 +15,7 @@
 # Go toolchain. This release contains the reviewed upstream dependency updates
 # for gRPC 1.83.2 and golang.org/x/crypto 0.55.0. A build module raises
 # golang.org/x/net to 0.60.0 for CVE-2026-78669; v2.26.0 still pins 0.59.0.
-FROM golang:1.26.9-trixie AS cloud-sql-proxy-builder
+FROM golang:1.26.10-trixie AS cloud-sql-proxy-builder
 
 ARG CLOUD_SQL_PROXY_VERSION=7905bdd628cd80cfb15714a7197f5bbd4a49d844
 ARG CLOUD_SQL_PROXY_X_NET_VERSION=v0.60.0
@@ -28,7 +28,7 @@ RUN go mod init cloud-sql-proxy-build \
       github.com/GoogleCloudPlatform/cloud-sql-proxy/v2
 
 # ---- Subscription worker builder ------------------------------------------
-FROM golang:1.26.9-trixie AS subscription-worker-builder
+FROM golang:1.26.10-trixie AS subscription-worker-builder
 WORKDIR /src
 COPY systems/account-proxy/go.mod systems/account-proxy/go.sum systems/account-proxy/bootstrap.sh ./
 COPY systems/account-proxy/patches ./patches
@@ -54,7 +54,7 @@ RUN cargo build --release --locked --manifest-path profiles/nif/Cargo.toml \
 # One process per Salix node for outbound SSH over Tailcat
 # (SalixAgent.Tailcat.Gateway). Only the gateway command ships; the test peer
 # stays out of the image.
-FROM golang:1.27.2-trixie AS tailcat-gateway-builder
+FROM golang:1.27.3-trixie AS tailcat-gateway-builder
 WORKDIR /src
 COPY systems/tailcat-gateway/go.mod systems/tailcat-gateway/go.sum ./
 RUN go mod download
@@ -65,7 +65,7 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /tailcat_gateway ./cmd/
 # ---- Tailnet gateway builder -----------------------------------------------
 # One process per Salix node for the tailnet nodes of the Agent Groups that
 # node owns (SalixAgent.Tailnet.Gateway).
-FROM golang:1.27.2-trixie AS tailnet-gateway-builder
+FROM golang:1.27.3-trixie AS tailnet-gateway-builder
 WORKDIR /src
 COPY systems/tailnet-gateway/go.mod systems/tailnet-gateway/go.sum ./
 RUN go mod download
@@ -86,6 +86,24 @@ RUN apt-get update -y && apt-get install -y --no-install-recommends ca-certifica
 WORKDIR /src
 COPY systems/native/spinfoam/SPINFOAM_VERSION systems/native/spinfoam/SHA256SUMS systems/native/spinfoam/fetch.sh ./native/spinfoam/
 RUN ./native/spinfoam/fetch.sh OUT=/out/spinfoam
+
+# The locked SILK v3 decoder (systems/runtime-images/runtime-dependencies.lock.json,
+# the one the Cloud VM images build): audio.transcribe decodes WeChat and QQ
+# voice messages with it, since ffmpeg has no SILK decoder.
+FROM debian:trixie-slim AS silk-decoder-builder
+RUN apt-get update -y && apt-get install -y --no-install-recommends \
+      ca-certificates curl gcc g++ jq make openssl \
+    && rm -rf /var/lib/apt/lists/*
+COPY systems/runtime-images/runtime-dependencies.lock.json /tmp/runtime-dependencies.lock.json
+RUN set -eu; \
+    tarball="$(jq -er .silkV3Decoder.tarball /tmp/runtime-dependencies.lock.json)"; \
+    integrity="$(jq -er .silkV3Decoder.integrity /tmp/runtime-dependencies.lock.json)"; \
+    curl --fail --location --silent --show-error "${tarball}" --output /tmp/silk.tgz; \
+    printf '%s' "${integrity#sha512-}" | base64 --decode >/tmp/silk.expected; \
+    openssl dgst -sha512 -binary /tmp/silk.tgz | cmp /tmp/silk.expected -; \
+    mkdir /tmp/silk && tar -xzf /tmp/silk.tgz -C /tmp/silk --strip-components=1; \
+    make -C /tmp/silk/silk lib decoder; \
+    install -D -m 0755 /tmp/silk/silk/decoder /out/silk-v3-decoder
 
 # ---- Stage 1: Elixir release builder -------------------------------------
 # ---- BFT dashboard builder -------------------------------------------------
@@ -235,6 +253,7 @@ RUN echo "${RUNTIME_APT_REFRESH}" >/dev/null \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=cloud-sql-proxy-builder /out/cloud-sql-proxy /usr/local/bin/cloud-sql-proxy
+COPY --from=silk-decoder-builder /out/silk-v3-decoder /usr/local/bin/silk-v3-decoder
 
 # Non-root runtime identity. Keep the UID/GID explicit because the same image is
 # also used by Kubernetes sidecars whose runAsNonRoot policy cannot validate a

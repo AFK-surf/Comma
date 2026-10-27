@@ -25,3 +25,5 @@ export function findHasBeforeUniversalSubjects(
   css: string,
   filename?: string
 ): string[];
+
+export function findUncappedLoops(source: string): string[];

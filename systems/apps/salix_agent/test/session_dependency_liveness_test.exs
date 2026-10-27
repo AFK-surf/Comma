@@ -173,7 +173,11 @@ defmodule SalixAgent.SessionDependencyLivenessTest do
       SystemsRuntime.Proc.send(owner, {:saturating_llm_started, lane, SystemsRuntime.Proc.self()})
 
       SystemsClock.vreceive do
-        :release_saturating_llm -> {:final, "released #{lane}"}
+        # A reply without a tool call leaves the turn open, and the session
+        # asks the model again at once, racing the waiting lane for the slot.
+        :release_saturating_llm ->
+          {:assistant, "",
+           [%{id: "released_#{lane}", name: "end_turn", args: %{"outcome" => "done"}}]}
       after
         10_000 -> {:final, "unbounded #{lane}"}
       end

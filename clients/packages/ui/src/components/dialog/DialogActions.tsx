@@ -11,6 +11,7 @@ import {
   dialogActionsTrailingGroup,
   dialogCloseButton,
   dialogCloseButtonStyle,
+  dialogComposeCloseButton,
 } from "./styles";
 import type { DialogAction, DialogShortcut, DialogShortcutTone } from "./types";
 
@@ -62,15 +63,22 @@ const DialogActionButton = ({ action }: { action: DialogAction }) => {
   );
 };
 
-export const DialogCloseButton = ({ onPress }: { onPress?: () => void }) => (
+export const DialogCloseButton = ({
+  compact = false,
+  onPress,
+}: {
+  /** The compose variant's: an xs button on its one-chip title row. */
+  compact?: boolean;
+  onPress?: () => void;
+}) => (
   <Button
     {...definedProps({ onPress })}
     aria-label="Close dialog"
-    className={dialogCloseButton}
+    className={compact ? dialogComposeCloseButton : dialogCloseButton}
     hierarchy="tertiary-gray"
     iconLeading={<XIcon />}
     iconOnly
-    size="md"
+    size={compact ? "xs" : "md"}
     style={dialogCloseButtonStyle}
   />
 );

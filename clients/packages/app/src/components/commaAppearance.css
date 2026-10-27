@@ -28,75 +28,16 @@
 
 /* The preference reaches every visible hit area: explicit pointer surfaces
    (tracks, menu content) and what they hold, and the label around React
-   Aria's hidden switch/radio/checkbox input. What that label holds inherits
-   from it: matching it too would put the `:has()` left of a universal
-   subject, and Chromium then restyles the label's whole subtree on each
-   insertion beneath it. Disabled, text-entry and functional-cursor elements,
-   and what they hold, keep their own cursor. The exclusions lead so they are
-   written once; `&` lands in each target's own compound, so each target keeps
-   its specificity. */
-:not(
-  :is(
-    :disabled,
-    [aria-disabled="true"],
-    [data-disabled]:not([data-disabled="false"]),
-    [data-comma-functional-cursor],
-    input:not(
-      [type="button"],
-      [type="checkbox"],
-      [type="radio"],
-      [type="range"],
-      [type="reset"],
-      [type="submit"]
-    ),
-    textarea,
-    [contenteditable]:not([contenteditable="false"])
-  ),
-  :is(
-      :disabled,
-      [aria-disabled="true"],
-      [data-disabled]:not([data-disabled="false"]),
-      [data-comma-functional-cursor],
-      input:not(
-        [type="button"],
-        [type="checkbox"],
-        [type="radio"],
-        [type="range"],
-        [type="reset"],
-        [type="submit"]
-      ),
-      textarea,
-      [contenteditable]:not([contenteditable="false"])
-    )
-    *
-) {
-  :root[data-comma-pointer-cursors]
-    &:is(
-      a[href],
-      area[href],
-      button,
-      select,
-      summary,
-      input[type="button"],
-      input[type="checkbox"],
-      input[type="radio"],
-      input[type="range"],
-      input[type="reset"],
-      input[type="submit"],
-      [role="button"],
-      [role="checkbox"],
-      [role="combobox"]:not(input),
-      [role="link"],
-      [role="menuitem"],
-      [role="menuitemcheckbox"],
-      [role="menuitemradio"],
-      [role="option"],
-      [role="radio"],
-      [role="switch"],
-      [role="tab"],
-      [role="treeitem"],
-      .cursor-pointer
-    ),
+   Aria's hidden switch/radio/checkbox input. Disabled, text-entry and
+   functional-cursor elements, and what they hold, keep their own cursor.
+
+   Each control is the root of a scope that ends at those exclusions, and a
+   control inside an exclusion roots none. Chromium carries a scope from an
+   element to its children while it restyles, so an element's cursor costs a
+   lookup. A selector for "inside a control and outside every exclusion"
+   instead walked each element's ancestors on every restyle, which made each
+   restyle in the app about twice as expensive. */
+@scope (
   :root[data-comma-pointer-cursors]
     :is(
       a[href],
@@ -123,13 +64,89 @@
       [role="tab"],
       [role="treeitem"],
       .cursor-pointer
+    ):not(
+      :is(
+        :disabled,
+        [aria-disabled="true"],
+        [data-disabled]:not([data-disabled="false"]),
+        [data-comma-functional-cursor],
+        input:not(
+          [type="button"],
+          [type="checkbox"],
+          [type="radio"],
+          [type="range"],
+          [type="reset"],
+          [type="submit"]
+        ),
+        textarea,
+        [contenteditable]:not([contenteditable="false"])
+      ),
+      :is(
+          :disabled,
+          [aria-disabled="true"],
+          [data-disabled]:not([data-disabled="false"]),
+          [data-comma-functional-cursor],
+          input:not(
+            [type="button"],
+            [type="checkbox"],
+            [type="radio"],
+            [type="range"],
+            [type="reset"],
+            [type="submit"]
+          ),
+          textarea,
+          [contenteditable]:not([contenteditable="false"])
+        )
+        *
     )
-    &,
-  :root[data-comma-pointer-cursors]
-    label&:has(
-      input:is([type="checkbox"], [type="radio"], [type="range"]):enabled,
-      select:enabled
-    ) {
+) to (
+  :is(
+    :disabled,
+    [aria-disabled="true"],
+    [data-disabled]:not([data-disabled="false"]),
+    [data-comma-functional-cursor],
+    input:not(
+      [type="button"],
+      [type="checkbox"],
+      [type="radio"],
+      [type="range"],
+      [type="reset"],
+      [type="submit"]
+    ),
+    textarea,
+    [contenteditable]:not([contenteditable="false"])
+  )
+) {
+  :scope,
+  * {
     cursor: var(--comma-interactive-cursor) !important;
   }
+}
+
+/* What the label holds inherits from it: matching it too would put the
+   `:has()` left of a universal subject, and Chromium then restyles the
+   label's whole subtree on each insertion beneath it. A label is never a text
+   field, nor inside one. */
+:root[data-comma-pointer-cursors]
+  label:not(
+    :is(
+      :disabled,
+      [aria-disabled="true"],
+      [data-disabled]:not([data-disabled="false"]),
+      [data-comma-functional-cursor],
+      [contenteditable]:not([contenteditable="false"])
+    ),
+    :is(
+        :disabled,
+        [aria-disabled="true"],
+        [data-disabled]:not([data-disabled="false"]),
+        [data-comma-functional-cursor],
+        [contenteditable]:not([contenteditable="false"])
+      )
+      *
+  ):has(
+    input:is([type="checkbox"], [type="radio"], [type="range"]):enabled,
+    select:enabled
+  ) {
+  cursor: var(--comma-interactive-cursor) !important;
 }

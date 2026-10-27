@@ -36,7 +36,6 @@ defmodule Comma.Stations do
   @enroll_ttl_seconds 3600
   @relay_purpose "station_relay"
   @relay_ttl_seconds 60
-  @read_only_roles ~w(viewer)
   @workspace_limit 100
 
   # ── access ─────────────────────────────────────────────────────────────
@@ -77,16 +76,14 @@ defmodule Comma.Stations do
   # theirs (`enrolled_by`), with access off until they set it.
   defp enroller(user, session, workspace_id) do
     with {:ok, workspace, role} <- member(user, session, workspace_id) do
-      if role in @read_only_roles, do: {:error, :forbidden}, else: {:ok, workspace, role}
+      if Comma.Stations.Members.read_only_role?(role),
+        do: {:error, :forbidden},
+        else: {:ok, workspace, role}
     end
   end
 
-  defp enroller?(tenant_id, group_id, user_id) do
-    case StationMembers.role(tenant_id, group_id, user_id) do
-      {:ok, role} -> role not in @read_only_roles
-      :none -> false
-    end
-  end
+  defp enroller?(tenant_id, group_id, user_id),
+    do: StationMembers.enroller?(tenant_id, group_id, user_id)
 
   defp unrestricted(%{"restricted" => true}), do: {:error, :forbidden}
   defp unrestricted(%{"id" => id}) when is_binary(id), do: :ok
@@ -267,6 +264,33 @@ defmodule Comma.Stations do
         version,
         origin \\ nil
       ) do
+    with {:ok, admission} <-
+           prepare_cloud_station(
+             tenant_id,
+             group_id,
+             station_id,
+             previous_station_id,
+             version,
+             origin
+           ),
+         :ok <- publish_cloud_station(admission) do
+      {:ok, admission.place}
+    end
+  end
+
+  @doc """
+  Prepares the local roster write and placement for a managed Station. The
+  caller can include this write in its owner transaction. Publish the returned
+  admission with `publish_cloud_station/1` only after that transaction commits.
+  """
+  def prepare_cloud_station(
+        tenant_id,
+        group_id,
+        station_id,
+        previous_station_id,
+        version,
+        origin \\ nil
+      ) do
     # The configured origin, else the one the station reaches this server at.
     origin = Config.origin(origin)
 
@@ -285,11 +309,26 @@ defmodule Comma.Stations do
              version
            ),
          {:ok, place} <- placement(row) do
-      if replaced, do: Events.station_removed(replaced)
-      Events.roster_changed(group_id)
-      Events.station_changed(row.id)
-      {:ok, Map.put(place, "origin", origin)}
+      {:ok,
+       %{
+         place: Map.put(place, "origin", origin),
+         station_id: row.id,
+         previous_station_id: replaced,
+         group_id: group_id
+       }}
     end
+  end
+
+  @doc "Publishes a managed Station admission after its local writes commit."
+  def publish_cloud_station(%{
+        station_id: station,
+        previous_station_id: previous,
+        group_id: group
+      }) do
+    if previous, do: Events.station_removed(previous)
+    Events.roster_changed(group)
+    Events.station_changed(station)
+    :ok
   end
 
   @doc """

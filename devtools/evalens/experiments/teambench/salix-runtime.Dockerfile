@@ -1,4 +1,4 @@
-FROM golang:1.25-bookworm AS connector-builder
+FROM golang:1.26.10-bookworm AS connector-builder
 
 WORKDIR /src
 COPY go.mod go.sum ./

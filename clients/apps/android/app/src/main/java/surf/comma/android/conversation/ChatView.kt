@@ -50,6 +50,9 @@ class ChatView internal constructor(
     private val lock = Any()
     private val mutableState = MutableStateFlow(ConversationState())
     val state: StateFlow<ConversationState> = mutableState.asStateFlow()
+    private val mutableRequests = MutableStateFlow(AgentRequests())
+    /** The Agent's requests in the conversation shown (the core's `agentRequests` topic), for their cards. */
+    val requests: StateFlow<AgentRequests> = mutableRequests.asStateFlow()
 
     /** A UI preparation can outlive the account that produced its snapshot. */
     fun isCurrent(state: ConversationState): Boolean = state.scope?.let(sessions::isCurrent) ?: (state.groupId == null)
@@ -107,6 +110,7 @@ class ChatView internal constructor(
         showing = null
         mutableState.value = target?.let { ConversationState(groupId = it.scope.groupId, conversationId = it.conversationId, scope = it.scope) }
             ?: ConversationState()
+        mutableRequests.value = AgentRequests()
         show()
     }
 
@@ -140,6 +144,17 @@ class ChatView internal constructor(
         if (showing?.isActive == true) return
         val reader = ChatViewReader(current!!.scope, current.conversationId)
         showing = root.launch {
+            launch {
+                val topic = JSONObject().put("topic", "agentRequests").put("group", current.scope.groupId)
+                    .put("conversation", current.conversationId)
+                core!!.subscribe(topic, AgentRequest::list).collect { value ->
+                    if (value !is TopicValue.Value) return@collect
+                    synchronized(lock) {
+                        if (target === current && sessions.isCurrent(current.scope))
+                            mutableRequests.value = AgentRequests(current.scope, current.conversationId, value.value)
+                    }
+                }
+            }
             core!!.subscribe(current.json().put("topic", "chatView"), reader::read).collect { value ->
                 if (value !is TopicValue.Value) return@collect
                 synchronized(lock) {
@@ -256,6 +271,21 @@ class ChatView internal constructor(
         rows(state.first { it.revision >= revision || it.scope == null }).firstOrNull { it.id !in before }?.id
     }
 
+    /**
+     * Adds a file the app holds by [localFileRef] (see `PickedLocalFiles`) to the draft: the core has the app upload
+     * it from where it is, as it is read. Returns its row, whose id is the ref, or null when the core took none.
+     */
+    suspend fun attachLocalFile(localFileRef: String, name: String, mediaType: String, size: Long): String? =
+        attaching.withLock {
+            val receipt = call("attachLocalFiles") {
+                put("files", JSONArray().put(JSONObject().put("localFileRef", localFileRef).put("mediaType", mediaType)
+                    .put("name", name).put("size", size)))
+            } as? JSONObject ?: return null
+            val revision = receipt.optLong("revision")
+            state.first { it.revision >= revision || it.scope == null }.attachments
+                .firstOrNull { it.id == localFileRef }?.id
+        }
+
     /** Removes a file from the draft, or from question card [questionMessageId]. */
     suspend fun removeAttachment(id: String, questionMessageId: String? = null) {
         call("removeAttachment") {
@@ -284,6 +314,23 @@ class ChatView internal constructor(
             other?.let { put("other", it) }
             if (skipped) put("skipped", true)
         } != null
+
+    /**
+     * Declines the Agent's request [requestId] in the conversation shown; the Agent's waiting call returns that the
+     * person declined, and the request's card closes as the core reads its ending. False when the core refused.
+     */
+    suspend fun declineRequest(requestId: String): Boolean {
+        val current = current() ?: return false
+        return try {
+            core?.call("agentRequests.decline", JSONObject().put("group", current.scope.groupId)
+                .put("conversation", current.conversationId).put("request", requestId))
+            core != null
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: CoreError) {
+            false
+        }
+    }
 
     fun close() {
         root.cancel()
@@ -484,7 +531,8 @@ internal class ChatViewReader(private val scope: ConversationScope, private val 
             title = json.string("title"), mimeType = json.string("mimeType"), size = json.optLongOrNull("size"),
             workspacePath = json.string("workspacePath"), widthPx = json.optLongOrNull("width")?.toInt(),
             heightPx = json.optLongOrNull("height")?.toInt(), blobRef = blob, agentId = json.string("agentId")?.takeIf { blob != null },
-            downloadable = served != null && blob != null,
+            // One the core reads by its place (a Task a station hosts) names no blob: its download is checked by nothing more.
+            downloadable = served != null,
         )
     }
 

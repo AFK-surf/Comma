@@ -9,6 +9,15 @@ vi.mock("node:fs", async (original) => ({
   cpSync: (from: string, to: string) => void copied.push({ from, to }),
 }));
 
+const trimmed = vi.hoisted(
+  () => [] as { dir: string; platform: string; arch: string }[]
+);
+vi.mock("../scripts/package-trim", async (original) => ({
+  ...(await original<typeof import("../scripts/package-trim")>()),
+  trimVelopackNatives: (dir: string, platform: string, arch: string) =>
+    void trimmed.push({ dir, platform, arch }),
+}));
+
 const { default: config } = await import("../forge.config");
 
 type AfterCopy = (
@@ -50,6 +59,14 @@ describe.runIf(process.platform === "darwin" && process.arch === "arm64")(
             ).name
         )
       ).toEqual(names);
+      // Only the target's velopack binary goes along (package-trim.ts).
+      expect(trimmed).toEqual([
+        {
+          dir: join(buildPath, "node_modules", "velopack"),
+          platform: "darwin",
+          arch: "arm64",
+        },
+      ]);
       // The station the app carries, with the mesh addon the core's endpoint is on (build-native.ts).
       expect(config.packagerConfig?.extraResource).toContain("dist/native");
     });

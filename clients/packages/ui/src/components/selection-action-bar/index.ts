@@ -4,4 +4,5 @@ export type {
   SelectionActionBarAnchor,
   SelectionActionBarDirection,
   SelectionActionBarProps,
+  SelectionActionBarReply,
 } from "./SelectionActionBar";

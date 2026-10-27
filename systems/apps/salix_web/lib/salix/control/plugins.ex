@@ -358,6 +358,42 @@ defmodule Salix.Control.Plugins do
       }
     },
     %{
+      # The Mac apps (Calendar, Messages, ...) on one member's Mac. Only the Comma
+      # desktop app on a Mac lists it; installing it connects that Mac, and the
+      # per-app switches inside it stay on that Mac. Comma offers it only to
+      # clients that install plugins on their own device (`Comma.ClientCapabilities`).
+      "plugin_id" => "mac-apps",
+      "name" => "Mac apps",
+      "description" =>
+        "Calendar, Reminders, Contacts, Messages, Mail, Notes, Music, Maps, system controls and image recognition on your own Mac.",
+      "ui" => %{
+        "category" => "Mac",
+        "platforms" => ["macos"],
+        "requires" => ["device-plugins"]
+      },
+      "default_enabled" => false,
+      "setup" => %{
+        "type" => "integration",
+        "default_connection" => "this-mac",
+        "connections" => [
+          %{"id" => "this-mac", "kind" => "device_client", "label" => "This Mac"}
+        ],
+        "mcps" => [
+          %{
+            "mcp_id" => "mcp1_0000000000000000011",
+            "alias" => "mac",
+            "target_ref" => "client:mac-apps",
+            "placement" => "device",
+            "auth_refs" => ["this-mac"]
+          }
+        ]
+      },
+      "refs" => %{
+        "tool_refs" => ["mcp.mac.*"],
+        "mcp_refs" => [%{"mcp_id" => "mcp1_0000000000000000011"}]
+      }
+    },
+    %{
       "plugin_id" => "github",
       "name" => "GitHub",
       "description" => "Repositories, issues and pull requests through OAuth or direct APIs.",

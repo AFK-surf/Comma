@@ -56,6 +56,9 @@ defmodule SalixIM.Application do
        name: SalixIM.ConversationNotificationTasks, max_children: 64},
       {SystemsRuntime.TaskSupervisor,
        name: SalixIM.ConversationProjectionTasks, max_children: 64},
+      # One bounded Slack call per delivered @-mention; over the cap the
+      # :eyes: is skipped, never the delivery.
+      {SystemsRuntime.TaskSupervisor, name: SalixIM.SlackMentionAckTasks, max_children: 64},
       conversation_owner_supervisor()
     ] ++
       conversation_recovery_children() ++

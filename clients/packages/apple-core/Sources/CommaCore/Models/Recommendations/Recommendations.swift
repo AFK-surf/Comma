@@ -164,6 +164,46 @@ public struct RecommendationCard: Equatable, Identifiable, Sendable {
     }
 }
 
+/// A member task's quoted source words, as the client core reads the server's quote markup for every client
+/// (`recommendationSourceQuote` in the recommendation contract): one line per source line, each as runs of words,
+/// Slack mentions and channels, and links.
+public struct RecommendationQuote: Equatable, Sendable {
+    public enum Kind: String, Sendable { case text, mention, channel, link }
+
+    public struct Run: Equatable, Sendable {
+        public let text: String
+        public let kind: Kind
+        public init(text: String, kind: Kind) { self.text = text; self.kind = kind }
+    }
+
+    /// A source line; a list item is drawn after a bullet.
+    public struct Line: Equatable, Sendable {
+        public let runs: [Run]
+        public let listItem: Bool
+        public init(runs: [Run], listItem: Bool = false) { self.runs = runs; self.listItem = listItem }
+    }
+
+    public let lines: [Line]
+
+    public init(lines: [Line]) { self.lines = lines }
+
+    /// An inline link's `quote`; nil when it has no line.
+    init?(json: JSONValue?) {
+        let lines = (json?.array ?? []).compactMap(\.object).map { line in
+            Line(runs: (line["runs"]?.array ?? []).compactMap(\.object).map { run in
+                Run(text: run["text"]?.string ?? "", kind: run["kind"]?.string.flatMap(Kind.init(rawValue:)) ?? .text)
+            }, listItem: line["listItem"]?.bool ?? false)
+        }
+        guard !lines.isEmpty else { return nil }
+        self.lines = lines
+    }
+
+    /// The quote as plain words, for VoiceOver.
+    public var plainText: String {
+        lines.map { ($0.listItem ? "• " : "") + $0.runs.map(\.text).joined() }.joined(separator: "\n")
+    }
+}
+
 public struct RecommendationItem: Equatable, Identifiable, Sendable {
     public let id: String
     /// A media item's title; text items carry their prose in `parts`.
@@ -172,10 +212,17 @@ public struct RecommendationItem: Equatable, Identifiable, Sendable {
     public let detail: String?
     public let imageURL: URL?
     public let action: RecommendationAction?
+    /// A row that is only its source link is the member's task: its objective (the link's label without one) leads
+    /// its card.
+    public let objective: String?
+    /// The source words that row quotes, as the client core reads them.
+    public let quote: RecommendationQuote?
 
     public init(id: String, title: String? = nil, parts: [RecommendationPart] = [], detail: String? = nil,
-                imageURL: URL? = nil, action: RecommendationAction? = nil) {
+                imageURL: URL? = nil, action: RecommendationAction? = nil, objective: String? = nil,
+                quote: RecommendationQuote? = nil) {
         self.id = id; self.title = title; self.parts = parts; self.detail = detail; self.imageURL = imageURL; self.action = action
+        self.objective = objective; self.quote = quote
     }
 
     init?(json: JSONValue, prompts: [String: String]) {
@@ -183,12 +230,27 @@ public struct RecommendationItem: Equatable, Identifiable, Sendable {
         let parts = RecommendationPart.parts(item["parts"], prompts: prompts)
         let title = item["title"]?.string
         guard title != nil || !parts.isEmpty else { return nil }
+        // A row that is only its source link is the member's task. The client core gives its link the task's objective
+        // and the source words it quotes, read for display.
+        let rawParts = item["parts"]?.array ?? []
+        let link = rawParts.count == 1 && parts.count == 1 ? rawParts[0].object?["link"]?.object : nil
         self.init(id: id, title: title, parts: parts, detail: item["description"]?.string,
                   imageURL: item["imageUrl"]?.string.flatMap(URL.init(string:)).flatMap { $0.scheme == "https" ? $0 : nil },
-                  action: RecommendationAction(json: item["action"], prompts: prompts))
+                  action: RecommendationAction(json: item["action"], prompts: prompts),
+                  objective: link.flatMap { fields in fields["objective"]?.string.flatMap { $0.isEmpty ? nil : $0 } ?? fields["label"]?.string },
+                  quote: RecommendationQuote(json: link?["quote"]))
     }
 
     public var text: String { RecommendationPart.plainText(parts) }
+
+    /// The source item the row stands for, which the member can dismiss: its source and URL. A Task row has none.
+    public var sourceItem: (sourceID: String, url: String)? {
+        guard linkedTaskID == nil else { return nil }
+        for part in parts {
+            if case .link(_, let url, let sourceID?) = part { return (sourceID, url.absoluteString) }
+        }
+        return nil
+    }
 
     /// A row that stands for one existing Task opens that Task instead of its source link, as on the desktop.
     public var linkedTaskID: String? {

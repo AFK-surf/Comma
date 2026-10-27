@@ -32,6 +32,7 @@ try {
       root,
       serverBuildId: options.get("server-build-id"),
       agentVMMReleaseId: options.get("agent-vmm-release-id"),
+      agentVMMLinuxReleaseId: options.get("agent-vmm-linux-release-id"),
       darwinSalixConnectReleaseId: options.get("darwin-salix-connect-release-id") ?? options.get("server-build-id"),
       computerUseHelperReleaseId: options.get("computer-use-helper-release-id") ?? options.get("server-build-id"),
       baseUrl: options.get("base-url"),

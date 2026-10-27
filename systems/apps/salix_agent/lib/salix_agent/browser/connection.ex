@@ -19,6 +19,9 @@ defmodule SalixAgent.Browser.Connection do
   def remember_origin(pid, origin), do: SystemsRuntime.Server.call(pid, {:origin, origin})
 
   def frame(pid, session), do: SystemsRuntime.Server.call(pid, {:frame, session})
+  def dialog(pid, session), do: SystemsRuntime.Server.call(pid, {:dialog, session})
+  @doc "How many loads `frame` started, and its phase: `:navigating`, `:loading` or `:idle`."
+  def load(pid, session, frame), do: SystemsRuntime.Server.call(pid, {:load, session, frame})
   def clear_frame(pid, session), do: SystemsRuntime.Server.call(pid, {:clear_frame, session})
   def generation(pid, session), do: SystemsRuntime.Server.call(pid, {:generation, session})
 
@@ -46,6 +49,7 @@ defmodule SalixAgent.Browser.Connection do
          {:ok, conn, ref} <-
            Mint.WebSocket.upgrade(ws_scheme, conn, path, Keyword.get(opts, :headers, [])) do
       timer = SystemsClock.send_after(SystemsRuntime.Proc.self(), :upgrade_timeout, 10_000)
+      SystemsClock.awaiting({__MODULE__, :upgrade})
 
       {:ok,
        %{
@@ -59,6 +63,8 @@ defmodule SalixAgent.Browser.Connection do
          serial: 0,
          pending: %{},
          frames: %{},
+         dialogs: %{},
+         loading: %{},
          sessions: MapSet.new(),
          generations: %{},
          origins: Map.new(Enum.with_index(Keyword.get(opts, :origins, []))),
@@ -78,16 +84,29 @@ defmodule SalixAgent.Browser.Connection do
 
   @impl true
   def handle_call({:command, method, params, session, timeout}, from, state) do
-    if map_size(state.pending) >= 32 do
-      {:reply, {:error, :browser_driver_busy}, state}
-    else
-      id = state.serial + 1
-      message = %{id: id, method: method, params: params}
-      message = if session, do: Map.put(message, :sessionId, session), else: message
-      timer = SystemsClock.send_after(SystemsRuntime.Proc.self(), {:timeout, id}, timeout)
-      pending = Map.put(state.pending, id, {from, timer, message})
-      state = %{state | serial: id, pending: pending}
-      if state.ws, do: {:noreply, send_json(state, message)}, else: {:noreply, state}
+    cond do
+      map_size(state.pending) >= 32 ->
+        {:reply, {:error, :browser_driver_busy}, state}
+
+      # The page answers nothing while a JavaScript dialog is open. Input
+      # after the event that opened it (a key or button release) is dropped
+      # and the action ends there; any other command fails unsent.
+      Map.has_key?(state.dialogs, session) and String.starts_with?(method, "Input.") ->
+        {:reply, {:ok, %{"dialog" => true}}, state}
+
+      Map.has_key?(state.dialogs, session) and method != "Page.handleJavaScriptDialog" ->
+        {:reply, {:error, "dialog_open"}, state}
+
+      true ->
+        id = state.serial + 1
+        message = %{id: id, method: method, params: params}
+        message = if session, do: Map.put(message, :sessionId, session), else: message
+        timer = SystemsClock.send_after(SystemsRuntime.Proc.self(), {:timeout, id}, timeout)
+        pending = Map.put(state.pending, id, {from, timer, message})
+        # The browser answers in real time: a manual clock holds while it does.
+        SystemsClock.awaiting({__MODULE__, id})
+        state = %{state | serial: id, pending: pending}
+        if state.ws, do: {:noreply, send_json(state, message)}, else: {:noreply, state}
     end
   end
 
@@ -127,6 +146,12 @@ defmodule SalixAgent.Browser.Connection do
   def handle_call({:generation, session}, _, state),
     do: {:reply, Map.get(state.generations, session, 0), state}
 
+  def handle_call({:dialog, session}, _, state),
+    do: {:reply, Map.get(state.dialogs, session), state}
+
+  def handle_call({:load, session, frame}, _, state),
+    do: {:reply, get_in(state.loading, [session, frame]) || {0, :idle}, state}
+
   def handle_call({:clear_frame, session}, _, state),
     do: {:reply, :ok, %{state | frames: Map.delete(state.frames, session)}}
 
@@ -135,7 +160,12 @@ defmodule SalixAgent.Browser.Connection do
   def handle_info(:upgrade_timeout, state), do: {:noreply, state}
 
   def handle_info({:timeout, id}, state) do
-    if Map.has_key?(state.pending, id), do: {:stop, :normal, state}, else: {:noreply, state}
+    if Map.has_key?(state.pending, id) do
+      SystemsClock.replied({__MODULE__, id})
+      {:stop, :normal, state}
+    else
+      {:noreply, state}
+    end
   end
 
   def handle_info({:DOWN, _, :process, owner, _}, %{owner: owner} = state),
@@ -165,6 +195,7 @@ defmodule SalixAgent.Browser.Connection do
     case Mint.WebSocket.new(state.conn, state.ref, state.status, state.headers) do
       {:ok, conn, ws} ->
         SystemsClock.cancel_timer(state.timer)
+        SystemsClock.replied({__MODULE__, :upgrade})
 
         Enum.reduce(Enum.sort(state.pending), %{state | conn: conn, ws: ws, headers: []}, fn {_,
                                                                                               {_,
@@ -203,6 +234,7 @@ defmodule SalixAgent.Browser.Connection do
 
           {{from, timer, command}, pending} ->
             SystemsClock.cancel_timer(timer)
+            SystemsClock.replied({__MODULE__, id})
 
             result =
               if Map.has_key?(packet, "result"),
@@ -267,17 +299,67 @@ defmodule SalixAgent.Browser.Connection do
           state
         end
 
-      {:ok, %{"method" => method, "sessionId" => session}}
-      when method in ["Runtime.executionContextsCleared", "Page.navigatedWithinDocument"] ->
-        if MapSet.member?(state.sessions, session),
-          do: %{state | generations: Map.update(state.generations, session, 1, &(&1 + 1))},
-          else: state
+      # A JavaScript dialog blocks page scripts until it is handled. The driver
+      # reports it instead of waiting on an evaluation that cannot finish.
+      {:ok,
+       %{"method" => "Page.javascriptDialogOpening", "sessionId" => session, "params" => params}} ->
+        dialog = %{
+          "type" => params["type"],
+          "message" => String.slice(params["message"] || "", 0, 2000),
+          "default_prompt" => String.slice(params["defaultPrompt"] || "", 0, 2000)
+        }
+
+        # The page answers none of this session's commands until the dialog
+        # closes. Each one was delivered and opened it, or runs on after it
+        # closes: answer it now. A late answer finds no pending command.
+        {opened, pending} =
+          Enum.split_with(state.pending, fn {_, {_, _, message}} ->
+            message[:sessionId] == session
+          end)
+
+        Enum.each(opened, fn {id, {from, timer, _}} ->
+          SystemsClock.cancel_timer(timer)
+          SystemsClock.replied({__MODULE__, id})
+          SystemsRuntime.Server.reply(from, {:ok, %{"dialog" => true}})
+        end)
+
+        %{state | dialogs: Map.put(state.dialogs, session, dialog), pending: Map.new(pending)}
+
+      {:ok, %{"method" => "Page.javascriptDialogClosed", "sessionId" => session}} ->
+        %{state | dialogs: Map.delete(state.dialogs, session)}
+
+      # A frame navigates from the start of a load until its new document
+      # commits (or the load is cancelled), then loads until the document and
+      # its resources have loaded. A click's navigation starts before the
+      # browser acknowledges the click.
+      {:ok, %{"method" => "Page.frameStartedLoading", "sessionId" => session, "params" => params}} ->
+        {starts, _} = get_in(state.loading, [session, params["frameId"]]) || {0, :idle}
+        frames = Map.get(state.loading, session, %{})
+        frames = Map.put(frames, params["frameId"], {starts + 1, :navigating})
+        %{state | loading: Map.put(state.loading, session, frames)}
+
+      {:ok, %{"method" => "Page.frameNavigated", "sessionId" => session, "params" => params}} ->
+        load_phase(state, session, params["frame"]["id"], :loading)
+
+      {:ok,
+       %{"method" => "Page.navigatedWithinDocument", "sessionId" => session, "params" => params}} ->
+        state
+        |> load_phase(session, params["frameId"], :loading)
+        |> next_generation(session)
+
+      {:ok, %{"method" => "Page.frameStoppedLoading", "sessionId" => session, "params" => params}} ->
+        load_phase(state, session, params["frameId"], :idle)
+
+      {:ok, %{"method" => "Runtime.executionContextsCleared", "sessionId" => session}} ->
+        next_generation(state, session)
 
       {:ok, %{"method" => "Target.detachedFromTarget", "params" => %{"sessionId" => session}}} ->
         %{
           state
           | sessions: MapSet.delete(state.sessions, session),
             frames: Map.delete(state.frames, session),
+            dialogs: Map.delete(state.dialogs, session),
+            loading: Map.delete(state.loading, session),
             generations: Map.delete(state.generations, session)
         }
 
@@ -292,6 +374,19 @@ defmodule SalixAgent.Browser.Connection do
   defp receive_frame({:ping, data}, state), do: send_frame(state, {:pong, data})
   defp receive_frame({:pong, _}, state), do: state
   defp receive_frame(_, _), do: throw(:connection_failed)
+
+  defp next_generation(state, session) do
+    if MapSet.member?(state.sessions, session),
+      do: %{state | generations: Map.update(state.generations, session, 1, &(&1 + 1))},
+      else: state
+  end
+
+  defp load_phase(state, session, frame, phase) do
+    case get_in(state.loading, [session, frame]) do
+      {starts, _} -> put_in(state.loading[session][frame], {starts, phase})
+      nil -> state
+    end
+  end
 
   defp take_origins(state, 0, origins), do: {origins, state}
 

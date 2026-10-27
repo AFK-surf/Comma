@@ -147,7 +147,7 @@ private final class CommaComputerUseDaemonAppDelegate: NSObject, NSApplicationDe
     ) async -> CommaComputerUseResponse {
         switch action.name {
         case "start":
-            let mode = action.string("mode").flatMap(ModeKind.init(rawValue:)) ?? .foreground
+            let mode = action.string("mode").flatMap(ModeKind.init(rawValue:)) ?? .background
             let apps = action.stringArray("apps")
             let control = SessionControl(
                 op: .start,
@@ -174,7 +174,8 @@ private final class CommaComputerUseDaemonAppDelegate: NSObject, NSApplicationDe
             return .success(text: permissionStatusText(), permissions: commaPermissionInfo())
 
         case "mode_help":
-            let mode = action.string("mode").flatMap(ModeKind.init(rawValue:)) ?? .foreground
+            let mode = action.string("mode").flatMap(ModeKind.init(rawValue:))
+                ?? SessionRegistry.shared.activeMode ?? .background
             if let help = SessionRegistry.shared.helpText(for: mode) {
                 return .success(text: help)
             }
@@ -248,6 +249,9 @@ private func commaArgv(
     thinking: String?
 ) throws -> [String] {
     let name = action.name
+    if let argv = try backgroundArgv(for: action) {
+        return argv
+    }
     switch name {
     case "get_screenshot", "screenshot":
         return withDisplay(["screenshot"], display: display)
@@ -361,6 +365,83 @@ private func commaArgv(
         return ["list-windows"]
     default:
         throw CommaComputerUseRequestError("unsupported computer_use action \(name)")
+    }
+}
+
+/// Background-mode actions address a snapshot from `get_app_state`. The
+/// names `click`, `scroll` and `drag` exist in both modes; a `snapshot_id`
+/// selects the background form. Returns nil for foreground actions.
+private func backgroundArgv(for action: CommaComputerUseAction) throws -> [String]? {
+    let snapshotID = action.optionalString("snapshot_id")
+    func element(_ argv: inout [String], required: Bool) throws {
+        if required {
+            argv += try ["--element-index", action.requiredString("element_index")]
+        } else if let index = action.optionalString("element_index") {
+            argv += ["--element-index", index]
+        }
+    }
+    switch action.name {
+    case "get_app_state":
+        var argv = try ["get-app-state", "--app", action.requiredString("app")]
+        if let title = action.optionalString("window_title"), !title.isEmpty {
+            argv += ["--window-title", title]
+        }
+        return argv
+    case "type_text", "set_value", "press_key", "perform_secondary_action":
+        guard let snapshotID, !snapshotID.isEmpty else {
+            throw CommaComputerUseRequestError("'snapshot_id' is required; call get_app_state first")
+        }
+        var argv = [action.name.replacingOccurrences(of: "_", with: "-"), "--snapshot-id", snapshotID]
+        switch action.name {
+        case "type_text":
+            guard let text = action.verbatimString("text"), !text.isEmpty else {
+                throw CommaComputerUseRequestError("'text' is required")
+            }
+            argv += ["--text", text]
+            try element(&argv, required: false)
+        case "set_value":
+            // An empty value clears the field.
+            guard let value = action.verbatimString("value") else {
+                throw CommaComputerUseRequestError("'value' is required")
+            }
+            try element(&argv, required: true)
+            argv += ["--value", value]
+        case "press_key":
+            argv += try ["--key", action.optionalString("key") ?? action.requiredString("combo")]
+        default:
+            try element(&argv, required: true)
+            argv += try ["--action", action.requiredString("action")]
+        }
+        return argv
+    case "click":
+        guard let snapshotID, !snapshotID.isEmpty else { return nil }
+        var argv = ["click", "--snapshot-id", snapshotID]
+        if action.optionalString("element_index") != nil {
+            try element(&argv, required: true)
+        } else {
+            argv += try ["--x", action.requiredString("x"), "--y", action.requiredString("y")]
+        }
+        return argv
+    case "scroll":
+        guard let snapshotID, !snapshotID.isEmpty else { return nil }
+        var argv = ["scroll", "--snapshot-id", snapshotID]
+        try element(&argv, required: true)
+        argv += try ["--direction", action.requiredString("direction")]
+        if let pages = action.optionalString("pages") {
+            argv += ["--pages", pages]
+        }
+        return argv
+    case "drag", "left_click_drag":
+        guard let snapshotID, !snapshotID.isEmpty else { return nil }
+        return try [
+            "drag", "--snapshot-id", snapshotID,
+            "--from-x", action.requiredString("from_x"),
+            "--from-y", action.requiredString("from_y"),
+            "--to-x", action.requiredString("to_x"),
+            "--to-y", action.requiredString("to_y"),
+        ]
+    default:
+        return nil
     }
 }
 

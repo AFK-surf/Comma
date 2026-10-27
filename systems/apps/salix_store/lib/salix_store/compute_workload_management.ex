@@ -27,15 +27,15 @@ defmodule SalixStore.ComputeWorkloadManagement do
     )
   end
 
-  def rename(tenant, project, id, revision, value, authorize) do
+  # Last writer wins: a name has no ordering with other Workload facts.
+  def rename(tenant, project, id, value, authorize) do
     with {:ok, normalized} when not is_nil(normalized) <- name(value) do
       Repo.transaction(fn ->
-        workload =
+        _workload =
           Repo.one(from(w in owned_query(tenant, project, id), lock: "FOR UPDATE OF c0")) ||
             Repo.rollback(:not_found)
 
         if authorize.() != :ok, do: Repo.rollback(:not_found)
-        if workload.revision != revision, do: Repo.rollback(:revision_conflict)
 
         Repo.update_all(from(w in Compute.Workload, where: w.id == ^id),
           set: [name: normalized, updated_at: SystemsClock.timestamp(:utc_datetime_usec)],
@@ -49,7 +49,9 @@ defmodule SalixStore.ComputeWorkloadManagement do
     end
   end
 
-  def retry(tenant, project, id, revision, generation, authorize) do
+  # The retry targets the observed generation. It replays no command, so an
+  # unknown command outcome stays as it is and does not block the retry.
+  def retry(tenant, project, id, generation, authorize) do
     Repo.transaction(fn ->
       workload =
         Repo.one(from(w in owned_query(tenant, project, id), lock: "FOR UPDATE OF c0")) ||
@@ -57,8 +59,7 @@ defmodule SalixStore.ComputeWorkloadManagement do
 
       if authorize.() != :ok, do: Repo.rollback(:not_found)
 
-      if workload.revision != revision or workload.generation != generation,
-        do: Repo.rollback(:revision_conflict)
+      if workload.generation != generation, do: Repo.rollback(:revision_conflict)
 
       if workload.kind != "shell", do: Repo.rollback(:business_owner_required)
       allocation = Repo.get!(Compute.Allocation, workload.allocation_id)
@@ -70,15 +71,6 @@ defmodule SalixStore.ComputeWorkloadManagement do
 
       if workload.deletion || workload.desired_state != "ready",
         do: Repo.rollback(:deletion_in_progress)
-
-      if Repo.exists?(
-           from(c in Compute.Command,
-             where:
-               c.workload_id == ^id and c.target_generation == ^generation and
-                 c.status == "unknown_outcome"
-           )
-         ),
-         do: Repo.rollback(:unknown_outcome)
 
       now = SystemsClock.utc_now()
 

@@ -12,6 +12,10 @@
       "types": "./src/station-native.ts",
       "default": "./src/station-native.ts"
     },
+    "./web": {
+      "types": "./src/web.ts",
+      "default": "./src/web.ts"
+    },
     "./testing": {
       "types": "./src/memory.ts",
       "default": "./src/memory.ts"

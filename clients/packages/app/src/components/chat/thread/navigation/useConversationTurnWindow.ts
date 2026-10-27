@@ -12,6 +12,7 @@ import {
   startKeyAfterSlide,
   type ConversationTurnWindowMetrics,
 } from "./conversationTurnWindow";
+import { transcriptGlideOffset } from "../../motion/outgoingBubbleMotion";
 
 type ScrollRestore = {
   anchor: HTMLElement | null;
@@ -24,6 +25,15 @@ type RevealRequest = {
   key: string;
   sequence: number;
 };
+
+/** Where `anchor` is laid out in `viewport`, without a send's glide offset. */
+function anchorLayoutOffset(anchor: HTMLElement, viewport: HTMLElement) {
+  return (
+    anchor.getBoundingClientRect().top -
+    transcriptGlideOffset(anchor) -
+    viewport.getBoundingClientRect().top
+  );
+}
 
 export function useConversationTurnWindow({
   getViewport,
@@ -59,9 +69,7 @@ export function useConversationTurnWindow({
         const anchor = viewport.querySelector<HTMLElement>("article[data-message-id]");
         restoreRef.current = {
           anchor,
-          anchorOffset: anchor
-            ? anchor.getBoundingClientRect().top - viewport.getBoundingClientRect().top
-            : 0,
+          anchorOffset: anchor ? anchorLayoutOffset(anchor, viewport) : 0,
           previousHeight: viewport.scrollHeight,
           previousTop: viewport.scrollTop,
         };
@@ -121,9 +129,7 @@ export function useConversationTurnWindow({
         const anchor = viewport.querySelector<HTMLElement>("article[data-message-id]");
         restoreRef.current = {
           anchor,
-          anchorOffset: anchor
-            ? anchor.getBoundingClientRect().top - viewport.getBoundingClientRect().top
-            : 0,
+          anchorOffset: anchor ? anchorLayoutOffset(anchor, viewport) : 0,
           previousHeight: viewport.scrollHeight,
           previousTop: viewport.scrollTop,
         };
@@ -242,8 +248,7 @@ export function useConversationTurnWindow({
       restoreRef.current = null;
       viewport.scrollTop = restore.anchor?.isConnected
         ? viewport.scrollTop +
-          restore.anchor.getBoundingClientRect().top -
-          viewport.getBoundingClientRect().top -
+          anchorLayoutOffset(restore.anchor, viewport) -
           restore.anchorOffset
         : restoredScrollTop(
             restore.previousTop,
@@ -261,8 +266,7 @@ export function useConversationTurnWindow({
           if (restore.anchor?.isConnected) {
             const readerMovement = viewport.scrollTop - restoredTop;
             viewport.scrollTop +=
-              restore.anchor.getBoundingClientRect().top -
-              viewport.getBoundingClientRect().top -
+              anchorLayoutOffset(restore.anchor, viewport) -
               restore.anchorOffset +
               readerMovement;
           }

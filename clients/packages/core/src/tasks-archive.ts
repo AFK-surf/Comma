@@ -26,6 +26,7 @@ import type {
   TaskWorkspace,
 } from "./contract.ts";
 import { type Ctx, Live } from "./ctx.ts";
+import type { HostedTasks } from "./hosted-tasks.ts";
 import type { TaskSummaries } from "./task-summaries.ts";
 import type { Tasks } from "./tasks.ts";
 import type { Workspaces } from "./workspaces.ts";
@@ -62,6 +63,22 @@ const string = (raw: unknown, name: string, max = 256): string => {
 
 const keyOf = (topic: Topic) => String(topic.workspace ?? "");
 
+/** `hosted` (newest change first) among `tasks`, kept in the server's order: each before the first that changed earlier. */
+function among(tasks: TaskSummary[], hosted: TaskSummary[]): TaskSummary[] {
+  if (hosted.length === 0) return tasks;
+  const out: TaskSummary[] = [];
+  let next = 0;
+  for (const task of tasks) {
+    while (
+      next < hosted.length &&
+      (hosted[next]!.updated_at ?? 0) > (task.updated_at ?? 0)
+    )
+      out.push(hosted[next++]!);
+    out.push(task);
+  }
+  return [...out, ...hosted.slice(next)];
+}
+
 export class TasksArchive {
   readonly #ctx: Ctx;
   readonly #tasks: Tasks;
@@ -74,6 +91,8 @@ export class TasksArchive {
   /** The Tasks with an archive or unarchive in flight. */
   readonly #changing = new Set<string>();
   #accountKey: string | null = null;
+  /** Tasks Comma's server does not keep: changed where they are kept. */
+  hosted: HostedTasks | undefined;
 
   constructor(
     ctx: Ctx,
@@ -90,10 +109,21 @@ export class TasksArchive {
     kernel.source("archivedTasks", {
       start: (topic) => {
         this.#shown.set(keyOf(topic), TasksArchive.#empty());
-        this.#live.run(topic, this.#read(topic, false));
+        // The workspace's station-hosted Tasks are kept current while it shows their archived ones.
+        this.#live.run(
+          topic,
+          Effect.all(
+            [this.#read(topic, false), this.hosted?.keep(topic) ?? Effect.void],
+            {
+              concurrency: "unbounded",
+              discard: true,
+            }
+          )
+        );
       },
       stop: (topic) => {
         this.#live.stop(topic);
+        this.hosted?.stop(topic);
         this.#shown.delete(keyOf(topic));
       },
       compute: (topic): Value => ({ ok: this.#value(topic) }),
@@ -102,14 +132,14 @@ export class TasksArchive {
       start: (topic) => {
         this.#pins.set(String(topic.group), { status: "loading", ids: [] });
         this.#live.run(topic, this.#readPins(String(topic.group)));
+        this.hosted?.showPins(String(topic.group));
       },
       stop: (topic) => {
         this.#live.stop(topic);
+        this.hosted?.hidePins(String(topic.group));
         this.#pins.delete(String(topic.group));
       },
-      compute: (topic): Value => ({
-        ok: this.#pins.get(String(topic.group)) ?? { status: "loading", ids: [] },
-      }),
+      compute: (topic): Value => ({ ok: this.#pinsOf(String(topic.group)) }),
     });
     ctx.session.onChange(() => {
       const key = ctx.session.accountKey();
@@ -139,6 +169,11 @@ export class TasksArchive {
             throw CoreError.invalid("action is archive or unarchive");
           if (typeof raw.version !== "number" || !Number.isFinite(raw.version))
             throw CoreError.invalid("version is required");
+          // One a station hosts is archived on its station, every list showing it so at once.
+          if (this.hosted?.owns(conversation))
+            return this.hosted
+              .archive(group, conversation, raw.action === "archive")
+              .pipe(Effect.as(true));
           return this.#change(group, conversation, raw.action, raw.version);
         },
       },
@@ -148,6 +183,11 @@ export class TasksArchive {
           const title = string(p, "title", 400).trim();
           if (!title || title.length > 200)
             throw CoreError.invalid("title is at most 200 characters");
+          const conversation = string(p, "conversation");
+          if (this.hosted?.owns(conversation))
+            return this.hosted
+              .rename(string(p, "group"), conversation, title)
+              .pipe(Effect.as(null));
           return this.#task(p, "PATCH", "", { title });
         },
       },
@@ -157,12 +197,25 @@ export class TasksArchive {
           const version = (p as { reviewVersion?: unknown } | null)?.reviewVersion;
           if (typeof version !== "number" || !Number.isInteger(version) || version <= 0)
             throw CoreError.invalid("reviewVersion is required");
+          const conversation = string(p, "conversation");
+          // One a station hosts is done on its station.
+          if (this.hosted?.owns(conversation))
+            return this.hosted
+              .accept(string(p, "group"), conversation)
+              .pipe(Effect.as(null));
           return this.#task(p, "POST", "/accept", { review_version: version });
         },
       },
       "tasks.cancel": {
         doing: true,
-        run: (p) => this.#task(p, "POST", "/cancel", {}),
+        run: (p) => {
+          const conversation = string(p, "conversation");
+          if (this.hosted?.owns(conversation))
+            return this.hosted
+              .cancel(string(p, "group"), conversation)
+              .pipe(Effect.as(null));
+          return this.#task(p, "POST", "/cancel", {});
+        },
       },
       "tasks.pin": {
         doing: true,
@@ -170,6 +223,9 @@ export class TasksArchive {
           const group = string(p, "group");
           const conversation = string(p, "conversation");
           const pinned = (p as { pinned?: unknown } | null)?.pinned === true;
+          // One a station hosts is pinned on its station, for the person, as its chats are there.
+          if (this.hosted?.owns(conversation))
+            return this.hosted.pin(group, conversation, pinned).pipe(Effect.as(null));
           const shown = this.#pins.get(group);
           // Shown at once; the pins read again after the server answered say what holds.
           if (shown) {
@@ -324,6 +380,19 @@ export class TasksArchive {
     );
   }
 
+  /** A Group's pins: the server's, then those its stations keep (station-hosted Tasks), first pinned first. */
+  #pinsOf(group: string): TaskPinsValue {
+    const shown = this.#pins.get(group) ?? { status: "loading", ids: [] };
+    const account = this.#ctx.session.current();
+    const hosted = account && this.hosted ? this.hosted.pinned(account, group) : [];
+    return hosted.length
+      ? {
+          ...shown,
+          ids: [...shown.ids.filter((id) => !hosted.includes(id)), ...hosted],
+        }
+      : shown;
+  }
+
   #pinsChanged(group: string): void {
     for (const topic of this.#ctx.kernel.store.liveTopics())
       if (topic.topic === "taskPins" && String(topic.group) === group)
@@ -446,9 +515,16 @@ export class TasksArchive {
 
   #value(topic: Topic): ArchivedTasksValue {
     const shown = this.#shown.get(keyOf(topic)) ?? TasksArchive.#empty();
+    const account = this.#ctx.session.current();
+    // The station-hosted ones its stations keep archived, among the server's by their last change.
+    const hosted =
+      account && shown.workspace && this.hosted
+        ? this.hosted.archived(account, shown.workspace.group_id)
+        : [];
+    const tasks = among(shown.tasks, hosted);
     return {
       workspace: shown.workspace,
-      tasks: shown.tasks.map((task) => ({
+      tasks: tasks.map((task) => ({
         ...task,
         archived_from_bucket: taskStatusBucket(
           task.archived_from_status ?? task.status

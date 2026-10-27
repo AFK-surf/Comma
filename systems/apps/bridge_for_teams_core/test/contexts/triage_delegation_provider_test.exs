@@ -192,6 +192,7 @@ defmodule BridgeForTeams.TriageDelegationProviderTest do
     assert_no_task!(group_id, ref)
 
     params = %{
+      "runs_on" => %{"kind" => "default"},
       "triage_delegation_ref" => ref,
       "agent_id" => worker.salix_agent_id,
       "title" => "Inspect the rollout",
@@ -321,6 +322,7 @@ defmodule BridgeForTeams.TriageDelegationProviderTest do
     context = handoff_context!(router_id, session_id, ref)
 
     params = %{
+      "runs_on" => %{"kind" => "default"},
       "triage_delegation_ref" => ref,
       "agent_id" => worker.salix_agent_id,
       "title" => "Source isolation",
@@ -419,6 +421,7 @@ defmodule BridgeForTeams.TriageDelegationProviderTest do
     params = fn original ->
       %{
         "connect_id" => "internal",
+        "runs_on" => %{"kind" => "default"},
         "triage_delegation_ref" => "triage-delegation:#{original.obligation_id}:0",
         "agent_id" => worker.salix_agent_id,
         "title" => "Investigate " <> original.obligation_id,
@@ -466,12 +469,12 @@ defmodule BridgeForTeams.TriageDelegationProviderTest do
     assert_receive {:paused_provider, pid_b, args_b}
     assert args_b["tool_context"]["trusted_origin"] == origin_b
     SystemsRuntime.Proc.send(pid_b, :continue_provider)
-    assert {:ok, result_b} = DependencyJob.yield(pending_b.dependency_job, 2_000)
+    assert {:ok, result_b} = DependencyJob.yield(pending_b.dependency_job, wait_limit())
     refute result_b.error
 
     Fixture.put_thread([source_a])
     SystemsRuntime.Proc.send(pid_a, :continue_provider)
-    assert {:ok, result_a} = DependencyJob.yield(pending_a.dependency_job, 2_000)
+    assert {:ok, result_a} = DependencyJob.yield(pending_a.dependency_job, wait_limit())
     refute result_a.error
 
     # Commit the real pending and completion events after original inputs are
@@ -648,6 +651,7 @@ defmodule BridgeForTeams.TriageDelegationProviderTest do
 
     common = %{
       "connect_id" => "internal",
+      "runs_on" => %{"kind" => "default"},
       "agent_id" => worker.salix_agent_id,
       "title" => "Investigate",
       "content" => "Investigate with authorized evidence."
@@ -695,7 +699,7 @@ defmodule BridgeForTeams.TriageDelegationProviderTest do
         assert args["tool_context"]["trusted_origins"] == [expected_origin]
         assert args["tool_context"]["source_message_ids"] == [source]
         SystemsRuntime.Proc.send(pid, :continue_provider)
-        assert {:ok, result} = DependencyJob.yield(pending.dependency_job, 2_000)
+        assert {:ok, result} = DependencyJob.yield(pending.dependency_job, wait_limit())
         refute result.error
 
         assert {:ok, events, _} =
@@ -772,6 +776,11 @@ defmodule BridgeForTeams.TriageDelegationProviderTest do
     assert card["tool_context"]["source_message_id"] == human_id
     refute_received :unexpected_model_call
   end
+
+  # A provider call answers when it is done: only the suite's shared limit for
+  # a message that never comes (config/test.exs) stops the wait, not 2 seconds
+  # of a loaded machine.
+  defp wait_limit, do: ExUnit.configuration()[:assert_receive_timeout]
 
   defp create_task(router_id, params, context, tool_call_id) do
     Provider.call_api(router_id, "internal", "internal.task.create", %{

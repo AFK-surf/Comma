@@ -23,7 +23,11 @@ import {
   Queue,
   Stream,
 } from "effect";
-import type { MeetingRecorderAction, MeetingRecorderValue } from "../contract.ts";
+import type {
+  MeetingRecorderAction,
+  MeetingRecorderValue,
+  MeetingTaskReference,
+} from "../contract.ts";
 import type { Ctx } from "../ctx.ts";
 import type {
   MeetingCaptureState,
@@ -35,11 +39,7 @@ import type {
 } from "../host.ts";
 import { meetingSubmissionError } from "./errors.ts";
 import { meetingCommand } from "./ports.ts";
-import {
-  MeetingTasks,
-  type MeetingTaskReceipt,
-  type MeetingTaskState,
-} from "./tasks.ts";
+import { MeetingTasks, type MeetingTaskState } from "./tasks.ts";
 
 export const unavailableMeetingCapture: MeetingCaptureState = {
   available: false,
@@ -140,7 +140,7 @@ type Input =
       kind: "finalized";
       generation: number;
       receiptId: number;
-      exit: Exit.Exit<MeetingTaskReceipt, unknown>;
+      exit: Exit.Exit<MeetingTaskReference, unknown>;
     };
 
 function message(error: unknown, fallback: string): string {
@@ -264,7 +264,7 @@ export class MeetingRecorder {
       },
       "meetingRecorder.retryTaskSync": {
         run: () =>
-          Effect.ignore(this.tasks.retryPending()).pipe(
+          Effect.ignore(this.tasks.retryPending(true)).pipe(
             Effect.map(() => this.#snapshot)
           ),
       },
@@ -717,7 +717,7 @@ export class MeetingRecorder {
             ...saved,
             summary: "queued",
             summaryError: undefined,
-            task: { groupId: exit.value.group_id, taskId: exit.value.task_id },
+            task: exit.value,
           }
         : {
             ...saved,

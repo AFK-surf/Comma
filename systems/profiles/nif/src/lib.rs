@@ -1,7 +1,7 @@
 //! SalixAgent.Profiles.Native: the Profiles' logic (systems/profiles) for Salix, JSON in and out. Each call is a few
 //! microseconds of pure work over a bounded list (a tenant's candidates), so it runs on the calling scheduler.
 
-use comma_profiles::{Profile, Request, Runtime, Signals, model_key, rank, runtime_config, sources, usable};
+use comma_profiles::{Profile, Request, Runtime, Signals, model_key, rank, refills_at, runtime_config, sources, usable};
 
 fn json<T: serde::de::DeserializeOwned>(text: &str) -> Result<T, String> {
     serde_json::from_str(text).map_err(|e| e.to_string())
@@ -36,6 +36,14 @@ fn usable_json(profile: String, model: String, now: i64) -> Result<bool, String>
     let profile: Profile = json(&profile)?;
     let model = (!model.is_empty()).then_some(model.as_str());
     Ok(usable(&profile, &Signals::default(), model, now))
+}
+
+/// When a Profile's used-up windows for a model (`""`: any) have all refilled (ms since the epoch), or nil.
+#[rustler::nif]
+fn refills_at_json(profile: String, model: String, now: i64) -> Result<Option<i64>, String> {
+    let profile: Profile = json(&profile)?;
+    let model = (!model.is_empty()).then_some(model.as_str());
+    Ok(refills_at(&profile, model, now))
 }
 
 /// A provider's answer about an allowance (JSON) as a Profile's quota (JSON), read at `now` (ms since the epoch).

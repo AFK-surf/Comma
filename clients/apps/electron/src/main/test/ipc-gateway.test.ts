@@ -1,3 +1,4 @@
+import { MaintenanceCapabilityProbe } from "../modules/compute-node/host-maintenance-protocol";
 import { NativeOperationError } from "../modules/ipc/operation-error";
 import { AgentVMMCommandAdapter } from "../modules/compute-node/runtime-adapter";
 import { z } from "zod";
@@ -271,7 +272,11 @@ describe("IpcGateway", () => {
     const run = vi.fn(async () => {
       throw new Error("/Users/private/helper: unknown maintenance-status command");
     });
-    const adapter = new AgentVMMCommandAdapter("isolated-helper", run, true);
+    const adapter = new AgentVMMCommandAdapter(
+      "isolated-helper",
+      run,
+      new MaintenanceCapabilityProbe(run)
+    );
     gateway.register(computeNodeConfigureCapability, async () => {
       await adapter.enable("operation", "registration");
       throw new Error("An incompatible helper must not enable the connection.");

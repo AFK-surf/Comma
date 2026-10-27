@@ -10,6 +10,14 @@ defmodule SalixIM.ProviderTest do
   use SalixStore.QueueCase, queues: [:feishu_mirror_outbox]
   use SystemsClock.Test, scope: ["Elixir.Salix"]
 
+  defmodule TerminalLinks do
+    @moduledoc "Coding Tasks' terminal links, as the product gives them: the one Task's."
+    def terminal_urls(_group, ids) do
+      task = SystemsRuntime.get_env(:salix_im, :terminal_link_task)
+      if task in ids, do: %{task => "https://l4es.test/t/comma:g/t-code-g1"}, else: %{}
+    end
+  end
+
   @incident_trigger Path.join([
                       __DIR__,
                       "fixtures",
@@ -1489,6 +1497,7 @@ defmodule SalixIM.ProviderTest do
           nil ->
             call("router-task-create", "im_api.internal.task.create", %{
               "connect_id" => "internal",
+              "runs_on" => %{"kind" => "default"},
               "agent_id" => config.worker_id,
               "content" => "Prepare a short repository health report.",
               "title" => "Repository health report"
@@ -10052,6 +10061,7 @@ defmodule SalixIM.ProviderTest do
 
       params = %{
         "agent_id" => worker["agent_id"],
+        "runs_on" => %{"kind" => "default"},
         "content" => "  Create the requested artifact.  ",
         "title" => "  Requested artifact  ",
         "parent_conversation_id" => Ids.new_conversation_id(),
@@ -10169,6 +10179,96 @@ defmodule SalixIM.ProviderTest do
       settle_receive({:task_create, ^group_id, ^agent_id, ^target_agent_id, distinct_attrs})
       refute distinct_attrs["client_request_id"] == attrs["client_request_id"]
       assert distinct_attrs["source_refs"] == attrs["source_refs"]
+    end
+
+    # A Router names where every Task runs, so a code change is never left
+    # inside Salix by an omitted place.
+    test "im_api.internal.task.create needs runs_on.kind; kind default takes the configured place",
+         %{tenant: tenant, group_id: group_id, agent_id: agent_id} do
+      previous = SystemsRuntime.get_env(:salix_im, :task_create_mod)
+      SystemsRuntime.put_env(:salix_im, :task_create_mod, RecordingTaskCreate)
+      RecordingTaskCreate.set_owner(SystemsRuntime.Proc.self())
+
+      on_exit(fn -> restore(:salix_im, :task_create_mod, previous) end)
+
+      source_conversation =
+        seed_group_conversation(group_id, agent_id, %{
+          "messages" => [
+            %{"content" => "Fix the bug.", "source_message_id" => "task-place-source"}
+          ]
+        })
+
+      conversation_id = source_conversation["conversation_id"]
+
+      assert {:ok, [source_message]} =
+               Conversations.list_group_conversation_messages(group_id, conversation_id,
+                 limit: 10
+               )
+
+      participant_id = Ids.new_participant_id()
+
+      source_message_id =
+        Enum.join(
+          ["groupconv", conversation_id, source_message["message_id"], participant_id],
+          ":"
+        )
+
+      metadata = %{
+        "tool_call_id" => "create-place-call",
+        "tool_context" => %{
+          "session_id" => "ses1_task_place",
+          "source_message_id" => source_message_id,
+          "source_message_ids" => [source_message_id],
+          "trusted_origin" => %{
+            "provider" => "internal",
+            "conversation_id" => conversation_id,
+            "conversation_kind" => "user_chat",
+            "message_id" => source_message["message_id"],
+            "participant_id" => participant_id,
+            "agent_group_id" => group_id
+          }
+        }
+      }
+
+      {:ok, worker} =
+        create_control_agent(
+          %{"name" => "Place target", "group_id" => group_id, "role" => "worker"},
+          tenant
+        )
+
+      params = %{"agent_id" => worker["agent_id"], "content" => "Fix the bug."}
+
+      for {place, reason} <- [
+            {nil, "runs_on.kind is required"},
+            {%{}, "runs_on.kind is required"},
+            {%{"kind" => "default", "device_id" => "dev-1"}, "takes no other fields"}
+          ] do
+        assert {:error, refused} =
+                 call(
+                   agent_id,
+                   "internal",
+                   "internal.task.create",
+                   "internal",
+                   if(place, do: Map.put(params, "runs_on", place), else: params),
+                   metadata
+                 )
+
+        assert refused =~ reason
+        refute_received {:task_create, _, _, _, _}
+      end
+
+      assert {:ok, %{"created" => true}} =
+               call(
+                 agent_id,
+                 "internal",
+                 "internal.task.create",
+                 "internal",
+                 Map.put(params, "runs_on", %{"kind" => "default"}),
+                 metadata
+               )
+
+      settle_receive({:task_create, ^group_id, ^agent_id, _target, attrs})
+      refute Map.has_key?(attrs, "runs_on")
     end
 
     test "im_api.internal.task.create rejects a Worker even when tool context forges Router role",
@@ -10361,6 +10461,37 @@ defmodule SalixIM.ProviderTest do
         refute Map.has_key?(entry, "source_refs")
         refute Map.has_key?(entry, "parent_conversation_id")
       end
+    end
+
+    test "im_api.internal.task.list gives a coding Task its sandbox's terminal link",
+         %{group_id: group_id, agent_id: agent_id} do
+      coding =
+        seed_group_conversation(group_id, agent_id, %{"kind" => "agent_task", "title" => "Code"})
+
+      plain =
+        seed_group_conversation(group_id, agent_id, %{"kind" => "agent_task", "title" => "Plain"})
+
+      previous = SystemsRuntime.get_env(:salix_im, :task_stations_mod)
+      SystemsRuntime.put_env(:salix_im, :task_stations_mod, __MODULE__.TerminalLinks)
+      SystemsRuntime.put_env(:salix_im, :terminal_link_task, coding["conversation_id"])
+
+      on_exit(fn ->
+        SystemsRuntime.delete_env(:salix_im, :terminal_link_task)
+
+        if previous,
+          do: SystemsRuntime.put_env(:salix_im, :task_stations_mod, previous),
+          else: SystemsRuntime.delete_env(:salix_im, :task_stations_mod)
+      end)
+
+      assert {:ok, %{"tasks" => tasks}} =
+               call(agent_id, "internal", "internal.task.list", "internal", %{})
+
+      by_id = Map.new(tasks, &{&1["task_id"], &1})
+
+      assert by_id[coding["conversation_id"]]["terminal_url"] ==
+               "https://l4es.test/t/comma:g/t-code-g1"
+
+      refute Map.has_key?(by_id[plain["conversation_id"]], "terminal_url")
     end
 
     test "im_api.internal.task.list rejects Workers and strict-schema violations from direct provider calls",
@@ -11519,6 +11650,89 @@ defmodule SalixIM.ProviderTest do
                  "internal",
                  base
                )
+    end
+
+    test "update_conversation_titles renames a batch with emoji and reports each entry",
+         %{tenant: tenant, group_id: group_id, agent_id: agent_id} do
+      first = seed_group_conversation(group_id, agent_id, %{"title" => "One"})["conversation_id"]
+      second = seed_group_conversation(group_id, agent_id, %{"title" => "Two"})["conversation_id"]
+
+      assert {:ok, outsider} =
+               create_control_agent(
+                 %{"name" => "Titles outsider", "group_id" => group_id, "role" => "router"},
+                 tenant
+               )
+
+      titles = [
+        %{"conversation_id" => first, "title" => "  🚀 Launch 👨\u200d👩\u200d👧  "},
+        %{"conversation_id" => second, "title" => "🐛 修复登录超时"}
+      ]
+
+      assert {:ok,
+              %{
+                "updated_count" => 2,
+                "failed_count" => 0,
+                "results" => [
+                  %{"conversation_id" => ^first, "updated" => true, "title" => title_one},
+                  %{"conversation_id" => ^second, "updated" => true, "title" => "🐛 修复登录超时"}
+                ]
+              }} =
+               call(agent_id, "internal", "internal.update_conversation_titles", "internal", %{
+                 "titles" => titles
+               })
+
+      assert title_one == "🚀 Launch 👨\u200d👩\u200d👧"
+
+      assert {:ok, %{"title" => ^title_one}} =
+               SalixIM.Conversations.get_group_conversation(group_id, first)
+
+      # One failing entry does not undo the others.
+      assert {:ok, %{"updated_count" => 1, "failed_count" => 1, "results" => [ok, failed]}} =
+               call(agent_id, "internal", "internal.update_conversation_titles", "internal", %{
+                 "titles" => [
+                   %{"conversation_id" => first, "title" => "✅ Done"},
+                   %{"conversation_id" => "cnv1_missing", "title" => "x"}
+                 ]
+               })
+
+      assert %{"updated" => true, "title" => "✅ Done"} = ok
+      assert %{"updated" => false, "error" => error} = failed
+      assert is_binary(error)
+
+      assert {:ok,
+              %{
+                "failed_count" => 1,
+                "results" => [
+                  %{
+                    "updated" => false,
+                    "error" => "current Agent is not a Conversation participant"
+                  }
+                ]
+              }} =
+               call(
+                 outsider["agent_id"],
+                 "internal",
+                 "internal.update_conversation_titles",
+                 "internal",
+                 %{
+                   "titles" => [%{"conversation_id" => first, "title" => "nope"}]
+                 }
+               )
+
+      for bad <- [
+            [],
+            [%{"conversation_id" => first, "title" => " "}],
+            [
+              %{"conversation_id" => first, "title" => "a"},
+              %{"conversation_id" => first, "title" => "b"}
+            ],
+            Enum.map(1..21, &%{"conversation_id" => "c#{&1}", "title" => "t"})
+          ] do
+        assert {:error, _} =
+                 call(agent_id, "internal", "internal.update_conversation_titles", "internal", %{
+                   "titles" => bad
+                 })
+      end
     end
 
     test "send_message records a user_chat group conversation result with idempotent inserted",
@@ -14441,6 +14655,26 @@ defmodule SalixIM.ProviderTest do
     refute third_payload.content =~ "This is the Router's first entry"
 
     assert length(MockSlack.requests("conversations.replies")) == 1
+
+    # Each @-mention gets :eyes: at ingress, before any Router turn; the
+    # unmentioned reply in the same thread does not.
+    assert eventually(fn -> length(MockSlack.requests("reactions.add")) >= 2 end)
+    SystemsClock.settle()
+
+    assert MockSlack.requests("reactions.add")
+           |> Enum.map(&Map.take(&1.params, ["channel", "timestamp", "name"]))
+           |> Enum.sort_by(& &1["timestamp"]) == [
+             %{
+               "channel" => "C-thread-mention-cache",
+               "timestamp" => "105.000013",
+               "name" => "eyes"
+             },
+             %{
+               "channel" => "C-thread-mention-cache",
+               "timestamp" => "105.000015",
+               "name" => "eyes"
+             }
+           ]
   end
 
   test "Slack Router participation is isolated by connect, installation, channel, and thread identity",
@@ -14644,6 +14878,103 @@ defmodule SalixIM.ProviderTest do
              "C-cache-reauthorize",
              "106.5"
            )
+  end
+
+  test "a Slack question card's first answer reaches the Router as that person's message", %{
+    tenant: tenant,
+    group_id: group_id,
+    agent_id: agent_id
+  } do
+    secret = "slack-question-secret"
+    connect = seed_slack_inbound_connect(group_id, tenant, "sl-question", secret)
+    MockSlack.respond("chat.postMessage", %{"ok" => true, "channel" => "C1", "ts" => "500.1"})
+
+    assert {:ok, %{"ts" => "500.1"}} =
+             SalixIM.Provider.Slack.call(nil, tenant, connect, "slack.reply_message", %{
+               "channel" => "C1",
+               "thread_ts" => "500.0",
+               "text" => "Which Node line should the station take?",
+               "question" => %{
+                 "type" => "options",
+                 "locale" => "zh-CN",
+                 "options" => [
+                   %{"label" => "Upgrade now", "recommended" => true},
+                   %{"label" => "Wait for Electron", "detail" => "Keeps one Node version"}
+                 ]
+               }
+             })
+
+    posted = MockSlack.last_request("chat.postMessage").params
+    blocks = Jason.decode!(posted["blocks"])
+    actions = Enum.find(blocks, &(&1["block_id"] == "bft_question_actions"))
+    [pick, send] = actions["elements"]
+
+    # The recommended option is shown last and chosen already.
+    assert Enum.map(pick["options"], & &1["text"]["text"]) == ["Wait for Electron", "Upgrade now"]
+    assert pick["initial_option"]["value"] == "1"
+    assert send["text"]["text"] == "确认"
+
+    press = fn user, action_ts ->
+      payload = %{
+        "type" => "block_actions",
+        "api_app_id" => "A1",
+        "team" => %{"id" => "T1"},
+        "user" => %{"id" => user},
+        "channel" => %{"id" => "C1"},
+        "message" => %{
+          "ts" => "500.1",
+          "thread_ts" => "500.0",
+          "text" => posted["text"],
+          "blocks" => blocks
+        },
+        "actions" => [Map.put(send, "action_ts", action_ts)],
+        "state" => %{
+          "values" => %{
+            "bft_question_actions" => %{
+              "bft_question_pick" => %{"selected_option" => %{"value" => "1"}}
+            }
+          }
+        }
+      }
+
+      raw = "payload=" <> URI.encode_www_form(Jason.encode!(payload))
+
+      SalixIM.ProviderHTTP.handle_slack_interaction(
+        "A1",
+        payload,
+        sign_slack_body(raw, secret),
+        raw
+      )
+    end
+
+    SalixAgent.LLM.Mock.script([{:final, "ack"}])
+    assert {:ok, :accepted} = press.("U1", "500.2")
+
+    assert_router_session_delivery(
+      tenant,
+      group_id,
+      agent_id,
+      "im_provider:slack:#{connect["connect_id"]}:question:C1:500.1",
+      "Upgrade now"
+    )
+
+    # The card now says who answered what, with nothing left to press.
+    [update] = MockSlack.requests("chat.update")
+    assert update.params["ts"] == "500.1"
+    answered = Jason.decode!(update.params["blocks"])
+    refute Enum.any?(answered, &(&1["type"] in ["actions", "input"]))
+
+    assert List.last(answered)["elements"] == [
+             %{"type" => "mrkdwn", "text" => "✓ <@U1> 回答：Upgrade now"}
+           ]
+
+    # A later press is told so, only to its presser, and changes nothing.
+    assert {:ok, :accepted} = press.("U2", "500.3")
+
+    assert [%{params: %{"user" => "U2", "text" => "这个问题已经有人回答过了。"}}] =
+             MockSlack.requests("chat.postEphemeral")
+
+    assert length(MockSlack.requests("chat.update")) == 1
   end
 
   test "Slack thread replies settle through explicit exact-target egress only", %{
@@ -14854,6 +15185,83 @@ defmodule SalixIM.ProviderTest do
              )
 
     settle_refute_receive({:meeting_provider_called, _, _}, 50)
+  end
+
+  test "a Feishu question card's first answer reaches the Router as that person's message", %{
+    tenant: tenant,
+    group_id: group_id,
+    agent_id: agent_id
+  } do
+    SalixAgent.LLM.Mock.script([{:final, "ack"}])
+
+    connect =
+      seed_connect(group_id, "fs-question", "feishu", %{
+        "tenant_id" => tenant,
+        "app_id" => "cli_q",
+        "verification_token" => "verify-token",
+        "bot_open_id" => "ou_bot",
+        "status" => "connected"
+      })
+
+    {:ok, question} =
+      SalixIM.QuestionCard.normalize(%{
+        "type" => "options",
+        "locale" => "zh-CN",
+        "options" => [%{"label" => "现在升级"}, %{"label" => "等 Electron"}]
+      })
+
+    {:ok, card} =
+      SalixIM.QuestionCard.feishu_card("选哪个？", question, %{"chat_type" => "group"})
+
+    %{"elements" => [_select, %{"behaviors" => [%{"value" => value}]}]} =
+      Enum.find(card["body"]["elements"], &(&1["tag"] == "form"))
+
+    press = fn open_id, choice ->
+      envelope = %{
+        "schema" => "2.0",
+        "header" => %{
+          "token" => "verify-token",
+          "app_id" => "cli_q",
+          "event_type" => "card.action.trigger",
+          "event_id" => "evt_press_" <> open_id
+        },
+        "event" => %{
+          "operator" => %{"open_id" => open_id},
+          "action" => %{
+            "tag" => "button",
+            "value" => value,
+            "form_value" => %{"bft_question_choice" => choice}
+          },
+          "context" => %{"open_message_id" => "om_card", "open_chat_id" => "oc_q"}
+        }
+      }
+
+      SalixIM.ProviderHTTP.handle_feishu_event(connect, envelope, [], Jason.encode!(envelope))
+    end
+
+    assert {:ok, %{"toast" => %{"type" => "success"}, "card" => %{"data" => answered}}} =
+             press.("ou_alice", "1")
+
+    assert Jason.encode!(answered) =~ "<at id=ou_alice></at> 回答：等 Electron"
+
+    assert_router_session_delivery(
+      tenant,
+      group_id,
+      agent_id,
+      "im_provider:feishu:fs-question:om_card",
+      "等 Electron"
+    )
+
+    message =
+      router_session_message!(group_id, agent_id, "im_provider:feishu:fs-question:om_card")
+
+    assert message.trusted_origin["source_text"] == "等 Electron"
+
+    # A later press is told the card was answered, and says nothing.
+    assert {:ok, %{"toast" => %{"type" => "info", "content" => "这个问题已经有人回答过了。"}} = later} =
+             press.("ou_bob", "0")
+
+    refute Map.has_key?(later, "card")
   end
 
   test "Feishu inbound delivers a group message that mentions the bot", %{

@@ -22,17 +22,22 @@ import { type ArchiveState, archiveName } from "./durable-archive.ts";
 import type { StationTaskIndex } from "./task-index.ts";
 import { runtimeDir } from "../ops/files.ts";
 import { computerAccess } from "../device/access.ts";
+import { INSTANCES_DIR, instanceHost } from "../accounts/sources.ts";
 
 /** The host the profiles Salix lends are borrowed from, and the Station its Tasks are kept on (an instance's Salix is
  * `salix:<id>`). */
 export const SALIX_HOST = "salix";
 
-/** The connector's configuration from the station's arguments after `--` and the environment; null when unused. */
-export function connectorConfig(argv: string[], env: Record<string, string | undefined>): Effect.Effect<ConnectorConfig | null, Error> {
+/**
+ * The connector's configuration from the station's arguments after `--` and the environment, with the Workload's
+ * credential the station took out of its environment (main.ts); null when unused.
+ */
+export function connectorConfig(argv: string[], env: Record<string, string | undefined>, workloadCredential = ""): Effect.Effect<ConnectorConfig | null, Error> {
   return Effect.gen(function* () {
     const at = argv.indexOf("--");
     const flags = at < 0 ? [] : argv.slice(at + 1);
     const { cfg, explicit } = yield* Effect.try({ try: () => parseArgs(flags, env), catch: (e) => e as Error });
+    cfg.workloadCredential ||= workloadCredential;
     if (!cfg.configPath && !(cfg.server && (cfg.token || cfg.workloadCredential))) return null;
     if (cfg.configPath) yield* applyConfigFile(cfg, explicit);
     normalizeConfig(cfg);
@@ -66,8 +71,6 @@ export function stationPlace(data: string) {
   };
 }
 
-/** The desktop app's connections, one per signed-in Workspace: a desktop config file each, named `<id>.json`. */
-export const INSTANCES_DIR = join("connector", "instances");
 const INSTANCE_ID = /^[A-Za-z0-9_-]{1,128}$/;
 const INSTANCE_RESCAN = Duration.seconds(2);
 
@@ -108,7 +111,7 @@ export function stationTaskIndex(store: StationStore): (host: string) => Station
   });
 }
 
-export const ConnectorLive = (argv: string[]) =>
+export const ConnectorLive = (argv: string[], workloadCredential: string) =>
   Layer.effectDiscard(
     Effect.gen(function* () {
       const { data } = yield* Paths;
@@ -119,12 +122,17 @@ export const ConnectorLive = (argv: string[]) =>
       // The computer's one access value, which every device connection of the station follows.
       const access = computerAccess(agents.config);
       const index = stationTaskIndex(store);
-      /** One connector to Salix, the Station `host` here, running until `scope` closes. */
-      const start = (cfg: ConnectorConfig, host: string, profiles?: StationProfiles) =>
+      /** The profiles a host's Salix lends, kept as borrowed from that host. */
+      const lentBy = (host: string): StationProfiles => ({
+        received: (profiles) => agents.sharing.hostProfiles(host, profiles),
+        attach: (ask) => agents.sharing.attachHost(host, ask),
+      });
+      /** One connector to Salix, the Station `host` here, running until `scope` closes; placed by Salix with `place`. */
+      const start = (cfg: ConnectorConfig, host: string, profiles: StationProfiles, place: boolean) =>
         Effect.gen(function* () {
           const tasks = {
             handle: (method: string, params: Record<string, unknown>) => agents.tasks.handle(host, { ...params, method }),
-            models: () => agents.tasks.models(),
+            models: () => agents.tasks.models(host),
             listen: (changed: () => void) => agents.config.listen(changed),
             attach: (ask: ((request: Record<string, unknown>) => Promise<unknown>) | null) => agents.tasks.attachHost(host, ask),
           };
@@ -137,7 +145,7 @@ export const ConnectorLive = (argv: string[]) =>
                 archive: stationArchiveState(cfg.root, data, () => store.listSessions().length),
                 relay,
                 profiles,
-                place: profiles ? stationPlace(data) : undefined,
+                place: place ? stationPlace(data) : undefined,
                 access,
                 index: index(host),
               }),
@@ -152,35 +160,43 @@ export const ConnectorLive = (argv: string[]) =>
         });
 
       // The station's own connection, from its arguments (a VM, a Workload, a headless machine).
-      const cfg = yield* connectorConfig(argv, process.env as Record<string, string | undefined>);
-      // A Workload's station uses the workspace's accounts Salix lends, as another station's shares.
-      if (cfg !== null)
-        yield* start(cfg, SALIX_HOST, {
-          received: (profiles) => agents.sharing.hostProfiles(SALIX_HOST, profiles),
-          attach: (ask) => agents.sharing.attachHost(SALIX_HOST, ask),
-        });
+      const cfg = yield* connectorConfig(argv, process.env as Record<string, string | undefined>, workloadCredential);
+      // A Workload's station uses the workspace's accounts Salix lends, as another station's shares. Salix places a
+      // Group's Cloud VM in its workspace (`stationPlace`); a station that works for Salix only and is placed nowhere
+      // (a coding sandbox's, SALIX_CONNECTOR_JOIN=1) is in its workspace while its connection runs, as a desktop
+      // Workspace's instance is.
+      if (cfg !== null) {
+        const connect = start(cfg, SALIX_HOST, lentBy(SALIX_HOST), true);
+        yield* process.env.SALIX_CONNECTOR_JOIN === "1"
+          ? Effect.acquireRelease(Effect.sync(() => agents.joined()), (leave) => Effect.sync(leave)).pipe(Effect.andThen(connect))
+          : connect;
+      }
 
-      // The desktop app's: an instance per file, started, changed and stopped as the files are. Its station runs what
-      // the machine is signed in to, as no workspace lends a device accounts.
+      // Each desktop Workspace has one instance, the host of its Tasks and of the accounts its Salix lends for them
+      // (accounts/sources.ts). Connecting it does not authorize use of the machine's accounts: a person chooses each
+      // runtime's account source for the Workspace (accounts/local-admin.ts). No placement: it joins by its device.
       yield* connectorInstances(join(data, INSTANCES_DIR), process.env as Record<string, string | undefined>, (next, id) =>
-        Effect.sync(() => agents.accounts.useMachineLogins()).pipe(
-          // While it runs, the station is in a workspace: its Sessions' turns go on.
-          Effect.andThen(Effect.acquireRelease(Effect.sync(() => agents.joined()), (leave) => Effect.sync(leave))),
-          Effect.andThen(start(next, `${SALIX_HOST}:${id}`)),
+        // While it runs, the station is in a workspace: its Sessions' turns go on.
+        Effect.acquireRelease(Effect.sync(() => agents.joined()), (leave) => Effect.sync(leave)).pipe(
+          Effect.andThen(start(next, instanceHost(id), { device: true, ...lentBy(instanceHost(id)) }, false)),
         ),
       );
     }),
   );
 
-/** What an instance runner needs of a connector: its scope or a device's access, changed in place, and the metadata that says so. */
-export type InstanceConnector = Pick<Connector, "currentScope" | "setCurrentScope" | "deviceAccess" | "publishCachedMetadata" | "writeStatusMetadataSent">;
+/**
+ * What an instance runner needs of a connector: its scope or a device's access, changed in place, the metadata that
+ * says so, and the device's next credential.
+ */
+export type InstanceConnector = Pick<Connector, "currentScope" | "setCurrentScope" | "deviceAccess" | "publishCachedMetadata" | "writeStatusMetadataSent" | "renewCredential">;
 
 /**
  * Runs a connector for each `<id>.json` in `dir` (until the caller's scope closes): started when its file appears,
- * changed in place when only its scope changed, started again when anything else did, stopped when it goes. A device
- * connection's file whose scope alone changed is the app setting the computer's access the 2-level way (scope "" is
- * full, local_file_read is read): every device connection then follows it. Its scope otherwise says nothing once the
- * computer has a value.
+ * changed in place when only its scope or its credential changed, started again when anything else did, stopped when
+ * it goes. A new credential is the app's renewal before the current one expires: the running connection presents it
+ * and keeps its requests and processes. A device connection's file whose scope alone changed is the app setting the
+ * computer's access the 2-level way (scope "" is full, local_file_read is read): every device connection then follows
+ * it. Its scope otherwise says nothing once the computer has a value.
  */
 export function connectorInstances(
   dir: string,
@@ -216,9 +232,10 @@ export function connectorInstances(
           yield* stop(id);
           continue;
         }
-        // Only the access changed: the running connection changes its scope in place, as the app's switch did.
-        if (current && sameButScope(current.cfg, next)) {
+        // Only the access or the credential changed: the running connection changes them in place.
+        if (current && sameButScopeAndToken(current.cfg, next)) {
           current.raw = raw;
+          if (current.cfg.token !== next.token) yield* current.connector.renewCredential(next.token);
           if (next.deviceMode && current.cfg.scope !== next.scope) {
             yield* current.connector.deviceAccess({ allow_operations: next.scope === "" }).pipe(
               Effect.tap(() => Effect.sync(() => current.connector.writeStatusMetadataSent(""))),
@@ -263,9 +280,9 @@ export function connectorInstances(
   });
 }
 
-/** Two configurations that differ in their scope alone. */
-function sameButScope(a: ConnectorConfig, b: ConnectorConfig): boolean {
-  const strip = (cfg: ConnectorConfig) => JSON.stringify({ ...cfg, scope: "", env: undefined, systemInfoInterval: undefined, workspaceArchiveIdle: undefined, workspaceArchiveRestoreTimeout: undefined });
+/** Two configurations that differ in their scope or their device credential alone. */
+function sameButScopeAndToken(a: ConnectorConfig, b: ConnectorConfig): boolean {
+  const strip = (cfg: ConnectorConfig) => JSON.stringify({ ...cfg, scope: "", token: "", env: undefined, systemInfoInterval: undefined, workspaceArchiveIdle: undefined, workspaceArchiveRestoreTimeout: undefined });
   return strip(a) === strip(b);
 }
 

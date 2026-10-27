@@ -150,7 +150,7 @@ type RealChatStreamProbe = {
   zeroAreaReplySamples: number;
 };
 
-test("a renderer-selected file over 10 MB uses the local index without uploading bytes", async () => {
+test("a renderer-selected file over 10 MB uploads from Main as it is attached and is sent as its path", async () => {
   await ensureChatRuntimeFixtureBuilt();
   const stub = await startChatRuntimeStub();
   const userDataDir = await mkdtemp(
@@ -185,27 +185,24 @@ test("a renderer-selected file over 10 MB uses the local index without uploading
       .toMatchObject([
         {
           name: "large-report.pdf",
+          path: "/uploads/0000000000000000000001-large-report.pdf",
           status: "uploaded",
           size: chatAttachmentUploadMaxBytes + 1,
         },
       ]);
-    expect(stub.uploads).toHaveLength(0);
-    expect(stub.localFileRegistrations).toHaveLength(1);
+    // Main sent the file chunked as it read it; the server got no route to read it from this device.
+    expect(stub.uploads).toMatchObject([
+      { filename: "large-report.pdf", transferEncoding: "chunked" },
+    ]);
+    expect(stub.uploads[0]?.bytes.byteLength).toBe(chatAttachmentUploadMaxBytes + 1);
+    expect(stub.localFileRegistrations).toHaveLength(0);
     await appWindow.getByRole("button", { name: "Send immediately" }).click();
     await expect.poll(() => stub.messageAttempts.length).toBe(1);
-    expect(stub.messageAttempts[0]?.body).toMatchObject({
-      message: {
-        content: [
-          { type: "text", text: "Send the delayed attachment" },
-          {
-            type: "local_file",
-            display_name: "large-report.pdf",
-            local_file_ref: expect.stringMatching(/^lfi1_[A-Za-z0-9_-]{43}$/),
-            size: chatAttachmentUploadMaxBytes + 1,
-          },
-        ],
-      },
-    });
+    const sent = JSON.stringify(stub.messageAttempts[0]?.body);
+    expect(sent).toContain(
+      "large-report.pdf (workspace file: /uploads/0000000000000000000001-large-report.pdf)"
+    );
+    expect(sent).not.toContain("local_file");
   } finally {
     await closeElectronTestApp(launched.app);
     await stub.close();
@@ -502,19 +499,10 @@ test(
       await expect(
         sentMessage.locator('[data-testid^="chat-attachment-preview-"]')
       ).toHaveCount(0);
-      await expect
-        .poll(() => new Set(stub.workspaceFileReads.map((read) => read.path)).size)
-        .toBe(4);
-      expect(new Set(stub.workspaceFileReads.map((read) => read.path))).toEqual(
-        new Set(stub.uploads.map((upload) => upload.path))
-      );
-      expect(
-        stub.workspaceFileReads.every(
-          (read) =>
-            read.token === runtimeAccountB.token &&
-            read.workspaceId === runtimeAccountB.workspaceId
-        )
-      ).toBe(true);
+      // The sent images show the previews the Composer held: none is read
+      // again from the workspace by the path it uploaded to.
+      expect(stub.uploads).toHaveLength(4);
+      expect(stub.workspaceFileReads).toEqual([]);
       expect(stub.localFileRegistrations).toHaveLength(0);
     } finally {
       await restorePicker(launched.app);
@@ -1144,6 +1132,10 @@ for (const blockedPhase of ["quit", "window cleanup"] as const) {
     const child = launched.app.process();
     let watchdog: ReturnType<typeof setTimeout> | undefined;
     try {
+      // Block a started Main: an evaluate sent while Main is still starting
+      // can lose its context ("Execution context was destroyed") instead of
+      // hanging, and the close then reports that error, not its own bound.
+      await productWindow(launched.app);
       if (blockedPhase === "quit") {
         await launched.app.evaluate(({ app }) => {
           app.on("before-quit", (event) => event.preventDefault());

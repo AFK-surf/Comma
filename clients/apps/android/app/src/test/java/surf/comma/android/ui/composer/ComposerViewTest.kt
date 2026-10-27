@@ -169,6 +169,48 @@ class ComposerViewTest {
         assertEquals(twelve.take(8), composer.attachments.map { it.uri })
     }
 
+    @Test fun `the photo picker offers videos too, a question card's only images`() = withComposer { activity, root, composer ->
+        composer.systemPhotoLimit = { 100 }
+        byDescription(composer, activity.getString(R.string.composer_attach)).performClick()
+        byDescription(menu(root), activity.getString(R.string.composer_attach_photos)).performClick()
+        val draft = shadowOf(activity).nextStartedActivityForResult
+        assertEquals(MediaStore.ACTION_PICK_IMAGES, draft.intent.action)
+        assertNull(draft.intent.type)
+        shadowOf(activity).receiveResult(draft.intent, Activity.RESULT_CANCELED, null)
+
+        composer.pickQuestionImages("question", 4)
+        assertEquals("image/*", shadowOf(activity).nextStartedActivityForResult.intent.type)
+    }
+
+    @Test fun `the file picker takes any file and the core decides which it sends`() = withComposer { activity, root, composer ->
+        byDescription(composer, activity.getString(R.string.composer_attach)).performClick()
+        byDescription(menu(root), activity.getString(R.string.composer_attach_files)).performClick()
+        val request = shadowOf(activity).nextStartedActivityForResult
+        assertArrayEquals(arrayOf("*/*"), request.intent.getStringArrayExtra(Intent.EXTRA_MIME_TYPES))
+    }
+
+    @Test fun `a file over the upload limit is not added and a message says so, an image over it is`() = withComposer { activity, root, composer ->
+        val folder = java.nio.file.Files.createTempDirectory("picked").toFile()
+        try {
+            fun sparse(name: String, size: Long) = Uri.fromFile(java.io.File(folder, name).apply {
+                java.io.RandomAccessFile(this, "rw").use { it.setLength(size) }
+            })
+            val limit = 512L * 1024 * 1024
+            val video = sparse("clip.mp4", limit + 1)
+            val fits = sparse("short.mp4", limit)
+            val photo = sparse("photo.jpg", limit + 1)
+            byDescription(composer, activity.getString(R.string.composer_attach)).performClick()
+            byDescription(menu(root), activity.getString(R.string.composer_attach_files)).performClick()
+            val request = shadowOf(activity).nextStartedActivityForResult
+            shadowOf(activity).receiveResult(request.intent, Activity.RESULT_OK, clip(listOf(video, fits, photo)))
+            assertEquals(activity.getString(R.string.composer_attach_too_large), ShadowToast.getTextOfLatestToast())
+            assertEquals(listOf(fits, photo), composer.attachments.map { it.uri })
+            assertEquals(listOf("short.mp4", "photo.jpg"), composer.attachments.map { it.file.name })
+        } finally {
+            folder.deleteRecursively()
+        }
+    }
+
     @Test fun `without a camera app nothing is added and a message explains`() = withComposer { activity, root, composer ->
         shadowOf(RuntimeEnvironment.getApplication()).checkActivities(true)
         val added = mutableListOf<Uri>()

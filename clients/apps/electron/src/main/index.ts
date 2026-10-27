@@ -1,3 +1,5 @@
+import { clockTimeoutSignal, realMainClock, type MainClock } from "./clock";
+import { advanceTestClocks, ManualMainClock } from "./test-clock";
 import { isAuthorizationReturnUrl } from "./authorization-return";
 import { installApplicationMenu } from "./application-menu";
 import { applicationMenuProvider } from "./application-menu-provider";
@@ -20,6 +22,7 @@ import {
   Tray,
   WebContentsView,
   clipboard as electronClipboard,
+  ClipboardItem,
   dialog,
   ipcMain,
   globalShortcut,
@@ -101,6 +104,7 @@ import {
 import { NotchService } from "./notch";
 import { NativeStatusMenuService } from "./native-status-menu";
 import { loadFileApplicationsAddon } from "../../native/macos/FileApplications";
+import { windowsFileApplications } from "./modules/files/windows-file-applications";
 import {
   loadFontFamiliesAddon,
   type FontFamiliesAddon,
@@ -175,6 +179,7 @@ import {
   parseBillingReturnUrl,
 } from "./billing-return";
 import { channelSettingsRoute, isChannelReturnUrl } from "./channel-return";
+import { dispatchMiniAppRunLink, miniAppLinkRoute } from "./mini-app-link";
 
 const {
   e2eHooks,
@@ -193,9 +198,28 @@ const displayVersion = getElectronDisplayVersion({
 if (process.env.NODE_ENV === "test" && !app.commandLine.hasSwitch("lang")) {
   app.commandLine.appendSwitch("lang", "en-US");
 }
+// Skia Graphite compiles a Metal pipeline the first time a window draws a new
+// kind of content, and the frame waits for it. Without precompilation the
+// first sends after a launch drop frames while the flying bubble's material
+// and clip compile.
+// The switch takes one list: features named at launch stay in it.
+app.commandLine.appendSwitch(
+  "enable-features",
+  [app.commandLine.getSwitchValue("enable-features"), "SkiaGraphitePrecompilation"]
+    .filter(Boolean)
+    .join(",")
+);
 
+/** Main's clock: real, or an e2e's test clock (`testClock`), chosen again each time Main's services start. */
+let activeMainClock: MainClock = e2eHooks.testClock
+  ? new ManualMainClock()
+  : realMainClock;
+const mainClock: MainClock = {
+  now: () => activeMainClock.now(),
+  setTimer: (ms, run) => activeMainClock.setTimer(ms, run),
+};
 // Labels Main's own Tasks (Quick Chat's) in Main's language until a window does.
-const notch = new NotchService({ locale: () => electronMainLocale });
+const notch = new NotchService({ clock: mainClock, locale: () => electronMainLocale });
 const opaqueWindowBackgrounds = new OpaqueWindowBackgroundController(
   nativeTheme.shouldUseDarkColors
 );
@@ -225,6 +249,7 @@ let e2eLaunchAtLoginStatus: LaunchAtLoginStatus | undefined =
       : undefined;
 // One station per machine: the Workspaces' connections and the static connector run in it.
 const station = new LocalStation({
+  clock: mainClock,
   dir: resolveStationDir(),
   data: join(app.getPath("userData"), "station"),
   log: { warn: (message) => log.warn(`station: ${message}`) },
@@ -243,6 +268,7 @@ let closingMainServices = false;
 let mainWindowInteractionsEnabled = false;
 let pendingBillingReturn: BillingReturn | undefined;
 let pendingChannelReturn: string | undefined;
+let pendingMiniAppLink: string | undefined;
 let quitAuthorizedAfterClose = false;
 // Under test, Main reports on stdout that its own quit sequence ran to its end.
 // The E2E harness takes that as a finished close and does not wait for
@@ -323,6 +349,7 @@ function createBrowserImportPlatform() {
     appIcon: browserAppIcon,
     applicationSupportDirectory:
       e2eHooks.browserImportDirectory ?? app.getPath("appData"),
+    clock: mainClock,
     cookies: session.fromPartition(BROWSER_SIDEBAR_PARTITION).cookies,
     readKeychainPassword: keychain
       ? (service, account) => keychain.readGenericPassword(service, account)
@@ -401,7 +428,7 @@ function createStatusTrayHost(toolTip: string, reinstall: () => void): StatusTra
     : electronHost();
   return {
     ...host,
-    // Every argument goes on: the left-click and menu-open actions too.
+    // Every argument goes on: the menu-open action too.
     setMenu(...menu) {
       recordElectronE2eStatusTrayMenu(
         e2eHooks,
@@ -416,6 +443,7 @@ function createStatusTrayHost(toolTip: string, reinstall: () => void): StatusTra
 function installStatusTray() {
   if (statusTray) return;
   const installedTray = createCommaStatusTray({
+    clock: mainClock,
     content: statusTrayContent,
     createHost: createStatusTrayHost,
     locale: electronMainLocale,
@@ -451,6 +479,7 @@ function openStatusTraySettings() {
 // aside as the onboarding window opens. Either way it shows once that window
 // has closed, however it closed.
 const mainWindowOnboardingHold = new MainWindowOnboardingHold({
+  clock: mainClock,
   bringOnboardingForward: () => onboardingWindow.mainWindowFocused(),
   hideMainWindow: () => {
     if (primaryWindow && !primaryWindow.isDestroyed() && primaryWindow.isVisible()) {
@@ -503,6 +532,14 @@ function requestOpenBillingSettings(value: string) {
   return true;
 }
 
+function requestOpenMiniAppLink(value: string) {
+  const route = miniAppLinkRoute(value, releaseConfig.urlScheme);
+  if (!route) return false;
+  if (mainWindowInteractionsEnabled) requestOpenMainAppRoute(route);
+  else pendingMiniAppLink = route;
+  return true;
+}
+
 function requestOpenChannelSettings(value: string) {
   if (!isChannelReturnUrl(value, releaseConfig.urlScheme)) return false;
   pendingChannelReturn = channelSettingsRoute;
@@ -536,6 +573,23 @@ async function openBillingSettings(routeOverride?: string) {
   window.focus();
 }
 
+function handleMiniAppRunUrl(url: string): boolean {
+  return dispatchMiniAppRunLink(
+    url,
+    allowedRendererOrigins(forgeRendererURL()),
+    requestOpenMainAppRoute,
+    () =>
+      dialog.showErrorBox(
+        messages.mini_app_unavailable_title(),
+        messages.mini_apps_load_failed()
+      )
+  );
+}
+
+async function openExternalOrMiniApp(url: string): Promise<void> {
+  if (!handleMiniAppRunUrl(url)) await shell.openExternal(url);
+}
+
 /** Opens the main window, then moves its router in place (a hash change). */
 async function openMainAppRoute(route: string) {
   await openMainApp();
@@ -545,7 +599,7 @@ async function openMainAppRoute(route: string) {
   }
   if (window.webContents.isLoadingMainFrame()) {
     await once(window.webContents, "did-finish-load", {
-      signal: AbortSignal.timeout(15_000),
+      signal: clockTimeoutSignal(realMainClock, 15_000),
     });
   }
   const rendererURL = e2eHooks.rendererUrl ?? appRendererUrl();
@@ -649,6 +703,7 @@ const notificationAuthorization = loadNotificationAuthorizationAddon({
 function createHybridPasskeys() {
   if (e2eHooks.cablePhoneOrigin) {
     return new HybridPasskeys({
+      clock: mainClock,
       scanner: createElectronE2eCableScanner(e2eHooks.cablePhoneOrigin),
       tunnelOrigin: e2eHooks.cablePhoneOrigin,
     });
@@ -656,7 +711,9 @@ function createHybridPasskeys() {
   if (process.env.NODE_ENV === "test" || process.platform !== "darwin")
     return undefined;
   const scanner = loadCableScannerAddon({ isPackaged: app.isPackaged, logger: log });
-  return scanner.loaded ? new HybridPasskeys({ logger: log, scanner }) : undefined;
+  return scanner.loaded
+    ? new HybridPasskeys({ clock: mainClock, logger: log, scanner })
+    : undefined;
 }
 
 async function readSystemNotificationsStatus(): Promise<SystemNotificationsStatus> {
@@ -720,11 +777,13 @@ async function setLaunchAtLogin(enabled: boolean): Promise<LaunchAtLoginReadback
 }
 
 async function createWindow({
+  bounds,
   id = mainWindowIdentity.id,
   route = "/",
   surfaces,
   webContentsRegistry,
 }: {
+  bounds?: { x: number; y: number; width: number; height: number } | undefined;
   id?: string | undefined;
   route?: string | undefined;
   surfaces: NativeSurfaceService;
@@ -733,6 +792,7 @@ async function createWindow({
   const rendererURL = e2eHooks.rendererUrl ?? appRendererUrl();
   const mainWindow = new BrowserWindow(
     createMainWindowOptions({
+      bounds,
       darkMode: opaqueWindowBackgrounds.darkMode,
       iconPath: resolveWindowIconPath(),
       preloadPath: join(__dirname, "preload.js"),
@@ -745,7 +805,7 @@ async function createWindow({
   // A maximize or system zoom that lands before the first paint leaves the
   // renderer at the creation size. Re-check after sizing settles, without
   // changing the native size while the user is still dragging an edge.
-  installWindowViewportSync(mainWindow, { log });
+  installWindowViewportSync(mainWindow, { clock: mainClock, log });
   // macOS and Windows report the end of a user resize; the renderer only ever
   // sees a `resize` stream that stops, which cannot tell a released window edge
   // from a pause with the button still down. The shell settles layouts the drag
@@ -805,6 +865,7 @@ async function createWindow({
     id,
     installWindowSecurity: () =>
       installWindowSecurity({
+        handleAppLink: handleMiniAppRunUrl,
         allowedNavigationOrigins: allowedRendererOrigins(forgeRendererURL()),
         logger: log,
         webContents: mainWindow.webContents,
@@ -871,6 +932,7 @@ async function createRuntimeWorkbenchWindow({
     id: runtimeWorkbenchIdentity.id,
     installWindowSecurity: () =>
       installWindowSecurity({
+        handleAppLink: handleMiniAppRunUrl,
         allowedNavigationOrigins: allowedRendererOrigins(forgeRendererURL()),
         logger: log,
         webContents: workbenchWindow.webContents,
@@ -997,6 +1059,7 @@ function createOnboardingWindow(bounds: WindowBounds) {
         id: onboardingWindowIdentity.id,
         installWindowSecurity: () =>
           installWindowSecurity({
+            handleAppLink: handleMiniAppRunUrl,
             allowedNavigationOrigins: allowedRendererOrigins(forgeRendererURL()),
             logger: log,
             webContents: window.webContents,
@@ -1081,12 +1144,14 @@ function ensureMeetingRecorderWindow() {
   if (closingMainServices || !appContext)
     throw new Error("Recorder window is unavailable.");
   meetingRecorderWindow ??= new MeetingRecorderWindow({
+    clock: mainClock,
     preloadPath: join(__dirname, "preload.js"),
     url: withHashRoute(e2eHooks.rendererUrl ?? appRendererUrl(), "/meeting-recorder"),
     surfaces: appContext.surfaces,
     registry: appContext.webContentsRegistry,
     secure: (window) =>
       installWindowSecurity({
+        handleAppLink: handleMiniAppRunUrl,
         allowedNavigationOrigins: allowedRendererOrigins(forgeRendererURL()),
         logger: log,
         webContents: window.webContents,
@@ -1111,6 +1176,11 @@ const lidSleepGuard = new LidSleepGuard({
 });
 
 async function createElectronMainContext() {
+  // A reset may turn an e2e's test clock on or off (`testClock` is a start hook). A test clock in use stays, with the
+  // timers set on it, so the modules that outlive a reset keep theirs; they read it through `mainClock` too.
+  if (!e2eHooks.testClock) activeMainClock = realMainClock;
+  else if (!(activeMainClock instanceof ManualMainClock))
+    activeMainClock = new ManualMainClock();
   const rendererURL = e2eHooks.rendererUrl ?? appRendererUrl();
   const observabilityFileLocation = "userData/agent-observability/native-events.jsonl";
   const observabilityFilePath = join(
@@ -1155,6 +1225,11 @@ async function createElectronMainContext() {
       meetingRecorderState = state;
       if (appContext && !closingMainServices)
         ensureMeetingRecorderWindow().update(state);
+    },
+    // A wake from sleep is the network event Main sees; otherwise continuation's 30 s backoff cap bounds recovery.
+    onNetworkRecovered: (listener) => {
+      powerMonitor.on("resume", listener);
+      return () => powerMonitor.removeListener("resume", listener);
     },
     confirmHostMaintenance: async (input) => {
       const locale = { locale: electronMainLocale };
@@ -1235,6 +1310,7 @@ async function createElectronMainContext() {
     // NODE_ENV=test alone does not change it, so an E2E may exercise the same
     // real Connector path as local development by selecting mode "real".
     station,
+    stationData: station.data,
     computerUseHelperApp: resolveComputerUseHelperApp(),
     airDropBinaryPath: resolveAirDropBinaryPath(),
     airDropSenderBinaryPath: resolveAirDropBinaryPath(),
@@ -1317,13 +1393,15 @@ async function createElectronMainContext() {
           }),
         }
       : new SystemBrowserGoogleAuth({
+          clock: mainClock,
           locale: () => electronMainLocale,
-          openExternal: (url) => shell.openExternal(url),
+          openExternal: openExternalOrMiniApp,
         }),
     ipcMain,
     isDevelopment: !app.isPackaged,
     coreDataDir: join(app.getPath("userData"), "core"),
-    coreTestClock: e2eHooks.coreTestClock,
+    coreTestClock: e2eHooks.testClock,
+    clock: mainClock,
     coreStationPeers: e2eHooks.stationPeers,
     coreMeshAddon: station.meshAddon,
     resetApp: () => void resetMain(),
@@ -1399,6 +1477,7 @@ async function createElectronMainContext() {
         registry: () => appContext!.webContentsRegistry,
         secure: (window) =>
           installWindowSecurity({
+            handleAppLink: handleMiniAppRunUrl,
             allowedNavigationOrigins: allowedRendererOrigins(forgeRendererURL()),
             logger: log,
             webContents: window.webContents,
@@ -1424,42 +1503,70 @@ async function createElectronMainContext() {
         // windows.focus is an explicit user action from accessory surfaces such
         // as the Notch, which must reactivate the regular app.
         activateApplication: () => app.focus({ steal: true }),
-        openWindow: async ({ route, windowId }) => {
-          await createWindow({
+        // Resolves once the window shows, and fails if it closes first: a renderer that hands its content to the
+        // window lets go of it only then, never while the window is still loading or once it is gone.
+        openWindow: async ({ bounds, route, windowId }) => {
+          const window = await createWindow({
+            bounds,
             id: windowId,
             route,
             surfaces,
             webContentsRegistry,
           });
+          if (window.isDestroyed())
+            throw new Error("The window closed before it showed.");
+          if (window.isVisible()) return;
+          await new Promise<void>((done, fail) => {
+            const shown = () => {
+              window.off("closed", closed);
+              done();
+            };
+            const closed = () => {
+              window.off("show", shown);
+              fail(new Error("The window closed before it showed."));
+            };
+            window.once("show", shown);
+            window.once("closed", closed);
+          });
         },
         surfaces,
       }),
-    readClipboardImage: () => {
-      const image = electronClipboard.readImage();
-      return image.isEmpty() ? null : new Uint8Array(image.toPNG());
+    // Chromium's clipboard hands every image over as `image/png`.
+    readClipboardImage: async () => {
+      for (const item of await electronClipboard.read()) {
+        if (!item.types.includes("image/png")) continue;
+        const png = await item.getType("image/png");
+        return new Uint8Array(await png.arrayBuffer());
+      }
+      return null;
     },
     readClipboardText: () => electronClipboard.readText(),
     writeClipboardText: (text) => electronClipboard.writeText(text),
     // nativeImage decodes PNG and JPEG only, and answers an empty image for
     // anything it cannot read: the renderer hands over PNG, and a decode that
     // fails is reported instead of leaving the clipboard silently unchanged.
-    writeClipboardImage: (pngImage) => {
+    writeClipboardImage: async (pngImage) => {
       const image = nativeImage.createFromBuffer(Buffer.from(pngImage));
       if (image.isEmpty()) return false;
-      electronClipboard.writeImage(image);
+      const png = new Blob([new Uint8Array(image.toPNG())], { type: "image/png" });
+      await electronClipboard.write([new ClipboardItem({ "image/png": png })]);
       return true;
     },
-    openExternalUrl: (url) => shell.openExternal(url),
+    openExternalUrl: openExternalOrMiniApp,
+    handleAppLink: handleMiniAppRunUrl,
     authorizationReturn: {
       url: `${releaseConfig.urlScheme}://authorization/return`,
       open: requestOpenMainApp,
     },
     resolveDownloadsDirectory: () => app.getPath("downloads"),
     openDownloadedFilePath: (path) => shell.openPath(path),
-    fileApplications: loadFileApplicationsAddon({
-      isPackaged: app.isPackaged,
-      logger: console,
-    }),
+    fileApplications:
+      process.platform === "win32"
+        ? windowsFileApplications()
+        : loadFileApplicationsAddon({
+            isPackaged: app.isPackaged,
+            logger: console,
+          }),
     fontFamilies: fontFamilies(),
     revealDownloadedFilePath: (path) => shell.showItemInFolder(path),
     ...(!app.isPackaged
@@ -1488,13 +1595,37 @@ async function createElectronMainContext() {
       ? {}
       : {
           quickChat: {
-            hostPath: app.isPackaged
-              ? join(process.resourcesPath, "native", "macos", "QuickChatHost")
-              : join(app.getAppPath(), "dist", "native", "macos", "QuickChatHost"),
+            ...(process.platform === "win32"
+              ? {
+                  hostPath: join(
+                    app.isPackaged
+                      ? process.resourcesPath
+                      : join(app.getAppPath(), "dist"),
+                    "native",
+                    "win32",
+                    process.arch,
+                    "QuickChatHost.exe"
+                  ),
+                  appUserModelId: releaseConfig.appUserModelId,
+                }
+              : {
+                  hostPath: app.isPackaged
+                    ? join(process.resourcesPath, "native", "macos", "QuickChatHost")
+                    : join(
+                        app.getAppPath(),
+                        "dist",
+                        "native",
+                        "macos",
+                        "QuickChatHost"
+                      ),
+                }),
             notch,
             openRoute: requestOpenMainAppRoute,
           },
         }),
+    macAppsHostPath: app.isPackaged
+      ? join(process.resourcesPath, "native", "macos", "MacAppsHost")
+      : join(app.getAppPath(), "dist", "native", "macos", "MacAppsHost"),
     screenAccessStatus: () =>
       process.platform === "darwin"
         ? systemPreferences.getMediaAccessStatus("screen")
@@ -1514,7 +1645,17 @@ async function createElectronMainContext() {
       (env) => {
         nextStartHooks = env;
       },
-      () => primaryWindow
+      () => primaryWindow,
+      (ms) => {
+        const coreHost = context.coreHost;
+        const core = (by: number) =>
+          coreHost?.running ? coreHost.advanceClock(by) : Promise.resolve(undefined);
+        return activeMainClock instanceof ManualMainClock
+          ? advanceTestClocks(activeMainClock, core, ms)
+          : coreHost
+            ? coreHost.advanceClock(ms).then(() => undefined)
+            : Promise.reject(new Error("Launch the app with electronTestClockEnv."));
+      }
     );
   await awaitElectronE2eMainReadyRelease(e2eHooks);
   return context;
@@ -1530,6 +1671,10 @@ if (!gotSingleInstanceLock) {
       isChannelReturnUrl(value, releaseConfig.urlScheme)
     );
     if (channelReturn && requestOpenChannelSettings(channelReturn)) return;
+    const miniAppLink = argv.find((value) =>
+      miniAppLinkRoute(value, releaseConfig.urlScheme)
+    );
+    if (miniAppLink && requestOpenMiniAppLink(miniAppLink)) return;
     const billingReturn = findBillingReturnUrl(argv, releaseConfig.urlScheme);
     if (!billingReturn || !requestOpenBillingSettings(billingReturn.url)) {
       requestOpenMainApp();
@@ -1554,11 +1699,19 @@ function startElectronApp() {
       );
       const devServerUrl = forgeRendererURL();
       registerAppProtocol(devServerUrl, {
+        clock: mainClock,
         getCredentialAuthority: () => appContext?.session,
         getDriveStreams: () => appContext?.synchronicity,
+        getFileStreams: () => appContext?.coreHost,
       });
-      installSessionSecurity(session.defaultSession);
-      installDynamicUiNetworkSecurity(session.defaultSession);
+      installSessionSecurity(session.defaultSession, {
+        microphoneOrigins: allowedRendererOrigins(devServerUrl),
+        // Only the desktop's voice call records in the page, and only with voice labs on.
+        microphoneAllowed: async () =>
+          (await appContext?.appPreferences.state())?.clientSettings
+            ?.voiceLabsEnabled === true,
+      });
+      installDynamicUiNetworkSecurity(session.defaultSession, { clock: mainClock });
       installApplicationMenu({
         isMainFocused: () => primaryWindow?.isFocused() ?? false,
         dispatch: (id) =>
@@ -1645,6 +1798,9 @@ async function startMainServices(kept?: NonNullable<typeof primaryWindowLaunch>)
     pendingChannelReturn = undefined;
   } else if (pendingBillingReturn) {
     await openBillingSettings();
+  } else if (pendingMiniAppLink) {
+    await openMainAppRoute(pendingMiniAppLink);
+    pendingMiniAppLink = undefined;
   } else {
     if (await onboardingPendingAtLaunch(appContext)) {
       log.info("first launch: the main window waits for the onboarding");
@@ -1683,6 +1839,9 @@ function registerBillingReturnProtocol() {
   if (initialReturn) pendingBillingReturn = initialReturn;
   if (process.argv.some((value) => isChannelReturnUrl(value, releaseConfig.urlScheme)))
     pendingChannelReturn = channelSettingsRoute;
+  for (const value of process.argv) {
+    pendingMiniAppLink ??= miniAppLinkRoute(value, releaseConfig.urlScheme);
+  }
 
   app.on("open-url", (event, value) => {
     if (isAuthorizationReturnUrl(value, releaseConfig.urlScheme)) {
@@ -1693,6 +1852,11 @@ function registerBillingReturnProtocol() {
     if (isChannelReturnUrl(value, releaseConfig.urlScheme)) {
       event.preventDefault();
       requestOpenChannelSettings(value);
+      return;
+    }
+    if (miniAppLinkRoute(value, releaseConfig.urlScheme)) {
+      event.preventDefault();
+      requestOpenMiniAppLink(value);
       return;
     }
     if (!parseBillingReturnUrl(value, releaseConfig.urlScheme)) return;

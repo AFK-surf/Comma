@@ -736,6 +736,51 @@ defmodule CommaWeb.RouterTest do
     |> expect_json(404)
   end
 
+  test "a Task's run switch is checked as a new Task's place is; a place that cannot take it is refused with why" do
+    session = email_login!("task-run-owner@example.com")
+    other_session = email_login!("task-run-outsider@example.com")
+    workspace = create_ready_workspace!(session["user"]["id"], "Task run")
+    workspace = CommaWeb.TestWorkers.with_default_worker!(workspace)
+    group = workspace["default_group_id"]
+
+    {:ok, task} =
+      SalixCluster.TaskSchedules.create_task_conversation(
+        group,
+        workspace["router_agent_id"],
+        workspace["default_worker_agent_id"],
+        %{"title" => "Switch me", "content" => "Run on another model"}
+      )
+
+    task_id = task["conversation_id"]
+    path = "/v1/comma/groups/#{group}/conversations/#{task_id}/run"
+    put = fn body, token -> :put |> json_conn(path, body) |> user_auth(token) |> call() end
+
+    assert %{"error" => "runs_on is required"} =
+             put.(%{"model" => nil}, session["token"]) |> expect_json(400)
+
+    # A computer this workspace does not have takes nothing; the Task is as it was.
+    assert %{"code" => "task_run_refused", "reason" => "device_not_found", "message" => why} =
+             put.(
+               %{"runs_on" => %{"kind" => "station", "device_id" => "dev-unknown"}},
+               session["token"]
+             )
+             |> expect_json(422)
+
+    assert why =~ "not known"
+
+    put.(%{"runs_on" => %{"kind" => "salix"}}, other_session["token"]) |> expect_json(404)
+
+    # Nothing was switched: the Worker was told nothing.
+    assert {:ok, messages} =
+             SalixIM.Conversations.list_group_conversation_messages(group, task_id)
+
+    assert [] =
+             Enum.filter(
+               messages,
+               &(get_in(&1, ["metadata", "message_type"]) == SalixIM.TaskRun.message_type())
+             )
+  end
+
   test "the workspace owner turns the Condensed Workspace on and edits its statements" do
     session = email_login!("condensed-owner@example.com")
     other_session = email_login!("condensed-outsider@example.com")
@@ -900,11 +945,14 @@ defmodule CommaWeb.RouterTest do
     assert get_resp_header(conn, "access-control-allow-origin") == ["http://localhost:5173"]
 
     assert get_resp_header(conn, "access-control-allow-headers") == [
-             "authorization,content-type,if-none-match,x-comma-session-transport,x-comma-session-lifecycle-version,x-comma-expected-auth-session-id"
+             "authorization,content-type,if-none-match,range,x-comma-session-transport,x-comma-session-lifecycle-version,x-comma-expected-auth-session-id,x-comma-client,x-comma-client-capabilities,x-comma-app-via,x-comma-app-method,x-comma-app-version"
            ]
 
     assert get_resp_header(conn, "access-control-allow-credentials") == ["true"]
-    assert get_resp_header(conn, "access-control-expose-headers") == ["etag,retry-after"]
+
+    assert get_resp_header(conn, "access-control-expose-headers") == [
+             "accept-ranges,content-range,etag,retry-after,x-comma-bundle-digest,x-comma-app-version"
+           ]
   end
 
   test "v1 CORS rejects every unapproved browser and Electron renderer origin before auth" do
@@ -2414,6 +2462,8 @@ defmodule CommaWeb.RouterTest do
       |> expect_json(201)
 
     assert is_nil(enrolling["expires_at"])
+    # Without an alias of its own the device's tool-facing alias is its name.
+    assert enrolling["alias"] == "T-Circle"
 
     assert_in_delta enrolling["registration_expires_at"],
                     SystemsClock.system_time(:second) + 600,
@@ -3439,6 +3489,184 @@ defmodule CommaWeb.RouterTest do
     end
   end
 
+  # A local stand-in for the OpenAI Voices API: every request is reported to
+  # the test process. A created voice's id is `voice_` and its prompt.
+  defmodule OpenAIVoicesStub do
+    import Plug.Conn
+
+    def init(opts), do: opts
+
+    def call(conn, _opts) do
+      {:ok, body, conn} = read_body(conn)
+      body = if body == "", do: nil, else: Jason.decode!(body)
+
+      if pid = SystemsRuntime.PersistentTerm.get({__MODULE__, :test_pid}, nil),
+        do:
+          SystemsRuntime.Proc.send(
+            pid,
+            {:openai_voice, conn.method, conn.request_path, get_req_header(conn, "authorization"),
+             body}
+          )
+
+      prompt = (body || %{})["prompt"] || ""
+      id = "voice_" <> String.replace(prompt, ~r/\W/, "")
+
+      conn
+      |> put_resp_content_type("application/json")
+      |> send_resp(200, Jason.encode!(%{"object" => "audio.voice", "id" => id}))
+    end
+  end
+
+  test "Comma user session sets the call voice, a custom voice and Router calls" do
+    prev_base_url = SystemsRuntime.get_env(:salix_web, :openai_api_base_url)
+
+    openai =
+      start_supervised!(
+        {Bandit, plug: OpenAIVoicesStub, ip: {127, 0, 0, 1}, port: 0, startup_log: false}
+      )
+
+    {:ok, {_, openai_port}} = ThousandIsland.listener_info(openai)
+    SystemsRuntime.put_env(:salix_web, :openai_api_base_url, "http://127.0.0.1:#{openai_port}")
+    SystemsRuntime.PersistentTerm.put({OpenAIVoicesStub, :test_pid}, SystemsRuntime.Proc.self())
+
+    on_exit(fn ->
+      SystemsRuntime.PersistentTerm.erase({OpenAIVoicesStub, :test_pid})
+      _ = SalixStore.S3.delete(SalixStore.Keys.ctl_system_voice())
+
+      if prev_base_url == nil,
+        do: SystemsRuntime.delete_env(:salix_web, :openai_api_base_url),
+        else: SystemsRuntime.put_env(:salix_web, :openai_api_base_url, prev_base_url)
+    end)
+
+    assert {:ok, _settings} =
+             SalixVoice.Settings.update(%{"enabled" => true, "openai_api_key" => "sk-voice"})
+
+    user =
+      :post
+      |> json_conn("/v1/comma/admin/users", %{"email" => "voice-prefs@example.com"})
+      |> admin_auth()
+      |> call()
+      |> expect_json(201)
+
+    workspace = create_ready_workspace!(user["id"], "Voice Preferences")
+
+    session =
+      :post
+      |> json_conn("/v1/comma/admin/users/#{user["id"]}/sessions", %{})
+      |> admin_auth()
+      |> call()
+      |> expect_json(201)
+
+    :ok = CommaWeb.TestConvergence.workspace!(workspace["id"])
+    auth = &put_req_header(&1, "authorization", "Bearer #{session["token"]}")
+    voice = "/v1/comma/workspaces/#{workspace["id"]}/integrations/voice"
+
+    put_prefs = fn body ->
+      :put |> json_conn(voice <> "/preferences", body) |> auth.() |> call()
+    end
+
+    status = conn(:get, voice) |> auth.() |> call() |> expect_json(200)
+
+    assert status["preferences"] == %{
+             "voice" => nil,
+             "custom_voice" => nil,
+             "router_calls" => false
+           }
+
+    assert "quartz" in status["voices"]
+
+    # A preset voice and Router calls are kept separately.
+    assert %{"voice" => %{"kind" => "preset", "name" => "quartz"}, "router_calls" => false} =
+             put_prefs.(%{"voice" => %{"kind" => "preset", "name" => "quartz"}})
+             |> expect_json(200)
+             |> Map.fetch!("preferences")
+
+    assert %{"voice" => %{"name" => "quartz"}, "router_calls" => true} =
+             put_prefs.(%{"router_calls" => true})
+             |> expect_json(200)
+             |> Map.fetch!("preferences")
+
+    # Unknown presets, the custom voice before it exists and bad types are refused.
+    assert %{"error" => _} =
+             put_prefs.(%{"voice" => %{"kind" => "preset", "name" => "nobody"}})
+             |> expect_json(400)
+
+    assert %{"error" => _} = put_prefs.(%{"voice" => %{"kind" => "custom"}}) |> expect_json(400)
+    assert %{"error" => _} = put_prefs.(%{"router_calls" => "yes"}) |> expect_json(400)
+
+    # A custom voice is made from the description with the platform key and
+    # selected; its provider id stays in Salix.
+    created =
+      :post
+      |> json_conn(voice <> "/custom-voice", %{
+        "name" => "Warm",
+        "description" => "A warm, calm voice speaking Mandarin Chinese."
+      })
+      |> auth.()
+      |> call()
+
+    assert %{
+             "voice" => %{"kind" => "custom"},
+             "custom_voice" => %{
+               "name" => "Warm",
+               "description" => "A warm, calm voice speaking Mandarin Chinese."
+             },
+             "router_calls" => true
+           } = expect_json(created, 200)["preferences"]
+
+    warm_id = "voice_AwarmcalmvoicespeakingMandarinChinese"
+    refute created.resp_body =~ warm_id
+
+    # The stub reports before it answers, so the report is already here.
+    assert_received {:openai_voice, "POST", "/v1/audio/voices", ["Bearer sk-voice"],
+                     %{
+                       "type" => "prompt",
+                       "name" => "Warm",
+                       "prompt" => "A warm, calm voice speaking Mandarin Chinese.",
+                       "model" => "auto"
+                     }}
+
+    # Calls of the Group speak with it.
+    {:ok, connect} =
+      SalixIM.ProviderConnects.get_voice_im_connect(
+        workspace["salix_tenant_id"],
+        workspace["default_group_id"]
+      )
+
+    assert %{"id" => ^warm_id} =
+             workspace["default_group_id"]
+             |> SalixIM.VoiceConnects.voice_preferences(connect["connect_id"])
+             |> SalixVoice.Voices.session_voice()
+
+    # Back to the platform default; the custom voice stays for later.
+    assert %{"voice" => nil, "custom_voice" => %{"name" => "Warm"}} =
+             put_prefs.(%{"voice" => nil}) |> expect_json(200) |> Map.fetch!("preferences")
+
+    # A voice made again without a name keeps an empty one (the clients show
+    # their own label) and sends no Group id to OpenAI; the replaced voice is
+    # deleted there.
+    assert %{"voice" => %{"kind" => "custom"}, "custom_voice" => %{"name" => ""}} =
+             :post
+             |> json_conn(voice <> "/custom-voice", %{"description" => "Bright and quick."})
+             |> auth.()
+             |> call()
+             |> expect_json(200)
+             |> Map.fetch!("preferences")
+
+    assert_received {:openai_voice, "POST", "/v1/audio/voices", _,
+                     %{"name" => "Comma custom voice", "prompt" => "Bright and quick."}}
+
+    delete_path = "/v1/audio/voices/" <> warm_id
+    assert_received {:openai_voice, "DELETE", ^delete_path, ["Bearer sk-voice"], nil}
+
+    assert %{"error" => _} =
+             :post
+             |> json_conn(voice <> "/custom-voice", %{"description" => " "})
+             |> auth.()
+             |> call()
+             |> expect_json(400)
+  end
+
   # A registered Signal account with Comma-chosen identifiers, removed after the test.
   defp signal_account!(scope) do
     n = SystemsRuntime.Proc.uniform(9_999_999)
@@ -3553,6 +3781,22 @@ defmodule CommaWeb.RouterTest do
              |> expect_json(200)
 
     assert platform_number == platform.e164
+
+    # An admin's cookie session runs the same audited command.
+    {operator, operator_token} =
+      browser_cookie_login!("signal-operator@comma.surf", @admin_origin)
+
+    assert %{"override" => %{"e164" => ^own_number}} =
+             :put
+             |> json_conn(admin_path, %{
+               "number" => own.e164,
+               "reason" => "Workspace uses its own number",
+               "confirmation" => "workspace-signal-number:#{user["id"]}:#{own.e164}",
+               "idempotency_key" => SystemsRuntime.Proc.uuid()
+             })
+             |> cookie_auth(operator_token, @admin_origin, operator["session_id"])
+             |> call()
+             |> expect_json(200)
 
     # Another user's session cannot reach this workspace's Signal setup.
     stranger =
@@ -5682,6 +5926,47 @@ defmodule CommaWeb.RouterTest do
     # A Router on the member's own key runs without platform credits.
     workspace["router_agent_id"] |> choose.(selection, token) |> expect_json(200)
 
+    # A Custom model id that names no known provider still shows on the page.
+    relay_profile =
+      :post
+      |> json_conn(base <> "/subscription-accounts", %{
+        "credential_kind" => "provider_api_key",
+        "source" => "custom",
+        "base_url" => unreachable,
+        "protocol" => "chat_completions",
+        "api_key" => "relay-secret",
+        "models" => ["relay-ai/model-1"]
+      })
+      |> user_auth(token)
+      |> call()
+      |> expect_json(200)
+
+    relay = %{"kind" => "catalog", "model" => "relay-ai/model-1", "allow_paid" => false}
+    relayed = workspace["router_agent_id"] |> choose.(relay, token) |> expect_json(200)
+    assert relayed["selection"]["model"] == "relay-ai/model-1"
+    assert relayed["selection"]["allow_paid"] == true
+
+    shown =
+      :get |> conn(base <> "/agent-models") |> user_auth(token) |> call() |> expect_json(200)
+
+    assert get_in(shown, ["agents", "router", "selection", "model"]) == "relay-ai/model-1"
+
+    # Removing the endpoint's Profile leaves the choice readable, so the page
+    # still opens and the member can choose another model.
+    tenant_id = workspace["salix_tenant_id"]
+    {:ok, stored_relay} = SalixAgent.SubscriptionStore.get(tenant_id, relay_profile["id"])
+    SalixAgent.AccountPool.delete(tenant_id, stored_relay["id"], stored_relay["version"])
+
+    assert {:error, :not_found} =
+             SalixAgent.SubscriptionStore.get(tenant_id, relay_profile["id"])
+
+    shown =
+      :get |> conn(base <> "/agent-models") |> user_auth(token) |> call() |> expect_json(200)
+
+    assert get_in(shown, ["agents", "router", "selection", "model"]) == "relay-ai/model-1"
+
+    workspace["router_agent_id"] |> choose.(selection, token) |> expect_json(200)
+
     assert {:ok, %{fee_control: %{reason: "tenant_credentials"}}} =
              Comma.AgentPolicies.authorize_send(
                workspace,
@@ -5770,6 +6055,82 @@ defmodule CommaWeb.RouterTest do
              |> user_auth(token)
              |> call()
              |> expect_json(200)
+  end
+
+  test "Admin sets and clears one Workspace's coding sandbox limit; others are refused" do
+    previous = SystemsRuntime.get_env(:salix_web, :l4es)
+    SystemsRuntime.put_env(:salix_web, :l4es, url: "https://l4es.test", max_sandboxes: 5)
+    on_exit(fn -> restore_env(:salix_web, :l4es, previous) end)
+
+    {operator, token} = browser_cookie_login!("limit-operator@comma.surf", @admin_origin)
+
+    {outsider, outsider_token} =
+      browser_cookie_login!("limit-outsider@example.com", @admin_origin)
+
+    {:ok, target} = Comma.Accounts.create_user(%{"email" => "limit-target@example.com"})
+    workspace = create_ready_workspace!(target)
+    tenant_id = workspace["salix_tenant_id"]
+    path = "/v1/comma/admin/users/#{target["id"]}/workspaces/sandbox-limit"
+
+    command = fn max, label ->
+      %{
+        "max_sandboxes" => max,
+        "reason" => "Workspace needs more sandboxes",
+        "confirmation" => "workspace-sandbox-limit:#{target["id"]}:#{label}",
+        "idempotency_key" => SystemsRuntime.Proc.uuid()
+      }
+    end
+
+    as_operator = &cookie_auth(&1, token, @admin_origin, operator["session_id"])
+
+    assert %{"override" => nil, "default" => 5, "effective" => 5, "workspace_id" => workspace_id} =
+             conn(:get, path) |> as_operator.() |> call() |> expect_json(200)
+
+    assert workspace_id == workspace["id"]
+
+    conn(:get, path)
+    |> cookie_auth(outsider_token, @admin_origin, outsider["session_id"])
+    |> call()
+    |> expect_json(403)
+
+    :put |> json_conn(path, command.(8, 8)) |> call() |> expect_json(401)
+
+    :put
+    |> json_conn(path, command.(8, 8))
+    |> cookie_auth(outsider_token, @admin_origin, outsider["session_id"])
+    |> call()
+    |> expect_json(403)
+
+    assert SalixWeb.L4ES.max_sandboxes(tenant_id) == 5
+
+    for bad <- [0, 101, "8", 2.5] do
+      label = if is_integer(bad), do: bad, else: "default"
+
+      assert %{"error" => "max_sandboxes must be an integer from 1 to 100"} =
+               :put
+               |> json_conn(path, command.(bad, label))
+               |> as_operator.()
+               |> call()
+               |> expect_json(400)
+    end
+
+    assert %{"override" => 8, "default" => 5, "effective" => 8} =
+             :put
+             |> json_conn(path, command.(8, 8))
+             |> as_operator.()
+             |> call()
+             |> expect_json(200)
+
+    assert SalixWeb.L4ES.max_sandboxes(tenant_id) == 8
+
+    assert %{"override" => nil, "effective" => 5} =
+             :put
+             |> json_conn(path, command.(nil, "default"))
+             |> as_operator.()
+             |> call()
+             |> expect_json(200)
+
+    assert SalixWeb.L4ES.max_sandboxes(tenant_id) == 5
   end
 
   @tag :workspace_cloud_vm

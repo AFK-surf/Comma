@@ -29,11 +29,17 @@ final class CoreHost: CoreHostOps, @unchecked Sendable {
     private static let authRequestHeaders: Set<String> = ["accept", "content-type"]
     private static let authResponseHeaders: Set<String> = ["content-type", "retry-after"]
     private static let leaseUnavailable = Data(#"{"error":{"code":"session_product_lease_unavailable"}}"#.utf8)
+    /// The most of a file one `localFiles.read` gives: the core reads a station's part (4 MB) at a time.
+    private static let maxLocalPart = 16 * 1024 * 1024
 
     let custody: SessionCustody
     let downloads: HostDownloads
+    /// Files picks left with the app, which a request may send as its body (`localFileRef`).
+    let localFiles: HostLocalFiles?
     private let apple: any AppleIdentityTokens
     private let network: StreamSession
+    private let deviceRecords: DeviceSetupRecords
+    @MainActor private var deviceBluetooth: DeviceBluetooth?
     private let sql: HostSQL
     /// Told of each request that got no answer or a server error (its status), for diagnostics.
     private let networkFailure: @Sendable (Int?) -> Void
@@ -50,12 +56,15 @@ final class CoreHost: CoreHostOps, @unchecked Sendable {
     /// The lease each download is made for: it stops when that lease is no longer the open one.
     private var downloadLeases: [Int: LeasedBearer] = [:]
 
-    init(custody: SessionCustody, dataDirectory: URL, downloads: HostDownloads, apple: any AppleIdentityTokens,
-         configuration: URLSessionConfiguration = .default, networkFailure: @escaping @Sendable (Int?) -> Void = { _ in }) {
+    init(custody: SessionCustody, dataDirectory: URL, downloads: HostDownloads, localFiles: HostLocalFiles? = nil,
+         apple: any AppleIdentityTokens, configuration: URLSessionConfiguration = .default,
+         networkFailure: @escaping @Sendable (Int?) -> Void = { _ in }) {
         self.custody = custody
         self.downloads = downloads
+        self.localFiles = localFiles
         self.apple = apple
         self.networkFailure = networkFailure
+        self.deviceRecords = DeviceSetupRecords(directory: dataDirectory)
         self.sql = HostSQL(directory: dataDirectory)
         let configuration = configuration.copy() as! URLSessionConfiguration
         // The server holds an event stream open and sends a heartbeat every 15 s.
@@ -67,7 +76,11 @@ final class CoreHost: CoreHostOps, @unchecked Sendable {
     }
 
     func startConfig() -> [String: Any] {
-        ["platform": "ios", "apiOrigin": custody.audience, "resumed": custody.resume()]
+        var config: [String: Any] = ["platform": "ios", "apiOrigin": custody.audience, "resumed": custody.resume(),
+                                     "uploadsLocalFiles": localFiles != nil, "readsLocalFiles": localFiles != nil]
+        // The app's version, as the core's requests report it.
+        if let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String { config["version"] = version }
+        return config
     }
 
     func attached(_ engine: (any CoreEngine)?) {
@@ -83,6 +96,7 @@ final class CoreHost: CoreHostOps, @unchecked Sendable {
         // The core went: its databases close, its requests end, and what it had not settled is queued.
         for stream in gone.0 { stream.cancel() }
         for task in gone.1 { task.cancel() }
+        Task { @MainActor in self.deviceBluetooth?.close() }
         downloads.closeAll()
         sql.closeAll()
         custody.coreExited()
@@ -122,7 +136,25 @@ final class CoreHost: CoreHostOps, @unchecked Sendable {
             stream?.cancel()
             task?.cancel()
             custody.dropped(aborted)
+        case let operation where operation.hasPrefix("deviceSetup."):
+            let command = String(operation.dropFirst("deviceSetup.".count))
+            if ["records", "put", "remove"].contains(command) {
+                do { reply.ok(["value": try deviceRecords.call(command, input)]) }
+                catch { reply.fail("Secure device storage is unavailable") }
+                return
+            }
+            if !["close", "disconnect", "stopScan"].contains(command),
+               SessionLease(input["lease"]).flatMap(custody.acquire) == nil {
+                reply.fail("Device setup session changed"); return
+            }
+            Task { @MainActor in
+                if self.deviceBluetooth == nil { self.deviceBluetooth = DeviceBluetooth() }
+                self.deviceBluetooth?.perform(command, box.value) { value, error in
+                    if let error { reply.fail(error) } else { reply.ok(["value": value ?? NSNull()]) }
+                }
+            }
         case "fetch": run(id, reply, box) { input in try await self.product(id, input, bytes, reply, stream: false) }
+        case "localFiles.read": run(id, reply, box) { input in try self.readLocal(input, reply) }
         case "stream.open": run(id, reply, box) { input in try await self.product(id, input, bytes, reply, stream: true) }
         case "stream.read":
             let streamId = (input["id"] as? NSNumber)?.intValue ?? 0
@@ -150,6 +182,16 @@ final class CoreHost: CoreHostOps, @unchecked Sendable {
                     throw error
                 }
             }
+        case "download.create":
+            run(id, reply, box) { input in
+                reply.ok(["id": try self.downloads.create(try Self.string(input, "target"))])
+            }
+        case "download.append":
+            let download = (input["id"] as? NSNumber)?.intValue ?? 0
+            run(id, reply, box) { _ in reply.ok(try self.downloads.append(download, bytes ?? Data())) }
+        case "download.finish":
+            let download = (input["id"] as? NSNumber)?.intValue ?? 0
+            run(id, reply, box) { _ in reply.ok(try self.downloads.finish(download)) }
         case "download.close":
             let download = (input["id"] as? NSNumber)?.intValue ?? 0
             lock.withLock { downloadLeases[download] = nil }
@@ -269,8 +311,22 @@ final class CoreHost: CoreHostOps, @unchecked Sendable {
         reply.ok(["id": download, "status": 200, "total": head.length.map { $0 as Any } ?? NSNull()])
     }
 
+    /// A part of a file a pick left with the app (`localFiles.read`), as a station takes it: fewer bytes only where it ends.
+    private func readLocal(_ input: [String: Any], _ reply: CoreReply) throws {
+        let ref = try Self.string(input, "ref")
+        guard let localFiles, let part = try localFiles.read(ref, offset: (input["offset"] as? NSNumber)?.uint64Value ?? 0,
+                                                             length: min((input["length"] as? NSNumber)?.intValue ?? 0, Self.maxLocalPart))
+        else { throw HostFailure(message: "The app holds no file \(ref).") }
+        reply.ok(bytes: part)
+    }
+
     /// A product request: the lease's bearer added, the answer whole (`fetch`) or opened as a stream.
     private func product(_ id: UInt64, _ input: [String: Any], _ bytes: Data?, _ reply: CoreReply, stream: Bool) async throws {
+        // A body that is a file a pick left with the app, sent from disk as it is read.
+        let upload = try (input["localFileRef"] as? String).map { ref in
+            guard let file = localFiles?.file(ref) else { throw HostFailure(message: "The app holds no file \(ref).") }
+            return file.url
+        }
         guard let leased = SessionLease(input["lease"]).flatMap(custody.acquire) else {
             answer(reply, 409, Self.leaseUnavailable, stream: stream)
             return
@@ -281,7 +337,7 @@ final class CoreHost: CoreHostOps, @unchecked Sendable {
         if (input["path"] as? String ?? "").hasPrefix("/v1/comma/auth/") {
             request.setValue("bearer", forHTTPHeaderField: "x-comma-session-transport")
         }
-        let response = network.start(request)
+        let response = network.start(request, upload: upload)
         track(id, response)
         let head: ResponseHead
         do {

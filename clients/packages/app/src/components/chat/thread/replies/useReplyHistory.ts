@@ -34,7 +34,11 @@ export function useReplyHistory({
   }>();
   const historyRequest = useRef<AbortController | null>(null);
   const historyReveal = useRef<PendingHistoryReveal | null>(null);
-  useEffect(() => () => historyRequest.current?.abort(), [call, historyScope]);
+  const cancelHistoryRequest = useCallback(() => {
+    historyRequest.current?.abort();
+    historyRequest.current = null;
+  }, []);
+  useEffect(() => cancelHistoryRequest, [call, historyScope, cancelHistoryRequest]);
   const historyPrefix = useMemo(() => {
     if (replyHistory?.scope !== historyScope || replyHistory.call !== call) return [];
     const currentIds = new Set(currentMessages.map((message) => message.messageId));
@@ -84,5 +88,11 @@ export function useReplyHistory({
     },
     [call, conversationId, conversationKind, groupId, historyScope, live]
   );
-  return { historyBoundaryMessageId, historyReveal, loadReplyTarget, messages };
+  return {
+    cancelHistoryRequest,
+    historyBoundaryMessageId,
+    historyReveal,
+    loadReplyTarget,
+    messages,
+  };
 }

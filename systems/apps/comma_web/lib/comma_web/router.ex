@@ -66,15 +66,19 @@ defmodule CommaWeb.Router do
   plug(SystemsObservability.PodDrainGate)
   plug(CommaWeb.SessionLifecycleProtocol)
   plug(CommaWeb.Auth)
+  plug(:mini_app_backend_body)
 
   plug(Plug.Parsers,
     parsers: [:urlencoded, :json, {:multipart, length: 11_000_000}],
     json_decoder: Jason,
-    pass: ["application/json", "audio/mp4"],
+    pass: ["application/json", "audio/mp4", "application/octet-stream"],
     body_reader: {__MODULE__, :cache_body, []}
   )
 
   plug(:dispatch)
+
+  defp mini_app_backend_body(conn, opts),
+    do: CommaWeb.MiniAppEndpoints.capture_backend_body(conn, opts)
 
   defp oauth_idp_telemetry(conn, _opts) do
     CommaWeb.OauthIdpEndpoints.register_telemetry(conn)
@@ -682,6 +686,16 @@ defmodule CommaWeb.Router do
     end)
   end
 
+  post "/v1/comma/me/dictation/tickets" do
+    with_profile_management(conn, fn user, _session ->
+      CommaWeb.DictationSocket.ticket(conn, user)
+    end)
+  end
+
+  get "/v1/comma/dictation" do
+    CommaWeb.DictationSocket.upgrade(conn)
+  end
+
   put "/v1/comma/me/synchronicity/devices/current" do
     with_profile_management(conn, fn user, _session ->
       params = conn.body_params || %{}
@@ -1017,6 +1031,50 @@ defmodule CommaWeb.Router do
     end
   end
 
+  # The Workspace's own coding sandbox limit, overriding the deployment default
+  # (docs/compute-devices.md#coding-sandboxes). Salix owns the setting; Comma
+  # audits the change. `max_sandboxes: null` clears the override.
+  get "/v1/comma/admin/users/:id/workspaces/sandbox-limit" do
+    with_admin_query(conn, fn ->
+      with {:ok, workspace} <- Comma.Admin.user_workspace_tenant(id),
+           {:ok, view} <- SalixWeb.L4ES.sandbox_limit(workspace["salix_tenant_id"]) do
+        conn
+        |> put_resp_header("cache-control", "no-store")
+        |> send_json(200, Map.put(view, "workspace_id", workspace["workspace_id"]))
+      else
+        {:error, reason} -> sandbox_limit_error(conn, reason)
+      end
+    end)
+  end
+
+  put "/v1/comma/admin/users/:id/workspaces/sandbox-limit" do
+    max = Map.get(conn.body_params, "max_sandboxes", :missing)
+
+    result =
+      run_admin_command(
+        conn,
+        "update_workspace_sandbox_limit",
+        "user_workspace",
+        id,
+        "workspace-sandbox-limit:#{id}:#{if is_integer(max), do: max, else: "default"}",
+        fn _actor, _attrs ->
+          with {:ok, workspace} <- Comma.Admin.user_workspace_tenant(id) do
+            SalixWeb.L4ES.put_sandbox_limit(workspace["salix_tenant_id"], max)
+          end
+        end
+      )
+
+    case result do
+      {:ok, view} ->
+        conn
+        |> put_resp_header("cache-control", "no-store")
+        |> send_json(200, view)
+
+      {:error, reason} ->
+        sandbox_limit_error(conn, reason)
+    end
+  end
+
   patch "/v1/comma/admin/users/:id" do
     result =
       run_admin_command(
@@ -1319,6 +1377,31 @@ defmodule CommaWeb.Router do
       {:ok, client} -> send_json(conn, 200, client)
       {:error, reason} -> admin_command_error(conn, reason)
     end
+  end
+
+  # Platform takedown of a Mini App: it stops at once and its backend scripts are deleted.
+  post "/v1/comma/admin/mini-apps/:id/disable" do
+    conn
+    |> run_admin_command(
+      "disable_mini_app",
+      "mini_app",
+      id,
+      "disable-mini-app:" <> id,
+      fn _actor, _attrs -> CommaWeb.MiniAppEndpoints.admin_command(:disable, id) end
+    )
+    |> send_mini_app_admin_result(conn)
+  end
+
+  post "/v1/comma/admin/mini-apps/:id/enable" do
+    conn
+    |> run_admin_command(
+      "enable_mini_app",
+      "mini_app",
+      id,
+      "enable-mini-app:" <> id,
+      fn _actor, _attrs -> CommaWeb.MiniAppEndpoints.admin_command(:enable, id) end
+    )
+    |> send_mini_app_admin_result(conn)
   end
 
   get "/v1/comma/admin/guest-mode" do
@@ -1659,6 +1742,208 @@ defmodule CommaWeb.Router do
 
   post "/v1/comma/workspaces/:workspace_id/station-credential" do
     CommaWeb.StationEndpoints.credential(conn, workspace_id)
+  end
+
+  # Coding sessions: Tasks that run on a cloud sandbox (CommaWeb.Coding.Endpoints).
+  get "/v1/comma/workspaces/:workspace_id/coding/repos" do
+    CommaWeb.Coding.Endpoints.repos(conn, workspace_id)
+  end
+
+  get "/v1/comma/workspaces/:workspace_id/coding/repos/:owner/:name/branches" do
+    CommaWeb.Coding.Endpoints.branches(conn, workspace_id, owner, name)
+  end
+
+  post "/v1/comma/workspaces/:workspace_id/coding/sessions" do
+    CommaWeb.Coding.Endpoints.start(conn, workspace_id)
+  end
+
+  post "/v1/comma/workspaces/:workspace_id/tasks" do
+    CommaWeb.WindowTasks.start(conn, workspace_id)
+  end
+
+  get "/v1/comma/workspaces/:workspace_id/coding/sessions/:task_id" do
+    CommaWeb.Coding.Endpoints.show(conn, workspace_id, task_id)
+  end
+
+  get "/v1/comma/workspaces/:workspace_id/coding/sessions/:task_id/changes" do
+    CommaWeb.Coding.Endpoints.changes(conn, workspace_id, task_id)
+  end
+
+  get "/v1/comma/workspaces/:workspace_id/coding/sessions/:task_id/history" do
+    CommaWeb.Coding.Endpoints.history(conn, workspace_id, task_id)
+  end
+
+  get "/v1/comma/workspaces/:workspace_id/coding/sessions/:task_id/pull-request" do
+    CommaWeb.Coding.Endpoints.pull_request_status(conn, workspace_id, task_id)
+  end
+
+  post "/v1/comma/workspaces/:workspace_id/coding/sessions/:task_id/pull-request" do
+    CommaWeb.Coding.Endpoints.pull_request(conn, workspace_id, task_id)
+  end
+
+  patch "/v1/comma/workspaces/:workspace_id/coding/sessions/:task_id/pull-request" do
+    CommaWeb.Coding.Endpoints.update_pull_request(conn, workspace_id, task_id)
+  end
+
+  post "/v1/comma/workspaces/:workspace_id/coding/sessions/:task_id/pull-request/merge" do
+    CommaWeb.Coding.Endpoints.merge_pull_request(conn, workspace_id, task_id)
+  end
+
+  post "/v1/comma/workspaces/:workspace_id/coding/sessions/:task_id/terminal" do
+    CommaWeb.Coding.Endpoints.terminal(conn, workspace_id, task_id)
+  end
+
+  # Mini Apps (CommaWeb.MiniAppEndpoints).
+  get "/v1/comma/workspaces/:workspace_id/apps" do
+    CommaWeb.MiniAppEndpoints.list(conn, workspace_id)
+  end
+
+  post "/v1/comma/workspaces/:workspace_id/apps" do
+    CommaWeb.MiniAppEndpoints.create(conn, workspace_id)
+  end
+
+  post "/v1/comma/workspaces/:workspace_id/apps/install" do
+    CommaWeb.MiniAppEndpoints.install(conn, workspace_id)
+  end
+
+  post "/v1/comma/workspaces/:workspace_id/apps/remix" do
+    CommaWeb.MiniAppEndpoints.remix(conn, workspace_id)
+  end
+
+  get "/v1/comma/workspaces/:workspace_id/apps/:app_id" do
+    CommaWeb.MiniAppEndpoints.show(conn, workspace_id, app_id)
+  end
+
+  patch "/v1/comma/workspaces/:workspace_id/apps/:app_id" do
+    CommaWeb.MiniAppEndpoints.update(conn, workspace_id, app_id)
+  end
+
+  delete "/v1/comma/workspaces/:workspace_id/apps/:app_id" do
+    CommaWeb.MiniAppEndpoints.delete(conn, workspace_id, app_id)
+  end
+
+  post "/v1/comma/workspaces/:workspace_id/apps/:app_id/publish" do
+    CommaWeb.MiniAppEndpoints.publish(conn, workspace_id, app_id)
+  end
+
+  post "/v1/comma/workspaces/:workspace_id/apps/:app_id/rollback" do
+    CommaWeb.MiniAppEndpoints.rollback(conn, workspace_id, app_id)
+  end
+
+  post "/v1/comma/workspaces/:workspace_id/apps/:app_id/disable" do
+    CommaWeb.MiniAppEndpoints.disable(conn, workspace_id, app_id)
+  end
+
+  post "/v1/comma/workspaces/:workspace_id/apps/:app_id/enable" do
+    CommaWeb.MiniAppEndpoints.enable(conn, workspace_id, app_id)
+  end
+
+  get "/v1/comma/workspaces/:workspace_id/apps/:app_id/link" do
+    CommaWeb.MiniAppEndpoints.get_link(conn, workspace_id, app_id)
+  end
+
+  put "/v1/comma/workspaces/:workspace_id/apps/:app_id/link" do
+    CommaWeb.MiniAppEndpoints.put_link(conn, workspace_id, app_id)
+  end
+
+  delete "/v1/comma/workspaces/:workspace_id/apps/:app_id/link" do
+    CommaWeb.MiniAppEndpoints.delete_link(conn, workspace_id, app_id)
+  end
+
+  post "/v1/comma/workspaces/:workspace_id/apps/:app_id/link/reset" do
+    CommaWeb.MiniAppEndpoints.reset_link(conn, workspace_id, app_id)
+  end
+
+  put "/v1/comma/workspaces/:workspace_id/apps/:app_id/grants" do
+    CommaWeb.MiniAppEndpoints.put_grants(conn, workspace_id, app_id)
+  end
+
+  put "/v1/comma/workspaces/:workspace_id/apps/:app_id/secrets/:name" do
+    CommaWeb.MiniAppEndpoints.put_secret(conn, workspace_id, app_id, name)
+  end
+
+  delete "/v1/comma/workspaces/:workspace_id/apps/:app_id/secrets/:name" do
+    CommaWeb.MiniAppEndpoints.delete_secret(conn, workspace_id, app_id, name)
+  end
+
+  delete "/v1/comma/workspaces/:workspace_id/apps/:app_id/install" do
+    CommaWeb.MiniAppEndpoints.uninstall(conn, workspace_id, app_id)
+  end
+
+  post "/v1/comma/workspaces/:workspace_id/apps/:app_id/report" do
+    CommaWeb.MiniAppEndpoints.report(conn, workspace_id, app_id)
+  end
+
+  get "/v1/comma/workspaces/:workspace_id/apps/:app_id/versions/:number/bundle" do
+    CommaWeb.MiniAppEndpoints.version_bundle(conn, workspace_id, app_id, number)
+  end
+
+  get "/v1/comma/apps/links/:token" do
+    CommaWeb.MiniAppEndpoints.link(conn, token)
+  end
+
+  get "/v1/comma/apps/links/:token/bundle" do
+    CommaWeb.MiniAppEndpoints.link_bundle(conn, token)
+  end
+
+  post "/v1/comma/apps/:app_id/open" do
+    CommaWeb.MiniAppEndpoints.open(conn, app_id)
+  end
+
+  post "/v1/comma/apps/:app_id/backend/*path" do
+    CommaWeb.MiniAppEndpoints.backend(conn, app_id, path)
+  end
+
+  get "/v1/comma/apps/:app_id/storage/:scope" do
+    CommaWeb.MiniAppEndpoints.storage_list(conn, app_id, scope)
+  end
+
+  get "/v1/comma/apps/:app_id/storage/:scope/*key" do
+    CommaWeb.MiniAppEndpoints.storage_get(conn, app_id, scope, key)
+  end
+
+  put "/v1/comma/apps/:app_id/storage/:scope/*key" do
+    CommaWeb.MiniAppEndpoints.storage_put(conn, app_id, scope, key)
+  end
+
+  delete "/v1/comma/apps/:app_id/storage/:scope/*key" do
+    CommaWeb.MiniAppEndpoints.storage_delete(conn, app_id, scope, key)
+  end
+
+  post "/v1/comma/apps/:app_id/ai/chat" do
+    CommaWeb.MiniAppEndpoints.ai_chat(conn, app_id)
+  end
+
+  post "/v1/comma/apps/:app_id/ai/decide" do
+    CommaWeb.MiniAppEndpoints.ai_decide(conn, app_id)
+  end
+
+  post "/v1/comma/apps/:app_id/web/search" do
+    CommaWeb.MiniAppEndpoints.web_search(conn, app_id)
+  end
+
+  get "/v1/comma/apps/:app_id/drive" do
+    CommaWeb.MiniAppEndpoints.drive_list(conn, app_id)
+  end
+
+  get "/v1/comma/apps/:app_id/drive/file" do
+    CommaWeb.MiniAppEndpoints.drive_read(conn, app_id)
+  end
+
+  put "/v1/comma/apps/:app_id/drive/file" do
+    CommaWeb.MiniAppEndpoints.drive_write(conn, app_id)
+  end
+
+  delete "/v1/comma/apps/:app_id/drive/file" do
+    CommaWeb.MiniAppEndpoints.drive_delete(conn, app_id)
+  end
+
+  get "/v1/comma/apps/:app_id/icon" do
+    CommaWeb.MiniAppEndpoints.icon(conn, app_id)
+  end
+
+  get "/v1/comma/apps/:app_id/cover" do
+    CommaWeb.MiniAppEndpoints.cover(conn, app_id)
   end
 
   post "/v1/comma/notifications/devices" do
@@ -2428,6 +2713,28 @@ defmodule CommaWeb.Router do
     end)
   end
 
+  # The call preferences: the voice calls speak with and whether they speak
+  # as the Router (docs/messaging-voice.md#call-preferences).
+  put "/v1/comma/workspaces/:workspace_id/integrations/voice/preferences" do
+    with_voice_numbers(conn, workspace_id, fn workspace, _user ->
+      Salix.Control.VoiceNumbers.set_preferences(
+        workspace["default_group_id"],
+        workspace["salix_tenant_id"],
+        voice_number_attrs(conn.body_params, ["voice", "router_calls"])
+      )
+    end)
+  end
+
+  post "/v1/comma/workspaces/:workspace_id/integrations/voice/custom-voice" do
+    with_voice_numbers(conn, workspace_id, fn workspace, _user ->
+      Salix.Control.VoiceNumbers.create_custom_voice(
+        workspace["default_group_id"],
+        workspace["salix_tenant_id"],
+        voice_number_attrs(conn.body_params, ["name", "description"])
+      )
+    end)
+  end
+
   # ---- Signal (docs/messaging-voice.md) ----
   #
   # The Signal chats connected to the workspace's default group. A connection
@@ -2668,6 +2975,27 @@ defmodule CommaWeb.Router do
     end)
   end
 
+  post "/v1/comma/workspaces/:workspace_id/compute-nodes/agent-vmm/install-commands" do
+    conn = put_resp_header(conn, "cache-control", "no-store")
+
+    with_user(conn, fn user, session ->
+      request_id = conn |> get_req_header("idempotency-key") |> List.first()
+      base_url = SystemsRuntime.get_env(:salix_web, :public_base_url) || request_url(conn)
+
+      with {:ok, base_url} <- SalixStore.AgentVMMInstallations.Headless.delivery(base_url),
+           {:ok, descriptor} <-
+             Comma.Compute.request_agent_vmm_headless_install(user, session, workspace_id, %{
+               "request_id" => request_id
+             }),
+           {:ok, command} <-
+             SalixStore.AgentVMMInstallations.Headless.command(descriptor, base_url) do
+        send_json(conn, 200, command)
+      else
+        {:error, reason} -> compute_error(conn, reason)
+      end
+    end)
+  end
+
   post "/v1/comma/workspaces/:workspace_id/compute-nodes/agent-vmm/install-operations" do
     conn = put_resp_header(conn, "cache-control", "no-store")
 
@@ -2796,7 +3124,13 @@ defmodule CommaWeb.Router do
         {:ok, operation} ->
           send_json(conn, 200, %{
             "operation" =>
-              Map.take(operation, [:id, :registration_id, :authorization_status, :scope_key])
+              Map.take(operation, [
+                :id,
+                :registration_id,
+                :authorization_status,
+                :scope_key,
+                :registration_revocation_reason
+              ])
           })
 
         {:error, reason} ->
@@ -3024,7 +3358,8 @@ defmodule CommaWeb.Router do
   get "/v1/comma/workspaces/:workspace_id/plugins" do
     with_user(conn, fn user, session ->
       with :ok <- full_workspace_session(session),
-           {:ok, plugins} <- Comma.Plugins.list(user, session, workspace_id) do
+           {:ok, plugins} <-
+             Comma.Plugins.list(user, session, workspace_id, client: client_capabilities(conn)) do
         send_json(conn, 200, %{"data" => plugins})
       else
         {:error, reason} -> comma_error(conn, reason)
@@ -3228,6 +3563,32 @@ defmodule CommaWeb.Router do
     end)
   end
 
+  # The member does not want to hear about one Routine source item again.
+  post "/v1/comma/workspaces/:workspace_id/recommendations/dismissals" do
+    with_user(conn, fn user, session ->
+      body = conn.body_params || %{}
+
+      with :ok <- full_workspace_session(session),
+           {:ok, workspace} <- Comma.Workspaces.authorize(user, session, workspace_id),
+           {:ok, envelope} <-
+             Comma.Recommendations.dismiss(
+               user,
+               session,
+               workspace_id,
+               body["sourceId"],
+               body["sourceUrl"]
+             ) do
+        send_json(conn, 200, CommaWeb.ProactiveRoutine.project(envelope, workspace))
+      else
+        {:error, :invalid_recommendation_dismissal} ->
+          comma_error(conn, {:bad_request, "invalid_recommendation_dismissal"})
+
+        {:error, reason} ->
+          comma_error(conn, reason)
+      end
+    end)
+  end
+
   post "/v1/comma/workspaces/:workspace_id/plugins/:plugin_id/install" do
     with_user(conn, fn user, session ->
       install =
@@ -3246,6 +3607,14 @@ defmodule CommaWeb.Router do
         end
 
       with :ok <- full_workspace_session(session),
+           :ok <-
+             Comma.Plugins.offered(
+               user,
+               session,
+               workspace_id,
+               plugin_id,
+               client_capabilities(conn)
+             ),
            {:ok, result} <- install.(user, session, workspace_id, plugin_id) do
         send_json(conn, 200, result)
       else
@@ -3280,6 +3649,29 @@ defmodule CommaWeb.Router do
            {:ok, upload} <- extract_upload(conn.body_params || %{}),
            {:ok, file} <- Comma.GroupFiles.store(group_scope, upload.filename, upload.binary) do
         send_json(conn, 201, file)
+      else
+        {:error, reason} -> comma_error(conn, reason)
+      end
+    end)
+  end
+
+  # A composer attachment of any type, its bytes the raw body, stored as they
+  # arrive (`Comma.GroupFiles.store_stream/4`): `?name=` names it and `?size=`
+  # is its length in bytes.
+  put "/v1/comma/groups/:group_id/files" do
+    with_user(conn, fn user, session ->
+      with :ok <- full_workspace_session(session),
+           {:ok, group_scope} <- Comma.Workspaces.authorize_group(user, session, group_id),
+           {:ok, name, size} <- stream_upload_head(conn) do
+        key = {__MODULE__, :upload_conn, SystemsRuntime.Proc.make_ref()}
+        Process.put(key, conn)
+        result = Comma.GroupFiles.store_stream(group_scope, name, size, upload_body(key))
+        conn = Process.delete(key)
+
+        case result do
+          {:ok, file} -> send_json(conn, 201, file)
+          {:error, reason} -> comma_error(conn, reason)
+        end
       else
         {:error, reason} -> comma_error(conn, reason)
       end
@@ -3366,28 +3758,72 @@ defmodule CommaWeb.Router do
   # path: reading one is exactly as authorized as reading that message.
   get "/v1/comma/groups/:group_id/conversations/:conversation_id/messages/:message_id/attachments/:index" do
     with_user(conn, fn user, session ->
-      with :ok <- authorize_task_attachment_session(user, session, group_id, conversation_id),
+      send_conversation_attachment(
+        conn,
+        user,
+        session,
+        group_id,
+        conversation_id,
+        message_id,
+        index
+      )
+    end)
+  end
+
+  # The attachment as a composer file, stored as an upload is but by reference
+  # to the same blob (Comma.GroupFiles.store_attachment/2). Authorized as an
+  # upload: a full session in the Group, which reads every attachment there.
+  post "/v1/comma/groups/:group_id/conversations/:conversation_id/messages/:message_id/attachments/:index/workspace-file" do
+    with_user(conn, fn user, session ->
+      with :ok <- full_workspace_session(session),
            {:ok, group_scope} <- Comma.Workspaces.authorize_group(user, session, group_id),
            {:ok, index} <- Comma.ConversationAttachments.parse_index(index) do
-        case Comma.ConversationAttachments.fetch(
-               group_scope,
-               conversation_id,
-               message_id,
-               index
-             ) do
-          {:ok, content_type, file_name, body} ->
-            conn
-            |> put_resp_header("cache-control", "private, no-store")
-            |> put_resp_header("content-type", content_type)
-            |> put_resp_header("x-content-type-options", "nosniff")
-            |> put_resp_header(
-              "content-disposition",
-              "attachment; filename*=UTF-8''" <> URI.encode(file_name)
-            )
-            |> send_resp(200, body)
+        case Comma.ConversationAttachments.open(group_scope, conversation_id, message_id, index) do
+          {:ok, attachment} ->
+            case Comma.GroupFiles.store_attachment(group_scope, attachment) do
+              {:ok, file} -> send_json(conn, 201, file)
+              {:error, reason} -> comma_error(conn, reason)
+            end
 
           {:error, reason} ->
             group_file_read_error(conn, reason)
+        end
+      else
+        {:error, reason} -> comma_error(conn, reason)
+      end
+    end)
+  end
+
+  # A URL a client's media element or download reads the attachment from, in
+  # ranges, without a session of its own: the blob store's signed URL, so the
+  # bytes never pass through here. The session that asks for it must read the
+  # attachment now; nothing stops the URL before it expires
+  # (Comma.ConversationAttachments.media_ttl_seconds/0).
+  post "/v1/comma/groups/:group_id/conversations/:conversation_id/messages/:message_id/attachments/:index/media" do
+    with_user(conn, fn user, session ->
+      with :ok <- authorize_task_attachment_session(user, session, group_id, conversation_id),
+           {:ok, group_scope} <- Comma.Workspaces.authorize_group(user, session, group_id),
+           {:ok, index} <- Comma.ConversationAttachments.parse_index(index) do
+        with {:ok, attachment} <-
+               Comma.ConversationAttachments.open(
+                 group_scope,
+                 conversation_id,
+                 message_id,
+                 index
+               ),
+             {:ok, url} <-
+               Comma.ConversationAttachments.presign(
+                 attachment,
+                 Comma.ConversationAttachments.media_ttl_seconds()
+               ) do
+          send_json(conn, 200, %{
+            "url" => url,
+            "expires_at" =>
+              SystemsClock.system_time(:second) +
+                Comma.ConversationAttachments.media_ttl_seconds()
+          })
+        else
+          {:error, reason} -> group_file_read_error(conn, reason)
         end
       else
         {:error, reason} -> comma_error(conn, reason)
@@ -3718,6 +4154,19 @@ defmodule CommaWeb.Router do
     end)
   end
 
+  # An Agent's requests to a person in a Conversation: its request cards (CommaWeb.AgentRequestEndpoints).
+  get "/v1/comma/groups/:group_id/conversations/:conversation_id/requests" do
+    CommaWeb.AgentRequestEndpoints.list(conn, group_id, conversation_id)
+  end
+
+  get "/v1/comma/groups/:group_id/conversations/:conversation_id/requests/events" do
+    CommaWeb.AgentRequestEndpoints.events(conn, group_id, conversation_id)
+  end
+
+  post "/v1/comma/groups/:group_id/conversations/:conversation_id/requests/:request_id/decline" do
+    CommaWeb.AgentRequestEndpoints.decline(conn, group_id, conversation_id, request_id)
+  end
+
   get "/v1/comma/groups/:group_id/conversations/:conversation_id/participants/:participant_id/history/events" do
     with_user(conn, fn user, session ->
       case Comma.Conversations.participant_history(
@@ -3925,7 +4374,7 @@ defmodule CommaWeb.Router do
   end
 
   # Drive's System Files space (`Comma.SystemFiles`): the Router's memory and
-  # import archive, plus its effective instructions.
+  # import archive, plus its effective instructions, which the owner may replace.
   get "/v1/comma/groups/:group_id/system-files" do
     with_user(conn, fn user, session ->
       with :ok <- full_workspace_session(session),
@@ -3978,6 +4427,23 @@ defmodule CommaWeb.Router do
       with :ok <- full_workspace_session(session),
            {:ok, result} <- Comma.SystemFiles.instructions(user, session, group_id) do
         conn |> put_resp_header("cache-control", "no-store") |> send_json(200, result)
+      else
+        {:error, reason} -> comma_error(conn, reason)
+      end
+    end)
+  end
+
+  put "/v1/comma/groups/:group_id/system-files/instructions" do
+    with_user(conn, fn user, session ->
+      with :ok <- full_workspace_session(session),
+           {:ok, result} <-
+             Comma.SystemFiles.write_instructions(
+               user,
+               session,
+               group_id,
+               conn.body_params || %{}
+             ) do
+        send_json(conn, 200, result)
       else
         {:error, reason} -> comma_error(conn, reason)
       end
@@ -4076,6 +4542,22 @@ defmodule CommaWeb.Router do
     end)
   end
 
+  put "/v1/comma/groups/:group_id/conversations/:conversation_id/run" do
+    with_user(conn, fn user, session ->
+      case Comma.Conversations.set_task_run(
+             user,
+             session,
+             group_id,
+             conversation_id,
+             conn.body_params || %{},
+             conversation_transcript_options(conn)
+           ) do
+        {:ok, conversation} -> send_json(conn, 200, conversation)
+        {:error, reason} -> conversation_error(conn, reason)
+      end
+    end)
+  end
+
   post "/v1/comma/groups/:group_id/conversations/:conversation_id/accept" do
     with_user(conn, fn user, session ->
       case Comma.Conversations.accept_task_review(
@@ -4087,6 +4569,17 @@ defmodule CommaWeb.Router do
              conversation_transcript_options(conn)
            ) do
         {:ok, conversation} -> send_json(conn, 200, conversation)
+        {:error, reason} -> conversation_error(conn, reason)
+      end
+    end)
+  end
+
+  post "/v1/comma/groups/:group_id/conversations/:conversation_id/suggestions" do
+    with_user(conn, fn user, session ->
+      case Comma.ChatSuggestions.generate(user, session, group_id, conversation_id,
+             locale: conn.query_params["locale"]
+           ) do
+        {:ok, suggestions} -> send_json(conn, 200, %{"data" => suggestions})
         {:error, reason} -> conversation_error(conn, reason)
       end
     end)
@@ -4368,6 +4861,9 @@ defmodule CommaWeb.Router do
   defp execute_oauth_client_command({:enable, client_id}),
     do: Comma.OauthIdp.ClientAdmin.enable(client_id)
 
+  defp send_mini_app_admin_result({:ok, app}, conn), do: send_json(conn, 200, app)
+  defp send_mini_app_admin_result({:error, reason}, conn), do: admin_command_error(conn, reason)
+
   defp run_admin_command(
          conn,
          action,
@@ -4639,6 +5135,13 @@ defmodule CommaWeb.Router do
 
   defp admin_command_error(conn, reason), do: send_error(conn, 400, reason)
 
+  defp sandbox_limit_error(conn, :admin_user_not_found), do: send_error(conn, 404, :not_found)
+
+  defp sandbox_limit_error(conn, {:bad_request, message}),
+    do: send_json(conn, 400, %{error: message})
+
+  defp sandbox_limit_error(conn, reason), do: admin_command_error(conn, reason)
+
   defp workspace_agent_models_error(conn, :not_found),
     do: send_error(conn, 404, :not_found)
 
@@ -4682,6 +5185,14 @@ defmodule CommaWeb.Router do
     do: Map.put(conversation, "shared", MapSet.member?(shared, id))
 
   defp put_shared(conversation, _shared), do: conversation
+
+  # What the client says it is and can do (`Comma.ClientCapabilities`).
+  defp client_capabilities(conn) do
+    Comma.ClientCapabilities.from_headers(
+      conn |> get_req_header("x-comma-client") |> List.first(),
+      conn |> get_req_header("x-comma-client-capabilities") |> List.first()
+    )
+  end
 
   defp with_user(conn, fun) do
     case {conn.assigns[:comma_user], conn.assigns[:comma_session]} do
@@ -4797,7 +5308,6 @@ defmodule CommaWeb.Router do
        when reason in [
               :deletion_in_progress,
               :business_owner_required,
-              :unknown_outcome,
               :shared_allocation,
               :allocation_scope_changed,
               :update_in_progress,
@@ -4821,6 +5331,9 @@ defmodule CommaWeb.Router do
               :runtime_template_required
             ],
        do: send_error(conn, 503, :runtime_template_unavailable)
+
+  defp compute_error(conn, :install_delivery_unavailable),
+    do: send_error(conn, 503, :install_delivery_unavailable)
 
   defp compute_error(conn, :unavailable), do: send_error(conn, 503, :compute_unavailable)
 
@@ -4922,6 +5435,7 @@ defmodule CommaWeb.Router do
     do: send_error(conn, 415, :unsupported_file_type)
 
   defp comma_error(conn, :file_too_large), do: send_error(conn, 413, :file_too_large)
+  defp comma_error(conn, :upload_incomplete), do: send_error(conn, 400, :upload_incomplete)
   defp comma_error(conn, {:bad_request, message}), do: send_json(conn, 400, %{error: message})
   defp comma_error(conn, {:forbidden, message}), do: send_json(conn, 403, %{error: message})
 
@@ -5097,6 +5611,17 @@ defmodule CommaWeb.Router do
   defp conversation_error(conn, :invalid_task_labels),
     do: send_error(conn, 400, :invalid_task_labels)
 
+  defp conversation_error(conn, {:task_upload_over_limit, limit}) when is_integer(limit),
+    do: comma_error(conn, {:bad_request, "A Task Message can attach at most #{limit} uploads."})
+
+  defp conversation_error(conn, {:task_upload_unavailable, name})
+       when is_binary(name) and byte_size(name) <= 255,
+       do:
+         comma_error(
+           conn,
+           {:bad_request, "Cannot read uploaded file #{name}. Retry or attach it again."}
+         )
+
   defp conversation_error(conn, {:bad_request, "invalid conversation cursor"} = reason),
     do: comma_error(conn, reason)
 
@@ -5109,6 +5634,7 @@ defmodule CommaWeb.Router do
               "Unknown message type",
               "Task and positive expected_updated_at are required",
               "expected_updated_at must be a positive integer",
+              "runs_on is required",
               "q is required",
               "q must contain at least 2 characters",
               "q must contain at most 128 characters",
@@ -5130,6 +5656,17 @@ defmodule CommaWeb.Router do
       do: comma_error(conn, reason),
       else: send_error(conn, 503, :conversation_unavailable)
   end
+
+  # The place or model a Task was to run on now is not usable: `reason` for
+  # clients to word, `message` for those that do not know it.
+  defp conversation_error(conn, {:task_run_refused, reason, message}),
+    do:
+      send_json(conn, 422, %{
+        error: "task_run_refused",
+        code: "task_run_refused",
+        reason: to_string(reason),
+        message: message
+      })
 
   defp conversation_error(conn, :invalid_cursor),
     do: send_error(conn, 400, :invalid_cursor)
@@ -5223,6 +5760,52 @@ defmodule CommaWeb.Router do
   end
 
   defp extract_upload(_params), do: {:error, :file_required}
+
+  # The size is a query parameter rather than `content-length`: a client that
+  # streams the body from disk sends it chunked.
+  defp stream_upload_head(conn) do
+    name = conn.query_params["name"]
+
+    with ["application/octet-stream" <> _] <- Plug.Conn.get_req_header(conn, "content-type"),
+         size when is_binary(size) <- conn.query_params["size"],
+         {size, ""} <- Integer.parse(size),
+         true <- is_binary(name) and String.trim(name) != "" and byte_size(name) <= 255 do
+      {:ok, name, size}
+    else
+      _ -> {:error, :file_required}
+    end
+  end
+
+  # Read where the body is stored, in this request's process: the connection
+  # each read returns is kept under `key` for the next read and the answer.
+  defp upload_body(key) do
+    Stream.resource(
+      fn -> :more end,
+      fn
+        :done ->
+          {:halt, :done}
+
+        :more ->
+          case Plug.Conn.read_body(Process.get(key),
+                 length: 1_048_576,
+                 read_length: 1_048_576,
+                 read_timeout: 60_000
+               ) do
+            {:ok, chunk, conn} ->
+              Process.put(key, conn)
+              {[chunk], :done}
+
+            {:more, chunk, conn} ->
+              Process.put(key, conn)
+              {[chunk], :more}
+
+            {:error, reason} ->
+              raise ArgumentError, "upload body unreadable: #{inspect(reason)}"
+          end
+      end,
+      fn _ -> :ok end
+    )
+  end
 
   defp create_workspace_connector_token(user, session, workspace_id, attrs, station_origin) do
     with :ok <- full_workspace_session(session),
@@ -5458,12 +6041,28 @@ defmodule CommaWeb.Router do
         "reason" => readiness["reason"]
       },
       "sessions_url" => urls["sessions_url"],
-      "readiness_url" => urls["readiness_url"]
+      "readiness_url" => urls["readiness_url"],
+      "preferences" => public_voice_preferences(status["preferences"]),
+      "voices" => Enum.filter(List.wrap(status["voices"]), &is_binary/1)
     }
   end
 
   defp public_voice_numbers(%{} = result),
     do: Map.take(result, ["e164", "line", "status", "expires_at"])
+
+  # The custom voice's provider id stays in Salix.
+  defp public_voice_preferences(%{} = prefs) do
+    custom = prefs["custom_voice"]
+
+    %{
+      "voice" => prefs["voice"],
+      "custom_voice" => if(is_map(custom), do: Map.take(custom, ["name", "description"])),
+      "router_calls" => prefs["router_calls"] == true
+    }
+  end
+
+  defp public_voice_preferences(_prefs),
+    do: %{"voice" => nil, "custom_voice" => nil, "router_calls" => false}
 
   defp public_voice_number(number) do
     locked_until = number["pin_locked_until"]
@@ -5522,6 +6121,33 @@ defmodule CommaWeb.Router do
   defp full_workspace_session(%{"restricted" => true}), do: {:error, :forbidden}
   defp full_workspace_session(_session), do: :ok
 
+  defp send_conversation_attachment(
+         conn,
+         user,
+         session,
+         group_id,
+         conversation_id,
+         message_id,
+         index
+       ) do
+    with :ok <- authorize_task_attachment_session(user, session, group_id, conversation_id),
+         {:ok, group_scope} <- Comma.Workspaces.authorize_group(user, session, group_id),
+         {:ok, index} <- Comma.ConversationAttachments.parse_index(index) do
+      with {:ok, attachment} <-
+             Comma.ConversationAttachments.open(group_scope, conversation_id, message_id, index),
+           {:ok, conn} <-
+             conn
+             |> put_resp_header("cache-control", "private, no-store")
+             |> CommaWeb.AttachmentDownload.send(attachment) do
+        conn
+      else
+        {:error, reason} -> group_file_read_error(conn, reason)
+      end
+    else
+      {:error, reason} -> comma_error(conn, reason)
+    end
+  end
+
   defp authorize_task_attachment_session(
          user,
          %{"session_source" => "channel_task_panel"} = session,
@@ -5541,7 +6167,7 @@ defmodule CommaWeb.Router do
     %{
       "name" => nonblank(attrs["name"], nil),
       "default_name" => workspace["name"] <> " Connector",
-      "alias" => nonblank(attrs["alias"], "comma"),
+      "alias" => nonblank(attrs["alias"], nil),
       "expires_in_seconds" => attrs["expires_in_seconds"],
       "registration_expires_in_seconds" => attrs["registration_expires_in_seconds"],
       "scope" => attrs["scope"],

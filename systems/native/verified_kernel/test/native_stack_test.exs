@@ -36,6 +36,16 @@ defmodule SalixVerifiedKernel.NativeStackTest do
     assert {[], nil} = provider(:responses_parts, [])
   end
 
+  test "request attachment projection pairs a long transcript without one frame per message" do
+    messages = for n <- 1..12_000, do: %{"id" => n, "role" => "user", "content" => "#{n}"}
+    session = Session.new("agent", "session")
+
+    projected =
+      Session.query(session, :provider_request_part, {:inline_attachments, messages, 0, true})
+
+    assert Enum.map(projected, & &1["content"]) == Enum.map(1..12_000, &Integer.to_string/1)
+  end
+
   test "deep JSON is rejected before recursive parsing exhausts the scheduler stack" do
     for {left, right} <- [{"[", "]"}, {"{\"x\":", "}"}] do
       raw = String.duplicate(left, 20_000) <> "0" <> String.duplicate(right, 20_000)

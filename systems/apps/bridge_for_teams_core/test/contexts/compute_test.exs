@@ -257,7 +257,7 @@ defmodule BridgeForTeams.ComputeTest do
     assert {:error, :not_found} = Compute.runner_status("other-tenant", runner.stable_id)
   end
 
-  test "a project has at most one live runner binding, and the choice precedes its Cloud VM" do
+  test "a project has one live VMM Runner binding independently of its Cloudflare VM" do
     suffix = SystemsRuntime.Proc.unique_integer([:positive])
     {:ok, org} = Orgs.create_org(%{name: "One #{suffix}", slug: "one-#{suffix}"})
     {:ok, project} = Projects.create_project(org.id, %{name: "One", slug: "one-#{suffix}"})
@@ -307,13 +307,19 @@ defmodule BridgeForTeams.ComputeTest do
                "status" => "archived"
              })
 
-    # The VM exists on Cloudflare: it stays there, and no runner is chosen for it now.
+    # Binding a VMM Runner preserves the existing Cloudflare VM.
     assert {:ok, %{"vm" => %{"status" => "archived", "location" => %{"kind" => "cloudflare"}}}} =
              Compute.cloud_vm(org, project)
 
     assert {:ok, _revoked} = Compute.remove_cloud_vm_runner(org, project)
 
-    assert {:error, :cloud_vm_exists} =
+    assert {:ok, _third} =
              Compute.choose_cloud_vm_runner(org, project, lab.id, "choice-4")
+
+    assert {:ok,
+            %{
+              "vm" => %{"status" => "archived", "location" => %{"kind" => "cloudflare"}},
+              "next_location" => %{"kind" => "cloudflare"}
+            }} = Compute.cloud_vm(org, project)
   end
 end

@@ -98,6 +98,7 @@ const forecast = z
       .optional(),
     highlight: text.optional(),
   })
+  .describe("weather for one place: now, today or the coming days")
   .meta({
     needs: ["days", "current"],
     layouts: "today (needs current), week, compact (current and <= 2 days)",
@@ -130,6 +131,7 @@ const options = z
       .meta({ limit: 4 })
       .optional(),
   })
+  .describe("choices to pick one from, such as trains, flights, hotels or plans")
   .meta({
     layouts:
       "timetable and list (every item has secondary), pick (no item has secondary)",
@@ -161,6 +163,7 @@ const metric = z
       })
       .optional(),
   })
+  .describe("one to four key numbers, or progress toward a goal")
   .meta({
     needs: ["metrics", "goal"],
     layouts: "single (1 metric), grid (2 to 4), goal",
@@ -204,6 +207,7 @@ const trend = z
       .meta({ limit: 6 })
       .optional(),
   })
+  .describe("how numbers change over time, or a watchlist of prices")
   .meta({
     needs: ["ranges", "bars", "series"],
     sameLength: [["bars.labels", "bars.values"]],
@@ -244,6 +248,7 @@ const comparison = z
       .meta({ limit: 8 }),
     verdict: text.optional(),
   })
+  .describe("two or three subjects compared attribute by attribute")
   .meta({
     sameLength: [["rows[].values", "subjects"]],
     layouts: "columns, table (<= 4 rows), versus (2 subjects, scores on every row)",
@@ -273,6 +278,7 @@ const schedule = z
       .optional(),
     summary: text.optional(),
   })
+  .describe("a day's events, an itinerary, or the stages of a process")
   .meta({
     needs: ["events", "stages"],
     layouts: "agenda and timeline (events), stages",
@@ -301,6 +307,7 @@ const checklist = z
       .meta({ limit: 4 })
       .describe("at most 12 items in total"),
   })
+  .describe("things to do, pack or check off")
   .meta({ layouts: "progress, grouped (2 or more groups)" });
 
 const composition = z
@@ -320,6 +327,7 @@ const composition = z
       .min(1)
       .meta({ limit: 6 }),
   })
+  .describe("how a total splits into parts")
   .meta({ layouts: "stacked, donut" });
 
 const place = z
@@ -330,8 +338,9 @@ const place = z
         z.object({
           name: text,
           category: text.optional(),
+          note: text.optional().describe("what it is or why it fits, in one line"),
           rating: number.optional(),
-          reviews: text.optional(),
+          reviews: text.optional().describe('a review count such as "2,310 条评价"'),
           status: status.optional(),
           address: text.optional(),
           distance: text.optional(),
@@ -340,8 +349,9 @@ const place = z
         })
       )
       .min(1)
-      .meta({ limit: 5 }),
+      .meta({ limit: 8 }),
   })
+  .describe("places to go: nearby results or recommendations")
   .meta({ layouts: "single (1 place), nearby (2 or more)" });
 
 const feed = z
@@ -362,7 +372,7 @@ const feed = z
           filterKeys: z.array(text).meta({ limit: 8 }).optional(),
         })
       )
-      .meta({ limit: 6 })
+      .meta({ limit: 60 })
       .optional(),
     filters: z
       .array(z.object({ key: text, label: text }))
@@ -381,8 +391,14 @@ const feed = z
       .meta({ limit: 6 })
       .optional(),
   })
-  .describe("news, updates and status lists such as pull requests or CI runs")
-  .meta({ needs: ["items", "groups"], layouts: "news (items), digest (groups)" });
+  .describe(
+    "news, updates and status lists such as a day's pull requests, issues or CI runs; over 12 items show title, status, source and time, and each filter shows its count"
+  )
+  .meta({
+    needs: ["items", "groups"],
+    layouts:
+      "news (<= 12 items), list (items without excerpts or tags, or over 12), digest (groups)",
+  });
 
 const timer = z
   .object({
@@ -404,6 +420,7 @@ const timer = z
     elapsedRatio: z.number().min(0).max(1).optional(),
     note: text.optional(),
   })
+  .describe("a countdown to a moment, a focus timer, or days until an event")
   .meta({
     needs: ["endsAt", "remainingSeconds", "daysLeft"],
     layouts: "countdown, event (daysLeft)",

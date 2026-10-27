@@ -1,17 +1,28 @@
 import { baseLocale, messages as commaMessages, type CommaLocale } from "@comma/i18n";
 import {
-  chatAttachmentDownloadMaxBytes,
   chatAttachmentDownloadMaxFileNameBytes,
+  type ChatCodingFacts,
+  type ChatConversationFile,
   type ChatDeviceSetupOffer,
+  type ChatMacAppItem,
   type ChatMessage as ContractChatMessage,
   type ChatMessagePart,
   type ChatQuestionState,
   type ChatReplyState,
   type ChatTaskActivity,
+  type ChatTaskAction,
   type ChatTaskRun,
+  type ChatTaskRunChoice,
+  type ConversationProjection,
   type ManualTaskStatus,
 } from "@comma/chat-contract";
-import type { CommaTaskRun } from "../../comma/api-schemas";
+import type { CommaGroupFile, CommaTaskRun } from "../../comma/api-schemas";
+import { toPullRequest } from "../../coding-wire";
+
+/** The message a Task's station writes when its model cannot start (`SalixWeb.StationTasks`). */
+const TASK_RUN_BLOCKED = "task_run_blocked";
+/** The message to its Worker when a Task was switched to another model (`SalixIM.TaskRun`). */
+const TASK_RUN_SWITCHED = "task_run_switched";
 import {
   ChatError,
   CommaApiError,
@@ -63,14 +74,11 @@ import {
   taskActivity,
   transcriptMessages,
   withActivityHistory,
+  withEarlier,
   withLoopRuns,
   type TaskLoopRun,
 } from "./taskActivity";
-import {
-  modelMentionsAsWords,
-  splitUserTaskMentionParts,
-} from "./mentionSerialization";
-import { decodeUserMessage, type UserMessageDisplay } from "./userMessageText";
+import { decodeUserMessage, userParts } from "./userMessageText";
 import { messageMarkdown } from "../../markdown/message";
 import { draftMarkdown } from "../../markdown/stream";
 
@@ -131,6 +139,8 @@ export type DraftAttachment = {
   status: DraftAttachmentStatus;
   /** Main-owned opaque local ref; generated chat projections strip this field. */
   localFile?: CommaLocalFileRef | undefined;
+  /** A message's attachment the server stores by reference (`attachConversationFiles`): no bytes are held for it. */
+  byReference?: true | undefined;
 };
 
 export type ChatActivity = {
@@ -150,6 +160,8 @@ export type ChatActivity = {
   streamIncarnation?: number | undefined;
   summary?: string | undefined;
   summaryClass?: ActivitySummaryClass | undefined;
+  /** What a public tool call works on (a query, a site, a file name), for the reader's wording. */
+  target?: string | undefined;
   toolName?: string | undefined;
   updatedAt?: number | undefined;
 };
@@ -203,6 +215,10 @@ export type ChatParticipantStatus = {
   workingConversationIds?: string[] | undefined;
   /** The Router waits, for example for a delegated Task. The hint carries no reason. */
   waiting?: boolean | undefined;
+  /** The canonical tool whose running call the Participant works on; never copy. */
+  waitTool?: string | undefined;
+  /** When the current wait, or the tool call it waits on, began, in ms since the epoch. */
+  waitStartedAt?: number | undefined;
   actorId?: string | undefined;
   actorRole?: "router" | "worker" | undefined;
   conversationId: string;
@@ -227,7 +243,21 @@ export type AgentBlobImagePreviewRef = {
   mediaType: "image/png" | "image/jpeg" | "image/gif" | "image/webp";
 };
 
-export type ChatImagePreviewRef = string | AgentBlobImagePreviewRef;
+/**
+ * An image a message carries by its place in it (`attachmentIndex`), with no other source to preview it from: read
+ * where its conversation keeps it (`chat.readGroupImage`, source `attachment`).
+ */
+export type MessageImagePreviewRef = {
+  fileName: string;
+  index: number;
+  kind: "attachment";
+  messageId: string;
+};
+
+export type ChatImagePreviewRef =
+  | string
+  | AgentBlobImagePreviewRef
+  | MessageImagePreviewRef;
 
 export type LocalFilePreview = {
   release(): void;
@@ -301,6 +331,10 @@ export type ConversationChannelState = {
   boundWorker?: ChatBoundWorker | undefined;
   /** Where a Task runs and its model, which its panels show instead of its Agent. */
   taskRun?: ChatTaskRun | undefined;
+  /** What this Task cannot take from its page, as its projection says (`ConversationProjection.unsupported`). */
+  unsupported?: readonly ChatTaskAction[] | undefined;
+  /** A Task whose model cannot start, as its projection says (`ConversationProjection.taskRunBlocked`). */
+  taskRunBlocked?: ConversationProjection["taskRunBlocked"] | undefined;
   /** Where the next reply stands (`replyState`), as the core sends it to every client. */
   reply?: ChatReplyState | undefined;
   serverMessages: ChatMessage[];
@@ -489,6 +523,10 @@ export class ConversationChannel {
   /** Each attachment's upload under way: a fiber, stopped when the attachment is removed or the channel stops. */
   private readonly uploads = new Map<string, Fiber.Fiber<void>>();
   private readonly attachmentFiles = new Map<string, AttachmentUploadInput>();
+  /** Each local file of the draft that uploads from the host (`ChatApi.uploadLocalFile`), by attachment id. */
+  private readonly localUploadFiles = new Map<string, CommaLocalFileRef>();
+  /** Each message attachment of the draft the server stores by reference (`ChatApi.storeConversationFile`), by id. */
+  private readonly conversationFiles = new Map<string, ChatConversationFile>();
   /**
    * Messages that waited for their files and have not been answered yet: a message sent after one goes out after
    * it, so the server has them in the order the person sent them.
@@ -585,6 +623,12 @@ export class ConversationChannel {
       this.coverage = SeqCoverage.of(options.initialState.history?.ranges ?? []);
       this.hasObservedCanonicalSnapshot = true;
     }
+    // A Task opened again shows where it ran last time at once; the detail and the stream then say where it runs now.
+    const remembered = rememberedTaskRuns.get(
+      taskRunKey(this.groupId, this.conversationId)
+    );
+    if (remembered && !this.state.taskRun)
+      this.state = { ...this.state, taskRun: remembered };
     this.transportMode =
       options.initialKind === "agent_task"
         ? "task-events"
@@ -662,6 +706,13 @@ export class ConversationChannel {
         status,
         expectedUpdatedAt
       )
+    );
+  }
+
+  /** Runs the Task on another model, perhaps in another place (`PUT …/run`); its run comes with the stream again. */
+  setTaskRun(run: ChatTaskRunChoice): Effect.Effect<void, Error> {
+    return this.applyTaskCommand(() =>
+      this.api.setTaskRun(this.groupId, this.conversationId, run)
     );
   }
 
@@ -876,18 +927,65 @@ export class ConversationChannel {
         name: file.name,
         path: undefined,
         size: file.size,
-        status: "uploaded",
+        // Uploaded from the host at once where it can (the message then names a file the server has); elsewhere sent
+        // as a local ref the server reads from this device when it delivers the message.
+        status: this.api.uploadLocalFile ? "uploading" : "uploaded",
       };
     });
     this.setState({
       draftAttachments: [...this.state.draftAttachments, ...additions],
     });
+    if (!this.api.uploadLocalFile) return;
+    for (const attachment of additions) {
+      this.localUploadFiles.set(attachment.id, attachment.localFile!);
+      this.startUpload(attachment.id);
+    }
+  }
+
+  /**
+   * Adds attachments of messages in the Group to the draft, of any size: the server stores each as a composer file
+   * by reference to its blob, so no bytes pass through here. They count toward the message's files as uploads do.
+   */
+  attachConversationFiles(files: ChatConversationFile[]) {
+    if (files.length === 0) return;
+    let projectedCount = this.state.draftAttachments.filter(
+      (attachment) => attachment.localFile === undefined
+    ).length;
+    const additions = files.map<DraftAttachment>((file) => {
+      const id = this.createClientRequestId();
+      const error = this.tooManyAttachments(projectedCount);
+      projectedCount += 1;
+      this.conversationFiles.set(id, file);
+      return {
+        byReference: true,
+        error,
+        id,
+        isImage: isImageAttachment(file.name),
+        name: file.name,
+        path: undefined,
+        size: file.size,
+        status: error ? "failed" : "uploading",
+      };
+    });
+    this.setState({
+      draftAttachments: [...this.state.draftAttachments, ...additions],
+    });
+    for (const attachment of additions) {
+      if (attachment.status === "uploading") this.startUpload(attachment.id);
+    }
+  }
+
+  /** Why a message with `count` files already cannot take another, in the channel's locale; undefined when it can. */
+  private tooManyAttachments(count: number) {
+    return count >= MAX_ATTACHMENTS_PER_MESSAGE
+      ? commaMessages.chat_too_many_attachments({}, { locale: this.locale })
+      : undefined;
   }
 
   /** Removes an attachment from the draft, or from question card `questionMessageId`. */
   removeAttachment(id: string, questionMessageId?: string) {
     this.stopUpload(id);
-    this.attachmentFiles.delete(id);
+    this.forgetFile(id);
     this.setAttachmentsOf(
       questionMessageId,
       this.attachmentsOf(questionMessageId).filter((attachment) => attachment.id !== id)
@@ -896,14 +994,43 @@ export class ConversationChannel {
 
   /** Uploads a failed attachment of the draft, or of question card `questionMessageId`, again. */
   retryAttachment(id: string, questionMessageId?: string) {
-    const file = this.attachmentFiles.get(id);
-    if (!file) {
-      return;
-    }
-
     const attachments = this.attachmentsOf(questionMessageId);
     const existing = attachments.find((attachment) => attachment.id === id);
     if (!existing || existing.status !== "failed") {
+      return;
+    }
+    if (this.localUploadFiles.has(id)) {
+      this.setAttachmentsOf(
+        questionMessageId,
+        replaceAttachment(attachments, {
+          ...existing,
+          error: undefined,
+          status: "uploading",
+        })
+      );
+      this.startUpload(id);
+      return;
+    }
+    if (this.conversationFiles.has(id)) {
+      const error = this.tooManyAttachments(
+        attachments.filter(
+          (attachment) => attachment.id !== id && attachment.localFile === undefined
+        ).length
+      );
+      this.setAttachmentsOf(
+        questionMessageId,
+        replaceAttachment(attachments, {
+          ...existing,
+          error,
+          status: error ? "failed" : "uploading",
+        })
+      );
+      if (!error) this.startUpload(id);
+      return;
+    }
+
+    const file = this.attachmentFiles.get(id);
+    if (!file) {
       return;
     }
 
@@ -1081,7 +1208,7 @@ export class ConversationChannel {
       if (!images) continue;
       for (const image of images) {
         this.stopUpload(image.id);
-        this.attachmentFiles.delete(image.id);
+        this.forgetFile(image.id);
       }
       kept ??= { ...held };
       delete kept[question.messageId];
@@ -1132,9 +1259,8 @@ export class ConversationChannel {
     const draftUploads = consumeDraft
       ? this.state.draftAttachments.filter(
           (attachment) =>
-            attachment.localFile === undefined &&
-            (attachment.status === "uploading" ||
-              (attachment.status === "uploaded" && attachment.path))
+            attachment.status === "uploading" ||
+            (attachment.status === "uploaded" && attachment.path)
         )
       : [];
     // A file of the message's own that could never upload stays out of it; the rest of the message still goes.
@@ -1170,9 +1296,10 @@ export class ConversationChannel {
       ...ownUploads.map(({ attachment }) => attachment),
     ];
     const uploading = uploads.some((attachment) => attachment.status === "uploading");
+    // A local file the host could not upload goes as its ref.
     const localFiles = consumeDraft
       ? this.state.draftAttachments.flatMap((attachment) =>
-          attachment.status === "uploaded" && attachment.localFile
+          attachment.status === "uploaded" && attachment.localFile && !attachment.path
             ? [{ ...attachment.localFile }]
             : []
         )
@@ -1214,7 +1341,7 @@ export class ConversationChannel {
       for (const attachment of this.state.draftAttachments) {
         // A file the message waits for keeps its upload, and its bytes for a retry.
         if (uploading && pending.uploads?.includes(attachment)) continue;
-        this.attachmentFiles.delete(attachment.id);
+        this.forgetFile(attachment.id);
         this.uploads.delete(attachment.id);
       }
     }
@@ -1278,7 +1405,7 @@ export class ConversationChannel {
       status: "sending" as const,
       // A file that failed uploads again, if its bytes are still here; one that is not fails the send again.
       uploads: pending.uploads?.map((attachment) =>
-        attachment.status === "failed" && this.attachmentFiles.has(attachment.id)
+        attachment.status === "failed" && this.holdsFile(attachment.id)
           ? { ...attachment, error: undefined, status: "uploading" as const }
           : attachment
       ),
@@ -1309,7 +1436,7 @@ export class ConversationChannel {
     );
     for (const attachment of discarded?.uploads ?? []) {
       this.stopUpload(attachment.id);
-      this.attachmentFiles.delete(attachment.id);
+      this.forgetFile(attachment.id);
     }
     this.state = {
       ...this.state,
@@ -1478,6 +1605,21 @@ export class ConversationChannel {
     return this.attachmentFiles.get(id);
   }
 
+  /** Whether the channel still has what attachment `id` uploads from: its bytes, its local file or its message. */
+  private holdsFile(id: string) {
+    return (
+      this.attachmentFiles.has(id) ||
+      this.localUploadFiles.has(id) ||
+      this.conversationFiles.has(id)
+    );
+  }
+
+  private forgetFile(id: string) {
+    this.attachmentFiles.delete(id);
+    this.localUploadFiles.delete(id);
+    this.conversationFiles.delete(id);
+  }
+
   /** The attachment uploading as `id`: in the draft, added to a question card, or in a message that took it. */
   private findUpload(id: string): DraftAttachment | undefined {
     return (
@@ -1522,7 +1664,7 @@ export class ConversationChannel {
       item.id === id ? { ...item, ...change } : item
     );
     const settled = uploads.every((item) => item.status === "uploaded");
-    if (settled) for (const item of uploads) this.attachmentFiles.delete(item.id);
+    if (settled) for (const item of uploads) this.forgetFile(item.id);
     this.setState({
       pending: replacePending(
         this.state.pending,
@@ -1540,9 +1682,27 @@ export class ConversationChannel {
   /** Uploads an attachment (an image transcoded first, when it needs to be), and says how it went. */
   private upload(id: string): Effect.Effect<void> {
     return Effect.suspend(() => {
-      const file = this.attachmentFiles.get(id);
       const attachment = this.findUpload(id);
-      if (!file || !attachment || attachment.status !== "uploading") return Effect.void;
+      if (!attachment || attachment.status !== "uploading") return Effect.void;
+      const localFile = this.localUploadFiles.get(id);
+      if (localFile && this.api.uploadLocalFile) {
+        return this.settleUploaded(
+          id,
+          this.api.uploadLocalFile(this.groupId, {
+            localFileRef: localFile.localFileRef,
+            name: localFile.displayName,
+            size: localFile.size,
+          })
+        );
+      }
+      const conversationFile = this.conversationFiles.get(id);
+      if (conversationFile)
+        return this.settleUploaded(
+          id,
+          this.api.storeConversationFile(this.groupId, conversationFile)
+        );
+      const file = this.attachmentFiles.get(id);
+      if (!file) return Effect.void;
       const transcode = this.env.transcodeAttachment;
       const source: Effect.Effect<AttachmentUploadInput, UploadFailure> =
         !isTranscodedImageAttachment(file.name)
@@ -1566,35 +1726,51 @@ export class ConversationChannel {
               });
       return source.pipe(
         Effect.flatMap((ready) =>
-          this.api
-            .uploadGroupFile(this.groupId, { data: ready.data, name: ready.name })
-            .pipe(
-              Effect.mapError(
-                (error): UploadFailure => ({
-                  message: uploadErrorMessage(error, this.locale),
-                })
-              )
-            )
+          this.settleUploaded(
+            id,
+            this.api.uploadGroupFile(this.groupId, {
+              data: ready.data,
+              name: ready.name,
+            })
+          )
         ),
-        Effect.match({
-          onSuccess: (uploaded) => {
-            if (!this.attachmentFiles.has(id)) return;
-            this.settleUpload(id, {
-              error: undefined,
-              isImage: isImageAttachment(uploaded.name),
-              name: uploaded.name,
-              path: uploaded.path,
-              size: uploaded.size,
-              status: "uploaded",
-            });
-          },
-          onFailure: (failure) => {
-            if (!this.attachmentFiles.has(id)) return;
+        Effect.catch((failure: UploadFailure) =>
+          Effect.sync(() => {
+            if (!this.holdsFile(id)) return;
             this.settleUpload(id, { error: failure.message, status: "failed" });
-          },
-        })
+          })
+        )
       );
     });
+  }
+
+  /** Records how upload `request` of attachment `id` went, if the channel still holds what it uploads. */
+  private settleUploaded(
+    id: string,
+    request: Effect.Effect<CommaGroupFile, Error>
+  ): Effect.Effect<void> {
+    return request.pipe(
+      Effect.match({
+        onSuccess: (uploaded) => {
+          if (!this.holdsFile(id)) return;
+          this.settleUpload(id, {
+            error: undefined,
+            isImage: isImageAttachment(uploaded.name),
+            name: uploaded.name,
+            path: uploaded.path,
+            size: uploaded.size,
+            status: "uploaded",
+          });
+        },
+        onFailure: (error) => {
+          if (!this.holdsFile(id)) return;
+          this.settleUpload(id, {
+            error: uploadErrorMessage(error, this.locale),
+            status: "failed",
+          });
+        },
+      })
+    );
   }
 
   /** Wakes the connection: `now` polls at once if it waits; `refresh` also polls again once a poll under way ends. */
@@ -1888,7 +2064,7 @@ export class ConversationChannel {
                 name: event.bound_worker.name,
               }
             : undefined,
-          taskRun: taskRun(event.run),
+          taskRun: this.rememberTaskRun(taskRun(event.run)),
           participantStatuses: event.participants.map((p) => ({
             conversationId: p.conversation_id,
             participantId: p.participant_id,
@@ -2243,6 +2419,7 @@ export class ConversationChannel {
       streamIncarnation,
       summary: payload.summary,
       summaryClass,
+      target: payload.target,
       toolName: payload.toolName,
       updatedAt: numberValue(raw.updated_at),
     };
@@ -2324,6 +2501,19 @@ export class ConversationChannel {
     return false;
   }
 
+  /** Keeps `run` for the next channel opened on this Task (the newest few dozen Tasks), and hands it back. */
+  private rememberTaskRun(run: ChatTaskRun | undefined): ChatTaskRun | undefined {
+    if (!run) return run;
+    const key = taskRunKey(this.groupId, this.conversationId);
+    rememberedTaskRuns.delete(key);
+    rememberedTaskRuns.set(key, run);
+    if (rememberedTaskRuns.size > REMEMBERED_TASK_RUNS) {
+      const oldest = rememberedTaskRuns.keys().next().value;
+      if (oldest !== undefined) rememberedTaskRuns.delete(oldest);
+    }
+    return run;
+  }
+
   private applyConversation(
     conversation: CommaConversation,
     opts: {
@@ -2374,8 +2564,22 @@ export class ConversationChannel {
       const knownMessageIds = new Set(
         previousServerMessages.map((message) => message.messageId)
       );
+      // A message older than the newest one held is history the held transcript
+      // did not reach (the device keeps 500 messages, a read returns up to
+      // 1000), not one the conversation gained.
+      const newestKnownSeq = previousServerMessages.reduce<number | undefined>(
+        (newest, message) =>
+          message.seq !== undefined && (newest === undefined || message.seq > newest)
+            ? message.seq
+            : newest,
+        undefined
+      );
       const appended = nextServerMessages.filter(
-        (message) => !knownMessageIds.has(message.messageId)
+        (message) =>
+          !knownMessageIds.has(message.messageId) &&
+          (newestKnownSeq === undefined ||
+            message.seq === undefined ||
+            message.seq > newestKnownSeq)
       );
       if (appended.length > 0) {
         this.onCanonicalMessagesAppended({ conversation, messages: appended });
@@ -2423,6 +2627,10 @@ export class ConversationChannel {
       // canonical reply must not inherit the previous feed's active owner
       // while its current stopped status waits in a separate SSE frame.
       participantStatus: opts.participantStatus ?? this.state.participantStatus,
+      // A coding Task's detail carries its run: its sandbox shows with the transcript, before the stream's first frame.
+      ...(conversation.run
+        ? { taskRun: this.rememberTaskRun(taskRun(conversation.run)) }
+        : {}),
       assistantDraft: this.visibleReplyPresentation.activeDraft,
       serverMessages: nextServerMessages,
       ...(suspiciousEmpty ? {} : this.loopRunsOf(nextRawMessages)),
@@ -3092,6 +3300,7 @@ export function toConversationProjection(
       : {}),
     ...(state.boundWorker ? { boundWorker: state.boundWorker } : {}),
     ...(state.taskRun ? { taskRun: state.taskRun } : {}),
+    ...taskRunBlockedOf(conversation?.kind, state.serverMessages),
     ...(state.participantStatuses
       ? { participantStatuses: state.participantStatuses }
       : {}),
@@ -3114,13 +3323,8 @@ function taskActivityOf(
   earlier: ChatTaskActivity["earlier"]
 ): { taskActivity?: ChatTaskActivity } {
   if (kind !== "agent_task") return {};
-  const activity = taskActivity(serverMessages, loopRuns);
-  if (!earlier) return activity ? { taskActivity: activity } : {};
-  // What is not read yet shows even before any milestone is.
-  const groups = activity?.groups ?? [];
-  return {
-    taskActivity: { key: `${earlier}:${activity?.key ?? ""}`, groups, earlier },
-  };
+  const activity = withEarlier(taskActivity(serverMessages, loopRuns), earlier);
+  return activity ? { taskActivity: activity } : {};
 }
 
 function normalizeEnv(env: ConversationChannelEnv): ConversationChannelEnv {
@@ -3206,6 +3410,8 @@ export function normalizeServerMessages(
         ? { brief: true }
         : {}),
       clientRequestId: message.client_request_id,
+      clientSource:
+        role === "user" && !platformMessage ? messageClientSource(message) : undefined,
       createdAt: message.created_at,
       createdBy: message.user_id,
       delivery: "sent",
@@ -3213,6 +3419,7 @@ export function normalizeServerMessages(
       error: undefined,
       messageId: message.message_id,
       messageType,
+      ...runBlockedOf(messageType, message.metadata),
       ...noticeOf(
         role,
         platformMessage,
@@ -3402,6 +3609,21 @@ function canonicalMessageCreatedAtMs(message: SalixMessage) {
     : undefined;
 }
 
+// The server stamps the sending session's client kind and platform on user
+// messages. It is a display hint only: it names the Comma app the user typed in.
+function messageClientSource(message: SalixMessage): ChatMessage["clientSource"] {
+  const kind = message.metadata?.client_kind;
+  if (kind === "ios") return "iphone";
+  if (kind === "watch" || kind === "android" || kind === "web") return kind;
+  if (kind !== "electron") return undefined;
+  const platform = message.metadata?.client_platform;
+  return platform === "macos"
+    ? "mac"
+    : platform === "windows" || platform === "linux"
+      ? platform
+      : undefined;
+}
+
 function sameMessage(a: ChatMessage, b: ChatMessage) {
   return (
     a.actorId === b.actorId &&
@@ -3411,6 +3633,7 @@ function sameMessage(a: ChatMessage, b: ChatMessage) {
     a.brief === b.brief &&
     a.routerRequest === b.routerRequest &&
     a.clientRequestId === b.clientRequestId &&
+    a.clientSource === b.clientSource &&
     a.blocksKey === b.blocksKey &&
     a.createdAt === b.createdAt &&
     a.createdBy === b.createdBy &&
@@ -3511,6 +3734,9 @@ function deriveBlockViews(
   // cannot be read.
   const questionFallbacks: ChatMessagePart[] = [];
   let asksQuestion = false;
+  // The plain-text version of Mac app cards: shown only when none of the cards can be read.
+  const macAppFallbacks: ChatMessagePart[] = [];
+  let macAppCards = 0;
 
   for (const [blockIndex, rawBlock] of blocks.entries()) {
     const block = objectValue(rawBlock);
@@ -3522,7 +3748,12 @@ function deriveBlockViews(
     if (type === "text") {
       const text = rawTextValue(block.text);
       if (text !== undefined) {
-        (block.fallback_for === "question" ? questionFallbacks : parts).push({
+        (block.fallback_for === "question"
+          ? questionFallbacks
+          : block.fallback_for === "mac_app_item"
+            ? macAppFallbacks
+            : parts
+        ).push({
           kind: "markdown",
           text,
         });
@@ -3538,6 +3769,16 @@ function deriveBlockViews(
       if (question) {
         parts.push(question);
         asksQuestion = true;
+      }
+      continue;
+    }
+
+    if (type === "mac_app_item") {
+      // Only an agent shows what it did on the user's Mac.
+      const item = sourceAgentId ? macAppItemValue(block) : undefined;
+      if (item) {
+        parts.push({ kind: "mac-app-item", item });
+        macAppCards += 1;
       }
       continue;
     }
@@ -3573,6 +3814,40 @@ function deriveBlockViews(
         conversationId,
         messageId,
         attachmentIndex: blockIndex,
+      });
+      continue;
+    }
+
+    if (type === "mini_app") {
+      // Only the Task's agent deploys an app; anything else shows as its summary.
+      const summary = (
+        stringValue(block.summary) ??
+        stringValue(block.text) ??
+        stringValue(block.name) ??
+        "App unavailable"
+      ).slice(0, 4000);
+      const appId = stringValue(block.app_id);
+      const appVersion = numberValue(block.app_version);
+      if (
+        !sourceAgentId ||
+        numberValue(block.version) !== 1 ||
+        !appId ||
+        appId.length > 256 ||
+        appVersion === undefined ||
+        !Number.isSafeInteger(appVersion) ||
+        appVersion <= 0
+      ) {
+        parts.push({ kind: "markdown", text: summary });
+        continue;
+      }
+      parts.push({
+        kind: "mini-app",
+        appId,
+        appVersion,
+        name: (stringValue(block.name) ?? summary).slice(0, 200),
+        summary,
+        conversationId,
+        messageId,
       });
       continue;
     }
@@ -3644,12 +3919,66 @@ function deriveBlockViews(
     }
   }
 
+  // A deployed app's message also carries its summary as text, for clients that cannot draw the card: the card shows
+  // the summary, so the text is not shown twice.
+  const appSummaries = new Set(
+    parts.flatMap((part) => (part.kind === "mini-app" ? [part.summary.trim()] : []))
+  );
+  if (appSummaries.size > 0)
+    for (let i = parts.length - 1; i >= 0; i--) {
+      const part = parts[i]!;
+      if (part.kind === "markdown" && appSummaries.has(part.text.trim()))
+        parts.splice(i, 1);
+    }
+
   return {
     attachments,
     blocksKey: JSON.stringify(blocks),
-    parts: asksQuestion ? parts : [...parts, ...questionFallbacks],
+    parts: [
+      ...(asksQuestion ? parts : [...parts, ...questionFallbacks]),
+      ...(macAppCards > 0 ? [] : macAppFallbacks),
+    ],
     refs,
   };
+}
+
+const MAC_APP_ITEM_APPS = new Set([
+  "calendar",
+  "reminders",
+  "notes",
+  "contacts",
+  "maps",
+]);
+
+/** A `mac_app_item` block as a chat card's item, or undefined when it names no app or title. */
+function macAppItemValue(block: Record<string, unknown>): ChatMacAppItem | undefined {
+  const app = stringValue(block.app);
+  const title = stringValue(block.title)?.trim();
+  if (!app || !MAC_APP_ITEM_APPS.has(app) || !title) return undefined;
+  const text = (key: string) => stringValue(block[key])?.trim() || undefined;
+  const item: ChatMacAppItem = {
+    app: app as ChatMacAppItem["app"],
+    title,
+    itemId: text("item_id"),
+    start: text("start"),
+    end: text("end"),
+    allDay: block.all_day === true || undefined,
+    calendar: text("calendar"),
+    color: /^#[0-9A-Fa-f]{6}$/.test(text("color") ?? "") ? text("color") : undefined,
+    location: text("location"),
+    due: text("due"),
+    completed: block.completed === true || undefined,
+    list: text("list"),
+    folder: text("folder"),
+    detail: text("detail"),
+    address: text("address"),
+    latitude: numberValue(block.latitude),
+    longitude: numberValue(block.longitude),
+    category: text("category"),
+  };
+  return Object.fromEntries(
+    Object.entries(item).filter(([, value]) => value !== undefined)
+  ) as ChatMacAppItem;
 }
 
 /** A pixel count a block declares, within what an image can be. */
@@ -3688,7 +4017,10 @@ function combineMessages(
           mimeType: undefined,
           size: upload.size,
           title: undefined,
-          ...(upload.status === "uploading" ? { uploadingId: upload.id } : {}),
+          // A message's attachment stored by reference has no bytes here to show from before it is stored.
+          ...(upload.status === "uploading" && !upload.byReference
+            ? { uploadingId: upload.id }
+            : {}),
           ...(upload.path ? { workspacePath: upload.path } : {}),
         })) ?? []),
         ...(item.localFiles?.map<ChatAttachment>((file) => ({
@@ -3801,6 +4133,44 @@ export function createdTasksOf(
  * no role is stamped) or a Task, in its own words. A worker's step, a system notice or another platform's message is
  * not.
  */
+/** Why a `task_run_blocked` message's model could not start, as its station said. */
+function runBlockedOf(
+  messageType: string | undefined,
+  metadata: SalixMessage["metadata"]
+): Pick<ChatMessage, "runBlockedError"> {
+  if (messageType !== TASK_RUN_BLOCKED) return {};
+  const blocked = metadata?.[TASK_RUN_BLOCKED];
+  const error =
+    blocked && typeof blocked === "object" && !Array.isArray(blocked)
+      ? stringValue((blocked as Record<string, unknown>).error)
+      : undefined;
+  return error ? { runBlockedError: error } : {};
+}
+
+/**
+ * A Task whose model cannot start: the last word that counts is its station's `task_run_blocked` message, with no
+ * switch to another model (`task_run_switched`) and no other word of its Worker after it.
+ */
+function taskRunBlockedOf(
+  kind: CommaConversationKind | undefined,
+  messages: readonly ChatMessage[]
+): Pick<ConversationProjection, "taskRunBlocked"> {
+  if (kind !== "agent_task") return {};
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index]!;
+    if (message.messageType === TASK_RUN_SWITCHED) return {};
+    if (message.messageType === TASK_RUN_BLOCKED)
+      return {
+        taskRunBlocked: {
+          messageId: message.messageId,
+          ...(message.runBlockedError ? { error: message.runBlockedError } : {}),
+        },
+      };
+    if (message.actorRole === "worker" && message.text.trim() !== "") return {};
+  }
+  return {};
+}
+
 function noticeOf(
   role: string,
   platformMessage: unknown,
@@ -3848,13 +4218,6 @@ export function previewText(text: string): string {
 }
 
 /** A person's message as parts: the words shown, task mentions as chips, a model mention as `@name`. */
-function userParts(display: UserMessageDisplay): ChatMessagePart[] {
-  const shown = display.command
-    ? `/${display.command}`
-    : modelMentionsAsWords(display.body);
-  return splitUserTaskMentionParts(shown) ?? [{ kind: "markdown", text: shown }];
-}
-
 const BRIEF_TYPES = new Set(["task_command", "meeting_recording"]);
 
 function isBrief(
@@ -3908,7 +4271,7 @@ function salixBlobRefValue(value: unknown): ChatAttachment["blobRef"] {
 
 /**
  * Match ConversationAttachments.downloadable?/1 for canonical string filenames
- * and fetch's sender requirement.
+ * and open's sender requirement. Any size downloads: the endpoint streams.
  * This only suppresses known unusable actions; the attachment endpoint still
  * decides whether the caller can retrieve the bytes. Preview refs deliberately
  * keep their separate, stricter parsing contract above.
@@ -3925,8 +4288,7 @@ function downloadableAttachmentFileName(
     !stringValue(ref?.hash) ||
     size === undefined ||
     !Number.isInteger(size) ||
-    size < 0 ||
-    size > chatAttachmentDownloadMaxBytes
+    size < 0
   ) {
     return undefined;
   }
@@ -4042,12 +4404,13 @@ function addBoundedSet(values: Set<string>, value: string, limit: number) {
   }
 }
 
-function validateAttachment(
+/** Why `file` cannot go with a message that has `projectedCount` files already, in `locale`; undefined when it can. */
+export function validateAttachment(
   file: AttachmentUploadInput,
   projectedCount: number,
   locale: CommaLocale,
   transcodesImages: boolean
-) {
+): string | undefined {
   if (projectedCount >= MAX_ATTACHMENTS_PER_MESSAGE) {
     return commaMessages.chat_too_many_attachments({}, { locale });
   }
@@ -4285,8 +4648,22 @@ function participantStatusValue(
       ? { workingConversationIds: workingConversationIds(raw.working_conversation_ids) }
       : {}),
     ...(state === "active" && raw.waiting === true ? { waiting: true } : {}),
+    ...(state === "active" && stringValue(raw.wait_tool)
+      ? { waitTool: stringValue(raw.wait_tool) }
+      : {}),
+    ...(state === "active" &&
+    (raw.waiting === true || stringValue(raw.wait_tool)) &&
+    numberValue(raw.wait_started_at)
+      ? { waitStartedAt: numberValue(raw.wait_started_at) }
+      : {}),
   };
 }
+
+/** The run each Task was last seen with, by Group and conversation, for the next channel opened on it. */
+const rememberedTaskRuns = new Map<string, ChatTaskRun>();
+const REMEMBERED_TASK_RUNS = 64;
+const taskRunKey = (groupId: string, conversationId: string) =>
+  `${groupId}\n${conversationId}`;
 
 /** A Task's place, model and its model's maker as the Task status stream sent them; none before a server sends them. */
 export function taskRun(run: CommaTaskRun | undefined): ChatTaskRun | undefined {
@@ -4298,7 +4675,19 @@ export function taskRun(run: CommaTaskRun | undefined): ChatTaskRun | undefined 
           deviceId: run.place.device_id,
           ...(run.place.name ? { name: run.place.name } : {}),
         }
-      : { kind: run.place.kind };
+      : run.place.kind === "sandbox"
+        ? {
+            kind: "sandbox",
+            repo: {
+              owner: run.place.repo.owner,
+              name: run.place.repo.name,
+              ...(run.place.repo.base_ref ? { baseRef: run.place.repo.base_ref } : {}),
+              ...(run.place.repo.branch ? { branch: run.place.repo.branch } : {}),
+            },
+            state: run.place.state,
+            ...(run.place.reason ? { reason: run.place.reason } : {}),
+          }
+        : { kind: run.place.kind };
   const model: ChatTaskRun["model"] = !run.model
     ? undefined
     : run.model.kind === "runtime"
@@ -4312,7 +4701,27 @@ export function taskRun(run: CommaTaskRun | undefined): ChatTaskRun | undefined 
         : { kind: "platform" };
   const vendor =
     run.model?.kind === "platform" ? "comma" : run.model?.vendor || undefined;
-  return { place, ...(model ? { model } : {}), ...(vendor ? { vendor } : {}) };
+  return {
+    place,
+    ...(model ? { model } : {}),
+    ...(vendor ? { vendor } : {}),
+    ...(run.facts ? { facts: codingFacts(run.facts) } : {}),
+  };
+}
+
+/** What a coding Task's sandbox and GitHub answered last, as the server kept it: each part once read. */
+function codingFacts(facts: NonNullable<CommaTaskRun["facts"]>): ChatCodingFacts {
+  return {
+    ...(facts.usage !== undefined ? { usage: facts.usage } : {}),
+    ...(facts.changes ? { changes: facts.changes } : {}),
+    ...(facts.pull_request !== undefined
+      ? {
+          pullRequest: facts.pull_request
+            ? { ...toPullRequest(facts.pull_request), body: null }
+            : null,
+        }
+      : {}),
+  };
 }
 
 export function participantIssueDetail(
@@ -4353,6 +4762,7 @@ function activityPayloadValue(
       phase: "execution" | "idle" | "messaging" | "thinking";
       status: "failed" | "idle" | "running";
       summary: string | undefined;
+      target: string | undefined;
       toolName: string | undefined;
     }
   | undefined {
@@ -4366,6 +4776,7 @@ function activityPayloadValue(
       phase,
       status,
       summary: undefined,
+      target: undefined,
       toolName: undefined,
     };
   }
@@ -4382,6 +4793,7 @@ function activityPayloadValue(
       phase,
       status,
       summary: copy,
+      target: undefined,
       toolName: undefined,
     };
   }
@@ -4394,11 +4806,13 @@ function activityPayloadValue(
     const summary = publicActivityProseValue(raw.summary);
     const action = optionalPublicActivityProseValue(raw.action);
     const goal = optionalPublicActivityProseValue(raw.goal);
+    const target = optionalPublicActivityProseValue(raw.target);
     const toolName = optionalPublicActivityProseValue(raw.tool_name);
     if (
       summary === undefined ||
       action === null ||
       goal === null ||
+      target === null ||
       toolName === null
     ) {
       return undefined;
@@ -4409,6 +4823,7 @@ function activityPayloadValue(
       phase,
       status,
       summary,
+      target,
       toolName,
     };
   }
@@ -4420,6 +4835,7 @@ function activityPayloadValue(
       phase,
       status,
       summary: undefined,
+      target: undefined,
       toolName: undefined,
     };
   }

@@ -9,6 +9,7 @@ import type {
   OnboardingWindowState,
 } from "@comma/native-bridge";
 import type { SessionLifecycleSnapshot } from "@comma/session-contract";
+import { realMainClock, type MainClock } from "./clock";
 
 /** The route the onboarding renderer loads; its window role picks the app. */
 export const onboardingWindowRoute = "/onboarding";
@@ -96,6 +97,7 @@ export function onboardingHoldsMainWindow({
 export interface MainWindowOnboardingHoldOptions {
   /** Brings the open onboarding window back in front. */
   bringOnboardingForward(): void;
+  clock?: MainClock | undefined;
   /** Takes the main window off screen, if it is on screen. */
   hideMainWindow(): void;
   logger: { warn(message: string): void };
@@ -123,27 +125,29 @@ export interface MainWindowOnboardingHoldOptions {
  */
 export class MainWindowOnboardingHold {
   readonly #options: MainWindowOnboardingHoldOptions;
-  #timer: ReturnType<typeof setTimeout> | undefined;
+  readonly #clock: MainClock;
+  #cancelTimer: (() => void) | undefined;
   #startedAt = 0;
 
   constructor(options: MainWindowOnboardingHoldOptions) {
     this.#options = options;
+    this.#clock = options.clock ?? realMainClock;
   }
 
   get held() {
-    return this.#timer !== undefined;
+    return this.#cancelTimer !== undefined;
   }
 
   begin() {
-    if (this.#timer) return;
-    this.#startedAt = Date.now();
-    this.#timer = setTimeout(() => {
+    if (this.#cancelTimer) return;
+    this.#startedAt = this.#clock.now();
+    this.#cancelTimer = this.#clock.setTimer(this.#options.timeoutMs, () => {
       if (this.#options.onboardingOpen()) return;
       this.#options.logger.warn(
         "no onboarding window opened on first launch; showing the main window"
       );
       this.release();
-    }, this.#options.timeoutMs);
+    });
   }
 
   /**
@@ -162,10 +166,10 @@ export class MainWindowOnboardingHold {
 
   /** Ends the hold without showing the main window (Main closes its windows); false when none was held. */
   cancel() {
-    const timer = this.#timer;
-    if (!timer) return false;
-    this.#timer = undefined;
-    clearTimeout(timer);
+    const cancelTimer = this.#cancelTimer;
+    if (!cancelTimer) return false;
+    this.#cancelTimer = undefined;
+    cancelTimer();
     return true;
   }
 
@@ -180,7 +184,8 @@ export class MainWindowOnboardingHold {
   openRequested() {
     if (!this.held) return false;
     if (this.#options.onboardingOpen()) this.#options.bringOnboardingForward();
-    else if (Date.now() - this.#startedAt >= this.#options.graceMs) this.release();
+    else if (this.#clock.now() - this.#startedAt >= this.#options.graceMs)
+      this.release();
     return true;
   }
 }
@@ -509,9 +514,10 @@ export class OnboardingWindowPresenter implements OnboardingWindowProvider {
     const { window } = presentation;
     if (ending === "finished") {
       // Asked by this window's own renderer: let the reply reach it first.
-      setTimeout(() => {
+      // The next turn, not a time: a test clock that stands still does not hold it.
+      setImmediate(() => {
         if (!window.isDestroyed()) window.destroy();
-      }, 0);
+      });
       return;
     }
     if (!window.isDestroyed()) window.destroy();

@@ -24,8 +24,15 @@ defmodule Comma.RecommendationMigrationTest do
       |> Keyword.put(:pool_size, 3)
       |> Keyword.put(:parameters, search_path: schema <> ",public")
 
-    repo = start_supervised!({MigrationRepo, config})
+    # The schema exists before the pool opens its connections. A connection
+    # still opening while CREATE SCHEMA commits can resolve its search path
+    # without the schema and keep that path, and the test's inserts through it
+    # then reach public's tables.
+    {:ok, creator} = MigrationRepo.start_link(Keyword.put(config, :pool_size, 1))
     MigrationRepo.query!("CREATE SCHEMA #{schema}")
+    Supervisor.stop(creator)
+
+    repo = start_supervised!({MigrationRepo, config})
 
     for table <- ~w(comma_recommendation_profiles comma_recommendation_runs oban_jobs) do
       MigrationRepo.query!("CREATE TABLE #{schema}.#{table} (LIKE public.#{table} INCLUDING ALL)")

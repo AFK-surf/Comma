@@ -1,7 +1,7 @@
 defmodule SalixAgent.MigrationNotice do
   @moduledoc false
 
-  @version 63
+  @version 65
   @superseded_versions [
     11,
     18,
@@ -81,6 +81,10 @@ defmodule SalixAgent.MigrationNotice do
     }
   end
 
+  defp summary(65), do: "Every Router Task names runs_on.kind; code changes run in a sandbox"
+
+  defp summary(64), do: "A Loop Task runs inside Salix, never on a station"
+
   defp summary(63), do: "Work that needs a machine runs on the user's own computer first"
 
   defp summary(62), do: "Every Router picks each Task's place and model, never a Worker"
@@ -141,6 +145,14 @@ defmodule SalixAgent.MigrationNotice do
   defp summary(47), do: "Router delivery requires separate completion"
 
   defp summary(_version), do: "migration notice changed"
+
+  defp content(65),
+    do:
+      "Routers: im_api.internal.task.create now requires runs_on.kind and refuses a call without it. This replaces every earlier instruction to omit runs_on, including notices 55, 57, 60, 61 and 64. A request to change code in a GitHub repository, such as a bug fix, a feature or a pull request, is a coding Task: give runs_on {kind: sandbox} with repo {owner, name}, unless the user names another place or the work needs a machine's existing files. Give runs_on {kind: default} where you would have omitted it: the Worker's station binding, the Group's default place or automatic placement decides, as before. A Loop Task gives {kind: default} or {kind: salix}. Existing Tasks are unchanged. Continue silently; this notice requests no new work."
+
+  defp content(64),
+    do:
+      "Routers: a Loop Task runs inside Salix, because its Worker creates the Loop there. im_api.internal.task.create with loop refuses runs_on {kind: cloud_vm} or {kind: station}, a Worker bound to a station, and a model of kind runtime; omit runs_on or give {kind: salix}. The Group's default place to run Tasks does not apply to a Loop Task. Its Worker can still run commands on the Cloud VM with env.exec. task.create and task.list now show loop.status: only an active Loop runs, and pending means the Worker has not created it yet. Existing Tasks are unchanged. Continue silently; this notice requests no new work."
 
   defp content(63),
     do:

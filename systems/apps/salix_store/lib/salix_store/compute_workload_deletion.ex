@@ -6,8 +6,10 @@ defmodule SalixStore.ComputeWorkloadDeletion do
   # external_worker: stored Workloads of the retired External Worker templates.
   @deletable_kinds ["shell", "external_worker"]
 
-  def start(tenant, project, id, revision, generation, request_id, authorize)
-      when is_integer(revision) and is_integer(generation) and is_binary(request_id) and
+  # Deletion targets the observed generation; other revisions of the Workload
+  # (a rename, a retry) do not conflict with it.
+  def start(tenant, project, id, generation, request_id, authorize)
+      when is_integer(generation) and is_binary(request_id) and
              byte_size(request_id) in 1..64 and is_function(authorize, 0) do
     Repo.transaction(fn ->
       workload = owned!(tenant, project, id)
@@ -22,7 +24,7 @@ defmodule SalixStore.ComputeWorkloadDeletion do
         previous != %{} ->
           Repo.rollback(:deletion_in_progress)
 
-        workload.revision != revision or workload.generation != generation ->
+        workload.generation != generation ->
           Repo.rollback(:revision_conflict)
 
         workload.kind not in @deletable_kinds or business_reference?(workload) ->
@@ -102,7 +104,7 @@ defmodule SalixStore.ComputeWorkloadDeletion do
     end)
   end
 
-  def start(_, _, _, _, _, _, _), do: {:error, :invalid_deletion_request}
+  def start(_, _, _, _, _, _), do: {:error, :invalid_deletion_request}
 
   defp owned!(tenant, project, id) do
     Repo.one(
@@ -393,12 +395,14 @@ defmodule SalixStore.ComputeWorkloadDeletion do
     end)
   end
 
+  # An unknown_outcome command is not accepted work: it is never replayed, and
+  # the generation-fenced dispose that follows decides the deletion result.
   defp accepted_work?(workload) do
     Repo.exists?(
       from(c in Compute.Command,
         where:
           c.allocation_id == ^workload.allocation_id and c.kind != "allocation.dispose" and
-            c.status in ["pending", "admitted", "executing", "unknown_outcome"]
+            c.status in ["pending", "admitted", "executing"]
       )
     ) or
       Repo.exists?(

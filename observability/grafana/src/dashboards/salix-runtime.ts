@@ -11,6 +11,8 @@ export function buildSalixRuntime(environment: DashboardEnvironment) {
   const workloadUp = 'up{namespace="comma",workload="comma"}';
   const lazyContext =
     "Lazy Salix series. No data may mean no matching event occurred; compare the required workload scrape health above.";
+  const first =
+    " Managed Prometheus takes a pod's first sample of a series as its zero, so the first event of each series on a pod is never counted and the series shows from its second; no query form recovers it.";
   const managesBusinessAlerts = environment.name === "staging";
   const pagingContext = managesBusinessAlerts
     ? "Cloud Monitoring owns platform paging; the two bounded LLM queries below also feed staging-only Grafana P2 rules."
@@ -696,7 +698,7 @@ export function buildSalixRuntime(environment: DashboardEnvironment) {
         environment,
         600,
         "Station Task delegations unanswered",
-        `${lazyContext} One point per delegation and stage (phase) that SalixIM.StationTaskWatch reported for a Task running on a Cloud VM or desktop station (kind). The Cloud Monitoring P2 pages on vm_not_ready, station_offline and not_given; given_no_reply is counted only, because a long turn and a dead one look alike.`,
+        `${lazyContext} One point per delegation and stage (phase) that SalixIM.StationTaskWatch reported for a Task running on a Cloud VM or desktop station (kind). The Cloud Monitoring P2 pages on vm_not_ready, station_offline and not_given; given_no_reply is counted only, because a long turn and a dead one look alike.${first}`,
         { x: 0, y: 93, w: 12, h: 8 },
         [
           {
@@ -714,7 +716,7 @@ export function buildSalixRuntime(environment: DashboardEnvironment) {
         environment,
         601,
         "Station Task first reply p95",
-        `${lazyContext} Time from a delegation to the first Worker Message a station posted for it, every answered delegation. A rising p95 with no stall points is a slow station, not a stuck one.`,
+        `${lazyContext} Time from a delegation to the first Worker Message a station posted for it, every answered delegation. A rising p95 with no stall points is a slow station, not a stuck one.${first}`,
         { x: 12, y: 93, w: 12, h: 8 },
         [
           {
@@ -725,6 +727,156 @@ export function buildSalixRuntime(environment: DashboardEnvironment) {
           },
         ],
         "s",
+      ),
+    )
+    .withPanel(
+      statPanel(
+        environment,
+        610,
+        "Cloud VM records by state",
+        "How many Group Cloud VM records stand in each state (salix_vm_records). Every node publishes the same fleet once a minute from one aggregate read; the max across pods is the fleet. 0 is a real zero.",
+        { x: 0, y: 101, w: 8, h: 8 },
+        [
+          {
+            refId: "A",
+            expression:
+              'max by (provider, state) (salix_vm_records{namespace="comma",workload="comma"})',
+            legend: "{{provider}} {{state}}",
+          },
+        ],
+        "short",
+      ),
+    )
+    .withPanel(
+      timeSeriesPanel(
+        environment,
+        611,
+        "Cloud VM wake p50 / p95",
+        `${lazyContext} Seconds from a wake's start to the record write that made the VM ready (outcome ok), over the wakes of the last six hours. Wakes are rare, so a point is a few wakes; the failed attempts are counted in the wakes-per-day panel. The cloud_vm_wake_slow alert reads the p95 over one hour, so it can fire on a wake this smoother line hides.${first}`,
+        { x: 8, y: 101, w: 8, h: 8 },
+        [
+          {
+            refId: "A",
+            expression:
+              'histogram_quantile(0.5, sum by (le, provider) (rate(salix_vm_wake_duration_seconds_bucket{namespace="comma",workload="comma",outcome="ok"}[6h])))',
+            legend: "{{provider}} p50",
+          },
+          {
+            refId: "B",
+            expression:
+              'histogram_quantile(0.95, sum by (le, provider) (rate(salix_vm_wake_duration_seconds_bucket{namespace="comma",workload="comma",outcome="ok"}[6h])))',
+            legend: "{{provider}} p95",
+          },
+        ],
+        "s",
+      ),
+    )
+    .withPanel(
+      timeSeriesPanel(
+        environment,
+        612,
+        "Cloud VM restore phases p95",
+        `${lazyContext} Each phase of the Container's restore of the archive from R2, as the station's receipt timed it: manifest read, first chunk byte, all chunks downloaded, written to disk, synced, and total. One receipt per wake that restored, over the last six hours.${first}`,
+        { x: 16, y: 101, w: 8, h: 8 },
+        [
+          {
+            refId: "A",
+            expression:
+              'histogram_quantile(0.95, sum by (le, phase) (rate(salix_vm_restore_duration_seconds_bucket{namespace="comma",workload="comma"}[6h])))',
+            legend: "{{phase}} p95",
+          },
+        ],
+        "s",
+      ),
+    )
+    .withPanel(
+      timeSeriesPanel(
+        environment,
+        613,
+        "Cloud VM archive p95",
+        `${lazyContext} Seconds from an archive's start to its end: archived (ok), or back to ready because it failed (error), was cancelled once begun (cancelled), or its station refused to park because it was busy or away (refused). The reason is why it started: idle, or a recovery after an interrupted wake. Over the last six hours.${first}`,
+        { x: 0, y: 109, w: 6, h: 8 },
+        [
+          {
+            refId: "A",
+            expression:
+              'histogram_quantile(0.95, sum by (le, provider, reason, outcome) (rate(salix_vm_archive_duration_seconds_bucket{namespace="comma",workload="comma"}[6h])))',
+            legend: "{{provider}} {{reason}} {{outcome}} p95",
+          },
+        ],
+        "s",
+      ),
+    )
+    .withPanel(
+      timeSeriesPanel(
+        environment,
+        614,
+        "Cloud VM oldest record stuck in a passing state",
+        "How long the oldest record in creating, waking, archiving or failed has stood there (salix_vm_transitional_oldest_age_seconds), 0 with none. A wake or archive passes in seconds to minutes; hours mean a stuck record that the reconciler retries without reaching anyone.",
+        { x: 6, y: 109, w: 6, h: 8 },
+        [
+          {
+            refId: "A",
+            expression:
+              'max by (provider, state) (salix_vm_transitional_oldest_age_seconds{namespace="comma",workload="comma"})',
+            legend: "{{provider}} {{state}}",
+          },
+        ],
+        "s",
+      ),
+    )
+    .withPanel(
+      timeSeriesPanel(
+        environment,
+        615,
+        "Cloud VM wakes per day",
+        `${lazyContext} Wake attempts that ended in the last 24 hours, by outcome: ready (ok), or the attempt failed because the Container never attached (timeout), stopped before its station connected (container_stopped), exited without restoring the archive (restore_failed), or started without restoring it (not_restored). One wake can count several failed attempts before its ok.${first}`,
+        { x: 12, y: 109, w: 6, h: 8 },
+        [
+          {
+            refId: "A",
+            expression:
+              'sum by (provider, outcome) (increase(salix_vm_wake_duration_seconds_count{namespace="comma",workload="comma"}[24h]))',
+            legend: "{{provider}} {{outcome}}",
+          },
+        ],
+        "short",
+      ),
+    )
+    .withPanel(
+      timeSeriesPanel(
+        environment,
+        616,
+        "Cloud VM ready seconds per day",
+        `${lazyContext} Ready time metered in the last 24 hours (salix_vm_ready_seconds_total), counted as the interval meter checkpoints it; only Cloudflare VMs are metered. A pod's first checkpoint of a series is its zero, so that interval's ready time is never counted.`,
+        { x: 18, y: 109, w: 6, h: 8 },
+        [
+          {
+            refId: "A",
+            expression:
+              'sum by (provider, profile) (increase(salix_vm_ready_seconds_total{namespace="comma",workload="comma"}[24h]))',
+            legend: "{{provider}} {{profile}}",
+          },
+        ],
+        "s",
+      ),
+    )
+    .withPanel(
+      statPanel(
+        environment,
+        617,
+        "Cloud VM container losses (24h)",
+        "Containers that stopped by themselves and lost their disk in the last 24 hours (salix_vm_container_loss_total), by reason: the Cloudflare runtime rolled a new version (rollout), the Container exited on its own (exit_code), or the Gateway kept no stop (unknown). Each one is a record archived from its last archive, or a never-archived VM started empty; the wake that follows restores it. A pod's first loss is counted only from its second sample; the cloud_vm_container_lost log event has every one.",
+        { x: 0, y: 117, w: 6, h: 8 },
+        [
+          {
+            refId: "A",
+            expression:
+              'sum by (provider, reason) (increase(salix_vm_container_loss_total{namespace="comma",workload="comma"}[24h]))',
+            legend: "{{provider}} {{reason}}",
+          },
+        ],
+        "short",
       ),
     )
     .build();

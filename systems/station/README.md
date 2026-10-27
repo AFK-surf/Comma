@@ -49,11 +49,22 @@ Every station connects out to Salix the same way, whatever machine it runs on.
   (`src/connector/`, run by `src/connector/service.ts`). This holds on a user's computer, in a Cloud VM (Cloudflare
   Sandbox) and in an Agent VMM container. The station listens on no port for Salix.
 - **Two kinds of credential.**
-  - A device credential: the connector token of a user's computer.
-  - A workload credential: given by the Compute provider when it starts the container. It names the Workload, the
-    runtime instance, the generation and the connection epoch. It starts as a one-time bootstrap credential that the
-    first handshake exchanges for a short-lived one. The station keeps that one in memory only and renews it over the
-    connection. Salix refuses a connection, and every command, whose generation or epoch is not current.
+  - A device credential: the connector token of a user's computer. Electron Main mints it with the user's Session,
+    for 2 hours. A device connection is served only while it holds an unexpired, unrevoked credential for its device,
+    and Salix closes the socket when the credential it holds expires. The connection starts with the credential that
+    admitted it. A quarter of its life before that credential expires, the app mints the next one and writes it to
+    the instance file. The station presents it on the live connection (`connector_credential_renew`, which Salix
+    offers in `connected`). The connection, its requests and its processes stay, and the new credential now bounds
+    the connection. Salix never mints a device credential for a connection by itself. A newer credential does not
+    end the live connection of an older one before the older one expires, but the older one admits no new
+    connection. When Salix refuses the new credential, or does not offer renewal, the station connects again with it.
+  - A workload credential: the connect credential the Compute provider gives the container when it starts it
+    (`SALIX_WORKLOAD_CREDENTIAL`, from `Compute.WorkloadCredential.issue_connect`). It names the Workload and its
+    generation and has no expiry. The station presents it on every connection, also after it restarts. It works while
+    the Workload stays at that generation. A Cloud VM reset or the next run of a coding sandbox advances the
+    generation. Salix refuses a connection whose generation is not current. It checks the generation again before each
+    command, except reads and commands that stop work. The station takes it out of its environment when it starts:
+    its `exec` commands, jobs and agent runtimes do not inherit it.
 - **What a credential allows.** Both allow environment work and Salix's Tasks. Only a workload credential may
   quiesce, release and resume its runtime, and export or import its archive. An archive moves over the connection:
   the station uploads to, or downloads from, the pre-signed URLs Salix gives it.
@@ -88,7 +99,7 @@ with their update.
    Open: runtime auth and subscription access, dependency installations.
 2. Salix side.
    Done: device Workers as Task Sessions (`SalixWeb.StationTasks`), the workload credential on `/v1/connect`
-   (`Compute.WorkloadCredential`, with the generation and epoch fence), Cloud VM and Agent VMM providers issue it to
+   (`Compute.WorkloadCredential`, with the generation fence), Cloud VM and Agent VMM providers issue it to
    the containers they start.
    Open: archives through `archive_*`, Workload Workers as chats. The carrier and the
    Cloud VM reverse dial go (the old export stays for the switching release).

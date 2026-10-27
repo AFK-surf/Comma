@@ -12,6 +12,6 @@ export function crashRenderer() {
 function BrokenView(): never {
   const error = new TypeError("private exception message comma_sess_secret");
   error.stack =
-    "TypeError: private exception message\n    at privateFunction (file:///Users/private/index-abc123.js?secret=private:42:7)";
+    "TypeError: private exception message\n    at privateFunction (file:///Users/private/assets/index-abc123.js?secret=private:42:7)";
   throw error;
 }

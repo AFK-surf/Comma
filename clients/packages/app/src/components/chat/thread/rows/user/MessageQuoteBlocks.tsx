@@ -1,19 +1,19 @@
 import { useCommaMessages } from "@comma/i18n/react";
 import {
-  aiInputQuoteAttachment,
+  aiInputMessageQuote,
+  aiInputQuoteExcerpt,
   aiInputQuoteHoverCard,
   aiInputQuotePreview,
   aiInputQuotePreviewText,
   aiInputQuotePreviewTitle,
 } from "@comma/ui/components/ai-input";
-import { CloseQuoteIcon } from "@comma/ui/components/icons";
 import { HoverCard } from "@comma/ui/components/hover-card";
 
 /**
- * Passages the sender quoted from the thread. Each one is the same icon-only
- * tile as the composer's staged quote chip — the text shows in the identical
- * hover card, and the tile's label carries it for screen readers and keyboard
- * focus.
+ * Passages the sender quoted from the thread. Each one shows the passage's
+ * opening lines like the composer's staged quote chip, the whole text in the
+ * identical hover card, and the tile's label carries it for screen readers
+ * and keyboard focus.
  */
 export function MessageQuoteBlocks({
   messageId,
@@ -49,10 +49,12 @@ export function MessageQuoteBlocks({
           >
             <button
               aria-label={messagesApi.ui_ai_quoted_text_named({ text: quote })}
-              className={aiInputQuoteAttachment}
+              className={aiInputMessageQuote}
               type="button"
             >
-              <CloseQuoteIcon className="size-5" />
+              <span aria-hidden className={aiInputQuoteExcerpt}>
+                {quote}
+              </span>
             </button>
           </HoverCard>
         </div>

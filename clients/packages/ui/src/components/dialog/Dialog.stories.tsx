@@ -83,6 +83,34 @@ export const WithInput: Story = {
   ),
 };
 
+/** Makes something new, as Linear's New issue: where it goes › what it is, then the body's own fields and footer. */
+export const Compose: Story = {
+  render: () => (
+    <Dialog
+      trigger={<Button hierarchy="primary">Open compose dialog</Button>}
+      showCloseButton
+      title="New task"
+      titleLeading={
+        <span className="inline-flex h-3xl items-center rounded-full border-[0.5px] border-primary px-md text-xs text-secondary">
+          Comma cloud
+        </span>
+      }
+      variant="compose"
+    >
+      <div className="flex flex-col gap-lg">
+        <p className="m-0 min-h-[calc(var(--text-md--line-height)*3)] text-md text-placeholder">
+          What should it do?
+        </p>
+        <div className="flex justify-end">
+          <Button hierarchy="primary" size="xs">
+            Create task
+          </Button>
+        </div>
+      </div>
+    </Dialog>
+  ),
+};
+
 export const ThreeButtons: Story = {
   render: () => (
     <Dialog

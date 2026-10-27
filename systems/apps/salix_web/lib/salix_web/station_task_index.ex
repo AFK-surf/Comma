@@ -12,6 +12,7 @@ defmodule SalixWeb.StationTaskIndex do
   answered `rate_limited`.
   """
 
+  alias SalixEnv.StationConnection
   alias SalixStore.{StationTaskIndex, Stations}
 
   @pages_per_second 4
@@ -53,10 +54,26 @@ defmodule SalixWeb.StationTaskIndex do
   end
 
   @doc """
-  Applies a page from the run `view` (`tenant_id`, `group_id`, `device_id`)
-  whose relay registration proved `station_id`.
+  Applies a page from the authenticated connection `view`, whose relay
+  registration proved `station_id`. The run and its Workload generation must
+  still be current when the page is stored.
   """
   def receive_page(station_id, view, params) do
+    case StationConnection.with_current(
+           view,
+           fn _record -> apply_page(station_id, view, params) end,
+           lock: true
+         ) do
+      {:ok, held, changed_group} ->
+        if changed_group, do: invalidated(changed_group)
+        {:ok, held}
+
+      result ->
+        result
+    end
+  end
+
+  defp apply_page(station_id, view, params) do
     with true <- is_binary(station_id) || {:error, :not_this_group},
          {:ok, station} <- Stations.active_station(station_id),
          true <-
@@ -66,9 +83,9 @@ defmodule SalixWeb.StationTaskIndex do
         {:error, :station_removed} ->
           {:error, :not_this_group}
 
-        {:ok, held} = result ->
-          if held != StationTaskIndex.held(station), do: invalidated(station.group_id)
-          result
+        {:ok, held} ->
+          changed_group = if held != StationTaskIndex.held(station), do: station.group_id
+          {:ok, held, changed_group}
 
         result ->
           result

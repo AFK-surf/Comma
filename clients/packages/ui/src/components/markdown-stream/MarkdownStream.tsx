@@ -261,6 +261,11 @@ export const MarkdownStreamLinkDecoratorContext = createContext<
   MarkdownStreamLinkDecorator | undefined
 >(undefined);
 
+// The app's appearance, provided once at its root, so every stream (chat,
+// file preview, task pages) highlights code for the theme it is shown in. An
+// explicit `isDark` prop still wins.
+export const MarkdownStreamDarkContext = createContext(false);
+
 const defaultBlurAnimation = defaultContext.blurAnimation;
 const minBatchedCharacterFrameMs = 16;
 const maxCatchUpCharactersPerFrame = 240;
@@ -1624,6 +1629,10 @@ function CommaRevealingText({ content }: { content: string }) {
   const { final, settled, isDark } = useContext(MarkdownStreamContext);
   const ref = useRef<HTMLSpanElement>(null);
   const previousNode = useRef<Text | null>(null);
+  // The theme the leaf's colour was read in. The colour moves only with the
+  // theme, so a streamed chunk reads no style: a read in this effect forced the
+  // document's style once more for every chunk.
+  const colorTheme = useRef<boolean | undefined>(undefined);
   useLayoutEffect(() => {
     const element = ref.current;
     const node = element?.firstChild;
@@ -1644,11 +1653,15 @@ function CommaRevealingText({ content }: { content: string }) {
     // restyles the live tail instead of every reply in the transcript.
     element.toggleAttribute("data-comma-text-reveal", enabled);
     if (enabled) {
-      element.style.setProperty(
-        "--comma-stream-text-color",
-        getComputedStyle(element).color
-      );
+      if (colorTheme.current !== isDark) {
+        colorTheme.current = isDark;
+        element.style.setProperty(
+          "--comma-stream-text-color",
+          getComputedStyle(element).color
+        );
+      }
     } else {
+      colorTheme.current = undefined;
       element.style.removeProperty("--comma-stream-text-color");
     }
     if (!text) return;
@@ -4089,9 +4102,11 @@ export const MarkdownStream = ({
   inlineElements,
   documentResourcePolicy,
   htmlPolicy = "escape",
-  isDark = false,
+  isDark: isDarkProp,
   ...props
 }: MarkdownStreamProps) => {
+  const contextIsDark = useContext(MarkdownStreamDarkContext);
+  const isDark = isDarkProp ?? contextIsDark;
   // High-frequency streamed output is immediately readable. Blur playback is
   // retained only when a caller explicitly requests it.
   const animation = animationOption ?? (ensureBlurAnimation ? "blur" : "none");

@@ -20,6 +20,7 @@ import {
   parse,
   resolve,
 } from "node:path";
+import { realMainClock, type MainClock } from "../../clock";
 
 export const LOCAL_FILE_REF_VERSION = 1;
 export const LOCAL_FILE_INDEX_VERSION = 2;
@@ -31,6 +32,8 @@ export const LOCAL_FILE_REGISTERED_TTL_MS =
   LOCAL_FILE_DRAFT_TTL_MS + LOCAL_FILE_BOUND_TTL_MS;
 export const LOCAL_FILE_ORPHAN_GRACE_MS = 60 * 60 * 1_000;
 export const LOCAL_FILE_CHUNK_BYTES = 256 * 1024;
+/** The most of a snapshot one `readPart` gives: the client core reads a station's part (4 MiB) at a time. */
+const LOCAL_FILE_PART_MAX_BYTES = 16 * 1024 * 1024;
 const LOCAL_FILE_STARTUP_CLEANUP_RETRY_MS = 60_000;
 
 const LOCAL_FILE_REF_PATTERN = /^lfi1_[A-Za-z0-9_-]{43}$/;
@@ -72,8 +75,8 @@ type LocalFileIndexRecordV2 = LocalFileIndexRecordBase & {
 type LocalFileIndexRecord = LocalFileIndexRecordV1 | LocalFileIndexRecordV2;
 
 type SnapshotStoreOptions = {
+  clock?: MainClock;
   maxBytes?: number;
-  now?: () => number;
   randomBytes?: (size: number) => Buffer;
   rootDir: string;
   startupCleanupFileOperations?: StartupCleanupFileOperations;
@@ -120,9 +123,9 @@ export class LocalFileSnapshotStore {
   readonly #activeCleanupOperations = new Set<Promise<void>>();
   readonly #cleanupDirectories = new Map<CleanupDirectoryKind, Dir>();
   readonly #cleanupScanLocks: Promise<void>[] = [];
+  readonly #clock: MainClock;
   readonly #entriesDir: string;
   readonly #maxBytes: number;
-  readonly #now: () => number;
   readonly #objectsDir: string;
   readonly #randomBytes: (size: number) => Buffer;
   readonly #recordLifecycleLocks = new Map<string, Promise<void>>();
@@ -141,12 +144,12 @@ export class LocalFileSnapshotStore {
   #closePromise: Promise<void> | undefined;
 
   private constructor(options: SnapshotStoreOptions) {
+    this.#clock = options.clock ?? realMainClock;
     this.#rootDir = options.rootDir;
     this.#entriesDir = join(options.rootDir, "entries");
     this.#objectsDir = join(options.rootDir, "objects");
     this.#tmpDir = join(options.rootDir, "tmp");
     this.#maxBytes = options.maxBytes ?? LOCAL_FILE_MAX_BYTES;
-    this.#now = options.now ?? Date.now;
     this.#randomBytes = options.randomBytes ?? randomBytes;
     this.#startupCleanupFileOperations = options.startupCleanupFileOperations ?? {
       lstat,
@@ -232,7 +235,7 @@ export class LocalFileSnapshotStore {
 
       const displayName = sanitizeLocalFileDisplayName(basename(sourcePath));
       const record: LocalFileIndexRecordV2 = {
-        created_at_ms: this.#now(),
+        created_at_ms: this.#clock.now(),
         display_name: displayName,
         local_file_ref: ref,
         media_type: mediaTypeForName(displayName),
@@ -333,7 +336,7 @@ export class LocalFileSnapshotStore {
 
       await this.#replaceRecord({
         ...record,
-        created_at_ms: this.#now(),
+        created_at_ms: this.#clock.now(),
         state: "registered",
       });
       return true;
@@ -359,7 +362,7 @@ export class LocalFileSnapshotStore {
           "Local snapshot is unavailable."
         );
       }
-      const now = this.#now();
+      const now = this.#clock.now();
       const retentionStartedAt = Math.min(
         now,
         record.created_at_ms + LOCAL_FILE_DRAFT_TTL_MS
@@ -396,7 +399,10 @@ export class LocalFileSnapshotStore {
       if (!/^[A-Za-z0-9_-]{43}\.json$/.test(name)) continue;
       try {
         const record = await this.#readRecord(`lfi1_${name.slice(0, -5)}`);
-        if (record.state === "draft" && record.created_at_ms + ttlMs <= this.#now()) {
+        if (
+          record.state === "draft" &&
+          record.created_at_ms + ttlMs <= this.#clock.now()
+        ) {
           if (await this.#removeExpiredSnapshot(record, ttlMs)) removed += 1;
         }
       } catch {
@@ -457,7 +463,7 @@ export class LocalFileSnapshotStore {
               : record.state === "bound"
                 ? boundTtlMs
                 : undefined;
-        if (ttlMs !== undefined && record.created_at_ms + ttlMs <= this.#now()) {
+        if (ttlMs !== undefined && record.created_at_ms + ttlMs <= this.#clock.now()) {
           if (await this.#removeExpiredSnapshot(record, ttlMs)) removed += 1;
         }
       } catch {
@@ -495,7 +501,7 @@ export class LocalFileSnapshotStore {
     scanTemporaries?: boolean;
   } = {}) {
     const boundedLimit = Math.max(0, Math.min(10_000, limit));
-    const cutoff = this.#now() - Math.max(0, graceMs);
+    const cutoff = this.#clock.now() - Math.max(0, graceMs);
     const temporaries = scanTemporaries
       ? await this.#withStartupCleanupKindLock("temporaries", async () => {
           const window = await this.#nextStartupCleanupWindow(
@@ -589,7 +595,7 @@ export class LocalFileSnapshotStore {
    */
   startStartupArtifactCleanup({
     limit = 1_000,
-    retryAfterError = waitToRetryStartupCleanup,
+    retryAfterError = (signal) => waitToRetryStartupCleanup(this.#clock, signal),
     yieldBetweenBatches = yieldToEventLoop,
   }: {
     limit?: number;
@@ -636,6 +642,119 @@ export class LocalFileSnapshotStore {
     );
   }
 
+  /**
+   * A live snapshot's bytes as a stream, read a chunk at a time as the reader pulls them (the client core uploads a
+   * file this way, never holding it whole). The stream errors if the object is not the size and SHA-256 its record
+   * says, so a changed file never uploads as the one attached.
+   */
+  async openUploadSource(
+    localFileRef: string
+  ): Promise<{ size: number; stream: ReadableStream<Uint8Array> }> {
+    const record = await this.#readRecord(localFileRef);
+    if (record.state === "revoked") {
+      throw new LocalFileSnapshotError(
+        "local_file_unavailable",
+        "Local snapshot is unavailable."
+      );
+    }
+    const object = await open(
+      this.#objectPath(record.object_id),
+      constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0)
+    ).catch(() => {
+      throw new LocalFileSnapshotError(
+        "local_file_unavailable",
+        "Local snapshot is unavailable."
+      );
+    });
+    const hash = createHash("sha256");
+    let offset = 0;
+    const corrupt = () =>
+      new LocalFileSnapshotError("local_file_corrupt", "Local snapshot is corrupt.");
+    const stream = new ReadableStream<Uint8Array>({
+      pull: async (controller) => {
+        try {
+          if (offset === record.size) {
+            await object.close();
+            if (hash.digest("hex") !== record.sha256) controller.error(corrupt());
+            else controller.close();
+            return;
+          }
+          const chunk = Buffer.allocUnsafe(
+            Math.min(LOCAL_FILE_CHUNK_BYTES, record.size - offset)
+          );
+          const { bytesRead } = await object.read(chunk, 0, chunk.byteLength, offset);
+          if (bytesRead <= 0) throw corrupt();
+          const bytes = chunk.subarray(0, bytesRead);
+          hash.update(bytes);
+          offset += bytesRead;
+          controller.enqueue(new Uint8Array(bytes));
+        } catch (error) {
+          await object.close().catch(() => undefined);
+          controller.error(error);
+        }
+      },
+      cancel: () => object.close().catch(() => undefined),
+    });
+    return { size: record.size, stream };
+  }
+
+  /**
+   * `length` bytes of a live snapshot from `offset`, fewer only where it ends: a part of it as a station takes one (the
+   * client core sends a file up to a station a part at a time). The object is the copy Main keeps and nothing writes,
+   * read within its record's size; its SHA-256 is checked where it is read whole (`openUploadSource`).
+   */
+  async readPart(
+    localFileRef: string,
+    offset: number,
+    length: number
+  ): Promise<Uint8Array> {
+    const record = await this.#readRecord(localFileRef);
+    const unavailable = () =>
+      new LocalFileSnapshotError(
+        "local_file_unavailable",
+        "Local snapshot is unavailable."
+      );
+    if (record.state === "revoked") throw unavailable();
+    if (
+      !Number.isSafeInteger(offset) ||
+      !Number.isSafeInteger(length) ||
+      offset < 0 ||
+      length < 0 ||
+      length > LOCAL_FILE_PART_MAX_BYTES ||
+      offset > record.size
+    )
+      throw new LocalFileSnapshotError(
+        "local_file_unavailable",
+        "That part of the local snapshot is not there."
+      );
+    const object = await open(
+      this.#objectPath(record.object_id),
+      constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0)
+    ).catch(() => {
+      throw unavailable();
+    });
+    try {
+      const part = Buffer.allocUnsafe(Math.min(length, record.size - offset));
+      for (let have = 0; have < part.byteLength; ) {
+        const { bytesRead } = await object.read(
+          part,
+          have,
+          part.byteLength - have,
+          offset + have
+        );
+        if (bytesRead <= 0)
+          throw new LocalFileSnapshotError(
+            "local_file_corrupt",
+            "Local snapshot is corrupt."
+          );
+        have += bytesRead;
+      }
+      return new Uint8Array(part.buffer, part.byteOffset, part.byteLength);
+    } finally {
+      await object.close().catch(() => undefined);
+    }
+  }
+
   /** Test/diagnostic helper that still resolves only a managed ref. */
   async readSnapshot(localFileRef: string) {
     const record = await this.#readRecord(localFileRef);
@@ -655,7 +774,7 @@ export class LocalFileSnapshotStore {
         record.version !== LOCAL_FILE_INDEX_VERSION ||
         !validOwnerUserId(ownerUserId) ||
         record.owner_user_id !== ownerUserId ||
-        !previewLifecycleIsLive(record, this.#now())
+        !previewLifecycleIsLive(record, this.#clock.now())
       ) {
         throw previewUnavailable();
       }
@@ -981,7 +1100,7 @@ export class LocalFileSnapshotStore {
       const current = await this.#readRecord(expected.local_file_ref);
       if (
         !sameLifecycleRecord(current, expected) ||
-        current.created_at_ms + ttlMs > this.#now()
+        current.created_at_ms + ttlMs > this.#clock.now()
       ) {
         return false;
       }
@@ -1384,10 +1503,11 @@ export async function readBoundedLocalFileSource(
 }
 
 async function openVerifiedLocalFileSource(
-  sourcePath: string,
+  selectedPath: string,
   maxBytes: number
 ): Promise<{ source: FileHandle; stat: BigIntStats }> {
-  requireLocalFileSourcePath(sourcePath);
+  requireLocalFileSourcePath(selectedPath);
+  const sourcePath = throughMacosPrivateAlias(selectedPath);
   await rejectSymlinkAncestors(sourcePath);
 
   let selectedIdentity: BigIntStats;
@@ -1437,6 +1557,24 @@ async function openVerifiedLocalFileSource(
     await source?.close();
     throw error;
   }
+}
+
+const MACOS_PRIVATE_ALIASES = ["/var/", "/tmp/"];
+
+/**
+ * macOS ships `/var` and `/tmp` as root-owned, SIP-protected links into `/private`, and temporary files arrive under
+ * them: a screenshot dragged from its thumbnail, or from most capture tools, is in `/var/folders/…`. A path through one
+ * is read as its `/private` target; a link anywhere else, `/etc` included, still turns the file away.
+ */
+export function throughMacosPrivateAlias(
+  sourcePath: string,
+  platform: NodeJS.Platform = process.platform
+) {
+  const absolute = resolve(sourcePath);
+  if (platform !== "darwin") return absolute;
+  return MACOS_PRIVATE_ALIASES.some((alias) => absolute.startsWith(alias))
+    ? `/private${absolute}`
+    : absolute;
 }
 
 function requireLocalFileSourcePath(sourcePath: string) {
@@ -1503,19 +1641,18 @@ function yieldToEventLoop(signal: AbortSignal) {
   });
 }
 
-function waitToRetryStartupCleanup(signal: AbortSignal) {
+function waitToRetryStartupCleanup(clock: MainClock, signal: AbortSignal) {
   if (signal.aborted) return Promise.resolve();
   return new Promise<void>((resolveWait) => {
     let settled = false;
     const finish = () => {
       if (settled) return;
       settled = true;
-      clearTimeout(timeout);
+      cancelTimeout();
       signal.removeEventListener("abort", finish);
       resolveWait();
     };
-    const timeout = setTimeout(finish, LOCAL_FILE_STARTUP_CLEANUP_RETRY_MS);
-    timeout.unref();
+    const cancelTimeout = clock.setTimer(LOCAL_FILE_STARTUP_CLEANUP_RETRY_MS, finish);
     signal.addEventListener("abort", finish, { once: true });
     if (signal.aborted) finish();
   });

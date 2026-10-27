@@ -1,3 +1,4 @@
+import { openMiniAppRunLink } from "../../miniAppRunLink";
 import {
   getNativeBridge,
   maxBrowserSidebarSessionsPerOwner,
@@ -36,7 +37,13 @@ export type ChatSidebarConversationTarget = ChatSidebarHost & {
   title?: string | undefined;
 };
 
+/** What a browser tab holds: a web page, or a coding sandbox's terminal, which has no address bar. */
+export type ChatSidebarBrowserKind = "page" | "terminal";
+
 export type ChatSidebarBrowserTarget = {
+  kind?: ChatSidebarBrowserKind | undefined;
+  /** A terminal's Task: the Task has one terminal tab, which opening it again brings to the front and reconnects. */
+  taskId?: string | undefined;
   title?: string | undefined;
   url: string;
 };
@@ -45,7 +52,11 @@ export type ChatSidebarBrowserPage = {
   closeBeforeOpenSessionIds?: string[] | undefined;
   favicon?: string | undefined;
   id: string;
+  /** A terminal tab; a page where not given. */
+  kind?: ChatSidebarBrowserKind | undefined;
   navigationRevision: number;
+  /** The Task a terminal tab belongs to. */
+  taskId?: string | undefined;
   title?: string | undefined;
   url: string;
 };
@@ -65,6 +76,24 @@ export type ChatSidebarHistoryPage = {
   >;
 };
 
+/** A coding Task's changes as a tab: its session branch's diff, from its sandbox or GitHub. One tab per Task. */
+export type ChatSidebarChangesPage = {
+  id: string;
+  workspaceId: string;
+  taskId: string;
+  /** The session branch, for the tab's name. */
+  branch?: string | undefined;
+  /** The branch it starts from, and the repository, for the tab's links to GitHub. */
+  base?: string | undefined;
+  repo?: { owner: string; name: string } | undefined;
+  /** The file the tab shows first; opening the tab again at another file changes it. */
+  file?: string | undefined;
+  /** The sandbox ran when the tab was opened, so a pull request can be made from it. */
+  ready?: boolean | undefined;
+  /** Counts the times the tab was opened: each one reads the changes again. */
+  revision: number;
+};
+
 export type ChatSidebarFilePreview = { id: string; source: ConversationFileSource };
 
 /** A computer's screen, live, as a tab: the big screen of a computer-use session. */
@@ -81,13 +110,25 @@ export function screenPageId(page: Pick<ChatSidebarScreenPage, "device" | "apps"
   return JSON.stringify([page.device, ...page.apps]);
 }
 
+/** A Mini App running beside the chat: one tab per app. */
+export type ChatSidebarAppPage = {
+  id: string;
+  appId: string;
+  workspaceId: string;
+  name: string;
+  /** The Version a Task's card previews; the app's live Version where not given. */
+  version?: number | undefined;
+};
+
 export type ChatSidebarSurface =
+  | "app"
   | "browser"
   | "chat"
   | "drive"
   | "history"
   | "file"
-  | "screen";
+  | "screen"
+  | "changes";
 
 export type ChatSidebarSession = {
   activeBrowserPageId?: string | undefined;
@@ -101,20 +142,28 @@ export type ChatSidebarSession = {
   drivePreviews: ChatSidebarDrivePreview[];
   historyPages?: ChatSidebarHistoryPage[];
   activeHistoryPageId?: string | undefined;
+  changesPages?: ChatSidebarChangesPage[];
+  activeChangesPageId?: string | undefined;
   screenPages?: ChatSidebarScreenPage[];
   activeScreenPageId?: string | undefined;
+  appPages?: ChatSidebarAppPage[];
+  activeAppPageId?: string | undefined;
 };
 
 export type ChatSidebarContextValue = {
   activeHost?: ChatSidebarHost | undefined;
   activeSession?: ChatSidebarSession | undefined;
+  /** The host the sidebar shows now, read when an action needs it. */
+  getActiveHost: () => ChatSidebarHost | undefined;
   addBrowserTab: (host: ChatSidebarHost) => void;
   canOpenChildChat: (host: ChatSidebarHost) => boolean;
   closeBrowserPage: (host: ChatSidebarHost, pageId: string) => void;
   closeChat: (host: ChatSidebarHost, chatId?: string) => void;
   closeDrivePreview: (host: ChatSidebarHost, previewId: string) => void;
   closeHistoryPage: (host: ChatSidebarHost, pageId: string) => void;
+  closeChangesPage: (host: ChatSidebarHost, pageId: string) => void;
   closeScreenPage: (host: ChatSidebarHost, pageId: string) => void;
+  closeAppPage: (host: ChatSidebarHost, pageId: string) => void;
   getNativeBrowserCapacityBlockedEpoch: (sessionId: string) => number | undefined;
   isOpen: boolean;
   nativeBrowserCapacityEpoch: number;
@@ -129,20 +178,17 @@ export type ChatSidebarContextValue = {
     host: ChatSidebarHost,
     target: Omit<ChatSidebarHistoryPage, "id">
   ) => void;
+  /** Opens (or returns to) a coding Task's changes tab, at `file` when given. */
+  openCodingChanges: (
+    host: ChatSidebarHost,
+    target: Omit<ChatSidebarChangesPage, "id" | "revision">
+  ) => void;
   openScreen: (
     host: ChatSidebarHost,
     target: Omit<ChatSidebarScreenPage, "id">
   ) => void;
-  /**
-   * Width the trailing sidebar has yet to take from `host`'s row: positive
-   * while it opens, negative while it closes, 0 once its width transition has
-   * settled or while it is not animating. Responsive folds beside the sidebar
-   * (the Task details column, Home's rails) subtract it from what they measure
-   * so they fold for the layout the reader will see, not for a frame in
-   * flight — deciding from the in-flight width squeezes the chat, folds late,
-   * then lets the chat spring back. Elements inside the sidebar owe nothing.
-   */
-  pendingTrailingWidth: (host: Element) => number;
+  /** Opens (or returns to) a Mini App's tab. */
+  openApp: (host: ChatSidebarHost, target: Omit<ChatSidebarAppPage, "id">) => void;
   registerHost: (
     host: ChatSidebarHost,
     options?: { commaCenter?: boolean | undefined; owner?: object | undefined }
@@ -161,7 +207,9 @@ export type ChatSidebarContextValue = {
   selectChat: (host: ChatSidebarHost, chatId?: string) => void;
   selectDrivePreview: (host: ChatSidebarHost, previewId: string) => void;
   selectHistoryPage: (host: ChatSidebarHost, pageId: string) => void;
+  selectChangesPage: (host: ChatSidebarHost, pageId: string) => void;
   selectScreenPage: (host: ChatSidebarHost, pageId: string) => void;
+  selectAppPage: (host: ChatSidebarHost, pageId: string) => void;
   toggle: (host: ChatSidebarHost) => void;
   toggleActive: () => void;
   /** The sidebar aside; the surface that renders it attaches the element. */
@@ -177,6 +225,22 @@ export type ChatSidebarContextValue = {
     patch: Partial<Pick<ChatSidebarBrowserPage, "title" | "url">>
   ) => void;
 };
+
+/**
+ * What acts on the sidebar, without what it shows. Each action is the same
+ * function for the provider's life, so a surface that only opens or registers
+ * things in the sidebar renders for none of its changes: the host each route
+ * registers, a tab's title, a browser view's state.
+ */
+export type ChatSidebarActions = Omit<
+  ChatSidebarContextValue,
+  | "activeHost"
+  | "activeSession"
+  | "canOpenChildChat"
+  | "isOpen"
+  | "nativeBrowserCapacityEpoch"
+  | "nativeBrowserStates"
+>;
 
 // The sidebar width changes on every pointer move of a resize drag; it lives
 // in its own context so only width consumers re-render while dragging.
@@ -194,6 +258,10 @@ type ChatSidebarRegistry = {
 
 const maxRememberedCommaLineageChats = 96;
 const ChatSidebarContext = createContext<ChatSidebarContextValue | null>(null);
+const ChatSidebarActionsContext = createContext<ChatSidebarActions | null>(null);
+// Whether the sidebar is open changes only when it opens or closes: layout that
+// answers to it reads it alone.
+const ChatSidebarOpenContext = createContext(false);
 const ChatSidebarWidthContext = createContext<ChatSidebarWidthContextValue | null>(
   null
 );
@@ -206,6 +274,8 @@ const emptySession = (): ChatSidebarSession => ({
   historyPages: [],
   filePreviews: [],
   screenPages: [],
+  changesPages: [],
+  appPages: [],
 });
 
 export function activeSidebarChat(session: ChatSidebarSession | undefined) {
@@ -229,6 +299,13 @@ const globalBrowserHost: ChatSidebarHost = {
  */
 export const driveSidebarHost: ChatSidebarHost = {
   conversationId: "__global_drive__",
+  groupId: "__global__",
+  workspaceId: "__global__",
+};
+
+/** The Apps gallery's apps open beside it on one shared host, as Drive's previews do. */
+export const appsSidebarHost: ChatSidebarHost = {
+  conversationId: "__global_apps__",
   groupId: "__global__",
   workspaceId: "__global__",
 };
@@ -275,17 +352,6 @@ export function ChatSidebarProvider({ children }: { children: ReactNode }) {
   const pendingHostOwner = useRef<object | undefined>(undefined);
   const globalSidebarOwner = useRef<object | undefined>(undefined);
   const trailingRef = useRef<HTMLElement | null>(null);
-  const pendingTrailingWidth = useCallback<
-    ChatSidebarContextValue["pendingTrailingWidth"]
-  >((host) => {
-    const aside = trailingRef.current;
-    if (!aside || aside.contains(host)) return 0;
-    // The aside's own width is what transitions; its content keeps the
-    // settled width throughout (the surface is pinned to the rendered width,
-    // see styles.css), so the content extent is the width it is heading for.
-    const target = aside.dataset.open === "true" ? aside.scrollWidth : 0;
-    return target - aside.getBoundingClientRect().width;
-  }, []);
   const [width, setWidthState] = useState(commaChatSidebarDefaultWidth);
   const [registry, setRegistry] = useState<ChatSidebarRegistry>({
     commaCenterLineage: new Set(),
@@ -307,9 +373,12 @@ export function ChatSidebarProvider({ children }: { children: ReactNode }) {
     new Map()
   );
   const registrySessionsRef = useRef(registry.sessions);
+  const activeHostRef = useRef(registry.activeHost);
   const retainedNativeBrowserSessionsRef = useRef<ReadonlySet<string>>(new Set());
   const providerMountedRef = useRef(true);
   registrySessionsRef.current = registry.sessions;
+  activeHostRef.current = registry.activeHost;
+  const getActiveHost = useCallback(() => activeHostRef.current, []);
 
   const observeNativeBrowserState = useCallback((state: BrowserSidebarState) => {
     const sessionId = state.sessionId;
@@ -544,16 +613,50 @@ export function ChatSidebarProvider({ children }: { children: ReactNode }) {
 
   const openBrowser = useCallback<ChatSidebarContextValue["openBrowser"]>(
     (host, target) => {
+      if (openMiniAppRunLink(target.url)) return;
       const url = safeBrowserUrl(target.url);
       if (!url) return;
       const pageId = createBrowserPageId();
       setRegistry((current) => {
+        // A Task's terminal has one tab: it comes to the front and loads its address again (a sandbox that came
+        // back may answer at a new one), so the dead page of a stopped sandbox reconnects.
+        const terminal =
+          target.kind === "terminal" && target.taskId
+            ? current.sessions
+                .get(chatSidebarHostKey(host))
+                ?.browserPages.find(
+                  (page) => page.kind === "terminal" && page.taskId === target.taskId
+                )
+            : undefined;
+        if (terminal) {
+          const sessions = updateSidebarSession(current.sessions, host, (session) => ({
+            ...session,
+            activeBrowserPageId: terminal.id,
+            activeSurface: "browser",
+            browserPages: session.browserPages.map((page) =>
+              page.id === terminal.id
+                ? { ...page, url, navigationRevision: page.navigationRevision + 1 }
+                : page
+            ),
+          }));
+          return {
+            ...current,
+            openSessionKeys: openSidebarSession(
+              current.openSessionKeys,
+              sessions,
+              host
+            ),
+            sessions,
+          };
+        }
         const sessions = updateSidebarSession(
           current.sessions,
           host,
           (session) => {
             const page: ChatSidebarBrowserPage = {
               id: pageId,
+              ...(target.kind ? { kind: target.kind } : {}),
+              ...(target.taskId ? { taskId: target.taskId } : {}),
               navigationRevision: 1,
               title: target.title,
               url,
@@ -743,7 +846,9 @@ export function ChatSidebarProvider({ children }: { children: ReactNode }) {
           session.drivePreviews.length === 0 &&
           !session.historyPages?.length &&
           !session.filePreviews?.length &&
-          !session.screenPages?.length
+          !session.screenPages?.length &&
+          !session.changesPages?.length &&
+          !session.appPages?.length
         ) {
           touchSidebarSession(sessions, key, emptySession());
           return finishSidebarTabClose(current, sessions, host);
@@ -976,7 +1081,9 @@ export function ChatSidebarProvider({ children }: { children: ReactNode }) {
           !session.chats.length &&
           !session.historyPages?.length &&
           !session.filePreviews?.length &&
-          !session.screenPages?.length
+          !session.screenPages?.length &&
+          !session.changesPages?.length &&
+          !session.appPages?.length
         ) {
           touchSidebarSession(sessions, key, emptySession());
           return finishSidebarTabClose(current, sessions, host);
@@ -1081,6 +1188,71 @@ export function ChatSidebarProvider({ children }: { children: ReactNode }) {
     []
   );
 
+  const openApp = useCallback<ChatSidebarContextValue["openApp"]>((host, target) => {
+    const id = target.appId;
+    setRegistry((current) => {
+      const sessions = updateSidebarSession(current.sessions, host, (session) => {
+        const pages = session.appPages ?? [];
+        const page = { ...target, id };
+        return {
+          ...session,
+          activeSurface: "app",
+          activeAppPageId: id,
+          // At most three apps run at once: reopening an app focuses its tab.
+          appPages: pages.some((item) => item.id === id)
+            ? pages.map((item) => (item.id === id ? page : item))
+            : [...pages.slice(-2), page],
+        };
+      });
+      return {
+        ...current,
+        sessions,
+        openSessionKeys: openSidebarSession(current.openSessionKeys, sessions, host),
+      };
+    });
+  }, []);
+
+  const selectAppPage = useCallback<ChatSidebarContextValue["selectAppPage"]>(
+    (host, pageId) => {
+      setRegistry((current) => {
+        const key = chatSidebarHostKey(host);
+        const session = current.sessions.get(key);
+        if (!session?.appPages?.some((page) => page.id === pageId)) return current;
+        const sessions = new Map(current.sessions);
+        touchSidebarSession(sessions, key, {
+          ...session,
+          activeSurface: "app",
+          activeAppPageId: pageId,
+        });
+        return { ...current, sessions };
+      });
+    },
+    []
+  );
+
+  const closeAppPage = useCallback<ChatSidebarContextValue["closeAppPage"]>(
+    (host, pageId) => {
+      setRegistry((current) => {
+        const key = chatSidebarHostKey(host);
+        const session = current.sessions.get(key);
+        const index = session?.appPages?.findIndex((page) => page.id === pageId) ?? -1;
+        if (!session || index < 0) return current;
+        const appPages = session.appPages!.filter((page) => page.id !== pageId);
+        const sessions = new Map(current.sessions);
+        touchSidebarSession(sessions, key, {
+          ...session,
+          appPages,
+          activeAppPageId:
+            session.activeAppPageId === pageId
+              ? appPages[Math.min(index, appPages.length - 1)]?.id
+              : session.activeAppPageId,
+        });
+        return finishSidebarTabClose(current, sessions, host);
+      });
+    },
+    []
+  );
+
   const selectScreenPage = useCallback<ChatSidebarContextValue["selectScreenPage"]>(
     (host, pageId) => {
       setRegistry((current) => {
@@ -1117,6 +1289,90 @@ export function ChatSidebarProvider({ children }: { children: ReactNode }) {
             session.activeScreenPageId === pageId
               ? screenPages[Math.min(index, screenPages.length - 1)]?.id
               : session.activeScreenPageId,
+        });
+        return finishSidebarTabClose(current, sessions, host);
+      });
+    },
+    []
+  );
+
+  const openCodingChanges = useCallback<ChatSidebarContextValue["openCodingChanges"]>(
+    (host, target) => {
+      const id = JSON.stringify([target.workspaceId, target.taskId]);
+      setRegistry((current) => {
+        const sessions = updateSidebarSession(current.sessions, host, (session) => {
+          const pages = session.changesPages ?? [];
+          const shown = pages.find((item) => item.id === id);
+          // Opening the tab again reads the changes again and lands on the file pressed.
+          const page = { ...target, id, revision: (shown?.revision ?? -1) + 1 };
+          return {
+            ...session,
+            activeSurface: "changes",
+            activeChangesPageId: id,
+            changesPages: shown
+              ? pages.map((item) => (item.id === id ? page : item))
+              : [...pages.slice(-23), page],
+          };
+        });
+        return {
+          ...current,
+          sessions,
+          openSessionKeys: openSidebarSession(current.openSessionKeys, sessions, host),
+        };
+      });
+    },
+    []
+  );
+
+  const selectChangesPage = useCallback<ChatSidebarContextValue["selectChangesPage"]>(
+    (host, pageId) => {
+      setRegistry((current) => {
+        const key = chatSidebarHostKey(host);
+        const session = current.sessions.get(key);
+        if (!session?.changesPages?.some((page) => page.id === pageId)) return current;
+        const sessions = new Map(current.sessions);
+        touchSidebarSession(sessions, key, {
+          ...session,
+          activeSurface: "changes",
+          activeChangesPageId: pageId,
+        });
+        return { ...current, sessions };
+      });
+    },
+    []
+  );
+
+  const closeChangesPage = useCallback<ChatSidebarContextValue["closeChangesPage"]>(
+    (host, pageId) => {
+      setRegistry((current) => {
+        const key = chatSidebarHostKey(host);
+        const session = current.sessions.get(key);
+        const index =
+          session?.changesPages?.findIndex((page) => page.id === pageId) ?? -1;
+        if (!session || index < 0) return current;
+        const changesPages = session.changesPages!.filter((page) => page.id !== pageId);
+        const closingActive =
+          session.activeSurface === "changes" && session.activeChangesPageId === pageId;
+        const sessions = new Map(current.sessions);
+        const activeChangesPageId =
+          session.activeChangesPageId === pageId
+            ? changesPages[Math.min(index, changesPages.length - 1)]?.id
+            : session.activeChangesPageId;
+        const activeSurface =
+          closingActive && !changesPages.length
+            ? session.chats.length
+              ? "chat"
+              : session.browserPages.length
+                ? "browser"
+                : session.historyPages?.length
+                  ? "history"
+                  : "drive"
+            : session.activeSurface;
+        touchSidebarSession(sessions, key, {
+          ...session,
+          changesPages,
+          activeChangesPageId,
+          activeSurface,
         });
         return finishSidebarTabClose(current, sessions, host);
       });
@@ -1180,6 +1436,7 @@ export function ChatSidebarProvider({ children }: { children: ReactNode }) {
 
   const updateBrowserPage = useCallback<ChatSidebarContextValue["updateBrowserPage"]>(
     (host, pageId, patch) => {
+      if (patch.url && openMiniAppRunLink(patch.url)) return;
       setRegistry((current) => {
         const sessions = updateBrowserPageInRegistry(
           current.sessions,
@@ -1231,22 +1488,18 @@ export function ChatSidebarProvider({ children }: { children: ReactNode }) {
     activeSession &&
     registry.openSessionKeys.has(chatSidebarHostKey(registry.activeHost))
   );
-  const value = useMemo<ChatSidebarContextValue>(
+  const actions = useMemo<ChatSidebarActions>(
     () => ({
-      activeHost: registry.activeHost,
-      activeSession,
       addBrowserTab,
-      canOpenChildChat: (host) =>
-        registry.commaCenterLineage.has(chatSidebarHostKey(host)),
       closeBrowserPage,
       closeChat,
       closeDrivePreview,
       closeHistoryPage,
+      closeChangesPage,
       closeScreenPage,
+      closeAppPage,
+      getActiveHost,
       getNativeBrowserCapacityBlockedEpoch,
-      isOpen,
-      nativeBrowserCapacityEpoch,
-      nativeBrowserStates,
       openBrowser,
       openChat,
       openDrivePreview,
@@ -1254,8 +1507,9 @@ export function ChatSidebarProvider({ children }: { children: ReactNode }) {
       selectFilePreview,
       closeFilePreview,
       openSessionHistory,
+      openCodingChanges,
       openScreen,
-      pendingTrailingWidth,
+      openApp,
       registerHost,
       registerPendingHost,
       recordNativeBrowserState,
@@ -1263,7 +1517,9 @@ export function ChatSidebarProvider({ children }: { children: ReactNode }) {
       selectChat,
       selectDrivePreview,
       selectHistoryPage,
+      selectChangesPage,
       selectScreenPage,
+      selectAppPage,
       toggle,
       toggleActive,
       trailingRef,
@@ -1271,17 +1527,16 @@ export function ChatSidebarProvider({ children }: { children: ReactNode }) {
       updateBrowserPageMetadata,
     }),
     [
-      activeSession,
       addBrowserTab,
       closeBrowserPage,
       closeChat,
       closeDrivePreview,
       closeHistoryPage,
+      closeChangesPage,
       closeScreenPage,
+      closeAppPage,
+      getActiveHost,
       getNativeBrowserCapacityBlockedEpoch,
-      isOpen,
-      nativeBrowserCapacityEpoch,
-      nativeBrowserStates,
       openBrowser,
       openChat,
       openDrivePreview,
@@ -1289,22 +1544,44 @@ export function ChatSidebarProvider({ children }: { children: ReactNode }) {
       selectFilePreview,
       closeFilePreview,
       openSessionHistory,
+      openCodingChanges,
       openScreen,
-      pendingTrailingWidth,
+      openApp,
       registerHost,
       registerPendingHost,
       recordNativeBrowserState,
-      registry.activeHost,
-      registry.commaCenterLineage,
       selectBrowserPage,
       selectChat,
       selectDrivePreview,
       selectHistoryPage,
+      selectChangesPage,
       selectScreenPage,
+      selectAppPage,
       toggle,
       toggleActive,
       updateBrowserPage,
       updateBrowserPageMetadata,
+    ]
+  );
+  const value = useMemo<ChatSidebarContextValue>(
+    () => ({
+      ...actions,
+      activeHost: registry.activeHost,
+      activeSession,
+      canOpenChildChat: (host) =>
+        registry.commaCenterLineage.has(chatSidebarHostKey(host)),
+      isOpen,
+      nativeBrowserCapacityEpoch,
+      nativeBrowserStates,
+    }),
+    [
+      actions,
+      activeSession,
+      isOpen,
+      nativeBrowserCapacityEpoch,
+      nativeBrowserStates,
+      registry.activeHost,
+      registry.commaCenterLineage,
     ]
   );
   const widthValue = useMemo<ChatSidebarWidthContextValue>(
@@ -1313,11 +1590,15 @@ export function ChatSidebarProvider({ children }: { children: ReactNode }) {
   );
 
   return (
-    <ChatSidebarContext.Provider value={value}>
-      <ChatSidebarWidthContext.Provider value={widthValue}>
-        {children}
-      </ChatSidebarWidthContext.Provider>
-    </ChatSidebarContext.Provider>
+    <ChatSidebarActionsContext.Provider value={actions}>
+      <ChatSidebarOpenContext.Provider value={isOpen}>
+        <ChatSidebarContext.Provider value={value}>
+          <ChatSidebarWidthContext.Provider value={widthValue}>
+            {children}
+          </ChatSidebarWidthContext.Provider>
+        </ChatSidebarContext.Provider>
+      </ChatSidebarOpenContext.Provider>
+    </ChatSidebarActionsContext.Provider>
   );
 }
 
@@ -1341,6 +1622,24 @@ export function useOptionalChatSidebar() {
   return useContext(ChatSidebarContext);
 }
 
+/** The sidebar's actions alone, for a surface that does not show the sidebar's state. */
+export function useChatSidebarActions() {
+  const context = useContext(ChatSidebarActionsContext);
+  if (!context) {
+    throw new Error("useChatSidebarActions must be used within ChatSidebarProvider");
+  }
+  return context;
+}
+
+export function useOptionalChatSidebarActions() {
+  return useContext(ChatSidebarActionsContext);
+}
+
+/** Whether the sidebar is open; false outside a sidebar's provider. */
+export function useChatSidebarOpen() {
+  return useContext(ChatSidebarOpenContext);
+}
+
 /**
  * Registers the route's conversation as the sidebar host. `awaitingHost`: the
  * route will have a host once its conversation loads, so a sidebar the reader
@@ -1350,7 +1649,7 @@ export function useRegisterChatSidebarHost(
   host: ChatSidebarHost | undefined,
   options?: { awaitingHost?: boolean | undefined; commaCenter?: boolean | undefined }
 ) {
-  const { registerHost, registerPendingHost } = useChatSidebar();
+  const { registerHost, registerPendingHost } = useChatSidebarActions();
   const [owner] = useState(() => ({}));
   const conversationId = host?.conversationId;
   const groupId = host?.groupId;
@@ -1559,7 +1858,9 @@ function finishSidebarTabClose(
       session.drivePreviews.length > 0 ||
       (session.historyPages?.length ?? 0) > 0 ||
       (session.filePreviews?.length ?? 0) > 0 ||
-      (session.screenPages?.length ?? 0) > 0);
+      (session.screenPages?.length ?? 0) > 0 ||
+      (session.changesPages?.length ?? 0) > 0 ||
+      (session.appPages?.length ?? 0) > 0);
   if (hasTabs || !current.openSessionKeys.has(key)) return { ...current, sessions };
   const openSessionKeys = new Set(current.openSessionKeys);
   openSessionKeys.delete(key);
@@ -1739,7 +2040,9 @@ function limitBrowserPageSessions(
       session.drivePreviews.length === 0 &&
       !session.historyPages?.length &&
       !session.filePreviews?.length &&
-      !session.screenPages?.length
+      !session.screenPages?.length &&
+      !session.changesPages?.length &&
+      !session.appPages?.length
     ) {
       sessions.delete(hostKey);
       continue;

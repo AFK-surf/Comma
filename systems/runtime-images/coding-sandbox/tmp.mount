@@ -1,0 +1,18 @@
+[Unit]
+Description=Disk-backed temporary directory
+ConditionPathIsSymbolicLink=!/tmp
+DefaultDependencies=no
+Conflicts=umount.target
+Before=local-fs.target umount.target
+
+[Mount]
+# The writable root overlay lives on the sandbox data disk, like Docker's data.
+# Bind it to itself to retain nosuid/nodev without the vendor unit's tmpfs.
+What=/tmp
+Where=/tmp
+Type=none
+Options=bind,nosuid,nodev
+DirectoryMode=1777
+
+[Install]
+WantedBy=local-fs.target

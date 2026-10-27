@@ -1,3 +1,4 @@
+import { realMainClock } from "../../../src/main/clock";
 import { SitePermissionMenuWindow } from "../../../src/main/site-permission-menu-window";
 // Test-only process composition. Real gateway, preload, owner and windows; audio
 // hardware/Drive transport are explicit controllable boundaries, never dev data.
@@ -472,8 +473,8 @@ void app.whenReady().then(async () => {
         throw new Error("fixture capture is owned above");
       },
     }),
-    setInterval: () => 0,
-    clearInterval: () => {},
+    // No polling: the fixture moves the meetings itself.
+    clock: { ...realMainClock, setTimer: () => () => {} },
     readBrowserMeetings: async () => browser?.readMeetings() ?? [],
     onStateChanged: (state) => owner.presenceChanged(state),
   });

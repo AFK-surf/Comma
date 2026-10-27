@@ -58,11 +58,12 @@
     <string name="routines_opens_task">Opens the task</string>
     <string name="routines_adds_prompt">Adds to your message to Comma</string>
     <string name="routines_opens_link">Opens the link</string>
+    <string name="routines_dismiss">Don’t remind me</string>
+    <string name="routines_dismiss_failed">Couldn’t remove this item. Try again.</string>
     <string name="routines_platforms">Platforms</string>
     <string name="routines_card_position">Card %1$d of %2$d</string>
     <string name="task_status_switcher">Task status</string>
     <string name="task_pinned">Pinned</string>
-    <string name="task_stale">Stale</string>
     <string name="task_now">now</string>
     <string name="task_action_done">Mark as done</string>
     <string name="task_action_rename">Rename</string>
@@ -74,7 +75,6 @@
     <string name="task_rename_title">Rename task</string>
     <string name="task_rename_hint">Title</string>
     <string name="task_archive_not_finished">Finish the task before archiving</string>
-    <string name="task_archive_scheduled">Remove the recurring schedule before archiving</string>
     <string name="task_archived_toast">Archived</string>
     <string name="task_restore_busy">The task is already being archived or restored. Try again shortly.</string>
     <string name="task_no_archived">No archived tasks</string>
@@ -90,6 +90,9 @@
     <string name="task_details_manage_labels">Manage labels…</string>
     <string name="task_details_change_status">Changes the task’s status</string>
     <string name="task_details_worker_steps">Shows the Worker’s steps</string>
+    <string name="task_details_machine">Runs on</string>
+    <string name="task_machine_fallback">Computer</string>
+    <string name="task_offline">%1$s · Offline</string>
     <string name="share_title">Share task</string>
     <string name="share_footer">Anyone with the link can read this task’s messages up to when it was shared. They can’t send messages or see your workspace.</string>
     <string name="share_link">Link</string>

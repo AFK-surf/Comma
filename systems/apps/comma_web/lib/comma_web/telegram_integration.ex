@@ -9,6 +9,9 @@ defmodule CommaWeb.TelegramIntegration do
   alias CommaWeb.{TelegramBot, TelegramCommands, TelegramOIDC, TelegramTaskCards}
   alias SalixIM.{ProviderConnects, ProviderHTTP}
 
+  @tasks_shown 8
+  @tasks_pages 3
+
   def state(user, session, workspace_id) do
     with {:ok, workspace, link} <- TelegramLinks.get(user, session, workspace_id) do
       configured? = TelegramBot.configured?()
@@ -236,10 +239,8 @@ defmodule CommaWeb.TelegramIntegration do
   defp send_tasks(identity) do
     case TelegramLinks.resolve_sender(identity["id"]) do
       {:ok, %{user: user, workspace: workspace}} ->
-        with {:ok, page} <-
-               Comma.Conversations.list_page(user, %{}, workspace["default_group_id"], limit: 8) do
-          tasks = page["data"]
-
+        with {:ok, dismissed} <- Comma.TaskPanelDismissals.list(user["id"]),
+             {:ok, tasks} <- recent_tasks(user, workspace["default_group_id"], dismissed) do
           if tasks == [] do
             reply(identity, :no_tasks, workspace["name"])
           else
@@ -290,6 +291,35 @@ defmodule CommaWeb.TelegramIntegration do
       {:error, :telegram_not_linked} ->
         reply(identity, :not_linked)
     end
+  end
+
+  # A page leaves out its archived Tasks, and the list leaves out the settled
+  # Tasks the User dismissed, so it reads on until it has @tasks_shown Tasks:
+  # at most @tasks_pages pages.
+  defp recent_tasks(user, group_id, dismissed, cursor \\ nil, kept \\ [], pages \\ @tasks_pages) do
+    with {:ok, page} <-
+           Comma.Conversations.list_page(user, %{}, group_id,
+             limit: @tasks_shown,
+             cursor: cursor
+           ) do
+      kept = kept ++ Enum.reject(page["data"], &dismissed?(&1, dismissed))
+
+      if length(kept) < @tasks_shown and pages > 1 and page["has_more"] == true and
+           is_binary(page["next_cursor"]) do
+        recent_tasks(user, group_id, dismissed, page["next_cursor"], kept, pages - 1)
+      else
+        {:ok, Enum.take(kept, @tasks_shown)}
+      end
+    end
+  end
+
+  # The chat Task panel's rule: a settled Task stays hidden until its latest
+  # run started after the dismissed one. A running Task always shows.
+  defp dismissed?(task, dismissed) do
+    task["status"] in ~w(ready_for_review escalated failed completed cancelled) and
+      Enum.any?(dismissed, fn row ->
+        row["task_id"] == task["id"] and row["revision"] >= (task["run_started_at"] || 0)
+      end)
   end
 
   defp task_panel_url(workspace, opts \\ []) do

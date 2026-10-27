@@ -36,7 +36,8 @@ import surf.comma.android.scroll.widget.RecyclerView
 
 /**
  * The Task actions every list and the open Task offer, with the desktop's glyphs: Mark as done for a Task in
- * review, Rename, Pin or Unpin, Share, then Archive or Restore. Rows also swipe to Archive and Mark as done.
+ * review, Rename, Pin or Unpin, Share, then Archive or Restore. Rows also swipe to Archive and Mark as done. One the
+ * core says a Task cannot take (`TaskSummary.unsupported`) is not offered.
  */
 class TaskActions(private val activity: ComponentActivity, private val store: WorkspaceStore) {
 
@@ -50,12 +51,14 @@ class TaskActions(private val activity: ComponentActivity, private val store: Wo
             divider()
         }
         item(activity.getString(R.string.task_action_rename), R.drawable.ic_action_rename) { rename(task) }
-        if (!task.isArchived) {
+        if (!task.isArchived && "pin" !in task.unsupported) {
             val pinned = task.id in store.pinned.value
             item(activity.getString(if (pinned) R.string.task_action_unpin else R.string.task_action_pin),
                 if (pinned) R.drawable.ic_action_unpin else R.drawable.ic_action_pin) { store.setPinned(task.id, !pinned) }
         }
-        item(activity.getString(R.string.task_action_share), R.drawable.ic_action_link) { ShareSheet(activity, store, task).show() }
+        if ("share" !in task.unsupported)
+            item(activity.getString(R.string.task_action_share), R.drawable.ic_action_link) { ShareSheet(activity, store, task).show() }
+        if ("archive" in task.unsupported) return@apply
         divider()
         if (task.isArchived) {
             item(activity.getString(R.string.task_action_restore), R.drawable.ic_action_restore) {
@@ -71,11 +74,10 @@ class TaskActions(private val activity: ComponentActivity, private val store: Wo
     /** Archive, or why it is not available yet. */
     private fun archiveTitle(task: TaskSummary): String = when {
         task.canArchive -> activity.getString(R.string.task_action_archive)
-        task.scheduled -> activity.getString(R.string.task_archive_scheduled)
         else -> activity.getString(R.string.task_archive_not_finished)
     }
 
-    fun archiveSwipe(task: TaskSummary, done: (TaskSummary) -> Unit = {}) = SwipeAction(
+    fun archiveSwipe(task: TaskSummary, done: (TaskSummary) -> Unit = {}): SwipeAction? = if ("archive" in task.unsupported) null else SwipeAction(
         activity.getString(R.string.task_action_archive), R.drawable.ic_list_archive,
         activity.getColor(R.color.token_bg_brand_solid), android.graphics.Color.WHITE, enabled = task.canArchive,
     ) { store.setArchived(task, true, done) }

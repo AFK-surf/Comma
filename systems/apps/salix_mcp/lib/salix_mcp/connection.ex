@@ -11,6 +11,7 @@ defmodule SalixMCP.Connection do
   alias SalixEnv.Connector.Live, as: ConnectorLive
 
   @request_timeout 120_000
+  @client_transport "comma-client"
 
   def child_spec(opts) do
     binding = Keyword.fetch!(opts, :binding)
@@ -640,7 +641,7 @@ defmodule SalixMCP.Connection do
   defp device_remote_request_with_cancel(state, config, id, msg, timeout, opts) do
     task =
       SystemsRuntime.TaskSupervisor.async_nolink(SalixMCP.TaskSupervisor, fn ->
-        device_http_jsonrpc(state, config, msg, timeout, opts)
+        device_jsonrpc(state, config, msg, timeout, opts)
       end)
 
     wait_request_task_with_cancel(
@@ -649,7 +650,7 @@ defmodule SalixMCP.Connection do
       task,
       SystemsClock.monotonic_time(:millisecond) + timeout,
       fn reason ->
-        device_http_jsonrpc(
+        device_jsonrpc(
           state,
           config,
           JSONRPC.notification("notifications/cancelled", cancel_params(id, reason)),
@@ -860,7 +861,7 @@ defmodule SalixMCP.Connection do
 
   defp do_notify(%{mode: :device_remote} = state, method, params) do
     with {:ok, config} <- request_config(state) do
-      case device_http_jsonrpc(
+      case device_jsonrpc(
              state,
              config,
              JSONRPC.notification(method, params),
@@ -959,7 +960,61 @@ defmodule SalixMCP.Connection do
     end
   end
 
-  defp device_http_jsonrpc(state, config, payload, timeout, opts \\ []) do
+  # The Comma desktop app's own MCP servers (the Mac apps) are not reached over
+  # HTTP: the device's Connector hands each message to the app's Main with
+  # `client_mcp`, so no port, URL or token on the device reaches Salix. Main
+  # answers only for the apps the user turned on, whatever Salix sends.
+  defp device_jsonrpc(state, config, payload, timeout, opts \\ [])
+
+  defp device_jsonrpc(
+         state,
+         %{"transport" => @client_transport} = config,
+         payload,
+         timeout,
+         _opts
+       ) do
+    if state.definition["mcp_id"] == SalixMCP.Builtins.mac_apps_mcp_id() do
+      client_jsonrpc(state, config, payload, timeout)
+    else
+      # Only Comma's own definition reaches the desktop app (SalixMCP.Store
+      # refuses the transport elsewhere); fail closed on any other.
+      {:error,
+       {:bad_request, "The comma-client transport is reserved for Comma's own MCP servers"}}
+    end
+  end
+
+  defp device_jsonrpc(state, config, payload, timeout, opts),
+    do: device_http_jsonrpc(state, config, payload, timeout, opts)
+
+  defp client_jsonrpc(state, config, payload, timeout) do
+    params = %{"server" => client_server(config), "message" => payload}
+    expect_response? = Map.has_key?(payload, "id")
+
+    case ConnectorLive.request(state.device["connector_run_id"], "client_mcp", params,
+           timeout: timeout + 5_000
+         ) do
+      {:ok, %{"message" => response}} when expect_response? and is_map(response) ->
+        {:ok, response, %{}}
+
+      {:ok, %{}} when not expect_response? ->
+        {:ok, %{"result" => %{}}, %{}}
+
+      {:ok, other} ->
+        {:error, {:bad_response, other}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp client_server(config) do
+    case URI.parse(config["url"] || "") do
+      %URI{host: host} when is_binary(host) and host != "" -> host
+      _ -> ""
+    end
+  end
+
+  defp device_http_jsonrpc(state, config, payload, timeout, opts) do
     headers =
       config
       |> Map.get("headers", %{})

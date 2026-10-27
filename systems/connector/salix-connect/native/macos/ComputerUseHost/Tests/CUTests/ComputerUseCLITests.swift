@@ -42,6 +42,18 @@ func parsesScrollCommandWithPages() throws {
 }
 
 @Test
+func parsesSetValueWithEmptyValue() throws {
+    let command = try ComputerUseCLI.parse(arguments: [
+        "set-value",
+        "--snapshot-id", "snap",
+        "--element-index", "3",
+        "--value", "",
+    ])
+
+    #expect(command == .setValue(snapshotID: "snap", elementIndex: 3, value: ""))
+}
+
+@Test
 func rejectsInvalidIntegerFlag() throws {
     #expect(throws: ComputerUseCLIError.invalidInteger(flag: "--element-index", value: "x")) {
         try ComputerUseCLI.parse(arguments: [

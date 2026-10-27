@@ -14,6 +14,8 @@ enum PerfSignal: String, CaseIterable, Sendable {
     case recover
     /// Lets the profile save `--hold-first-profile-save` holds answer.
     case releaseSave
+    /// Lets the reads of earlier router messages `--hold-earlier` holds answer.
+    case releaseEarlier
 
     var name: String { "surf.comma.perf." + rawValue }
 

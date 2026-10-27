@@ -31,6 +31,9 @@ actor FixtureServer {
     private var holdingProfileSave = ProcessInfo.processInfo.arguments.contains("--hold-first-profile-save")
     private var heldProfileSave: CheckedContinuation<Void, Never>?
     private var profileSaveReleased = false
+    /// The reads of earlier router messages `--hold-earlier` holds until `PerfSignal.releaseEarlier`.
+    private var heldEarlier: [CheckedContinuation<Void, Never>] = []
+    private var earlierReleased = false
 
     /// An upload answers after 0.8 s, so its tile shows it uploading; `--upload-fail-once` refuses the first.
     private var uploads = 0
@@ -50,11 +53,12 @@ actor FixtureServer {
     init(metrics: Metrics, perf: PerfOptions = PerfOptions()) {
         self.metrics = metrics
         self.perf = perf
-        router = perf.longChat ? PerfChat.messages() : FixtureData.routerMessages
+        router = perf.variedChat ? PerfChat.varied() : perf.longChat ? PerfChat.messages() : FixtureData.routerMessages
         replyGate = perf.stream ? PerfReplyGate.listening() : nil
     }
 
-    /// Listens for `PerfSignal.recover`, after which the failing reads answer, and `PerfSignal.releaseSave`.
+    /// Listens for `PerfSignal.recover`, after which the failing reads answer, `PerfSignal.releaseSave` and
+    /// `PerfSignal.releaseEarlier`.
     func listenForSignals() {
         var token: Int32 = 0
         notify_register_dispatch(PerfSignal.recover.name, &token, .global()) { [weak self] _ in
@@ -64,6 +68,16 @@ actor FixtureServer {
         notify_register_dispatch(PerfSignal.releaseSave.name, &release, .global()) { [weak self] _ in
             Task { await self?.releaseProfileSave() }
         }
+        var earlier: Int32 = 0
+        notify_register_dispatch(PerfSignal.releaseEarlier.name, &earlier, .global()) { [weak self] _ in
+            Task { await self?.releaseEarlier() }
+        }
+    }
+
+    private func releaseEarlier() {
+        earlierReleased = true
+        for read in heldEarlier { read.resume() }
+        heldEarlier.removeAll()
     }
 
     private func releaseProfileSave() {
@@ -131,6 +145,10 @@ actor FixtureServer {
             json = FixtureData.modelProfiles
         case ("GET", "workspaces/w/agent-models") where models:
             json = FixtureData.agentModels
+        case ("GET", "workspaces/w/integrations/voice"):
+            json = #"{"lines":[],"numbers":[],"readiness":{"ready":true}}"#
+        case ("GET", "workspaces/w/voice-api-keys"):
+            json = "[]"
         case (_, "workspaces/w/recommendations"):
             json = FixtureData.recommendations
         case (_, "groups/g/task-activity"):
@@ -146,8 +164,12 @@ actor FixtureServer {
             await MainActor.run { metrics.listLoads += 1 }
             json = FixtureData.taskPage()
         case (_, "groups/g/assistant-chat"), (_, "groups/g/conversations/home"):
-            json = FixtureData.routerConversation(router.suffix(value("message_limit").flatMap(Int.init) ?? router.count))
+            json = FixtureData.routerConversation(router.suffix(routerReadLimit(value("message_limit"))))
         case (_, "groups/g/conversations/home/messages"):
+            if perf.holdEarlier, value("before") != nil, !earlierReleased {
+                await MainActor.run { metrics.earlierHeld += 1 }
+                await withCheckedContinuation { heldEarlier.append($0) }
+            }
             json = FixtureData.messagePage(router, limit: value("limit").flatMap(Int.init) ?? 100,
                                            before: value("before").flatMap(Int.init))
         case ("POST", _) where parts.count == 5 && parts[2] == "conversations" && parts[4] == "accept":
@@ -180,13 +202,24 @@ actor FixtureServer {
             return PerfStream.held([])
         }
         let limit = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?
-            .first(where: { $0.name == "message_limit" })?.value.flatMap(Int.init) ?? 24
-        let snapshot = PerfStream.snapshot(router.suffix(limit))
+            .first(where: { $0.name == "message_limit" })?.value
+        let snapshot = PerfStream.snapshot(router.suffix(routerReadLimit(limit ?? "24")))
         guard let replyGate else { return PerfStream.held([snapshot]) }
         return PerfStream.reply(after: snapshot, gate: replyGate) { await self.commitReply() }
     }
 
-    private func commitReply() { router.append(PerfChat.streamedMessage()) }
+    private func commitReply() async {
+        router.append(PerfChat.streamedMessage())
+        await MainActor.run { metrics.replyCommitted = true }
+    }
+
+    /// How many of the newest router messages a read answers with: those asked for, with `--perf-varied-chat` the
+    /// 500 a device keeps, and with `--hold-earlier` at most 24, so earlier ones are left for the server to read.
+    private func routerReadLimit(_ asked: String?) -> Int {
+        let limit = asked.flatMap(Int.init) ?? router.count
+        if perf.holdEarlier { return min(limit, 24) }
+        return perf.variedChat ? 500 : limit
+    }
 
     /// Notes a send's text and tagged skills for the tests (`lastSend`) and answers as the server does: with the
     /// conversation, the member's message in it under the send's request id.
@@ -198,12 +231,13 @@ actor FixtureServer {
         let reply = fields["reply_to_message_id"]?.string.map { "|reply=\($0)" } ?? ""
         let sent = "text=\(text)|skills=\(skills.joined(separator: ","))" + reply
         await MainActor.run { metrics.lastSend = sent }
-        let message = FixtureData.sentMessage(text: text, requestID: requestID)
         guard conversation != "home" else {
-            router.append(message)
-            return FixtureData.routerConversation(router.suffix(24))
+            // The varied chat's messages carry their seq, and a send joins them with the next one.
+            router.append(FixtureData.sentMessage(text: text, requestID: requestID, seq: perf.variedChat ? router.count + 1 : nil))
+            return FixtureData.routerConversation(router.suffix(routerReadLimit("24")))
         }
         guard let task = FixtureData.task(id: conversation) else { throw FixtureFailure.notFound }
+        let message = FixtureData.sentMessage(text: text, requestID: requestID)
         return String(task.dropLast()) + #","messages":[\#(message)]}"#
     }
 

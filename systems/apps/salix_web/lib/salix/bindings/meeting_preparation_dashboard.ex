@@ -7,7 +7,7 @@ defmodule Salix.Bindings.MeetingPreparationDashboard do
   alias SalixMeet.{CalendarConfiguration, CalendarEnrollmentCache}
   alias SalixStore.MeetingCalendarSettings
 
-  @settings_fields ~w(enabled mode connect_id channel channel_id calendars calendar_selections calendar_writeback preparation_lead_minutes research_enabled series personal_preparation settings_revision updated_at)
+  @settings_fields ~w(enabled mode connect_id channel channel_id calendars calendar_selections calendar_writeback preparation_lead_minutes research_enabled series personal_preparation channel_notice settings_revision updated_at)
 
   def run(tenant_id, group_id, action, attrs) when is_map(attrs) do
     with {:ok, group} <- Groups.get(group_id, tenant_id) do
@@ -220,6 +220,7 @@ defmodule Salix.Bindings.MeetingPreparationDashboard do
          true <-
            !Map.has_key?(attrs, "personal_preparation") or
              is_boolean(attrs["personal_preparation"]),
+         true <- !Map.has_key?(attrs, "channel_notice") or is_boolean(attrs["channel_notice"]),
          true <- valid_series?(attrs["series"] || [], attrs["calendar_selections"]),
          {:ok, previous} <- settings(group),
          {:ok, connect} <- active_connect(group, attrs["connect_id"]),
@@ -236,6 +237,10 @@ defmodule Salix.Bindings.MeetingPreparationDashboard do
           |> Map.take(~w(account_id calendar_id name account_name))
         end)
 
+      # Saving without the field keeps the existing choice; older settings
+      # had no field and post the notice.
+      channel_notice = Map.get(attrs, "channel_notice", previous["channel_notice"] != false)
+
       {:ok,
        %{
          "enabled" => true,
@@ -245,7 +250,8 @@ defmodule Salix.Bindings.MeetingPreparationDashboard do
          "channel_id" => channel_id,
          "calendar_selections" => selected,
          "calendars" => selected |> Enum.map(& &1["calendar_id"]) |> Enum.uniq(),
-         "calendar_writeback" => attrs["calendar_writeback"],
+         # Without a channel notice the shared report has no calendar audience.
+         "calendar_writeback" => attrs["calendar_writeback"] and channel_notice,
          "preparation_lead_minutes" => attrs["preparation_lead_minutes"],
          "research_enabled" => attrs["research_enabled"],
          "series" =>
@@ -253,7 +259,8 @@ defmodule Salix.Bindings.MeetingPreparationDashboard do
              attrs["series"] || [],
              &Map.take(&1, ~w(account_id calendar_id event_id title))
            ),
-         "personal_preparation" => personal
+         "personal_preparation" => personal,
+         "channel_notice" => channel_notice
        }}
     else
       {:error, _} = error -> error

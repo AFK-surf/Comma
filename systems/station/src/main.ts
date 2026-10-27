@@ -25,6 +25,7 @@ import { AdbShares, AdminApi, AdminHost, ControlPlane, Events, Key, MeshNative, 
 import { PROVIDERS, type Provider } from "./cloud/provider.ts";
 import { wall } from "./ops/fibers.ts";
 import { ConnectorLive } from "./connector/service.ts";
+import { LocalAdminLive } from "./accounts/local-admin.ts";
 import { SalixRelay } from "./mesh/salix-relay.ts";
 import { platform } from "./platform/index.ts";
 import { keepRunnerIn } from "./platform/processes.ts";
@@ -100,6 +101,10 @@ function run() {
   const app = flag(args, "--app");
   if (!app) usage();
   const control = launcher(args);
+  // A Compute Workload's connect credential is the station's own: what it starts (agents, jobs, `exec`) does not
+  // inherit it. The next station at a handover gets it from the launcher, which keeps its own environment.
+  const workloadCredential = process.env.SALIX_WORKLOAD_CREDENTIAL ?? "";
+  delete process.env.SALIX_WORKLOAD_CREDENTIAL;
   // Runners (agents', jobs') from copies under the data directory on Windows, out of reach of the app's updater.
   keepRunnerIn(join(data, "run", "bin"));
   // Error lines to still.fail's error tracking, while config.json says so (telemetry.errors) and the build has a key.
@@ -119,9 +124,9 @@ function run() {
   const paths = Layer.succeed(Paths)({ data, app });
   const base = Layer.mergeAll(Key.layer, Readers.layer, Store.layer, MeshNative.layer, Up.layer).pipe(Layer.provideMerge(paths));
   const parts = Layer.mergeAll(ControlPlane.layer, SalixRelay.layer).pipe(Layer.provideMerge(base));
-  const station = Layer.mergeAll(MeshLive, Loopback(control), ConnectorLive(args)).pipe(
+  const station = Layer.mergeAll(MeshLive, Loopback(control), ConnectorLive(args, workloadCredential), LocalAdminLive).pipe(
     Layer.provideMerge(AdminApi.layer),
-    Layer.provideMerge(AgentsLive(control)),
+    Layer.provideMerge(AgentsLive(control, workloadCredential !== "")),
     Layer.provideMerge(Events.layer),
     Layer.provideMerge(AdminHost.layer),
     Layer.provideMerge(AdbShares.layer),

@@ -18,6 +18,8 @@ import type { Host, SessionLease } from "./host.ts";
 
 type Opened = {
   key: string;
+  /** The account's database, as named before it is open. */
+  name: string;
   scoped: Scoped;
   account: Deferred.Deferred<Account, CoreError>;
   ready: Account | null;
@@ -75,6 +77,11 @@ export class Session {
   /** Which account the core works for now (null for none): what changes when the person signed in changes. */
   accountKey(): string | null {
     return this.#opened?.key ?? null;
+  }
+
+  /** The database name of the account the core works for now (null for none), already while it opens. */
+  dbName(): string | null {
+    return this.#opened?.name ?? null;
   }
 
   /** Called after each change of the session or its account. */
@@ -237,9 +244,9 @@ export class Session {
     // The lifecycle calls in synchronously, so the deferred is made outside a fiber (as before the Effect rules).
     // @effect-diagnostics-next-line preferUnsafeConstructor:off
     const account = Effect.runSync(Deferred.make<Account, CoreError>());
-    const opened: Opened = { key, scoped, account, ready: null };
-    this.#opened = opened;
     const name = accountDbName(lease.audience, userId);
+    const opened: Opened = { key, name, scoped, account, ready: null };
+    this.#opened = opened;
     const host = this.#host;
     const open = Effect.gen(function* () {
       const file = yield* Effect.result(host.openDb(name));

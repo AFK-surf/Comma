@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
+import { realMainClock } from "../clock";
 import {
   importBrowserCookies,
   listBrowserImportProfiles,
@@ -116,7 +117,7 @@ function testPlatform(
     flushes: 0,
     applicationSupportDirectory: root,
     temporaryDirectory: root,
-    now: () => now,
+    clock: { ...realMainClock, now: () => now },
     readKeychainPassword: async () => ({ status: "found" as const, password }),
     cookies: {
       list: async () => [

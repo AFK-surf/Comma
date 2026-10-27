@@ -85,8 +85,15 @@ defmodule SalixWeb.MockCloudflareGateway do
     end
   end
 
-  @doc "Stops the Sandbox's Container (its station's connection ends)."
-  def stop_container(pid, sandbox), do: GenServer.call(pid, {:stop_container, sandbox, false})
+  @doc "Makes the named operations fail from now on; `[]` lets every operation succeed again."
+  def fail_ops(pid, ops), do: GenServer.call(pid, {:fail_ops, MapSet.new(ops)})
+
+  @doc """
+  Stops the Sandbox's Container (its station's connection ends). `error:` is
+  the stop's message as the runtime gives it, in place of the exit-code one.
+  """
+  def stop_container(pid, sandbox, opts \\ []),
+    do: GenServer.call(pid, {:stop_container, sandbox, false, opts[:error]})
 
   @doc """
   R2 as Salix reaches it in tests (`config :salix_web, :cloud_vm_archive_r2_req,
@@ -265,6 +272,8 @@ defmodule SalixWeb.MockCloudflareGateway do
   def handle_call({:fail?, op}, _from, state),
     do: {:reply, MapSet.member?(state.fail_ops, op), state}
 
+  def handle_call({:fail_ops, ops}, _from, state), do: {:reply, :ok, %{state | fail_ops: ops}}
+
   def handle_call({:station, sandbox}, _from, state),
     do: {:reply, state.stations[sandbox], state}
 
@@ -293,11 +302,14 @@ defmodule SalixWeb.MockCloudflareGateway do
     {:reply, :ok, %{state | stations: stations}}
   end
 
-  # The Container stops by itself (`stop_container/2`), or by the destroy
+  # The Container stops by itself (`stop_container/3`), or by the destroy
   # Salix commanded.
-  def handle_call({:stop_container, sandbox, requested}, _from, state) do
+  def handle_call({:stop_container, sandbox, requested, error}, _from, state) do
     stopped =
-      if Map.has_key?(state.stations, sandbox), do: stopped(state, sandbox, 137, requested)
+      if Map.has_key?(state.stations, sandbox) do
+        stop = stopped(state, sandbox, 137, requested)
+        if error, do: Map.put(stop, "error", error), else: stop
+      end
 
     state = state |> stop_station(sandbox) |> lose_disk(sandbox)
 
@@ -1028,7 +1040,7 @@ defmodule SalixWeb.MockCloudflareGateway do
 
       with false <- fail?(pid, op_atom),
            :ok <- GenServer.call(pid, {:admit, sandbox_id, permit(conn, body), op}) do
-        if op == "destroy", do: GenServer.call(pid, {:stop_container, sandbox_id, true})
+        if op == "destroy", do: GenServer.call(pid, {:stop_container, sandbox_id, true, nil})
 
         json(
           conn,

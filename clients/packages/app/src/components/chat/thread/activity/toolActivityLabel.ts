@@ -33,6 +33,7 @@ const toolWork = new Map<string, ToolWork>([
   ["im_api.internal.task.create", "taskCreate"],
   ["im_api.internal.task.update", "taskUpdate"],
   ["im_api.internal.update_conversation", "taskUpdate"],
+  ["im_api.internal.update_conversation_titles", "taskUpdate"],
   ["im_api.internal.task.list", "taskList"],
   ["im_api.internal.list_conversation_participants", "progress"],
   ["im_api.internal.get_conversation_participant_status", "progress"],
@@ -88,6 +89,31 @@ const toolWork = new Map<string, ToolWork>([
   ["video.generate", "video"],
   ["audio.transcribe", "audio"],
   ["preview.publish_html", "page"],
+  ["cloud_vm.start", "cloudVm"],
+  ["ssh.upload", "filesUpload"],
+  ["ssh.download", "filesDownload"],
+  ["env.process_list", "commandOutput"],
+  ["env.process_tail", "commandOutput"],
+  ["env.process_write", "commandOutput"],
+  ["process.list", "commandOutput"],
+  ["process.tail", "commandOutput"],
+  ["process.write", "commandOutput"],
+  ["process.stop", "commandStop"],
+  ["device.lan_discover", "smartHome"],
+  ["device.lan_request", "smartHome"],
+  ["device.miio_request", "smartHome"],
+  ["device.gree_request", "smartHome"],
+  ["env.android", "android"],
+  ["ui.create", "card"],
+  ["question.request", "question"],
+  ["compute.service.export", "workspace"],
+  ["compute.service.import", "workspace"],
+  ["compute.workloads.list", "workspace"],
+  ["compute.route.revoke", "workspace"],
+  ["schedule.list", "scheduleRead"],
+  ["oauth.list_credentials", "credentials"],
+  ["oauth.delete_credential", "credentials"],
+  ["drive.status", "drive"],
   ["device.list", "devices"],
   ["device.get", "devices"],
   ["memory.search", "memoryRead"],
@@ -104,7 +130,24 @@ const toolWorkFamilies: ReadonlyArray<readonly [prefix: string, work: ToolWork]>
   ["mcp_manager.", "pluginsSetup"],
   ["plugin.", "pluginsSetup"],
   ["skill.", "skills"],
+  ["ssh.", "remoteServer"],
+  ["station.", "station"],
+  ["tailnet.", "network"],
   ["loop.", "automation"],
+  // The Mac apps on the user's Mac (mcp.mac.<app>_<operation>); the first match wins.
+  ["mcp.mac.calendar_list", "calendarRead"],
+  ["mcp.mac.calendar_", "calendarWrite"],
+  ["mcp.mac.reminders_list", "remindersRead"],
+  ["mcp.mac.reminders_", "remindersWrite"],
+  ["mcp.mac.contacts_", "contactsRead"],
+  ["mcp.mac.messages_send", "macMessageSend"],
+  ["mcp.mac.mail_", "emailDraft"],
+  ["mcp.mac.notes_create", "notesWrite"],
+  ["mcp.mac.notes_", "notesRead"],
+  ["mcp.mac.music_", "music"],
+  ["mcp.mac.maps_", "maps"],
+  ["mcp.mac.system_", "macControl"],
+  ["mcp.mac.vision_", "imageRead"],
   ["mcp.", "pluginUse"],
 ];
 
@@ -117,6 +160,37 @@ const messagingWork = new Map<string, readonly [send: ToolWork, use: ToolWork]>(
   ["wechat", ["wechatSend", "wechatUse"]],
   ["imessage", ["imessageSend", "imessageUse"]],
   ["signal", ["signalSend", "signalUse"]],
+]);
+
+// The Router's own bookkeeping between steps: a second or so, and nothing a
+// reader follows. While one runs the line stays on what came before it.
+const quietTools = new Set([
+  "im_api.internal.send_message",
+  "device.list",
+  "device.get",
+  "agent.models",
+  "tool_call.cancel",
+]);
+const quietFamilies = ["recommendation.", "migration."];
+
+// What a call works on, worded with the work: a search's query, the site of
+// a page read, the name of a file read.
+const targetCopy: ReadonlyMap<
+  string,
+  (messages: CommaMessages, target: string) => string
+> = new Map([
+  [
+    "web.search",
+    (messages, target) => messages.chat_tool_web_search_target({ target }),
+  ],
+  [
+    "web.read_pages",
+    (messages, target) => messages.chat_tool_web_read_target({ target }),
+  ],
+  [
+    "fs.read_file",
+    (messages, target) => messages.chat_tool_file_read_target({ target }),
+  ],
 ]);
 
 function toolWorkFor(toolName: string): ToolWork | undefined {
@@ -139,9 +213,19 @@ function toolWorkFor(toolName: string): ToolWork | undefined {
 export function toolActivityLabel(
   messages: CommaMessages,
   toolName: string | undefined,
-  status: "running" | "failed"
+  status: "running" | "failed",
+  target?: string | undefined
 ): string | undefined {
-  const work = toolName ? toolWorkFor(toolName.trim()) : undefined;
+  const name = toolName?.trim();
+  if (
+    status === "running" &&
+    name &&
+    (quietTools.has(name) || quietFamilies.some((prefix) => name.startsWith(prefix)))
+  )
+    return undefined;
+  const targeted = name && target?.trim() ? targetCopy.get(name) : undefined;
+  if (status === "running" && targeted) return targeted(messages, target!.trim());
+  const work = name ? toolWorkFor(name) : undefined;
   if (!work) return undefined;
   return toolWorkLabel(messages, work, status);
 }

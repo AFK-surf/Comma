@@ -19,9 +19,6 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
   @env_alias "cloud-vm"
 
   @config_missing_error "the Cloud VM requires tenant vm provider configuration"
-  # The one container profile of a Group's Cloud VM on an Agent VMM Host (the
-  # `station.default` runtime template); its station's connection names it.
-  @agent_vmm_profile_key "vmm-station-1"
   @defaults %{
     auto_provision: true,
     verify_connector: true,
@@ -32,6 +29,12 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
     max_provision_age_ms: 300_000,
     metering_provider: "cloudflare"
   }
+
+  # A station's Task activity restarts the idle clock; writes within this span
+  # of the last one are not repeated.
+  @station_activity_coalesce_ms 30_000
+  # Refused idle archives wait idle_archive_ms x 2^(n-1), capped here.
+  @idle_archive_refusal_backoff_max 4
 
   @mutating_vm_operations MapSet.new([
                             "exec",
@@ -243,10 +246,9 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
   @spec ensure_record(map()) :: {:ok, map(), :created | :restarted | :existing} | {:error, term()}
   def ensure_record(agent), do: ensure_group_record(agent)
 
-  # The Group's VM keeps the provider it was created on. A new one goes where
-  # `SalixWeb.CloudVM.placement/2` puts it: the Group's Agent VMM Host, or
-  # Cloudflare.
-  defp ensure_group_record(%{"group_id" => group_id, "tenant_id" => tenant_id} = agent) do
+  # Existing VMs keep their provider. New Group Cloud VMs use Cloudflare;
+  # enabled VMM Hosts own their separate reusable Station Workload.
+  defp ensure_group_record(%{"group_id" => group_id} = agent) do
     case get_record(group_id) do
       {:ok, %{"provider" => "agent_vmm"}} ->
         restart_if_failed(group_id, "agent_vmm")
@@ -255,57 +257,10 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
         ensure_cloudflare_record(agent)
 
       {:error, :not_found} ->
-        case SalixWeb.CloudVM.placement(tenant_id, group_id) do
-          # Not on a Runner that is offline: the VM would stay there.
-          {:ok, {:agent_vmm, registration_id}} ->
-            with :ok <- SalixWeb.CloudVM.host_runner_online(tenant_id, registration_id),
-                 do: ensure_agent_vmm_record(agent, registration_id)
-
-          {:ok, :cloudflare} ->
-            ensure_cloudflare_record(agent)
-
-          {:error, _} = error ->
-            error
-        end
+        ensure_cloudflare_record(agent)
 
       {:error, _} = error ->
         error
-    end
-  end
-
-  # A Group's Cloud VM on its Agent VMM Host: a container of the station image
-  # on that Host's registration. It keeps the Cloud VM's device identity, so
-  # its station connects as the Group's Cloud VM.
-  defp ensure_agent_vmm_record(
-         %{"group_id" => group_id, "tenant_id" => tenant_id} = agent,
-         registration_id
-       ) do
-    rec =
-      %{
-        "tenant_id" => tenant_id,
-        "group_id" => group_id,
-        "schema_version" => 1,
-        "provider" => "agent_vmm",
-        "provider_resource_name" => RuntimeIds.cloud_vm_provider_resource_name(group_id),
-        "provider_resource_id" => registration_id,
-        "env_id" => cloudvm_env_id(group_id),
-        "device_id" => cloudvm_device_id(group_id),
-        "connector_id" => cloudvm_connector_id(group_id),
-        "provider_spec" => %{"profile_key" => @agent_vmm_profile_key},
-        "alias" => @env_alias,
-        "status" => "creating",
-        "node_id" => nil,
-        "attempt_at" => nil,
-        "created_at" => now_ms(),
-        "ready_at" => nil,
-        "error" => nil
-      }
-      |> maybe_put("created_by_agent_id", agent["agent_id"])
-
-    case GroupCompute.ensure_group_workload(rec) do
-      {:ok, created, :created} -> {:ok, created, :created}
-      {:ok, existing, :existing} -> restart_if_failed(group_id, existing["provider"])
-      {:error, _} = error -> error
     end
   end
 
@@ -970,8 +925,16 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
     end
   end
 
+  # A recovery's archive ends here: its target is recorded for the rebuild.
   defp record_rebuild_target(rec, operation) do
-    update_record(rec["group_id"], fn current ->
+    with {:ok, target, previous} <- record_rebuild_target_record(rec, operation) do
+      if previous["status"] == "archiving", do: emit_archive_end(previous, now_ms(), "ok")
+      {:ok, target}
+    end
+  end
+
+  defp record_rebuild_target_record(rec, operation) do
+    update_record_with_previous(rec["group_id"], fn current ->
       if current["wake_operation_id"] == operation and
            current["provider_resource_name"] == rec["provider_resource_name"] and
            current["status"] in ["waking", "archiving"] and current["archive"] == rec["archive"] do
@@ -1343,29 +1306,38 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
   @doc "Mark the group cloud VM ready after its stable device is connected."
   @spec mark_ready(String.t()) :: {:ok, map()} | {:error, term()}
   def mark_ready(group_id) do
-    update_record(group_id, fn rec ->
-      Map.merge(rec, %{
-        "status" => "ready",
-        "ready_at" => now_ms(),
-        "error" => nil,
-        "last_error" => nil,
-        "node_id" => nil,
-        "attempt_at" => nil
-      })
-    end)
+    with {:ok, committed, previous} <-
+           update_record_with_previous(group_id, fn rec ->
+             Map.merge(rec, %{
+               "status" => "ready",
+               "ready_at" => now_ms(),
+               "error" => nil,
+               "last_error" => nil,
+               "node_id" => nil,
+               "attempt_at" => nil
+             })
+           end) do
+      emit_ready_metrics(previous, committed, nil)
+      SalixWeb.StationTasks.vm_ready(previous, committed)
+      {:ok, committed}
+    end
   end
 
   @doc "Mark a Group VM failed and retain its error for the owner."
   @spec mark_failed(String.t(), String.t()) :: {:ok, map()} | {:error, term()}
   def mark_failed(group_id, error) do
-    update_record(group_id, fn rec ->
-      Map.merge(rec, %{
-        "status" => "failed",
-        "error" => to_string(error),
-        "node_id" => nil,
-        "attempt_at" => nil
-      })
-    end)
+    with {:ok, committed, previous} <-
+           update_record_with_previous(group_id, fn rec ->
+             Map.merge(rec, %{
+               "status" => "failed",
+               "error" => to_string(error),
+               "node_id" => nil,
+               "attempt_at" => nil
+             })
+           end) do
+      emit_wake_failure(previous, {:error, :failed})
+      {:ok, committed}
+    end
   end
 
   @doc "Mark a VM record as blocked by hard billing availability."
@@ -1645,7 +1617,9 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
                {:error, :ready_record_changed}
              end
            end) do
-      Logger.warning(
+      report_container_loss(
+        expected,
+        stop,
         "cloud-vm container stopped and its disk is gone: restoring the last archive group=#{group_id} archive=#{operation} stop=#{inspect(stop)}"
       )
 
@@ -1653,18 +1627,32 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
     end
   end
 
+  # The record stays ready through the loss, so an empty start that fails
+  # leaves the next exec to find the same stopped Container: a stop the
+  # record already holds is marked, counted and logged once, by its first
+  # pass.
   defp mark_disk_lost(%{"group_id" => group_id} = expected, stop) do
-    with {:ok, _} <-
-           update_record(group_id, fn rec ->
-             if same_carrier?(rec, expected),
-               do: Map.put(rec, "container_loss", container_loss(nil, stop)),
-               else: {:error, :ready_record_changed}
-           end) do
-      Logger.warning(
-        "cloud-vm container stopped and its disk is gone with no archive to restore: starting empty group=#{group_id} stop=#{inspect(stop)}"
-      )
+    case update_record(group_id, fn rec ->
+           cond do
+             not same_carrier?(rec, expected) -> {:error, :ready_record_changed}
+             get_in(rec, ["container_loss", "stop"]) == stop -> {:error, :disk_loss_marked}
+             true -> Map.put(rec, "container_loss", container_loss(nil, stop))
+           end
+         end) do
+      {:ok, _} ->
+        report_container_loss(
+          expected,
+          stop,
+          "cloud-vm container stopped and its disk is gone with no archive to restore: starting empty group=#{group_id} stop=#{inspect(stop)}"
+        )
 
-      {:ok, :disk_lost}
+        {:ok, :disk_lost}
+
+      {:error, :disk_loss_marked} ->
+        {:ok, :disk_lost}
+
+      {:error, _} = error ->
+        error
     end
   end
 
@@ -1672,6 +1660,25 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
   # nothing) and how it stopped, as the Gateway kept it.
   defp container_loss(archive_operation, stop),
     do: %{"at" => now_ms(), "restored_from" => archive_operation, "stop" => stop}
+
+  # The loss is counted (salix.vm.container_loss.total) and logged as the
+  # `cloud_vm_container_lost` event with the write that recorded it, so an
+  # alert fires on either; the reason is the finite label, never the
+  # Gateway's message.
+  defp report_container_loss(rec, stop, message) do
+    reason = Salix.Telemetry.vm_container_loss_reason(stop)
+    Salix.Telemetry.emit_vm_container_loss(Map.put(vm_metric_metadata(rec), :reason, reason))
+
+    Logger.warning(message,
+      event: "cloud_vm_container_lost",
+      component: "salix_web",
+      group_id: rec["group_id"],
+      provider: rec["provider"],
+      reason: reason,
+      exit_code: stop["exit_code"],
+      restored: DurableArchive.restorable?(rec["archive"])
+    )
+  end
 
   # How the Container stopped by itself, from the observation that found it
   # stopped: the Gateway's last stop nobody commanded (kept apart from
@@ -2097,7 +2104,12 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
          {:ok, receipt} <- await_started_station(rec, sandbox, client, before, opts) do
       :ok = maybe_call_hook(opts, :before_cloudflare_ready, group_id)
 
-      case mark_cloudflare_ready(group_id, rec, sandbox, opts) do
+      case mark_cloudflare_ready(
+             group_id,
+             rec,
+             sandbox,
+             Keyword.put(opts, :restore_receipt, receipt)
+           ) do
         {:ok, _} ->
           log_restored_ready(group_id, receipt)
           {:ok, :ready}
@@ -2109,6 +2121,7 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
       {:error, why} when why in [:timeout, :container_stopped] ->
         case {start_failure(rec, client), Keyword.has_key?(opts, :wake_operation_id)} do
           {failure, true} ->
+            emit_wake_failure(rec, failure)
             wake_failed(rec, opts[:wake_operation_id], failure)
 
           {{:error, :timeout}, false} ->
@@ -2144,6 +2157,7 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
         end
 
       {:error, {:archive_not_restored_before_start, _}} = failure ->
+        if Keyword.has_key?(opts, :wake_operation_id), do: emit_wake_failure(rec, failure)
         wake_failed(rec, opts[:wake_operation_id], failure)
 
       {:error, reason} ->
@@ -2205,7 +2219,16 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
   defp mark_cloudflare_ready(group_id, expected, sandbox, opts) do
     wake_operation_id = Keyword.get(opts, :wake_operation_id)
 
-    update_record(group_id, fn rec ->
+    with {:ok, committed, previous} <-
+           mark_cloudflare_ready_record(group_id, expected, sandbox, wake_operation_id) do
+      emit_ready_metrics(previous, committed, Keyword.get(opts, :restore_receipt))
+      SalixWeb.StationTasks.vm_ready(previous, committed)
+      {:ok, committed}
+    end
+  end
+
+  defp mark_cloudflare_ready_record(group_id, expected, sandbox, wake_operation_id) do
+    update_record_with_previous(group_id, fn rec ->
       owner_keys = ~w(workload_id generation provider_resource_name provider_spec)
 
       if Map.take(rec, owner_keys) == Map.take(expected, owner_keys) and
@@ -2492,8 +2515,7 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
   defp idle_archive_eligible?(%{"provider" => provider, "status" => "ready"} = rec, opts)
        when provider in ["cloudflare", "agent_vmm"] do
     now = opts[:now] || now_ms()
-    idle_ms = Keyword.get(opts, :idle_archive_ms, cfg(:idle_archive_ms, opts))
-    last_operation = rec["last_operation_at"] || 0
+    idle_ms = cfg(:idle_archive_ms, opts)
     settled = rec["last_agent_settled_after_vm_at"]
     # A provisioned VM that has never run an operation has no agent settlement
     # to wait for. Start its idle grace at readiness, not at provision start.
@@ -2522,7 +2544,7 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
       Keyword.get(opts, :force, false) ->
         :ok
 
-      now - Enum.max([last_operation, idle_since, rec["ready_at"] || 0]) >= idle_ms ->
+      now - idle_clock_start(rec, idle_since) >= idle_ms ->
         :ok
 
       true ->
@@ -2531,6 +2553,71 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
   end
 
   defp idle_archive_eligible?(_rec, _opts), do: {:skip, :not_cloudflare_ready}
+
+  # The idle clock starts at the latest of: readiness, the last operation Salix
+  # ran on the VM, the agent's settle after it, and the station's last Task
+  # activity (`mark_station_activity/2`).
+  defp idle_clock_start(rec, idle_since) do
+    Enum.max([
+      rec["last_operation_at"] || 0,
+      idle_since || 0,
+      rec["ready_at"] || 0,
+      rec["last_station_activity_at"] || 0
+    ])
+  end
+
+  @doc """
+  The station of the Group's Cloud VM posted a Task Message or was given one
+  (`SalixWeb.StationTasks`): the VM's idle clock restarts now, and the wait
+  after a refused idle archive ends. A device that is not the Group's Cloud VM
+  costs no read. At most one write per #{@station_activity_coalesce_ms} ms.
+  """
+  @spec mark_station_activity(String.t(), String.t()) :: :ok
+  def mark_station_activity(group_id, device_id)
+      when is_binary(group_id) and is_binary(device_id) do
+    if device_id == cloudvm_device_id(group_id) do
+      now = now_ms()
+
+      with {:ok, rec} <- get_record(group_id),
+           true <- now - (rec["last_station_activity_at"] || 0) >= @station_activity_coalesce_ms do
+        _ =
+          update_record(group_id, fn current ->
+            if current["device_id"] == device_id do
+              current
+              |> Map.put("last_station_activity_at", now)
+              |> Map.delete("archive_retry_at")
+              |> Map.delete("archive_refusals")
+            else
+              current
+            end
+          end)
+      end
+    end
+
+    :ok
+  end
+
+  def mark_station_activity(_group_id, _device_id), do: :ok
+
+  @doc """
+  The station refused to park for an idle archive (it was busy): the record,
+  back to ready, waits a full idle period before the next one, doubled for
+  each refusal in a row (at most #{@idle_archive_refusal_backoff_max} times),
+  until the VM is used again (a Salix operation, or the station's Task
+  activity) or archives.
+  """
+  @spec refused_idle_archive(map(), keyword()) :: map()
+  def refused_idle_archive(current, opts) do
+    refusals = (current["archive_refusals"] || 0) + 1
+
+    wait =
+      cfg(:idle_archive_ms, opts) *
+        min(Integer.pow(2, refusals - 1), @idle_archive_refusal_backoff_max)
+
+    current
+    |> Map.put("archive_refusals", refusals)
+    |> Map.put("archive_retry_at", now_ms() + wait)
+  end
 
   defp archive_cloudflare_idle(%{"group_id" => group_id, "tenant_id" => tenant_id} = rec, opts) do
     archive_operation_id = Keyword.get(opts, :archive_operation) || random_operation_id("archive")
@@ -2645,7 +2732,7 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
         {:error, :provider_neutral_archive_required}
 
       {:error, :runtime_not_quiet} = error ->
-        _ = restore_unquiesced_archiving_record(group_id, archive_operation_id)
+        _ = restore_unquiesced_archiving_record(group_id, archive_operation_id, opts)
         error
 
       {:error, :archive_attachment_unavailable} = error ->
@@ -2682,35 +2769,44 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
       if rec["archive_reason"] == "recovery_committing" do
         record_rebuild_target(rec, archive_operation_id)
       else
-        update_record(group_id, fn current ->
-          if current["status"] == "archiving" and
-               current["archive_operation_id"] == archive_operation_id and
-               current["active_operation_count"] == 0 do
-            current
-            |> enqueue_previous_archive_gc(archive_operation_id)
-            |> Map.delete("archive_previous")
-            |> Map.delete("connector_archive_previous")
-            |> Map.put("status", "archived")
-            |> Map.put("archive_last_operation", %{
-              "operation" => archive_operation_id,
-              "result" => "archived",
-              "at" => now_ms()
-            })
-            |> Map.put("archived_at", now_ms())
-            |> Map.put("archive_reason", "idle")
-            |> Map.delete("archive_operation_id")
-            |> Map.delete("archive_progress")
-            |> Map.delete("archive_cancel_requested")
-            |> Map.put("active_operation_count", 0)
-            |> Map.put("active_operations", %{})
-            |> Map.put("node_id", nil)
-            |> Map.put("attempt_at", nil)
-          else
-            {:error, :archive_operation_lost}
-          end
-        end)
+        with {:ok, archived, previous} <-
+               finish_archived_source_record(group_id, archive_operation_id) do
+          emit_archive_end(previous, archived["archived_at"], "ok")
+          {:ok, archived}
+        end
       end
     end
+  end
+
+  defp finish_archived_source_record(group_id, archive_operation_id) do
+    update_record_with_previous(group_id, fn current ->
+      if current["status"] == "archiving" and
+           current["archive_operation_id"] == archive_operation_id and
+           current["active_operation_count"] == 0 do
+        current
+        |> enqueue_previous_archive_gc(archive_operation_id)
+        |> Map.delete("archive_previous")
+        |> Map.delete("connector_archive_previous")
+        |> Map.put("status", "archived")
+        |> Map.put("archive_last_operation", %{
+          "operation" => archive_operation_id,
+          "result" => "archived",
+          "at" => now_ms()
+        })
+        |> Map.put("archived_at", now_ms())
+        |> Map.put("archive_reason", "idle")
+        |> Map.delete("archive_operation_id")
+        |> Map.delete("archive_progress")
+        |> Map.delete("archive_cancel_requested")
+        |> Map.delete("archive_refusals")
+        |> Map.put("active_operation_count", 0)
+        |> Map.put("active_operations", %{})
+        |> Map.put("node_id", nil)
+        |> Map.put("attempt_at", nil)
+      else
+        {:error, :archive_operation_lost}
+      end
+    end)
   end
 
   defp record_idle_archive_start_delay(rec, opts) do
@@ -2719,9 +2815,7 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
         if(is_nil(rec["last_operation_at"]), do: rec["ready_at"])
 
     if is_integer(idle_since) and is_integer(rec["archive_started_at"]) do
-      due_at =
-        Enum.max([rec["last_operation_at"] || 0, idle_since, rec["ready_at"] || 0]) +
-          Keyword.get(opts, :idle_archive_ms, cfg(:idle_archive_ms, opts))
+      due_at = idle_clock_start(rec, idle_since) + cfg(:idle_archive_ms, opts)
 
       SystemsRuntime.Telemetry.execute(
         [:salix, :vm, :idle_archive, :start],
@@ -2771,7 +2865,9 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
                 else: {:error, :archive_operation_lost}
            end),
          {:ok, archived} <- finish_archived_source(rec["group_id"], operation) do
-      Logger.warning(
+      report_container_loss(
+        rec,
+        stop,
         "cloud-vm archive source container stopped and its disk is gone: keeping the last archive group=#{rec["group_id"]} archive=#{archive || "none"} stop=#{inspect(stop)}"
       )
 
@@ -2881,20 +2977,26 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
       else
         case resume_archive_source(rec, archive_operation_id) do
           {:ok, %{"resumed" => true}} ->
-            update_record(group_id, fn current ->
-              if current["archive_operation_id"] == archive_operation_id do
-                current
-                |> Map.put("status", "ready")
-                |> rollback_failed_archive(archive_operation_id)
-                |> Map.delete("archive_operation_id")
-                |> Map.delete("archive_progress")
-                |> Map.delete("archive_cancel_requested")
-                |> Map.put("last_error", inspect(reason) |> String.slice(0, 500))
-                |> maybe_record_archive_cancel(archive_operation_id, reason)
-              else
-                current
-              end
-            end)
+            with {:ok, resumed, previous} <-
+                   update_record_with_previous(group_id, fn current ->
+                     if current["archive_operation_id"] == archive_operation_id do
+                       current
+                       |> Map.put("status", "ready")
+                       |> rollback_failed_archive(archive_operation_id)
+                       |> Map.delete("archive_operation_id")
+                       |> Map.delete("archive_progress")
+                       |> Map.delete("archive_cancel_requested")
+                       |> Map.put("last_error", inspect(reason) |> String.slice(0, 500))
+                       |> maybe_record_archive_cancel(archive_operation_id, reason)
+                     else
+                       current
+                     end
+                   end) do
+              if previous["status"] == "archiving" and resumed["status"] == "ready",
+                do: emit_archive_end(previous, now_ms(), "error")
+
+              {:ok, resumed}
+            end
 
           _ ->
             record_last_error(group_id, {:archive_resume_pending, reason})
@@ -2903,24 +3005,30 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
     end
   end
 
-  defp restore_unquiesced_archiving_record(group_id, archive_operation_id) do
+  # The station was busy: nothing of the archive began. The VM is ready again
+  # and waits longer before the next try (`refused_idle_archive/2`).
+  defp restore_unquiesced_archiving_record(group_id, archive_operation_id, opts) do
     with {:ok, rec} <- get_record(group_id),
-         :ok <- reopen_unquiesced_source(rec) do
-      update_record(group_id, fn current ->
-        if current["status"] == "archiving" and
-             current["archive_reason"] == "idle" and
-             current["archive_operation_id"] == archive_operation_id do
-          current
-          |> Map.put("status", "ready")
-          |> rollback_failed_archive(archive_operation_id)
-          |> Map.delete("archive_operation_id")
-          |> Map.delete("archive_progress")
-          |> Map.delete("archive_cancel_requested")
-          |> Map.put("last_error", ":runtime_not_quiet")
-        else
-          {:error, :archive_operation_lost}
-        end
-      end)
+         :ok <- reopen_unquiesced_source(rec),
+         {:ok, resumed, previous} <-
+           update_record_with_previous(group_id, fn current ->
+             if current["status"] == "archiving" and
+                  current["archive_reason"] == "idle" and
+                  current["archive_operation_id"] == archive_operation_id do
+               current
+               |> Map.put("status", "ready")
+               |> rollback_failed_archive(archive_operation_id)
+               |> refused_idle_archive(opts)
+               |> Map.delete("archive_operation_id")
+               |> Map.delete("archive_progress")
+               |> Map.delete("archive_cancel_requested")
+               |> Map.put("last_error", ":runtime_not_quiet")
+             else
+               {:error, :archive_operation_lost}
+             end
+           end) do
+      emit_archive_end(previous, now_ms(), "refused")
+      {:ok, resumed}
     end
   end
 
@@ -3061,18 +3169,32 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
     end
   end
 
-  @doc "Confirm only the exact connected wake without starting a Container."
-  def confirm_completed_wake(workload) do
+  @doc "Complete a connected wake or dispose of its exact carrier after recovery expires."
+  def reconcile_wake(workload, opts \\ []) do
     with %GroupCompute.Environment{owner_type: "group", owner_id: group} <-
            SalixStore.Repo.get(GroupCompute.Environment, workload.environment_id),
          {:ok, %{"workload_id" => id, "provider" => "cloudflare"} = rec} <- get_record(group),
-         true <- id == workload.id do
+         true <-
+           id == workload.id and rec["generation"] == workload.generation and
+             workload.desired_state == "ready" do
       case complete_connected_wake(rec) do
         {:ok, _} -> {:ok, %{outcome: :group_reconciled}}
+        :continue -> recover_expired_wake(rec, opts)
         result -> result
       end
     else
       _ -> :continue
+    end
+  end
+
+  defp recover_expired_wake(rec, opts) do
+    if rec["archive_reason"] == "disposable_reset" or
+         (rec["status"] == "waking" and is_binary(rec["wake_operation_id"]) and
+            now_ms() >= restore_deadline_ms(rec)) do
+      with {:ok, _} <- discard_failed_vm(rec["group_id"], rec, opts),
+           do: {:ok, %{outcome: :group_reconciled}}
+    else
+      :continue
     end
   end
 
@@ -3103,9 +3225,21 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
        }} ->
         # The wake's Container restored the archive before it started this
         # station: the wake is complete with the station that holds its receipt.
-        if not DurableArchive.restorable?(rec["archive"]) or source_restored?(rec),
-          do: mark_cloudflare_ready(rec["group_id"], rec, %{}, wake_operation_id: operation),
-          else: :continue
+        receipt =
+          if DurableArchive.restorable?(rec["archive"]),
+            do: restore_receipt(rec),
+            else: {:restored, nil}
+
+        case receipt do
+          {:restored, receipt} ->
+            mark_cloudflare_ready(rec["group_id"], rec, %{},
+              wake_operation_id: operation,
+              restore_receipt: receipt
+            )
+
+          _ ->
+            :continue
+        end
 
       _ ->
         :continue
@@ -3382,8 +3516,13 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
 
       if checkpoint_meter_result?(result) do
         case update_record(group_id, &Map.put(&1, "last_metered_at", now)) do
-          {:ok, _} -> :ok
-          {:error, _} = error -> if(opts[:strict_metering], do: error, else: :ok)
+          {:ok, _} ->
+            # Counted only with the checkpoint: an interval the meter did not
+            # take is measured again by the next sweep, from the same start.
+            Salix.Telemetry.emit_vm_ready_interval(vm_metric_metadata(rec), duration_seconds)
+
+          {:error, _} = error ->
+            if(opts[:strict_metering], do: error, else: :ok)
         end
       else
         if(
@@ -3531,6 +3670,13 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
   defp put_initial_worker_release(rec, _provider), do: rec
 
   defp update_record(group_id, fun) do
+    with {:ok, committed, _previous} <- update_record_with_previous(group_id, fun),
+         do: {:ok, committed}
+  end
+
+  # The committed record with the one it replaced: the write that ends a
+  # wake or an archive measures it against the record before it.
+  defp update_record_with_previous(group_id, fun) do
     with {:ok, committed, previous} <- GroupCompute.update_group_workload(group_id, fun) do
       billing_owner = committed["billing_owner"] || previous["billing_owner"] || %{}
 
@@ -3543,9 +3689,103 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
         committed["status"]
       )
 
-      {:ok, committed}
+      {:ok, committed, previous}
     end
   end
+
+  # ---- lifecycle metrics (Salix.Telemetry, salix.vm.*) ----
+
+  defp vm_metric_metadata(rec) do
+    %{
+      provider: rec["provider"] || "other",
+      profile: get_in(rec, ["provider_spec", "profile_key"]) || "unknown"
+    }
+  end
+
+  # The write that made the record ready ends its wake when the record was
+  # waking (every write that makes a record waking sets `last_wake_at`, and a
+  # rebuild target keeps its wake's), and times the restore when the station's
+  # receipt came with it.
+  defp emit_ready_metrics(previous, committed, receipt) do
+    if previous["status"] in ["waking", "creating"] and committed["status"] == "ready" do
+      metadata = vm_metric_metadata(committed)
+      last_wake_at = previous["last_wake_at"]
+
+      if previous["status"] == "waking" and is_integer(last_wake_at) and
+           is_integer(committed["ready_at"]) do
+        Salix.Telemetry.emit_vm_wake(
+          Map.put(metadata, :outcome, "ok"),
+          committed["ready_at"] - last_wake_at
+        )
+      end
+
+      if is_map(receipt) do
+        Salix.Telemetry.emit_vm_restore(
+          metadata,
+          receipt,
+          get_in(committed, ["archive", "byte_size"])
+        )
+      end
+    end
+
+    :ok
+  end
+
+  # A wake attempt that ends without a ready record: measured from the wake's
+  # start, so repeated attempts of one wake report its growing age.
+  defp emit_wake_failure(%{"status" => "waking"} = rec, failure) do
+    case {rec["last_wake_at"], failure} do
+      {last_wake_at, {:error, reason}} when is_integer(last_wake_at) ->
+        outcome =
+          case reason do
+            :timeout -> "timeout"
+            :failed -> "failed"
+            {:container_stopped, _} -> "container_stopped"
+            {:archive_restore_failed, _} -> "restore_failed"
+            {:archive_not_restored_before_start, _} -> "not_restored"
+            _ -> "other"
+          end
+
+        Salix.Telemetry.emit_vm_wake(
+          Map.put(vm_metric_metadata(rec), :outcome, outcome),
+          now_ms() - last_wake_at
+        )
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp emit_wake_failure(_rec, _failure), do: :ok
+
+  # The write that ends an archive: archived (ok) or back to ready.
+  defp emit_archive_end(previous, ended_at, outcome) do
+    started_at = previous["archive_started_at"]
+
+    if is_integer(started_at) and is_integer(ended_at) do
+      Salix.Telemetry.emit_vm_archive(
+        previous
+        |> vm_metric_metadata()
+        |> Map.merge(%{reason: archive_reason_tag(previous["archive_reason"]), outcome: outcome}),
+        ended_at - started_at
+      )
+    end
+
+    :ok
+  end
+
+  defp archive_reason_tag(reason) when reason in ["idle", "idle_committing"], do: "idle"
+
+  defp archive_reason_tag(reason)
+       when reason in [
+              "recovery",
+              "recovery_committing",
+              "recovery_rebuild",
+              "recovery_restoring"
+            ],
+       do: "recovery"
+
+  defp archive_reason_tag(_reason), do: "other"
 
   defp cloudflare_keepalive_candidate?(rec) do
     rec["provider"] == "cloudflare" and rec["provider_resource_id"] not in [nil, ""] and

@@ -19,6 +19,7 @@ defmodule Comma.Recommendations do
   alias CommaProduct.Telemetry
 
   @manual_runs_per_hour 6
+  @dismissal_limit 200
   @source_kinds ~w(native_mcp_oauth managed_oauth composio im_connect)
 
   def sync_sources(user, session, workspace_id, discovered) when is_list(discovered) do
@@ -513,6 +514,142 @@ defmodule Comma.Recommendations do
 
     result
   end
+
+  @doc """
+  Records that the member does not want to hear about one source item again,
+  then answers the envelope without it. The key is the item's source and URL,
+  as Routine rows and attention items carry them. The Profile keeps the
+  #{@dismissal_limit} most recent keys as digests; the item's later versions stay
+  dismissed.
+  """
+  def dismiss(user, session, workspace_id, source_id, url)
+      when is_binary(source_id) and byte_size(source_id) in 1..128 and is_binary(url) and
+             byte_size(url) in 1..65_536 do
+    with {:ok, _workspace} <- Workspaces.authorize(user, session, workspace_id) do
+      Repo.transaction(fn ->
+        profile = locked_profile(workspace_id, user["id"])
+
+        dismissed =
+          profile.dismissed_items
+          |> Map.put(dismissal_key(source_id, url), SystemsClock.system_time(:millisecond))
+          |> Enum.sort_by(fn {_key, at} -> at end, :desc)
+          |> Enum.take(@dismissal_limit)
+          |> Map.new()
+
+        {:ok, updated} =
+          profile |> Ecto.Changeset.change(dismissed_items: dismissed) |> Repo.update()
+
+        public_envelope(updated)
+      end)
+    end
+  end
+
+  def dismiss(_user, _session, _workspace_id, _source_id, _url),
+    do: {:error, :invalid_recommendation_dismissal}
+
+  @doc "Whether the member dismissed this source item."
+  def dismissed?(%RecommendationProfile{dismissed_items: dismissed}, source_id, url),
+    do: Map.has_key?(dismissed, dismissal_key(source_id, url))
+
+  defp dismissal_key(source_id, url),
+    do: :crypto.hash(:sha256, [source_id, 0, url]) |> Base.url_encode64(padding: false)
+
+  defp without_dismissed(snapshot, dismissed) when map_size(dismissed) == 0, do: snapshot
+
+  defp without_dismissed(snapshot, dismissed),
+    do: hide_items(snapshot, &Map.has_key?(dismissed, dismissal_key(&1, &2)))
+
+  @doc """
+  The snapshot without the rows whose source item `hidden?.(source_id, url)`
+  names, or whose Task stands for such an item. A member summary, which the
+  server wrote with one linked clause per item, loses only the clauses of the
+  removed items. Other summary prose can refer to a removed row without a link,
+  so such a snapshot keeps only the greeting of its summary instead of claiming
+  that the work still needs attention.
+  """
+  def hide_items(snapshot, hidden?) when is_map(snapshot) and is_function(hidden?, 2) do
+    hidden_tasks =
+      (snapshot["attentionItems"] || [])
+      |> Enum.filter(&hidden?.(&1["sourceId"], &1["sourceUrl"]))
+      |> Enum.map(& &1["taskId"])
+      |> Enum.reject(&is_nil/1)
+      |> MapSet.new()
+
+    hidden_row? = fn row ->
+      Enum.any?(row["parts"] || [], fn
+        %{"kind" => "inline-link", "link" => link} ->
+          hidden?.(link["sourceId"], link["href"])
+
+        %{"kind" => "inline-task", "task" => task} ->
+          MapSet.member?(hidden_tasks, task["conversationId"])
+
+        _ ->
+          false
+      end)
+    end
+
+    cards =
+      Enum.flat_map(snapshot["cards"] || [], fn card ->
+        rows = Enum.reject(card["items"], hidden_row?)
+        if rows == [], do: [], else: [Map.put(card, "items", rows)]
+      end)
+
+    snapshot =
+      snapshot
+      |> update_present(
+        "attentionItems",
+        &Enum.reject(&1, fn item -> hidden?.(item["sourceId"], item["sourceUrl"]) end)
+      )
+      |> then(fn snapshot ->
+        if cards == (snapshot["cards"] || []),
+          do: snapshot,
+          else:
+            snapshot
+            |> Map.put("cards", cards)
+            |> Map.put("summary", remaining_summary(snapshot, hidden?))
+      end)
+
+    referenced = prompt_ids(Map.delete(snapshot, "prompts"))
+    update_present(snapshot, "prompts", &Map.take(&1, referenced))
+  end
+
+  defp update_present(map, key, fun),
+    do: if(Map.has_key?(map, key), do: Map.update!(map, key, fun), else: map)
+
+  defp remaining_summary(snapshot, hidden?) do
+    case Comma.RecommendationMemberSelection.without_summary_items(
+           snapshot["summary"],
+           snapshot["prompts"] || %{},
+           &hidden?.(&1["sourceId"], &1["href"])
+         ) do
+      {:ok, summary} -> summary
+      :error -> greeting(snapshot["summary"])
+    end
+  end
+
+  # The title keeps the paragraph break after it, so clients read it as the
+  # title of an empty briefing, not as its prose.
+  defp greeting([%{"kind" => "markdown", "text" => text} | _]) do
+    # Compiled summaries merge the greeting and the first paragraph in one part.
+    # Without that separator, no prose can safely be attributed to a greeting.
+    first =
+      case String.split(text, "\n\n", parts: 2) do
+        [title, _body] -> title <> "\n\n"
+        _ -> ""
+      end
+
+    [%{"kind" => "markdown", "text" => first}]
+  end
+
+  defp greeting(_), do: [%{"kind" => "markdown", "text" => ""}]
+
+  defp prompt_ids(map) when is_map(map),
+    do:
+      List.wrap(map["promptId"]) ++
+        Enum.flat_map(Map.values(Map.delete(map, "promptId")), &prompt_ids/1)
+
+  defp prompt_ids(list) when is_list(list), do: Enum.flat_map(list, &prompt_ids/1)
+  defp prompt_ids(_), do: []
 
   @doc """
   Settle a run with its projection. `metrics` holds the run's bounded generation
@@ -1337,7 +1474,7 @@ defmodule Comma.Recommendations do
       if profile.snapshot_source_revision == profile.source_revision and
            (profile.published_metrics["variant"] || "generic") == relevance_mode(profile) and
            identity_valid?,
-         do: profile.snapshot,
+         do: without_dismissed(profile.snapshot, profile.dismissed_items),
          else: nil
 
     enabled_sources? = Enum.any?(profile.sources, &(&1["enabled"] == true))

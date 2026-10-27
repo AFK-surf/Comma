@@ -62,6 +62,8 @@ test("a chat's people hear of its turns and of each other, once, gathered", asyn
   store.insertMessage(newMessage(chat.id, "1.2", "person", "bob@x.com", "看一下"));
   store.startTurn("t1", "k", "input");
   store.insertMessage({ ...newMessage(chat.id, "1.3", "agent", "k", "好了"), declared: "final" });
+  // Milestones alone, after its post: no one hears of them, and the turn is told by the post.
+  store.insertMessage({ ...newMessage(chat.id, "1.31", "agent", "k", ""), milestones: ["修好了间距"] });
   store.endTurn("t1", "completed", null, "final", null);
   store.insertMessage(newMessage(chat.id, "1.4", "ember", "ember", "⚠️ 没能启动"));
   const settle = () => new Promise((r) => setImmediate(r));

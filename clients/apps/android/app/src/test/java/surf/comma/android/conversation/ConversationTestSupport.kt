@@ -190,6 +190,8 @@ internal class FakeChatViewCore : surf.comma.android.core.CoreApi {
     private var extra = JSONObject()
     private var revision = 0L
     private val value = MutableStateFlow(JSONObject())
+    /** The core's `agentRequests` value for the conversation shown. */
+    val requests = MutableStateFlow(JSONObject().put("requests", JSONArray()))
 
     init { publish() }
 
@@ -271,6 +273,17 @@ internal class FakeChatViewCore : surf.comma.android.core.CoreApi {
                 }
                 publish()
             }
+            "chatView.attachLocalFiles" -> {
+                val files = params.getJSONArray("files")
+                for (index in 0 until files.length()) {
+                    val file = files.getJSONObject(index)
+                    val row = file.getString("localFileRef")
+                    attached[row] = JSONObject().put("id", row).put("name", file.getString("name")).put("size", file.getLong("size"))
+                        .put("isImage", false).put("status", if (uploads) "uploaded" else "failed")
+                        .apply { if (uploads) put("path", "/uploads/abcdefghijklmnopqrstuv-${file.getString("name")}") else put("error", "The upload failed") }
+                }
+                publish()
+            }
             "chatView.removeAttachment" -> {
                 if (params.has("questionMessageId")) questionAttached[params.getString("questionMessageId")]?.remove(params.getString("attachmentId"))
                 else attached.remove(params.getString("attachmentId"))
@@ -308,8 +321,11 @@ internal class FakeChatViewCore : surf.comma.android.core.CoreApi {
 
     override fun <T> subscribe(topic: JSONObject, read: (Any?) -> T): kotlinx.coroutines.flow.Flow<surf.comma.android.core.TopicValue<T>> {
         subscribed += topic
-        return if (topic.optString("topic") != "chatView") kotlinx.coroutines.flow.emptyFlow()
-        else value.map { surf.comma.android.core.TopicValue.Value(read(it)) }
+        return when (topic.optString("topic")) {
+            "chatView" -> value.map { surf.comma.android.core.TopicValue.Value(read(it)) }
+            "agentRequests" -> requests.map { surf.comma.android.core.TopicValue.Value(read(it)) }
+            else -> kotlinx.coroutines.flow.emptyFlow()
+        }
     }
 }
 

@@ -268,28 +268,7 @@ defmodule SalixIM.ConversationSource do
         ConversationMessage.targets_participant?(participant, message)
 
   def reject(binding, message, reason) do
-    record =
-      ConversationMessage.delivery_record(
-        binding.conversation,
-        message,
-        binding.participant,
-        SystemsClock.system_time(:millisecond)
-      )
-      |> Map.put("participant_agent_id", binding.agent["agent_id"])
-      |> Map.put("participant_payload", %{"session_id" => binding.session_id})
-
-    settlement =
-      if SalixIM.Triage.Investigation.worker_assignment?(record) do
-        SalixIM.ConversationServer.escalate_triage_command_delivery(
-          binding.group["group_id"],
-          binding.conversation["conversation_id"],
-          record
-        )
-      else
-        {:ok, nil}
-      end
-
-    with {:ok, _} <- settlement,
+    with {:ok, _} <- settle_failed_command(binding, message),
          {:ok, scan} <- entry(binding, Map.put(message, "delivery_log_skip", true)) do
       rejection = %{
         "message_id" => message["message_id"],
@@ -302,6 +281,54 @@ defmodule SalixIM.ConversationSource do
          scan
          | conversation_source: Map.put(scan.conversation_source, "last_rejection", rejection)
        }}
+    end
+  end
+
+  # Retirement ends Session input, but an outstanding Triage command still
+  # needs its Task outcome. Read only the tail, which the owner fences below.
+  def retire(binding) do
+    if SalixIM.Triage.Investigation.task?(binding.conversation) and
+         binding.conversation["status"] == "active" and
+         binding.conversation["task_worker_agent_id"] == binding.agent["agent_id"] do
+      with {:ok, messages} <-
+             Conversations.list_group_conversation_messages(
+               binding.group["group_id"],
+               binding.conversation["conversation_id"],
+               after_seq: max((binding.conversation["message_tail_seq"] || 0) - 1, 0),
+               limit: 1
+             ) do
+        case messages do
+          [message] ->
+            with {:ok, _} <- settle_failed_command(binding, message), do: :ok
+
+          [] ->
+            {:error, :conversation_source_gap}
+        end
+      end
+    else
+      :ok
+    end
+  end
+
+  defp settle_failed_command(binding, message) do
+    record =
+      ConversationMessage.delivery_record(
+        binding.conversation,
+        message,
+        binding.participant,
+        SystemsClock.system_time(:millisecond)
+      )
+      |> Map.put("participant_agent_id", binding.agent["agent_id"])
+      |> Map.put("participant_payload", %{"session_id" => binding.session_id})
+
+    if SalixIM.Triage.Investigation.worker_assignment?(record) do
+      SalixIM.ConversationServer.escalate_triage_command_delivery(
+        binding.group["group_id"],
+        binding.conversation["conversation_id"],
+        record
+      )
+    else
+      {:ok, nil}
     end
   end
 
@@ -427,15 +454,25 @@ defmodule SalixIM.ConversationSource do
   end
 
   defp recovered?(agent, source, _conversation, target) do
-    with {:ok, binding} <- binding(agent, source),
-         {:ok, progress} <-
-           SalixIM.Ports.AgentDelivery.conversation_progress(
+    with {:ok, binding} <- binding(agent, source) do
+      case SalixIM.Ports.AgentDelivery.conversation_progress(
              agent,
              binding.session_id,
              source.participant_id
-           ),
-         {:ok, seq} <- frontier(binding, progress) do
-      seq >= target
+           ) do
+        {:error, :conversation_source_retired} ->
+          with :ok <- retire(binding), do: true
+
+        {:ok, progress} ->
+          case frontier(binding, progress) do
+            {:ok, seq} -> seq >= target
+            {:error, :conversation_source_retired} -> true
+            error -> error
+          end
+
+        error ->
+          error
+      end
     else
       {:error, :conversation_source_retired} -> true
       error -> error

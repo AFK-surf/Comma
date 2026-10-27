@@ -6,12 +6,18 @@ defmodule Comma.Plugins do
   the source of truth for plugin definitions and group enablement.
   """
 
-  alias Comma.{PluginInstallations, Workspaces}
+  alias Comma.{ClientCapabilities, PluginInstallations, Workspaces}
   alias SalixAgent.PluginStore
 
   @description_max 1_000
 
-  def list(user, session, workspace_id) do
+  @doc """
+  The workspace's plugins. With `client:` (a `Comma.ClientCapabilities`), only
+  those offered to that client.
+  """
+  def list(user, session, workspace_id, opts \\ []) do
+    client = Keyword.get(opts, :client)
+
     with {:ok, workspace} <- Workspaces.authorize(user, session, workspace_id),
          {:ok, definitions} <- list_definitions(workspace),
          {:ok, enablements} <- list_enablements(workspace),
@@ -21,10 +27,19 @@ defmodule Comma.Plugins do
 
       plugins =
         definitions
-        |> Enum.filter(&product_plugin?/1)
+        |> Enum.filter(&(product_plugin?(&1) and ClientCapabilities.allows?(client, &1)))
         |> Enum.map(&public_plugin(&1, enablement_by_id, installed_plugin_ids))
 
       {:ok, plugins}
+    end
+  end
+
+  @doc "`:ok` when the plugin is offered to `client`; not found otherwise."
+  def offered(user, session, workspace_id, plugin_id, client) do
+    with {:ok, workspace} <- Workspaces.authorize(user, session, workspace_id),
+         :ok <- validate_plugin_id(plugin_id),
+         {:ok, definition} <- get_product_definition(workspace, plugin_id) do
+      if ClientCapabilities.allows?(client, definition), do: :ok, else: {:error, :not_found}
     end
   end
 

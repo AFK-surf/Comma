@@ -6,8 +6,8 @@ import QuickChatCore
 /// the Dock and listens; the words appear as they are said. Clicking them or
 /// typing stops listening and opens them for editing; a tap of ⌘ then
 /// listens again after them. Return or the send button sends them away
-/// with the shockwave and asks Main to send a Message. The close button drops the
-/// words. Esc or a click elsewhere closes it too, and the next Quick Chat
+/// with the shockwave and asks Main to send a Message. The close button and
+/// Esc drop the words. A click elsewhere closes it too, and the next Quick Chat
 /// continues them; so does `silenceLimit` without new words while it
 /// listens, so a double tap of ⌘ by mistake never leaves the microphone on. Words
 /// taller than their box scroll under the pointer.
@@ -24,6 +24,7 @@ final class QuickChatController {
 
     private let emit: (HostEvent) -> Void
     private let transcripts: ServerTranscripts
+    private let tickets: DictationTickets
     private let submissions: QuickChatSubmission
     private let makeSource: (_ draft: String) -> TranscriptSource
     /// False for `--preview`, which must not take the keyboard from the person at the Mac.
@@ -66,11 +67,13 @@ final class QuickChatController {
         takesKeyboard: Bool = true,
         emit: @escaping (HostEvent) -> Void,
         transcripts: ServerTranscripts,
+        tickets: DictationTickets,
         makeSource: @escaping (_ draft: String) -> TranscriptSource
     ) {
         self.takesKeyboard = takesKeyboard
         self.emit = emit
         self.transcripts = transcripts
+        self.tickets = tickets
         submissions = QuickChatSubmission(emit: emit)
         self.makeSource = makeSource
         let root = effectPanel.contentView!.layer!
@@ -81,7 +84,7 @@ final class QuickChatController {
         controls.onClose = { [weak self] in self?.close() }
         controls.onSend = { [weak self] in self?.send() }
         keyPanel.onKeyDown = { [weak self] event in self?.key(event) }
-        keyPanel.onCancel = { [weak self] in self?.cancel() }
+        keyPanel.onCancel = { [weak self] in self?.close() }
         keyPanel.onClick = { [weak self] event, point in self?.edit(with: event, at: point) }
         keyPanel.onScroll = { [weak self] event in
             guard let self, phase == .listening else { return }
@@ -101,7 +104,7 @@ final class QuickChatController {
         editor.onCommand = { [weak self] command in
             switch command {
             case .send: self?.send()
-            case .cancel: self?.cancel()
+            case .cancel: self?.close()
             }
         }
         editor.onChange = { [weak self] in
@@ -128,12 +131,14 @@ final class QuickChatController {
             scheduleHide(after: 3)
         case let .transcript(clipId, text):
             transcripts.receive(clipId: clipId, text: text)
+        case let .dictationTicket(requestId, ticket):
+            tickets.receive(requestId: requestId, ticket: ticket)
         case .listen:
             summon()
         }
     }
 
-    /// A double tap of ⌘, or a click on the menu-bar item: Quick Chat opens, or
+    /// A double tap of ⌘, or the menu-bar menu's Quick Chat row: Quick Chat opens, or
     /// listens again after edited words; it keeps listening when it already does.
     func summon() {
         switch phase {
@@ -177,16 +182,7 @@ final class QuickChatController {
             self?.armSilence()
         }
         source.onLevel = { [weak self] loudness in self?.setLevel(loudness) }
-        // What is happening, or what went wrong, shows where the words will be,
-        // or above them once there are words.
-        source.onPreparing = { [weak self, weak source] preparing in
-            guard let self, let source else { return }
-            if !source.text.isEmpty {
-                preparing ? showTip(strings.preparing) : hideTip()
-            } else {
-                transcript.setPlaceholder(preparing ? strings.preparing : strings.listening, style: .waiting)
-            }
-        }
+        // What went wrong shows where the words will be, or above them once there are words.
         source.onFailure = { [weak self, weak source] failure in
             guard let self, let source else { return }
             let message = failure == .microphoneDenied ? strings.microphoneDenied : strings.speechUnavailable
@@ -204,7 +200,7 @@ final class QuickChatController {
     }
 
     /// Starts the wait for words over: without any for `silenceLimit`, Quick
-    /// Chat closes as Esc does, keeping its words for the next one.
+    /// Chat closes as a click elsewhere does, keeping its words for the next one.
     private func armSilence() {
         silence?.cancel()
         guard phase == .listening else { return }
@@ -236,7 +232,7 @@ final class QuickChatController {
             // Return or the keypad's Enter.
             if modifiers.isEmpty { send() }
         case 53:
-            cancel()
+            close()
         case 48:
             // Tab types nothing here.
             break
@@ -412,12 +408,13 @@ final class QuickChatController {
         submit()
     }
 
-    /// The close button: the words are dropped.
+    /// The close button or Esc: the words are dropped, so the next Quick Chat
+    /// starts empty.
     func close() {
         leave(keepingWords: false)
     }
 
-    /// Esc or a click elsewhere, which can happen by accident: the words wait
+    /// A click elsewhere, which can happen by accident: the words wait
     /// for the next Quick Chat, finished like a send.
     func cancel() {
         leave(keepingWords: true)

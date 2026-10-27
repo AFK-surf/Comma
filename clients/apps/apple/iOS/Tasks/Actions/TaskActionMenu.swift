@@ -2,7 +2,7 @@ import SwiftUI
 import CommaCore
 
 /// The Task actions offered from a list row's context menu and from the open Task's header menu, with the
-/// desktop's glyphs for the same actions.
+/// desktop's glyphs for the same actions. One the core says a Task cannot take (`TaskSummary.unsupported`) is not offered.
 struct TaskActionMenuItems: View {
     let store: CommaStore
     let task: TaskSummary
@@ -26,7 +26,7 @@ struct TaskActionMenuItems: View {
             Divider()
         }
         Button(action: rename) { Label("Rename", image: "central-edit-big") }
-        if !task.isArchived {
+        if !task.isArchived, !task.unsupported.contains("pin") {
             Button {
                 Task { await store.setTaskPinned(id: task.id, pinned: !pinned) }
             } label: {
@@ -34,15 +34,19 @@ struct TaskActionMenuItems: View {
             }
         }
         // The desktop shares a Task as a link.
-        Button(action: share) { Label("Share", image: "central-chain-link-4") }
-        Divider()
-        if task.isArchived {
-            Button { setArchived(false) } label: { Label("Restore", image: Self.restoreIcon) }
-        } else {
-            Button { if let archive { archive() } else { setArchived(true) } } label: {
-                Label("Archive", image: Self.archiveIcon)
+        if !task.unsupported.contains("share") {
+            Button(action: share) { Label("Share", image: "central-chain-link-4") }
+        }
+        if !task.unsupported.contains("archive") {
+            Divider()
+            if task.isArchived {
+                Button { setArchived(false) } label: { Label("Restore", image: Self.restoreIcon) }
+            } else {
+                Button { if let archive { archive() } else { setArchived(true) } } label: {
+                    Label("Archive", image: Self.archiveIcon)
+                }
+                    .archiveAvailability(of: task)
             }
-                .archiveAvailability(of: task)
         }
     }
 

@@ -254,6 +254,42 @@ export class Recommendations {
           );
         },
       },
+      // The member does not want to hear about one source item again: the answer is the briefing without it.
+      "recommendations.dismiss": {
+        doing: true,
+        run: (p) => {
+          const raw = p as {
+            workspace?: unknown;
+            sourceId?: unknown;
+            sourceUrl?: unknown;
+          } | null;
+          if (
+            typeof raw?.workspace !== "string" ||
+            !raw.workspace ||
+            typeof raw.sourceId !== "string" ||
+            !raw.sourceId ||
+            typeof raw.sourceUrl !== "string" ||
+            !raw.sourceUrl
+          )
+            throw CoreError.invalid("workspace, sourceId and sourceUrl are required");
+          const workspace = raw.workspace;
+          return ctx.session.account().pipe(
+            Effect.flatMap((account) =>
+              ctx.api.request(
+                account,
+                "POST",
+                `${recommendationsPath(workspace)}/dismissals`,
+                recommendationEnvelopeSchema,
+                { sourceId: raw.sourceId, sourceUrl: raw.sourceUrl }
+              )
+            ),
+            Effect.tap((envelope) =>
+              Effect.sync(() => this.#adopt(workspace, envelope))
+            ),
+            Effect.as(null)
+          );
+        },
+      },
       "proactive.set": {
         doing: true,
         run: (p) => {

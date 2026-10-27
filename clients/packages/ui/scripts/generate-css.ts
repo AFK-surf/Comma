@@ -41,6 +41,7 @@ import {
   motionDuration,
   motionEasing,
   motionLoginCodeError,
+  motionLoop,
   motionRotate,
   motionScale,
 } from "../src/tokens/motion";
@@ -190,6 +191,9 @@ const emitLayoutUtilities = () => {
   emitUtility("w-dialog-preview", {
     width: "min(var(--dialog-width-preview), calc(100vw - var(--spacing-xl) * 2))",
   });
+  emitUtility("w-dialog-compose", {
+    width: "min(var(--dialog-width-compose), calc(100vw - var(--spacing-xl) * 2))",
+  });
   emitUtility("inset-toast-close-icon", { inset: "var(--toast-close-icon-inset)" });
   emitUtility("inset-dialog-close-icon", { inset: "var(--dialog-close-icon-inset)" });
 };
@@ -274,6 +278,9 @@ for (const [key, value] of Object.entries(motionDuration)) {
 }
 for (const [key, value] of Object.entries(motionEasing)) {
   emit(`motion-easing-${kebab(key)}`, value);
+}
+for (const [key, value] of Object.entries(motionLoop)) {
+  emit(`motion-loop-${kebab(key)}`, value);
 }
 for (const [key, value] of Object.entries(motionScale)) {
   emit(`motion-scale-${kebab(key)}`, value);

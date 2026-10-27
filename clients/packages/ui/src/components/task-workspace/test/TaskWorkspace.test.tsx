@@ -1,4 +1,5 @@
 import userEvent from "@testing-library/user-event";
+import { setInteractionModality } from "react-aria/private/interactions/useFocusVisible";
 import { act, render, screen, waitFor, within } from "@comma/test-utils/render";
 import { Toaster, toast } from "../../toast";
 import { describe, expect, it, vi } from "vitest";
@@ -148,7 +149,7 @@ describe("TaskWorkspace", () => {
       "Task data is not connected yet. The board UI is ready."
     );
 
-    await userEvent.click(screen.getByRole("button", { name: "Create new task" }));
+    await userEvent.click(screen.getByRole("button", { name: "New task" }));
     await userEvent.click(screen.getByRole("button", { name: "Chat with Comma" }));
 
     expect(onCreateTask).toHaveBeenCalledOnce();
@@ -159,7 +160,7 @@ describe("TaskWorkspace", () => {
     render(<TaskWorkspace tasks={[]} />);
 
     expect(screen.getByText("No tasks")).toBeVisible();
-    expect(screen.queryByRole("button", { name: "Create new task" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "New task" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Chat with Comma" })).toBeNull();
   });
 
@@ -485,7 +486,7 @@ describe("TaskWorkspace", () => {
             taskFixture({ archiveAction: { run }, id: "task-a", title: "Task A" }),
             taskFixture({
               archiveAction: {
-                disabledReason: "Finish the task before archiving",
+                disabledReason: "Finish the task first",
                 run,
               },
               id: "task-b",
@@ -510,24 +511,23 @@ describe("TaskWorkspace", () => {
     await waitFor(() => expect(screen.queryByTestId("tasks-selection-bar")).toBeNull());
     expect(
       await screen.findByTestId("tasks-archive-selected-skipped")
-    ).toHaveTextContent("1 left in place");
+    ).toHaveTextContent("1 left in place: Finish the task first");
   });
 
-  it("offers no archive while nothing checked allows it", async () => {
+  it("says why nothing checked can be archived", async () => {
     const user = userEvent.setup();
+    const run = vi.fn();
     render(
       <TaskWorkspace
         onAskComma={vi.fn()}
         onOpenTask={vi.fn()}
         tasks={[
           taskFixture({
-            archiveAction: {
-              disabledReason: "Finish the task before archiving",
-              run: vi.fn(),
-            },
+            archiveAction: { disabledReason: "Finish the task first", run },
             id: "task-b",
             title: "Task B",
           }),
+          taskFixture({ id: "task-c", title: "Task C" }),
         ]}
       />
     );
@@ -535,7 +535,24 @@ describe("TaskWorkspace", () => {
     await user.click(card("Task B"));
     await user.keyboard("{/Shift}");
     const bar = await screen.findByTestId("tasks-selection-bar");
-    expect(within(bar).getByRole("button", { name: "Archive" })).toBeDisabled();
+    const archive = within(bar).getByRole("button", { name: "Archive" });
+    expect(archive).toHaveAttribute("aria-disabled", "true");
+
+    setInteractionModality("pointer");
+    await user.hover(archive);
+    expect(
+      await screen.findByRole("tooltip", { name: "Finish the task first" })
+    ).toBeInTheDocument();
+    await user.click(archive);
+    expect(run).not.toHaveBeenCalled();
+
+    // A Task with no archive action of its own adds its reason beside the other.
+    await user.unhover(archive);
+    await user.click(card("Task C"));
+    await user.hover(archive);
+    const tooltip = await screen.findByRole("tooltip");
+    expect(tooltip).toHaveTextContent("Finish the task first");
+    expect(tooltip).toHaveTextContent("This task can't be archived here");
   });
 
   it("counts a narrowed caller section as an active filter", () => {
@@ -907,17 +924,47 @@ describe("TaskWorkspace", () => {
     expect(onSendMessage).toHaveBeenCalledWith(task, "Looks good");
   });
 
-  it("delegates keyboard selection when a runtime open handler is provided", async () => {
+  it("delegates keyboard selection with the shown order when a runtime open handler is provided", async () => {
     const onOpenTask = vi.fn();
     const task = taskFixture();
-    render(<TaskWorkspace initialView="list" onOpenTask={onOpenTask} tasks={[task]} />);
+    const done = taskFixture({ id: "task_2", statusBucket: "done", title: "Ship it" });
+    const review = taskFixture({
+      id: "task_3",
+      statusBucket: "needs_review",
+      title: "Check copy",
+    });
+    render(
+      <TaskWorkspace
+        initialView="list"
+        onOpenTask={onOpenTask}
+        tasks={[done, task, review]}
+      />
+    );
 
     const taskRow = screen.getByRole("button", { name: task.title });
     taskRow.focus();
     await userEvent.keyboard("{Enter}");
 
-    expect(onOpenTask).toHaveBeenCalledWith(task);
+    // Status groups in reading order, not the order the Tasks arrived in.
+    expect(onOpenTask).toHaveBeenCalledWith(task, [task, review, done]);
     expect(screen.queryByRole("complementary", { name: "Task chat" })).toBeNull();
+  });
+
+  it("leaves a folded list group's Tasks out of the shown order", async () => {
+    const onOpenTask = vi.fn();
+    const task = taskFixture();
+    const done = taskFixture({ id: "task_2", statusBucket: "done", title: "Ship it" });
+    render(
+      <TaskWorkspace initialView="list" onOpenTask={onOpenTask} tasks={[done, task]} />
+    );
+
+    const doneHeader = [
+      ...document.querySelectorAll<HTMLElement>('[data-slot="task-list-group-header"]'),
+    ].find((header) => header.textContent?.includes("Done"));
+    await userEvent.click(doneHeader!);
+    await userEvent.click(screen.getByRole("button", { name: task.title }));
+
+    expect(onOpenTask).toHaveBeenCalledWith(task, [task]);
   });
 });
 
@@ -930,7 +977,6 @@ function taskFixture(overrides: Partial<TaskWorkspaceTask> = {}): TaskWorkspaceT
     conversationId: "cnv_task_1",
     groupId: "grp_1",
     updatedAt: 1_700_000_000,
-    freshness: "fresh",
     id: "task_1",
     lastMessage: {
       content: "I am checking it now.",

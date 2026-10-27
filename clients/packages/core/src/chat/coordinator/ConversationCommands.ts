@@ -2,6 +2,7 @@ import type {
   ChatCommandReceipt,
   ChatLeasedAttachInput,
   ChatLeasedClientRequestInput,
+  ChatLeasedSetTaskRunInput,
   ChatLeasedSetTaskStatusInput,
   ChatLeasedTarget,
 } from "@comma/chat-contract";
@@ -124,6 +125,20 @@ export class ConversationCommands {
     return Effect.suspend(() => {
       const entry = this.#entries.required(input);
       return entry.channel.setTaskStatus(input.status, input.expectedUpdatedAt).pipe(
+        Effect.map(() => {
+          entry.boundary.assertCurrent();
+          return this.#publisher.receipt();
+        })
+      );
+    });
+  }
+
+  setTaskRun(
+    input: ChatLeasedSetTaskRunInput
+  ): Effect.Effect<ChatCommandReceipt, Error> {
+    return Effect.suspend(() => {
+      const entry = this.#entries.required(input);
+      return entry.channel.setTaskRun(input.run).pipe(
         Effect.map(() => {
           entry.boundary.assertCurrent();
           return this.#publisher.receipt();

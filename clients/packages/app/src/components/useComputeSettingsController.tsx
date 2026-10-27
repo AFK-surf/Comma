@@ -8,13 +8,19 @@ import { useCommaMessages } from "@comma/i18n/react";
 import { Dialog } from "@comma/ui/components/dialog";
 import type { ComputeNodeExpectedBinding } from "@comma/native-bridge";
 import { useActiveWorkspaceId } from "./activeWorkspace";
-import { computeProblemMessage, useComputeNode } from "./useComputeNode";
-import { useComputeWorkloadsSection } from "./useComputeWorkloadsSection";
+import { useComputeNode } from "./useComputeNode";
+import { computeNodeCard, type ComputeCardActionId } from "./computeNodeCard";
+import {
+  useComputeWorkloadsSection,
+  type ComputeWorkloadDevices,
+} from "./useComputeWorkloadsSection";
 
 export function useComputeSettingsController(
   /** Whether this app reaches the Comma cloud (a local-only login entry does not). */
   hasCloud: boolean,
-  visible: boolean
+  visible: boolean,
+  /** The devices list, which names a workload's device. */
+  devices?: ComputeWorkloadDevices
 ) {
   const m = useCommaMessages();
   const node = useComputeNode();
@@ -29,10 +35,11 @@ export function useComputeSettingsController(
   const workloads = useComputeWorkloadsSection(
     hasCloud,
     visible && hasCloud,
-    local.available ? local.tick : undefined
+    local.available ? local.tick : undefined,
+    devices
   );
   const [confirm, setConfirm] = useState<
-    "enable" | "drain" | "remove" | "repair" | "rebuild" | "abandon"
+    "drain" | "remove" | "repair" | "rebuild" | "abandon"
   >();
   const target = useRef<string | undefined>(undefined);
   const expectedBinding = useRef<ComputeNodeExpectedBinding | undefined>(undefined);
@@ -131,81 +138,32 @@ export function useComputeSettingsController(
   const recovery = useComputeRecoverySection(
     workspaceId,
     state?.confirmationId,
-    () => void node.refresh(),
-    workloads.workspaceName ?? undefined
+    () => void node.refresh()
   );
-  const boundElsewhere = !!binding && binding !== workspaceId;
   const workspaceLabel = (id: string | undefined): string =>
     id === workspaceId && workloads.workspaceName
       ? workloads.workspaceName
       : id
         ? m.compute_workspace_label({ id: id.slice(-8) })
         : m.compute_no_workspace();
-  const status: string = workspaceUnconfirmed
-    ? m.compute_operation_unknown()
-    : !node.available || state?.eligibility.eligible === false
-      ? m.compute_unsupported()
-      : state?.remoteRevocationConfirmed === false
-        ? m.compute_local_removed()
-        : state?.status === "removed"
-          ? m.compute_removed()
-          : state?.status === "not_set"
-            ? m.compute_not_enabled()
-            : state?.operation?.outcome === "pending" && state.status === "processing"
-              ? state?.operation?.kind === "drain"
-                ? m.compute_stopping()
-                : state?.operation?.kind === "remove"
-                  ? m.compute_removing()
-                  : m.compute_preparing()
-              : state?.status === "ready" && state.observationFresh
-                ? m.compute_available()
-                : state?.status === "stopped"
-                  ? m.compute_stopped()
-                  : m.compute_attention();
-  const reason: string = workspaceUnconfirmed
-    ? node.error
-      ? m.compute_read_failed()
-      : m.compute_maintenance_checking()
-    : state?.issue === "removal_incomplete"
-      ? m.compute_removal_incomplete()
-      : state?.issue === "authorization_unavailable"
-        ? m.compute_current_login_unavailable()
-        : state?.issue === "shell_initialization_pending"
-          ? m.compute_shell_pending()
-          : state?.issue === "operation_unknown"
-            ? m.compute_operation_unknown()
-            : state?.issue === "capability_missing"
-              ? m.compute_host_update_required()
-              : state?.issue === "connection"
-                ? m.compute_connection_problem()
-                : state?.issue === "authorization"
-                  ? m.compute_authorization_problem()
-                  : state?.issue === "preparation_failed"
-                    ? m.compute_preparation_problem()
-                    : state?.issue === "enable_incomplete"
-                      ? m.compute_enable_incomplete()
-                      : m.compute_node_description();
-  const problem = state?.problem ? computeProblemMessage(state.problem, m) : undefined;
-  // Main keeps the failed component setup's own error until the next attempt; it shows under the generic line.
-  const reasonDetail =
-    !workspaceUnconfirmed && state?.issue === "preparation_failed"
-      ? state.preparation?.error
-      : undefined;
-  const canFinishRemove = !!(
-    eligible &&
-    !busy &&
-    state?.recoveryActions?.includes("finish_remove")
-  );
-  const canEnable = !!(
-    eligible &&
-    !busy &&
-    !boundElsewhere &&
-    state?.issue !== "capability_missing" &&
-    state?.issue !== "authorization_unavailable" &&
-    state?.issue !== "removal_incomplete" &&
-    ((!state?.desiredEnabled && state?.operation?.outcome !== "unknown") ||
-      state.recoveryActions?.includes("continue_enable") ||
-      state.recoveryActions?.includes("continue_shell"))
+  // A reader sees the state; Main checks the binding owner of every connection action again.
+  const canManage = workloads.canManage;
+  const readOnly = !!workloads.projection && !workloads.canManage;
+  const card = computeNodeCard(
+    {
+      state,
+      maintenance: {
+        state: local.maintenance.state,
+        active: maintenanceActive && !local.maintenance.failed,
+        title: local.maintenance.title,
+      },
+      workspaceUnconfirmed: workspaceUnconfirmed && !local.maintenance.failed,
+      readFailed: !!node.error,
+      workspace: workspaceLabel(binding ?? workspaceId),
+      canManage,
+      readOnly,
+    },
+    m
   );
   const openConfirm = (action: NonNullable<typeof confirm>) => {
     target.current = binding ?? workspaceId;
@@ -219,11 +177,9 @@ export function useComputeSettingsController(
       : undefined;
     setConfirm(action);
   };
-  const recoveryNeeded =
-    state?.issue === "authorization" || state?.issue === "authorization_unavailable";
   // Closes an install request that the cloud never handed over; Main decides when that is possible.
   const canAbandon = !!(eligible && !busy && binding && state?.canAbandonRequest);
-  /** The same maintenance entry as the local settings page; Main asks for native confirmation. */
+  /** The local settings maintenance entry: it shows the progress page. Main asks for native confirmation. */
   const startMaintenance = (action: "update" | "reinstall" | "uninstall" | "clear") => {
     const original = local.maintenance.state?.operation?.requestId;
     workloads.close();
@@ -233,61 +189,55 @@ export function useComputeSettingsController(
         setDetail("settings");
     });
   };
-  const setupDone =
-    state?.setup?.components === "ready" &&
-    state.setup.connection === "ready" &&
-    state.setup.shell === "ready";
-  // The steps page returns to the main view once the steps it showed in progress are all ready.
-  const setupSeenIncomplete = useRef(false);
-  useEffect(() => {
-    if (detail !== "setup") {
-      setupSeenIncomplete.current = false;
-      return;
+  /** Runs one card action. Enabling binds the one workspace the card names, so it needs no dialog. */
+  const run = (action: ComputeCardActionId) => {
+    const workspace = binding ?? workspaceId;
+    switch (action) {
+      case "enable":
+      case "retry":
+        if (workspace)
+          void node.configure({ desiredEnabled: true, workspaceId: workspace });
+        return;
+      case "remove":
+        openConfirm("remove");
+        return;
+      case "recover":
+        workloads.close();
+        setDetail("authorization");
+        void recovery.discover();
+        return;
+      case "update_host":
+        void local.maintenance.submit(
+          local.maintenance.needsInstall ? "reinstall" : "update"
+        );
+        return;
+      case "reinstall_reset":
+        void local.maintenance.submit("reinstall_reset");
+        return;
+      case "reset_local_record":
+        void node.resetLocalRecord().then(() => local.maintenance.refresh());
+        return;
+      case "manage_storage":
+        workloads.close();
+        setDetail("local");
+        return;
+      case "resume_maintenance":
+        local.maintenance.resume();
+        return;
+      case "check_status":
+        checkWorkspace();
+        return;
     }
-    if (!setupDone) {
-      setupSeenIncomplete.current = true;
-      return;
-    }
-    if (!setupSeenIncomplete.current) return;
-    setupSeenIncomplete.current = false;
-    setDetail(hasCloud ? undefined : "settings");
-  }, [detail, setupDone, hasCloud]);
-  // While the visible steps page waits, each local tick (one per 5 s) reads the node
-  // once, so a step that finishes shows without a manual status check.
-  const setupTick = local.available ? local.tick : undefined;
-  useEffect(() => {
-    if (!visible || detail !== "setup" || setupDone || setupTick === undefined) return;
-    void refreshRef.current();
-  }, [visible, detail, setupDone, setupTick]);
-  const primary = () => {
-    if (maintenanceActive) {
-      setDetail("maintenance");
-      return;
-    }
-    if (state?.status === "processing") {
-      setDetail("setup");
-      return;
-    }
-    if (state?.issue === "capability_missing") {
-      startMaintenance(local.maintenance.needsInstall ? "reinstall" : "update");
-      return;
-    }
-    if (canFinishRemove) {
-      openConfirm("remove");
-      return;
-    }
-    if (recoveryNeeded) {
-      workloads.close();
-      setDetail("authorization");
-      void recovery.discover();
-      return;
-    }
-    if (canEnable) {
-      openConfirm("enable");
-      return;
-    }
-    checkWorkspace();
   };
+  /** Whether a card action can run now. Local maintenance actions wait only for their own request. */
+  const canRun = (action: ComputeCardActionId) =>
+    action === "reinstall_reset" || action === "resume_maintenance"
+      ? !local.maintenance.pending
+      : action === "manage_storage"
+        ? true
+        : action === "check_status"
+          ? !node.pending
+          : eligible && !busy;
   return {
     node,
     local,
@@ -304,16 +254,12 @@ export function useComputeSettingsController(
     busy,
     binding,
     eligible,
-    canEnable,
-    canFinishRemove,
+    canManage,
+    readOnly,
     canAbandon,
-    recoveryNeeded,
-    status,
-    reason,
-    reasonDetail,
-    problem,
-    problemDetail: state?.problemDetail,
-    primary,
+    card,
+    run,
+    canRun,
     startMaintenance,
     openConfirm,
     checkWorkspace,
@@ -324,15 +270,13 @@ export function useComputeSettingsController(
         title={
           confirm === "abandon"
             ? m.compute_close_request()
-            : confirm === "enable"
-              ? m.compute_enable()
-              : confirm === "drain"
-                ? m.compute_stop()
-                : confirm === "remove"
-                  ? m.settings_compute_node_remove()
-                  : m.settings_compute_node_repair()
+            : confirm === "drain"
+              ? m.compute_stop()
+              : confirm === "remove"
+                ? m.settings_compute_node_remove()
+                : m.settings_compute_node_repair()
         }
-        description={`${m.compute_target({ workspace: workspaceLabel(target.current) })} ${confirm === "abandon" ? m.compute_close_request_confirm() : confirm === "enable" ? m.compute_enable_confirm() : confirm === "drain" ? m.compute_stop_confirm() : confirm === "remove" ? m.compute_remove_confirm() : m.compute_repair_warning()}`}
+        description={`${m.compute_target({ workspace: workspaceLabel(target.current) })} ${confirm === "abandon" ? m.compute_close_request_confirm() : confirm === "drain" ? m.compute_stop_confirm() : confirm === "remove" ? m.compute_remove_confirm() : m.compute_repair_warning()}`}
         onOpenChange={(open) => {
           if (!open) setConfirm(undefined);
         }}
@@ -346,28 +290,17 @@ export function useComputeSettingsController(
             label:
               confirm === "abandon"
                 ? m.compute_close_request()
-                : confirm === "enable"
-                  ? m.compute_enable()
-                  : confirm === "drain"
-                    ? m.compute_stop()
-                    : confirm === "remove"
-                      ? m.settings_compute_node_remove()
-                      : m.settings_compute_node_repair(),
+                : confirm === "drain"
+                  ? m.compute_stop()
+                  : confirm === "remove"
+                    ? m.settings_compute_node_remove()
+                    : m.settings_compute_node_repair(),
             hierarchy: "primary",
             disabled: busy,
             onPress: () => {
               const action = confirm;
-              const workspace = target.current;
               setConfirm(undefined);
-              if (action === "enable" && workspace) {
-                setDetail("setup");
-              }
-              if (action === "enable" && workspace)
-                void node.configure({
-                  desiredEnabled: true,
-                  workspaceId: workspace,
-                });
-              else if (action === "drain" && expectedBinding.current)
+              if (action === "drain" && expectedBinding.current)
                 void node.drain(expectedBinding.current);
               else if (action === "remove" && expectedBinding.current)
                 void node.remove(expectedBinding.current);

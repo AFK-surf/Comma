@@ -31,6 +31,7 @@ defmodule SalixMeet.Store do
 
   alias SalixMeet.FallbackMessageManifest
   alias SalixStore.{Keys, MeetingGroupProjections, S3}
+  require Logger
 
   @type doc :: %{
           required(String.t()) => term()
@@ -224,6 +225,69 @@ defmodule SalixMeet.Store do
       when is_binary(generation) and generation != "" do
     retries = Keyword.get(opts, :retries, 8)
     do_checkpoint_join_dispatch(id, generation, outcome, opts, retries)
+  end
+
+  @doc "Record a runtime target before dispatch under the current join claim."
+  def select_join_runtime(id, generation, target),
+    do: update_join_runtime(id, generation, {:select, stringify(target)}, 8)
+
+  @doc "Release a target only after its carrier confirms nonacceptance."
+  def reject_join_runtime(id, generation, target, reason),
+    do: update_join_runtime(id, generation, {:reject, stringify(target), inspect(reason)}, 8)
+
+  @doc "Record a business refusal without changing its runtime target."
+  def refuse_join_runtime(id, generation, target, reason),
+    do: update_join_runtime(id, generation, {:refuse, stringify(target), reason}, 8)
+
+  defp update_join_runtime(_id, _generation, _change, 0), do: {:error, :lost}
+
+  defp update_join_runtime(id, generation, change, retries) do
+    with {:ok, doc, etag} <- get(id),
+         state = doc["state"] || %{},
+         %{"status" => "dispatching", "generation" => ^generation} <- state["join_dispatch"],
+         {:ok, next} <- change_join_runtime(state, change) do
+      case cas_put(id, Map.put(doc, "state", next), etag) do
+        {:error, :lost} -> update_join_runtime(id, generation, change, retries - 1)
+        result -> result
+      end
+    else
+      {:error, _} = error -> error
+      _ -> {:error, :fenced}
+    end
+  end
+
+  defp change_join_runtime(state, {:select, target}) do
+    if is_nil(state["runtime_target"]) or state["runtime_target"] == target do
+      {:ok,
+       state
+       |> Map.put("runtime_target", target)
+       |> Map.put("runtime_source", target["source"])
+       |> Map.merge(Map.take(target, ~w(compute_environment_id workload_id)))}
+    else
+      {:error, :meeting_runtime_pinned}
+    end
+  end
+
+  defp change_join_runtime(state, {:reject, target, reason}) do
+    if state["runtime_target"] == target do
+      rejected = Map.put(target, "reason", reason)
+
+      {:ok,
+       state
+       |> Map.drop(~w(runtime_target compute_environment_id workload_id))
+       |> Map.put("runtime_source", "automatic")
+       |> Map.update!("join_dispatch", fn dispatch ->
+         Map.update(dispatch, "runtime_rejections", [rejected], &Enum.take(&1 ++ [rejected], -3))
+       end)}
+    else
+      {:error, :meeting_runtime_pinned}
+    end
+  end
+
+  defp change_join_runtime(state, {:refuse, target, reason}) do
+    if state["runtime_target"] == target,
+      do: {:ok, state |> Map.put("status", "failed") |> Map.put("reason_code", reason)},
+      else: {:error, :meeting_runtime_pinned}
   end
 
   @doc "Terminally abandon a pending calendar join without overriding an active or completed claim."
@@ -757,7 +821,8 @@ defmodule SalixMeet.Store do
     delivery_reclaim_after = opts[:reclaim_after_ms] || @delivery_reclaim_after_ms
     activation_reclaim_after = opts[:reclaim_after_ms] || @activation_reclaim_after_ms
 
-    with {:ok, doc, etag} <- get(id) do
+    with {:ok, doc, etag} <- get(id),
+         :ok <- settle_terminal_workload(doc) do
       state = stringify(doc["state"] || %{})
       delivery = stringify(state["delivery"] || %{})
 
@@ -1147,6 +1212,7 @@ defmodule SalixMeet.Store do
                 "completed_at" => nil,
                 "last_error" => nil,
                 "previous_error" => dispatch["last_error"],
+                "runtime_rejections" => dispatch["runtime_rejections"] || [],
                 "attempt_count" => join_attempts(dispatch) + 1
               }
 
@@ -1490,11 +1556,40 @@ defmodule SalixMeet.Store do
   end
 
   defp cas_put(id, doc, etag) do
-    case S3.put(Keys.meet_state(id), Jason.encode!(doc), if_match: etag) do
-      {:ok, %{etag: new_etag}} -> {:ok, doc, new_etag}
-      {:error, :precondition_failed} -> {:error, :lost}
-      {:error, {:ambiguous, _}} -> verify(id, doc)
-      other -> other
+    result =
+      case S3.put(Keys.meet_state(id), Jason.encode!(doc), if_match: etag) do
+        {:ok, %{etag: new_etag}} -> {:ok, doc, new_etag}
+        {:error, :precondition_failed} -> {:error, :lost}
+        {:error, {:ambiguous, _}} -> verify(id, doc)
+        other -> other
+      end
+
+    with {:ok, committed, _etag} <- result,
+         :ok <- settle_terminal_workload(committed) do
+      result
+    end
+  end
+
+  # Every terminal writer uses this commit seam. The existing delivery reader
+  # retries cleanup after a committed state whose Compute stop was unavailable.
+  defp settle_terminal_workload(%{"id" => meeting_id, "state" => state}) do
+    if state["status"] in @terminal_statuses and
+         state["runtime_source"] in ["automatic", "compute_workload"] do
+      case SalixMeet.MeetingComputeCarrier.terminal(Map.put(state, "meeting_id", meeting_id)) do
+        {:ok, _stopped} ->
+          :ok
+
+        {:error, reason} ->
+          Logger.warning(
+            "Meeting Workload cleanup deferred: #{inspect(reason, limit: 5, printable_limit: 200)}",
+            meeting_id: meeting_id,
+            workload_id: state["workload_id"]
+          )
+
+          :ok
+      end
+    else
+      :ok
     end
   end
 

@@ -78,6 +78,49 @@ describe("Comma web static worker", () => {
     ).toEqual(["/share.html", "/share"]);
   });
 
+  it("serves the app runtime as a sandboxed document without app content", async () => {
+    const assetsFetch = vi.fn();
+
+    const response = await worker.fetch(
+      new Request("https://app.comma.surf/app-runtime/"),
+      {
+        ASSETS: { fetch: assetsFetch },
+      }
+    );
+
+    expect(response.status).toBe(200);
+    const policy = response.headers.get("content-security-policy") ?? "";
+    expect(policy.split("; ")).toEqual(
+      expect.arrayContaining([
+        "sandbox allow-scripts allow-forms",
+        "connect-src 'none'",
+        expect.stringMatching(/^script-src 'sha256-[A-Za-z0-9+/]+=*' blob:$/),
+      ])
+    );
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(await response.text()).toMatch(/^<!doctype html>/);
+    expect(assetsFetch).not.toHaveBeenCalled();
+  });
+
+  it("opens an app link in the main app without leaking its token", async () => {
+    const assetsFetch = vi.fn(async (request: Request) =>
+      new URL(request.url).pathname === "/"
+        ? new Response("main app", { headers: { "content-type": "text/html" } })
+        : new Response("other", { status: 404 })
+    );
+
+    const response = await worker.fetch(
+      new Request(`https://app.comma.surf/a/${"b".repeat(32)}`),
+      { ASSETS: { fetch: assetsFetch } }
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe("main app");
+    expect(response.headers.get("referrer-policy")).toBe("no-referrer");
+    expect(response.headers.get("x-robots-tag")).toBe("noindex");
+    expect(response.headers.get("cache-control")).toBe("no-store");
+  });
+
   it("keeps staging out of search indexes and leaves production indexable", async () => {
     const assetsFetch = vi.fn(async () => new Response("app", { status: 200 }));
     const env = { ASSETS: { fetch: assetsFetch } };

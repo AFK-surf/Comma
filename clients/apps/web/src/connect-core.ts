@@ -14,7 +14,9 @@ export function connectWebCore(
         new Worker(new URL("./core.worker.ts", import.meta.url), {
           name: `comma-core:${apiBaseUrl}`,
           type: "module",
-        })
+        }),
+      // This bundle names the worker's script: while it is served, so is the worker's.
+      import.meta.url
     ),
     options
   );

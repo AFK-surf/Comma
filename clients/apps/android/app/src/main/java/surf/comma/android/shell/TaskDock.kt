@@ -383,7 +383,9 @@ class TaskDock(private val shell: Shell, private val onState: (open: Boolean, ra
             if (task != null) {
                 val bucket = task.bucket.takeIf { it != TaskStatusBucket.ARCHIVED } ?: TaskStatusBucket.IN_PROGRESS
                 status.setStatus(bucket, statusTint(activity, bucket))
-                statusText.text = theme.statusLabel(bucket)
+                statusText.text = theme.statusLabel(bucket).let { label ->
+                    if (task.host?.online == false) activity.getString(R.string.task_offline, label) else label
+                }
             }
             titleBlock.contentDescription = listOfNotNull(title.text, statusText.text.takeIf { task != null }).joinToString(", ")
             titleBlock.stateDescription = activity.getString(R.string.task_toggle)
@@ -424,6 +426,8 @@ class TaskDock(private val shell: Shell, private val onState: (open: Boolean, ra
             private set
         private val properties = FlowLayout(activity, activity.dp(6))
         private val workerCaption = caption(R.string.task_details_worker)
+        private val machineCaption = caption(R.string.task_details_machine)
+        private val machine = FlowLayout(activity, activity.dp(6))
         private val worker = FlowLayout(activity, activity.dp(6))
         private val labels = FlowLayout(activity, activity.dp(6))
         private var catalog: List<TaskLabel>? = null
@@ -473,6 +477,8 @@ class TaskDock(private val shell: Shell, private val onState: (open: Boolean, ra
             addView(properties, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT).apply { topMargin = activity.dp(8) })
             addView(workerCaption, LayoutParams(-2, -2).apply { topMargin = activity.dp(18) })
             addView(worker, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT).apply { topMargin = activity.dp(8) })
+            addView(machineCaption, LayoutParams(-2, -2).apply { topMargin = activity.dp(18) })
+            addView(machine, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT).apply { topMargin = activity.dp(8) })
             addView(caption(R.string.task_details_labels), LayoutParams(-2, -2).apply { topMargin = activity.dp(18) })
             addView(labels, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT).apply { topMargin = activity.dp(8) })
             setContentAlpha(0f)
@@ -624,6 +630,18 @@ class TaskDock(private val shell: Shell, private val onState: (open: Boolean, ra
                     setOnClickListener { WorkerHistorySheet(activity, store, task.id, bound).show() }
                 })
             }
+            // Where a Task a station hosts runs: the machine, and whether it is reached.
+            val host = task.host
+            machine.removeAllViews()
+            machineCaption.isVisible = host != null
+            machine.isVisible = host != null
+            if (host != null) {
+                val name = host.machine ?: activity.getString(R.string.task_machine_fallback)
+                machine.addView(pill(ImageView(activity).apply {
+                    setImageResource(R.drawable.ic_filter_device)
+                    imageTintList = ColorStateList.valueOf(activity.getColor(R.color.token_text_quaternary))
+                }, if (host.online == false) activity.getString(R.string.task_offline, name) else name))
+            }
             labels.removeAllViews()
             val known = catalog
             val applied = known.orEmpty().filter { it.id in task.labelIds }
@@ -700,7 +718,8 @@ class TaskDock(private val shell: Shell, private val onState: (open: Boolean, ra
             return ImageView(activity).apply {
                 setImageDrawable(logo)
                 scaleType = ImageView.ScaleType.FIT_CENTER
-                val inset = activity.dp(3)
+                // The logo fills 85% of the disc, the desktop's size.
+                val inset = activity.dpf(1.35f).toInt().coerceAtLeast(1)
                 setPadding(inset, inset, inset, inset)
                 background = disc
             }

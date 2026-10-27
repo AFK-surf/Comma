@@ -4,12 +4,14 @@ import type {
   ChatCommandReceipt,
   ChatLeasedAcknowledgeIntakeFailuresInput,
   ChatLeasedAttachInput,
+  ChatLeasedAttachConversationFilesInput,
   ChatLeasedAttachLocalFilesInput,
   ChatLeasedAttachmentIdInput,
   ChatLeasedBeginSendIntentInput,
   ChatLeasedClientRequestInput,
   ChatLeasedSendInput,
   ChatLeasedSetDraftInput,
+  ChatLeasedSetTaskRunInput,
   ChatLeasedSetTaskStatusInput,
   ChatLeasedTarget,
   ChatPickAttachmentError,
@@ -100,6 +102,9 @@ export interface ChatProvider {
   setTaskStatus(
     input: ChatLeasedSetTaskStatusInput
   ): Effect.Effect<ChatCommandReceipt, Error>;
+  setTaskRun(
+    input: ChatLeasedSetTaskRunInput
+  ): Effect.Effect<ChatCommandReceipt, Error>;
   beginSendIntent(input: ChatLeasedBeginSendIntentInput): ChatBeginSendIntentReceipt;
   cancelSendIntent(input: ChatLeasedBeginSendIntentInput): ChatCommandReceipt;
   acknowledgeIntakeFailures(
@@ -107,6 +112,9 @@ export interface ChatProvider {
   ): ChatCommandReceipt;
   attach(input: ChatLeasedAttachInput): ChatCommandReceipt;
   attachLocalFiles(input: ChatLeasedAttachLocalFilesInput): ChatCommandReceipt;
+  attachConversationFiles(
+    input: ChatLeasedAttachConversationFilesInput
+  ): ChatCommandReceipt;
   claimAttachmentIntake(input: ChatAttachmentIntakeTarget): ChatAttachmentIntakeClaim;
   clearPresentation(input: ChatLeasedTarget): ChatCommandReceipt;
   discard(input: ChatLeasedClientRequestInput): ChatCommandReceipt;

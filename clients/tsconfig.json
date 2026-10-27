@@ -23,6 +23,7 @@
       "@comma/mesh": ["./packages/mesh/src/index.ts"],
       "@comma/mesh/station-native": ["./packages/mesh/src/station-native.ts"],
       "@comma/mesh/testing": ["./packages/mesh/src/memory.ts"],
+      "@comma/mesh/web": ["./packages/mesh/src/web.ts"],
       "@comma/session-contract": ["./packages/session-contract/src/index.ts"],
       "@comma/test-utils/*": ["./packages/test-utils/src/*"],
       "@comma/ui": ["./packages/ui/src/index.ts"],
@@ -49,6 +50,9 @@
     },
     {
       "path": "./packages/chat-contract"
+    },
+    {
+      "path": "./packages/miniapp-sdk"
     },
     {
       "path": "./packages/config"

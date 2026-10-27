@@ -27,12 +27,16 @@ const sources: MediaMenuSource[] = [
 ];
 function Group({
   attach,
+  attachConversationFiles,
   entries = sources,
 }: {
   attach: (files: import("@comma/core/chat").AttachmentUploadInput[]) => unknown;
+  attachConversationFiles?: (
+    files: import("@comma/chat-contract").ChatConversationFile[]
+  ) => unknown;
   entries?: MediaMenuSource[];
 }) {
-  const { open, menu } = useMediaContextMenu(attach);
+  const { open, menu } = useMediaContextMenu(attach, attachConversationFiles);
   return (
     <>
       <ChatPanelImageGroup
@@ -74,6 +78,46 @@ describe("image context actions", () => {
         { data: png, name: "first.png", size: png.size },
       ])
     );
+  });
+
+  it("adds a message's file to context by reference, without reading it", async () => {
+    const attach = vi.fn();
+    const attachConversationFiles = vi.fn();
+    const resolve = vi.fn(async () => png);
+    render(
+      <Group
+        attach={attach}
+        attachConversationFiles={attachConversationFiles}
+        entries={[
+          {
+            fileName: "clip.png",
+            resolve,
+            attachment: {
+              groupId: "g",
+              conversationId: "task_1",
+              messageId: "msg_clip",
+              attachmentIndex: 2,
+              fileName: "clip.png",
+              size: 33_000_000,
+            },
+          },
+        ]}
+      />
+    );
+    await choose(screen.getByRole("img", { name: "clip.png" }), "Add to Context");
+    await waitFor(() =>
+      expect(attachConversationFiles).toHaveBeenCalledWith([
+        {
+          conversationId: "task_1",
+          messageId: "msg_clip",
+          index: 2,
+          name: "clip.png",
+          size: 33_000_000,
+        },
+      ])
+    );
+    expect(resolve).not.toHaveBeenCalled();
+    expect(attach).not.toHaveBeenCalled();
   });
 
   it("dismisses the media menu with Escape", async () => {

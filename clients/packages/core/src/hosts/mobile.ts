@@ -9,16 +9,22 @@
 // hold) and keeps the files. The core runs the session lifecycle against it (session/electron-lifecycle.ts).
 //
 // Operations the script asks of the app (`op`, its JSON → its answer):
-//   fetch {method, path, headers, lease} + body → {status, headers} + body
+//   fetch {method, path, headers, lease, localFileRef?} + body → {status, headers} + body (with `localFileRef`, the
+//     body is that file the app holds, read as it is sent; asked only of an app that `uploadsLocalFiles`)
+//   localFiles.read {ref, offset, length} → bytes: a part of a file the app holds, as a station takes it (asked only
+//     of an app that `readsLocalFiles`)
 //   stream.open {method, path, headers, lease} + body → {id, status, headers}; stream.read {id} → bytes, or {end};
 //     stream.close {id}
 //   auth.fetch {method, path, headers, credential?} + body → {status, headers} + body
 //   download.open {method, path, headers, lease, target} + body → {id, status, total}; download.step {id} →
-//     {received}, or {size, sha256} once the file is in place; download.close {id}; download.remove {path};
-//     download.retain {keep}
+//     {received}, or {size, sha256} once the file is in place; download.create {target} → {id}, a file the core reads
+//     itself, then download.append {id} + body → {received} each part and download.finish {id} → {size, sha256} once
+//     it is in place; download.close {id}; download.remove {path}; download.retain {keep}
 //   session.vault {} → the vault; session.change {change} → {value}; session.google {clientId, nonce} → the grant;
 //     session.googleDone {grant, ok} (Android); session.apple {clientId, nonce} → {identityToken} (iOS); abort {id}
 //     (an operation given up: never answered)
+//   mesh.* (mobile-mesh.ts): this phone's iroh, which the engine answers itself where the app carries it
+//     (`commaNative.mesh`); the app never sees them
 // And at once (`callSync`, answering {value} or {error}): session.gate {snapshot, lease}; sql.open {name} → id
 //   (`:memory:` one in memory); sql.exec {id, sql}; sql.run {id, sql, params} → changes; sql.all {id, sql, params} →
 //   rows; sql.close {id}; sql.delete {name}. A blob goes as {"$bytes": base64}, as bytes do in what the UI says and hears.
@@ -41,13 +47,16 @@ import type {
   ApiResponse,
   AuthRequest,
   BearerSessionPorts,
+  ClientIdentity,
   DownloadPorts,
   Host,
   Pull,
   SessionLease,
+  StationMeshPorts,
   StreamResponse,
 } from "../host.ts";
 import type { MobileNative } from "./mobile-globals.ts";
+import { mobileStations } from "./mobile-mesh.ts";
 import type {
   AppleGrant,
   BearerVault,
@@ -206,17 +215,48 @@ export interface MobileStart {
   apiOrigin: string;
   /** Where the app's gate is: the core continues its authority (the gate follows no other). */
   resumed: SessionAuthorityResume;
+  /** The app sends a file it holds as a request's body (`localFileRef`): its picks upload from where they are. */
+  uploadsLocalFiles?: boolean;
+  /** The app reads a part of a file it holds (`localFiles.read`): its picks go up to a station a part at a time. */
+  readsLocalFiles?: boolean;
+  /** The app's version, as the core's requests report it (`Host.client`). */
+  version?: string;
 }
 
 class MobileHost implements Host {
   readonly sessionSource = "core" as const;
+  readonly uploadsLocalFiles: boolean;
   readonly bearerSession: BearerSessionPorts;
+  readonly client: ClientIdentity;
+  readonly deviceSetup?: import("../host.ts").DeviceSetupPort;
   readonly downloads: DownloadPorts;
+  readonly stationMesh?: StationMeshPorts;
+  readonly readLocalFile?: NonNullable<Host["readLocalFile"]>;
   readonly #bridge: Bridge;
   readonly #device: Sql;
 
   constructor(bridge: Bridge, start: MobileStart) {
     this.#bridge = bridge;
+    this.uploadsLocalFiles = start.uploadsLocalFiles === true;
+    this.client = {
+      kind: start.platform,
+      platform: start.platform,
+      version: typeof start.version === "string" ? start.version : undefined,
+    };
+    if (start.platform === "ios")
+      this.deviceSetup = {
+        call: (op, input) =>
+          bridge
+            .call(`deviceSetup.${op}`, input)
+            .pipe(Effect.map((answer) => (answer.json as { value: unknown }).value)),
+      };
+    if (bridge.native.mesh === true) this.stationMesh = mobileStations(bridge);
+    if (start.readsLocalFiles === true)
+      this.readLocalFile = (ref, offset, length) =>
+        Effect.map(
+          bridge.call("localFiles.read", { ref, offset, length }),
+          (answer) => answer.bytes ?? new Uint8Array()
+        );
     this.#device = new MobileSql(bridge, "device");
     this.#device.exec(
       "CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value BLOB NOT NULL)"
@@ -237,6 +277,21 @@ class MobileHost implements Host {
           (a) => a.json as { received: number } | { size: number; sha256: string }
         ),
       close: (id) => Effect.asVoid(bridge.call("download.close", { id })),
+      create: (path) =>
+        Effect.map(
+          bridge.call("download.create", { target: path }),
+          (a) => a.json as { id: number }
+        ),
+      append: (id, bytes) =>
+        Effect.map(
+          bridge.call("download.append", { id }, bytes),
+          (a) => a.json as { received: number }
+        ),
+      finish: (id) =>
+        Effect.map(
+          bridge.call("download.finish", { id }),
+          (a) => a.json as { size: number; sha256: string }
+        ),
       remove: (path) => Effect.asVoid(bridge.call("download.remove", { path })),
       retain: (keep) => Effect.asVoid(bridge.call("download.retain", { keep })),
     };
@@ -281,6 +336,9 @@ class MobileHost implements Host {
       path: request.path,
       headers: request.headers,
       lease: request.lease,
+      ...(request.localFileRef !== undefined
+        ? { localFileRef: request.localFileRef }
+        : {}),
     };
   }
 

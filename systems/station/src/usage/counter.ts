@@ -475,11 +475,14 @@ export class UsageCounter {
     const claudeRoots = await distinct([join(config.dataDir, "transcripts", "claude"), ...config.profiles.map((p) => join(p.home, "projects"))]);
     const codexRoots = await distinct([join(config.dataDir, "transcripts", "codex"), ...config.profiles.map((p) => join(p.home, "sessions"))]);
     const seenFiles = new Set<string>();
+    // A session that changed runtime ran the one it ran before too.
+    const ranBefore = store.runtimesRun();
+    const ran = (s: SessionRow, runtime: string) => s.runtime === runtime || (ranBefore.get(s.key)?.has(runtime) ?? false);
     for (const s of sessions) {
       if (wanted !== null && !wanted.has(s.key)) continue;
-      if (s.runtime !== "claude") continue;
+      if (!ran(s, "claude")) continue;
       const project = claudeProject(s.cwd ?? s.workspace);
-      const only = s.cwd !== null ? s.runtimeSessionId : null;
+      const only = s.cwd === null ? null : s.runtime === "claude" ? s.runtimeSessionId : (store.runtimeSessions(s.key).findLast((r) => r.runtime === "claude")?.id ?? null);
       if (s.cwd !== null && only === null) continue;
       const turns: { of: UsageTurn[] | null } = { of: null };
       for (const root of claudeRoots) {
@@ -496,7 +499,7 @@ export class UsageCounter {
     for (const root of codexRoots) await rolloutsIn(root, found);
     const rollouts = [...new Set(found)];
     if (rollouts.length > 0) {
-      const codex = sessions.filter((s) => s.runtime === "codex");
+      const codex = sessions.filter((s) => ran(s, "codex"));
       const turnsOf = new Map<string, { of: UsageTurn[] | null }>();
       for (const path of rollouts) {
         const file = known.get(path);

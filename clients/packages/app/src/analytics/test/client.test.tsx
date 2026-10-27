@@ -60,6 +60,14 @@ function session(userId?: string): SessionLifecycleSnapshot {
       };
 }
 
+function sanitizedError(error_detail: unknown) {
+  return sanitizeCommaAnalyticsEvent({
+    uuid: "error-1",
+    event: "$exception",
+    properties: { error_kind: "unhandled_error", error_detail, $exception_list: [] },
+  })?.properties;
+}
+
 function preventDefault(event: ErrorEvent) {
   event.preventDefault();
 }
@@ -463,12 +471,18 @@ describe("Comma client analytics", () => {
               frames: [
                 null,
                 {
-                  filename: "file:///Users/private/index-abc123.js?token=private",
+                  filename:
+                    "file:///Users/private/assets/index-abc123.js?token=private",
                   function: "private",
                   lineno: 42,
                   colno: 7,
                 },
                 { filename: "https://private/secret.ts", lineno: -1 },
+                {
+                  filename: "https://app.comma.test/assets/client-CG7ocHpJ.js",
+                  lineno: 3,
+                },
+                { filename: "file:///Users/private/secret-notes.js", lineno: 1 },
               ],
             },
           },
@@ -477,13 +491,86 @@ describe("Comma client analytics", () => {
     });
     expect(JSON.stringify(result)).not.toContain("private");
     expect(JSON.stringify(result)).not.toContain("secret");
+    const frames = result?.properties.$exception_list[0].stacktrace.frames;
     expect(result?.properties.$exception_list[0].stacktrace.type).toBe("raw");
-    expect(result?.properties.$exception_list[0].stacktrace.frames[1]).toEqual({
+    expect(frames[1]).toEqual({
       platform: "web:javascript",
       function: "redacted",
       filename: "comma://assets/index-abc123.js",
       lineno: 42,
       colno: 7,
     });
+    // Lazy chunks keep their names too; a script outside the bundle's assets does not.
+    expect(frames[3].filename).toBe("comma://assets/client-CG7ocHpJ.js");
+    expect(frames[4].filename).toBe("redacted");
+  });
+
+  it("classifies errors that carry no Error, and core channel failures, without their text", () => {
+    start("user-a");
+    window.dispatchEvent(
+      new ErrorEvent("error", {
+        message: "ResizeObserver loop completed with undelivered notifications.",
+      })
+    );
+    window.dispatchEvent(new ErrorEvent("error", { message: "Script error." }));
+    reportCommaClientError("private reason", "unhandled_rejection");
+    reportCommaClientError(
+      Object.assign(new Error("private"), {
+        name: "CoreFailed",
+        failure: "worker_load",
+      }),
+      "core_fault"
+    );
+    reportCommaClientError(
+      Object.assign(new Error("private"), { failure: "worker_load" }),
+      "core_fault"
+    );
+
+    expect(sdk.captureException.mock.calls.map(([, properties]) => properties)).toEqual(
+      [
+        {
+          error_kind: "unhandled_error",
+          severity: "error",
+          error_detail: "resize_observer_loop",
+        },
+        {
+          error_kind: "unhandled_error",
+          severity: "error",
+          error_detail: "cross_origin_script",
+        },
+        {
+          error_kind: "unhandled_rejection",
+          severity: "error",
+          error_detail: "non_error_string",
+        },
+        { error_kind: "core_fault", severity: "error", error_detail: "worker_load" },
+        { error_kind: "core_fault", severity: "error" },
+      ]
+    );
+    // A stand-in has no stack: its own frames would locate the reporter, not the failure.
+    expect(sdk.captureException.mock.calls[0]?.[0].stack).toBe("");
+
+    expect(sanitizedError("private detail")?.error_detail).toBeUndefined();
+    expect(sanitizedError("resize_observer_loop")?.$exception_fingerprint).not.toBe(
+      sanitizedError("cross_origin_script")?.$exception_fingerprint
+    );
+  });
+
+  it("keeps ResizeObserver loop errors from using up the budget for unhandled errors", () => {
+    start("user-a");
+    for (let i = 0; i < 25; i++)
+      window.dispatchEvent(
+        new ErrorEvent("error", { message: "ResizeObserver loop limit exceeded" })
+      );
+    window.dispatchEvent(new ErrorEvent("error", { error: new Error("private") }));
+
+    const details = sdk.captureException.mock.calls.map(
+      ([, properties]) => properties.error_detail
+    );
+    expect(details.filter((detail) => detail === "resize_observer_loop")).toHaveLength(
+      20
+    );
+    expect(details.at(-1)).toBeUndefined();
+    expect(sdk.captureException).toHaveBeenCalledTimes(21);
   });
 });

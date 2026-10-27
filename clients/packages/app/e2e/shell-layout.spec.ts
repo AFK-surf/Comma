@@ -546,8 +546,8 @@ for (const reducedMotion of [false]) {
       const content = page.getByRole("region", { name: "Content" });
       const composer = content.locator(".comma-chat-composer");
       await composer.getByRole("textbox", { name: "AI prompt" }).fill("A new question");
-      // Sample from the first paint. Space grows with the flight and must
-      // reach its final size before the bubble settles.
+      // Sample from the first paint. The turn's spacing is laid out before
+      // the bubble flies, not grown with it.
       await page.evaluate(() => {
         const samples: {
           minHeight: number;
@@ -598,19 +598,12 @@ for (const reducedMotion of [false]) {
           ).turnSpacingSamples
       );
       expect(samples.length).toBeGreaterThan(0);
+      // The padding is final from the first frame, and the reserve is either
+      // not laid out yet or whole: neither animates.
+      expect(samples.every((sample) => sample.padding === 48)).toBe(true);
       expect(
-        samples.every((sample) => sample.padding >= 0 && sample.padding <= 48)
+        samples.every((sample) => sample.minHeight === 0 || sample.minHeight === 200)
       ).toBe(true);
-      expect(
-        samples.every((sample) => sample.minHeight >= 0 && sample.minHeight <= 200)
-      ).toBe(true);
-      if (reducedMotion) {
-        expect(samples.every((sample) => sample.padding === 48)).toBe(true);
-      } else {
-        expect(
-          samples.some((sample) => sample.padding > 0 && sample.padding < 48)
-        ).toBe(true);
-      }
       if (!reducedMotion) {
         // The last painted flight frame must already land in the real slot;
         // clearing the top-layer presentation must not teleport the bubble.
@@ -921,7 +914,7 @@ test("font size preference scales core conversation typography without changing 
     expect(defaultIcon.globalStroke).toBe(iconStrokeWidth);
     expect(defaultIcon.scale).toBe("1");
     expect(defaultIcon.stroke2.computed).toBeCloseTo(iconStrokeWidth, 4);
-    expect(defaultIcon.stroke075.computed).toBeCloseTo(0.75, 4);
+    expect(defaultIcon.stroke075.computed).toBeCloseTo(iconStrokeWidth * 0.375, 4);
     const defaultActionRect = await readActionRect();
     // Compact category rows are 1.75rem, so their height follows font size.
     // Labels must remain contained while icon geometry stays unchanged.
@@ -946,7 +939,7 @@ test("font size preference scales core conversation typography without changing 
     expect(smallIcon.stroke2.nominal).toBe(defaultIcon.stroke2.nominal);
     expect(smallIcon.stroke075.nominal).toBe(defaultIcon.stroke075.nominal);
     expect(smallIcon.stroke2.computed).toBeCloseTo(defaultIcon.stroke2.computed, 4);
-    expect(smallIcon.stroke075.computed).toBeCloseTo(0.75, 4);
+    expect(smallIcon.stroke075.computed).toBeCloseTo(iconStrokeWidth * 0.375, 4);
     const smallActionRect = await readActionRect();
     expect(smallActionRect.width).toBe(defaultActionRect.width);
     expect(smallActionRect.height).toBeCloseTo(1.75 * smallActionRect.rootFontSize, 1);
@@ -966,7 +959,7 @@ test("font size preference scales core conversation typography without changing 
     expect(largeIcon.stroke2.nominal).toBe(defaultIcon.stroke2.nominal);
     expect(largeIcon.stroke075.nominal).toBe(defaultIcon.stroke075.nominal);
     expect(largeIcon.stroke2.computed).toBeCloseTo(defaultIcon.stroke2.computed, 4);
-    expect(largeIcon.stroke075.computed).toBeCloseTo(0.75, 4);
+    expect(largeIcon.stroke075.computed).toBeCloseTo(iconStrokeWidth * 0.375, 4);
     const largeActionRect = await readActionRect();
     expect(largeActionRect.width).toBe(defaultActionRect.width);
     expect(largeActionRect.height).toBeCloseTo(1.75 * largeActionRect.rootFontSize, 1);

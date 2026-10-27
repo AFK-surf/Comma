@@ -74,7 +74,50 @@ defmodule SalixStore.Blob do
   def stream(agent_id, %{} = ref) do
     size = ref_size(ref)
     key = key_for(agent_id, ref)
-    {:ok, ranged_stream(key, size), size}
+    {:ok, ranged_stream(key, 0, size), size}
+  end
+
+  @doc """
+  Stream `length` bytes of a body from `offset`, in bounded chunks. The size
+  returned is the whole body's. A span past the body's end is refused.
+  """
+  @spec stream(String.t(), ref(), {non_neg_integer(), non_neg_integer()}) ::
+          {:ok, Enumerable.t(), non_neg_integer()} | {:error, :invalid_range}
+  def stream(agent_id, %{} = ref, {offset, length})
+      when is_integer(offset) and offset >= 0 and is_integer(length) and length >= 0 do
+    size = ref_size(ref)
+
+    if offset + length <= size do
+      {:ok, ranged_stream(key_for(agent_id, ref), offset, offset + length), size}
+    else
+      {:error, :invalid_range}
+    end
+  end
+
+  @doc """
+  A URL the body by ref is read from straight from the store, in any byte
+  ranges, until it expires (`SalixStore.S3.presign_get/2`).
+  """
+  @spec presign(String.t(), ref(), [SalixStore.S3.presign_opt()]) ::
+          {:ok, String.t()} | {:error, term()}
+  def presign(agent_id, %{} = ref, opts), do: S3.presign_get(key_for(agent_id, ref), opts)
+
+  @doc "A part of a body by ref: at most `length` bytes from `offset`, empty from its end on."
+  @spec read_range(String.t(), ref(), non_neg_integer(), pos_integer()) ::
+          {:ok, binary()} | {:error, term()}
+  def read_range(agent_id, %{} = ref, offset, length)
+      when is_integer(offset) and offset >= 0 and is_integer(length) and length > 0 do
+    case min(length, ref_size(ref) - offset) do
+      len when len <= 0 ->
+        {:ok, ""}
+
+      len ->
+        case S3.get(key_for(agent_id, ref), range: {offset, len}) do
+          {:ok, %{body: body}} when is_binary(body) -> {:ok, body}
+          {:error, _} = error -> error
+          other -> {:error, other}
+        end
+    end
   end
 
   @doc "Store an enumerable body immutably without carrying it as one RPC payload."
@@ -225,16 +268,16 @@ defmodule SalixStore.Blob do
 
   # ---- internal ----
 
-  defp ranged_stream(_key, 0), do: []
+  defp ranged_stream(_key, from, to) when from >= to, do: []
 
-  defp ranged_stream(key, size) do
+  defp ranged_stream(key, from, to) do
     Stream.resource(
-      fn -> 0 end,
+      fn -> from end,
       fn offset ->
-        if offset >= size do
+        if offset >= to do
           {:halt, offset}
         else
-          len = min(@stream_chunk_size, size - offset)
+          len = min(@stream_chunk_size, to - offset)
 
           case S3.get(key, range: {offset, len}) do
             {:ok, %{body: body}} when byte_size(body) > 0 ->

@@ -32,5 +32,4 @@ export {
   type VisibleTaskStatusBucket,
   type TaskStatusBucket,
 } from "./task-status";
-export { contentFreshnessLabel, type ContentFreshness } from "./freshness";
 export * as messages from "#messages";

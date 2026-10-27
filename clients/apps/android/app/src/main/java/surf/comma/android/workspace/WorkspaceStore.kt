@@ -24,6 +24,7 @@ import surf.comma.android.core.CoreError
 import surf.comma.android.core.TopicValue
 import surf.comma.android.inbox.InboxMarks
 import surf.comma.android.routines.RecommendationFeed
+import surf.comma.android.routines.RecommendationItem
 import surf.comma.android.tasks.TaskSummary
 import surf.comma.android.tasks.data.ServerTaskRepository
 import surf.comma.android.tasks.data.TaskArchiveResult
@@ -402,6 +403,26 @@ class WorkspaceStore internal constructor(
             if (shownBefore) runCatching { api.call("recommendations.visit", JSONObject().put("workspace", workspace)) }
                 .onFailure { if (it is CancellationException) throw it }
             return true
+        }
+
+        /**
+         * The member does not want to hear about this row's source item again. The core shows the briefing the server
+         * answers, without it; a refusal is a toast.
+         */
+        fun dismiss(item: RecommendationItem) {
+            val (sourceId, sourceUrl) = item.sourceItem ?: return
+            val workspace = workspaceId ?: return
+            val jobs = scopeJobs ?: return
+            jobs.launch {
+                try {
+                    api.call("recommendations.dismiss", JSONObject().put("workspace", workspace)
+                        .put("sourceId", sourceId).put("sourceUrl", sourceUrl))
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (_: CoreError) {
+                    showToast(context.getString(R.string.routines_dismiss_failed), error = true)
+                }
+            }
         }
 
         /** An explicit request for a new briefing. The hourly budget refusal is the one failure reported. */

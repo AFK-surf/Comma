@@ -25,7 +25,8 @@ async function bodyOf(req: IncomingMessage) {
 /**
  * A station for the station-hosted Tasks E2E: an endpoint on the station's mesh addon, on loopback, serving
  * `comma/mesh/1` with the parts of the admin API the app uses (a Task whose agent asks with an options card, Tasks made
- * from the app, their status, the event stream, the profiles a Task runs on), and the control plane's routes for the
+ * from the app, their status, the milestones their agents record, the event stream, the profiles a Task runs on), and
+ * the control plane's routes for the
  * chat stub (`extraRoutes`): the workspace's stations, their member credential, and the Task index Comma lists. The
  * member credential the stub signs is JSON naming the workspace and the device; the station admits it only from that
  * device.
@@ -152,6 +153,8 @@ export async function startE2eStation({
       },
     ],
   ]);
+  /** The files sent in its chats, by the name each has in its session's uploads (`GET /sessions/:key/files`). */
+  const uploads = new Map<string, { type: string; bytes: Uint8Array }>();
   const listeners = new Set<(event: string) => void>();
   const say = (name: string, data: unknown) => {
     for (const listener of listeners)
@@ -269,6 +272,14 @@ export async function startE2eStation({
           return answer(200, { n: said.n });
         }
       }
+      const sessionFile = /^\/sessions\/[^/?]+\/files\?/.exec(request.path);
+      if (request.method === "GET" && sessionFile) {
+        const name = new URLSearchParams(request.path.split("?")[1]).get("name") ?? "";
+        const file = uploads.get(name);
+        return file
+          ? { body: file.bytes, headers: [["content-type", file.type]], status: 200 }
+          : answer(404, { error: "No such file" });
+      }
       if (request.path === "/tools/access" && request.method === "GET")
         return answer(200, { access });
       if (request.path === "/tools/access" && request.method === "PUT") {
@@ -302,6 +313,37 @@ export async function startE2eStation({
     posted,
     made,
     status: (thread: number) => statuses.get(thread),
+    /**
+     * The Task's agent records milestones alone (chat_post `milestones`): a `milestone` entry, written and said on the
+     * event stream as the station does.
+     */
+    record: (id: number, titles: string[]) => {
+      const thread = threads.get(id)!;
+      const recorded = entry(thread.entries.length + 1, "agent", "", {
+        kind: "milestone",
+        milestones: titles,
+        text: null,
+      });
+      thread.entries.push(recorded);
+      say("thread", { id, entries: [recorded] });
+    },
+    /** The Task's agent posts `text` with a picture (chat_post `files`), kept in its session's uploads. */
+    post: (id: number, text: string, picture: { name: string; bytes: Uint8Array }) => {
+      const thread = threads.get(id)!;
+      const kept = `2026-10-01-${picture.name}`;
+      uploads.set(kept, { type: "image/png", bytes: picture.bytes });
+      const said = entry(thread.entries.length + 1, "agent", text, {
+        attachments: [
+          {
+            name: picture.name,
+            path: `/work/s_agent/uploads/${kept}`,
+            size: picture.bytes.length,
+          },
+        ],
+      });
+      thread.entries.push(said);
+      say("thread", { id, entries: [said] });
+    },
     labels: (thread: number) => labels.get(thread) ?? [],
     /** Resolves once the station has been asked `count` requests of `kind` (a Task made, a message, a status). */
     heard: (kind: keyof typeof heard, count: number) =>

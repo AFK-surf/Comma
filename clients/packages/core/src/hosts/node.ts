@@ -43,6 +43,7 @@ import {
   type MainToCore,
   type MeetingAnswer,
   type MeetingEvent,
+  type VoiceCallSocketEvent,
   type UtilitySessionAnswer,
   type UtilityDesktopStart,
   type UtilitySessionCall,
@@ -55,6 +56,7 @@ import type {
   ApiResponse,
   AuthRequest,
   BearerSessionPorts,
+  ClientIdentity,
   DesktopPorts,
   Host,
   LegacyWorkspaceTasks,
@@ -64,6 +66,7 @@ import type {
   LocalDrivePorts,
   LocalDriveState,
   MeetingPorts,
+  VoiceCallPorts,
   Pull,
   ResetPorts,
   StreamResponse,
@@ -168,6 +171,7 @@ function readLegacyMeetingTasks(path: string | undefined): string | null {
 
 class UtilityHost implements Host {
   readonly sessionSource = "core" as const;
+  readonly uploadsLocalFiles = true;
   readonly stationMesh: StationMeshPorts;
   /**
    * The core's data is this process's directory: every value of the device database and every account database. Main
@@ -188,7 +192,13 @@ class UtilityHost implements Host {
     }),
   };
   readonly bearerSession: BearerSessionPorts;
+  readonly client: ClientIdentity;
   readonly desktop?: DesktopPorts;
+  readonly deviceSetup?: import("../host.ts").DeviceSetupPort;
+  readonly #deviceSetupCalls = new Map<
+    number,
+    (value: unknown, error?: string) => void
+  >();
   readonly meeting: MeetingPorts;
   /** Meeting commands waiting for Main's answer, by id. */
   readonly #meetingCalls = new Map<
@@ -197,6 +207,8 @@ class UtilityHost implements Host {
   >();
   #meetingListener: ((event: MeetingEvent) => void) | null = null;
   readonly #meetingEarly: MeetingEvent[] = [];
+  readonly voiceCall: VoiceCallPorts;
+  #voiceCallListener: ((event: VoiceCallSocketEvent) => void) | null = null;
   /** Session ports waiting for Main's answer, by id. */
   readonly #calls = new Map<number, (value: unknown, error?: string) => void>();
   readonly #parent: ParentPort;
@@ -268,6 +280,21 @@ class UtilityHost implements Host {
           return () => void this.#driveListeners.delete(listener);
         },
       };
+    if (session.clientPlatform === "macos")
+      this.deviceSetup = {
+        call: (op, input) =>
+          Effect.callback<unknown, HostError>((resume) => {
+            const id = this.#asked();
+            this.#deviceSetupCalls.set(id, (value, error) =>
+              resume(error ? Effect.fail(new HostError(error)) : Effect.succeed(value))
+            );
+            this.#send({ type: "device-setup", id, op, input });
+            return Effect.sync(() => {
+              this.#deviceSetupCalls.delete(id);
+              this.#answered(id);
+            });
+          }),
+      };
     this.meeting = {
       command: (op, input) => {
         // Main's journal from before the core is read here, where its file is.
@@ -295,8 +322,19 @@ class UtilityHost implements Host {
         for (const event of this.#meetingEarly.splice(0)) listener(event);
       },
     };
+    this.voiceCall = {
+      command: (op) => this.#send({ type: "voice-call", ...op } as CoreToMain),
+      listen: (listener) => {
+        this.#voiceCallListener = listener;
+      },
+    };
     this.#dataDir = dataDir;
     this.#legacyTasksPath = legacyTasksPath;
+    this.client = {
+      kind: "electron",
+      platform: session.clientPlatform,
+      version: session.appVersion,
+    };
     this.bearerSession = {
       apiOrigin: session.apiOrigin,
       clientPlatform: session.clientPlatform,
@@ -318,6 +356,14 @@ class UtilityHost implements Host {
         pickAttachments: (request) => this.#call({ op: "chatPick", input: request }),
         saveDownload: (fileName, content) =>
           this.#call({ op: "saveDownload", input: { fileName, content } }),
+        saveOpen: (fileName) => this.#call({ op: "saveOpen", input: { fileName } }),
+        saveWrite: (id, bytes) =>
+          Effect.asVoid(this.#call({ op: "saveWrite", input: { id, bytes } })),
+        saveClose: (id, keep) => this.#call({ op: "saveClose", input: { id, keep } }),
+        openStream: (input) => this.#call({ op: "openStream", input }),
+        closeStream: (url) =>
+          Effect.asVoid(this.#call({ op: "closeStream", input: { url } })),
+        saveStream: (input) => this.#call({ op: "saveStream", input }),
         listen: (input) =>
           listenLoopback({
             port: input.port,
@@ -374,6 +420,26 @@ class UtilityHost implements Host {
 
   readonly #previews = new Map<number, (out: Uint8Array | HostError) => void>();
   readonly #transcoder = createDarwinImageTranscoder();
+  readonly #localReads = new Map<number, (out: Uint8Array | HostError) => void>();
+
+  /** A part of a local file a pick left with Main, read there: what goes up to a station a part at a time. */
+  readLocalFile(
+    ref: string,
+    offset: number,
+    length: number
+  ): Effect.Effect<Uint8Array, HostError> {
+    return Effect.callback<Uint8Array, HostError>((resume) => {
+      const id = this.#asked();
+      this.#localReads.set(id, (out) =>
+        resume(out instanceof HostError ? Effect.fail(out) : Effect.succeed(out))
+      );
+      this.#send({ type: "local-read", id, localFileRef: ref, offset, length });
+      return Effect.sync(() => {
+        this.#localReads.delete(id);
+        this.#answered(id);
+      });
+    });
+  }
 
   /** A workspace image drawn again by Main (Electron's nativeImage): the preview a window may show. */
   renderImagePreview(input: ImageBytes): Effect.Effect<Uint8Array, HostError> {
@@ -471,6 +537,11 @@ class UtilityHost implements Host {
     for (const listener of this.#driveListeners) listener();
   }
 
+  /** What the voice call socket did (none before the core listens: there is no call then). */
+  voiceCallEvent(event: VoiceCallSocketEvent): void {
+    this.#voiceCallListener?.(event);
+  }
+
   /** What Main's meeting parts saw. */
   meetingEvent(event: MeetingEvent): void {
     if (this.#meetingListener) this.#meetingListener(event);
@@ -483,6 +554,12 @@ class UtilityHost implements Host {
     if (message.type === "drive-done") {
       const done = this.#driveCalls.get(message.id);
       this.#driveCalls.delete(message.id);
+      done?.(message.value ?? null, message.error);
+      return;
+    }
+    if (message.type === "device-setup-done") {
+      const done = this.#deviceSetupCalls.get(message.id);
+      this.#deviceSetupCalls.delete(message.id);
       done?.(message.value ?? null, message.error);
       return;
     }
@@ -507,6 +584,12 @@ class UtilityHost implements Host {
       const done = this.#previews.get(message.id);
       this.#previews.delete(message.id);
       done?.(message.bytes ?? new HostError(message.error ?? "no preview"));
+      return;
+    }
+    if (message.type === "local-read-done") {
+      const done = this.#localReads.get(message.id);
+      this.#localReads.delete(message.id);
+      done?.(message.bytes ?? new HostError(message.error ?? "no part of the file"));
       return;
     }
     const pending = this.#pending.get(message.id);
@@ -566,6 +649,9 @@ class UtilityHost implements Host {
         path: request.path,
         headers: request.headers,
         body: request.body,
+        ...(request.localFileRef !== undefined
+          ? { localFileRef: request.localFileRef }
+          : {}),
         lease: request.lease,
       });
       return Effect.sync(() => this.#abort(id));
@@ -829,8 +915,9 @@ export function startCoreUtility(parent: ParentPort): void {
       );
       if (message.testClock) {
         const settling = host;
-        // Starts at the same instant on every run (TestTime's zero), so what the e2e sees never depends on when it ran.
-        time = new TestTime(undefined, () => settling.settled());
+        // Starts where Main's test clock is (TestTime's zero when Main gives none), so the two read one time and
+        // what the e2e sees never depends on when it ran.
+        time = new TestTime(message.testClockStart, () => settling.settled());
       }
       // A test clock's core sends each change at once: gathering them would wait on the clock too.
       core = new Core(host, time ? { clock: time.clock, coalesceMs: 0 } : {});
@@ -853,6 +940,9 @@ export function startCoreUtility(parent: ParentPort): void {
       case "meeting-event":
         host.meetingEvent(message.event);
         return;
+      case "voice-call-event":
+        host.voiceCallEvent(message.event);
+        return;
       case "clock": {
         const { id, ms } = message;
         const moved = host;
@@ -860,6 +950,11 @@ export function startCoreUtility(parent: ParentPort): void {
         const done = (error?: string) => {
           const out: CoreToMain = { type: "clock-done", id };
           if (error !== undefined) out.error = error;
+          if (clock) {
+            out.now = clock.now();
+            const next = clock.nextDue();
+            if (next !== undefined) out.nextDue = next;
+          }
           // oxlint-disable-next-line unicorn/require-post-message-target-origin -- a port has no target origin
           parent.postMessage(out);
         };

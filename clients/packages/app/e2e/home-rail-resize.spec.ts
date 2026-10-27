@@ -4,8 +4,9 @@ import { installBrowserTestSession } from "../../../e2e/helpers/browser-auth";
 import { startChatSmokeStub } from "../../../e2e/p0/chat-stub";
 import { installVirtualTime } from "../../../e2e/helpers/virtual-time";
 
+/** The play state of a status's shine: the text's ::after band. */
 function animationState(element: Element) {
-  return element.getAnimations()[0]?.playState;
+  return element.getAnimations({ subtree: true })[0]?.playState;
 }
 
 async function installBriefing(page: Page, paragraphs = 1) {
@@ -162,20 +163,19 @@ test("Greeting previews fold and reveal Tasks before pointer release", async ({
       token: "comma_sess_home_live_fold",
     });
     await installBriefing(page);
-    // Grab the seam before Tasks' fold transition has moved. The drag may not
-    // keep the chat width of that frame as its bound. The clock starts before
-    // the page loads: a fold frame the page requested on real time would end
-    // the Tasks fold before its transition starts.
+    // The clock starts before the page loads, so every fold frame the page
+    // requests steps with it.
     const time = await installVirtualTime(page);
     await page.goto("/");
     const layout = page.getByTestId("home-responsive-layout");
     const greet = page.getByTestId("home-greet-rail");
     const tasks = page.getByTestId("home-tasks-rail");
     const handle = page.getByTestId("home-greet-rail-handle");
+    // The Greeting comes with the briefing's reply, which does not follow the
+    // test clock: wait for it, then step its folds to rest.
+    await expect(handle).toBeAttached();
     await time.advanceUntil(
-      () =>
-        document.querySelector('[data-testid="home-greet-rail-handle"]') !== null &&
-        document.querySelector("[data-fold-moving]") === null
+      () => document.querySelector("[data-fold-moving]") === null
     );
     await expect(handle).toBeVisible();
 
@@ -192,11 +192,13 @@ test("Greeting previews fold and reveal Tasks before pointer release", async ({
           ?.getAttribute("data-folded") === "true"
     );
     await expect(greet).toHaveAttribute("data-folded", "false");
+    // A fold the route forces lands in the same layout as the narrower route,
+    // so the drag starts from widths that no longer move.
     expect(
       await layout.evaluate((element) =>
         getComputedStyle(element).getPropertyValue("--comma-home-tasks-fold")
       )
-    ).toBe("0");
+    ).toBe("1");
     const width = () =>
       greet.evaluate((element) => Math.round(element.getBoundingClientRect().width));
     expect(await width()).toBe(300);
@@ -583,11 +585,13 @@ test("Home folds preserve content layout and scroll through expansion and revers
     await expect.poll(() => firstProgress.evaluate(animationState)).toBe("running");
     await expect.poll(() => lastProgress.evaluate(animationState)).toBe("paused");
     const pausedBefore = await lastProgress.evaluate(
-      (element) => element.getAnimations()[0]!.currentTime
+      (element) => element.getAnimations({ subtree: true })[0]!.currentTime
     );
     await time.advance(100);
     expect(
-      await lastProgress.evaluate((element) => element.getAnimations()[0]!.currentTime)
+      await lastProgress.evaluate(
+        (element) => element.getAnimations({ subtree: true })[0]!.currentTime
+      )
     ).toBe(pausedBefore);
     const taskViewport = taskRail.locator('[data-slot="scroll-area-viewport"]').first();
     // Put a clipped card exactly on the scrollport edge. Threshold zero can
@@ -631,7 +635,8 @@ test("Home folds preserve content layout and scroll through expansion and revers
       await progress.evaluateAll(
         (elements) =>
           elements.filter(
-            (element) => element.getAnimations()[0]?.playState === "running"
+            (element) =>
+              element.getAnimations({ subtree: true })[0]?.playState === "running"
           ).length
       )
     ).toBe(0);

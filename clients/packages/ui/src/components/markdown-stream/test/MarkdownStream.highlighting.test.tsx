@@ -19,7 +19,7 @@ vi.mock("../shikiHighlightWorkerClient", async () => {
   };
 });
 
-import { MarkdownStream } from "../MarkdownStream";
+import { MarkdownStream, MarkdownStreamDarkContext } from "../MarkdownStream";
 
 /** Runs what is due, then awaits each highlight started, until none starts. */
 async function settleHighlights() {
@@ -64,5 +64,26 @@ describe("MarkdownStream syntax highlighting", () => {
     expect(
       container.querySelector(".code-block-render [style*='color:']")
     ).toBeTruthy();
+  });
+
+  it("highlights for the dark theme the app provides when the caller passes no isDark", async () => {
+    // A file preview renders without an isDark prop; light-theme token colors
+    // on the dark surface left an unsupported fence (metal) unreadable.
+    const { container } = render(
+      <MarkdownStreamDarkContext.Provider value>
+        <MarkdownStream
+          content={
+            "```metal\nkernel void probe(device uint* out [[buffer(0)]]) {}\n```"
+          }
+          final
+          streamId="markdown-stream-dark-context-highlight-test"
+        />
+      </MarkdownStreamDarkContext.Provider>
+    );
+
+    await settleHighlights();
+    expect(container.querySelector("[data-theme]")?.getAttribute("data-theme")).toBe(
+      "vitesse-dark"
+    );
   });
 });

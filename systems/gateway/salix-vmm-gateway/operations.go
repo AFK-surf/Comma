@@ -523,7 +523,9 @@ func grpcClientForSession(session net.Conn) (*grpc.ClientConn, error) {
 		used = true
 		return session, nil
 	}
-	return grpc.NewClient("passthrough:///agent-vmm-session", grpc.WithContextDialer(dialer), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	// The tunnel owns this single-use connection. gRPC idle teardown cannot
+	// redial it. Session expiry, revocation and transport loss still close it.
+	return grpc.NewClient("passthrough:///agent-vmm-session", grpc.WithContextDialer(dialer), grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithIdleTimeout(0))
 }
 
 func executeHostOperation(ctx context.Context, client hostv1.AgentRuntimeServiceClient, input hostOperationRequest) (any, error) {
@@ -744,10 +746,10 @@ func executeHostOperation(ctx context.Context, client hostv1.AgentRuntimeService
 		value, err := client.StatWorkspace(ctx, &hostv1.WorkspacePathRequest{Path: stringArg(input.Args, "path")})
 		return protoJSON(value, err)
 	case "workspace_list":
-		value, err := client.ListWorkspace(ctx, &hostv1.ListWorkspaceRequest{Path: stringArg(input.Args, "path"), Limit: uint32Arg(input.Args, "limit", 256)})
+		value, err := client.ListWorkspace(ctx, &hostv1.ListWorkspaceRequest{Path: stringArg(input.Args, "path"), Limit: uint32Arg(input.Args, "limit", 256), VolumeId: stringArg(input.Args, "volume_id")})
 		return protoJSON(value, err)
 	case "workspace_read":
-		stream, err := client.ReadWorkspace(ctx, &hostv1.ReadWorkspaceRequest{Path: stringArg(input.Args, "path"), Offset: uint64Arg(input.Args, "offset", 0), MaxBytes: uint64Arg(input.Args, "max_bytes", 1<<20)})
+		stream, err := client.ReadWorkspace(ctx, &hostv1.ReadWorkspaceRequest{Path: stringArg(input.Args, "path"), Offset: uint64Arg(input.Args, "offset", 0), MaxBytes: uint64Arg(input.Args, "max_bytes", 1<<20), VolumeId: stringArg(input.Args, "volume_id")})
 		if err != nil {
 			return nil, err
 		}
@@ -781,7 +783,7 @@ func executeHostOperation(ctx context.Context, client hostv1.AgentRuntimeService
 		if err != nil {
 			return nil, err
 		}
-		if err := stream.Send(&hostv1.WriteWorkspaceRequest{Payload: &hostv1.WriteWorkspaceRequest_Header{Header: &hostv1.WriteWorkspaceHeader{RequestId: stringArg(input.Args, "request_id"), Path: stringArg(input.Args, "path"), ExpectedPrefixSha256: expected, Mode: uint32Arg(input.Args, "mode", 0644)}}}); err != nil {
+		if err := stream.Send(&hostv1.WriteWorkspaceRequest{Payload: &hostv1.WriteWorkspaceRequest_Header{Header: &hostv1.WriteWorkspaceHeader{RequestId: stringArg(input.Args, "request_id"), Path: stringArg(input.Args, "path"), ExpectedPrefixSha256: expected, Mode: uint32Arg(input.Args, "mode", 0644), VolumeId: stringArg(input.Args, "volume_id")}}}); err != nil {
 			return nil, err
 		}
 		if err := stream.Send(&hostv1.WriteWorkspaceRequest{Payload: &hostv1.WriteWorkspaceRequest_Data{Data: content}}); err != nil {

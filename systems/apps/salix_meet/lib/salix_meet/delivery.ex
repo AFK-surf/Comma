@@ -640,6 +640,7 @@ defmodule SalixMeet.Delivery do
       state = Map.put(state, "meeting_id", meeting_id)
       _ = deliver_activation(meeting_id, claim["claim_node"], [])
       _ = project_memory(state, summary)
+      _ = record_followups(state, summary)
       :published
     else
       {:error, :fenced} ->
@@ -653,6 +654,7 @@ defmodule SalixMeet.Delivery do
             if Store.activation_delivery_ready?(delivery, meeting_id) do
               _ = deliver_activation(meeting_id, claim["claim_node"], [])
               _ = project_memory(Map.put(terminal_state, "meeting_id", meeting_id), summary)
+              _ = record_followups(Map.put(terminal_state, "meeting_id", meeting_id), summary)
             end
 
             :terminal_failed
@@ -1416,6 +1418,24 @@ defmodule SalixMeet.Delivery do
       )
 
       :skip
+  end
+
+  # Action items become the product's follow-ups. Owners are only those that
+  # attribution resolved for this exact summary.
+  defp record_followups(_state, summary) when not is_map(summary), do: :skip
+
+  defp record_followups(state, summary) do
+    owners =
+      SalixMeet.OwnerAttributionSnapshot.slack_ids_for(
+        SalixMeet.OwnerAttributionSnapshot.current(state),
+        summary
+      )
+
+    SalixMeet.Ports.Followups.minutes_published(
+      state
+      |> Map.put("summary", summary)
+      |> Map.put("owner_slack_ids", owners)
+    )
   end
 
   defp project_memory(_state, summary) when not is_map(summary), do: :skip

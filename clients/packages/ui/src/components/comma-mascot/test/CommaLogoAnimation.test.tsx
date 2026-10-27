@@ -6,35 +6,71 @@ import {
 } from "../CommaLogoAnimation";
 
 describe("CommaLogoAnimation", () => {
-  it("keeps independently mounted marks from sharing clipping or animation IDs", () => {
+  it("cuts one aperture through both parts of the mark, apart from other marks", () => {
     const view = render(
       <>
-        <CommaLogoAnimation size={18} />
-        <CommaLogoAnimation size={32} />
+        <CommaLogoAnimation cutout size={18} />
+        <CommaLogoAnimation cutout size={32} />
       </>
     );
-    const marks = Array.from(view.container.querySelectorAll("svg"));
-    const boundaries = marks.map((mark) => mark.querySelector("clipPath")!.id);
-    expect(new Set(boundaries).size).toBe(2);
+    const marks = Array.from(
+      view.container.querySelectorAll('[data-slot="comma-logo-animation"]')
+    );
+    const apertures = marks.map((mark) => mark.querySelector("mask")!.id);
+    expect(new Set(apertures).size).toBe(2);
     marks.forEach((mark, index) => {
-      expect(mark.querySelector("g[clip-path]")).toHaveAttribute(
-        "clip-path",
-        `url(#${boundaries[index]})`
+      const masked = Array.from(mark.querySelectorAll("path[mask]"));
+      expect(masked).toHaveLength(2);
+      masked.forEach((path) =>
+        expect(path).toHaveAttribute("mask", `url(#${apertures[index]})`)
       );
     });
-    expect(marks[0]!.style.getPropertyValue("--comma-logo-zoom-animation")).not.toBe(
-      marks[1]!.style.getPropertyValue("--comma-logo-zoom-animation")
+  });
+
+  it("plays the stylesheet's shared cycle without adding keyframes of its own", () => {
+    // Adding or removing an @keyframes rule restyles every animated element
+    // in the document, and the mark mounts with each reply.
+    const view = render(<CommaLogoAnimation size={18} />);
+    const logo = view.container.querySelector<HTMLElement>(
+      '[data-slot="comma-logo-animation"]'
+    )!;
+    expect(logo.querySelector("style")).toBeNull();
+    expect(logo.style.getPropertyValue("--comma-logo-zoom-animation")).toBe("");
+    expect(logo.style.getPropertyValue("--comma-logo-nested-animation")).toBe("");
+    expect(logo.style.getPropertyValue("--comma-logo-cycle")).toBe("3.4s");
+  });
+
+  it("names its own keyframes only for a cycle of its own", () => {
+    const view = render(
+      <>
+        <CommaLogoAnimation easing="linear" size={18} />
+        <CommaLogoAnimation intervalSeconds={0.4} size={18} />
+      </>
     );
+    const marks = Array.from(
+      view.container.querySelectorAll<HTMLElement>('[data-slot="comma-logo-animation"]')
+    );
+    const names = marks.map((mark) =>
+      mark.style.getPropertyValue("--comma-logo-zoom-animation")
+    );
+    expect(names.every((name) => name.startsWith("comma-logo-zoom-"))).toBe(true);
+    expect(new Set(names).size).toBe(2);
+    marks.forEach((mark, index) => {
+      expect(mark.querySelector("style")!.textContent).toContain(
+        `@keyframes ${names[index]}`
+      );
+    });
   });
 
   it("preserves the source cycle and supports paused frame inspection", () => {
     const view = render(<CommaLogoAnimation paused progress={0.5} size={18} />);
-    const logo = view.container.querySelector("svg")!;
+    const logo = view.container.querySelector<HTMLElement>(
+      '[data-slot="comma-logo-animation"]'
+    )!;
     expect(logo).toHaveAttribute("data-paused", "true");
     expect(logo.style.getPropertyValue("--comma-logo-cycle")).toBe("3.4s");
     expect(logo.style.getPropertyValue("--comma-logo-delay")).toBe("-1.7s");
-    expect(logo).toHaveAttribute("width", "18");
-    expect(logo).toHaveAttribute("height", "18");
+    expect(logo.style.getPropertyValue("--comma-logo-size")).toBe("18px");
   });
 
   it.each<CommaLogoAnimationProps>([
@@ -62,7 +98,9 @@ describe("CommaLogoAnimation", () => {
 
   it("allows a zero hold and the first and last inspection frames", () => {
     const view = render(<CommaLogoAnimation intervalSeconds={0} progress={0} />);
-    const logo = view.container.querySelector("svg")!;
+    const logo = view.container.querySelector<HTMLElement>(
+      '[data-slot="comma-logo-animation"]'
+    )!;
     expect(logo.style.getPropertyValue("--comma-logo-cycle")).toBe("2s");
     view.rerender(<CommaLogoAnimation intervalSeconds={0} progress={1} />);
     expect(logo.style.getPropertyValue("--comma-logo-delay")).toBe("-2s");

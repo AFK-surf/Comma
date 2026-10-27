@@ -542,7 +542,9 @@
     align-items: center;
     gap: var(--spacing-lg);
     padding: calc(var(--spacing-md) + var(--spacing-xxs)) var(--spacing-lg);
-    box-shadow: inset 0 0 0 var(--border-width-0-5) var(--color-border-primary);
+    box-shadow:
+      inset 0 0 0 var(--border-width-0-5) var(--color-border-primary),
+      var(--shadow-xs);
     color: var(--color-fg-primary);
   }
 
@@ -552,7 +554,11 @@
     border: 0;
     border-radius: inherit;
     background: transparent;
+    /* The trigger paints over the card, so it carries the card's ring, but
+       not its drop shadow, which the card already casts. */
+    box-shadow: inset 0 0 0 var(--border-width-0-5) var(--color-border-primary);
     cursor: pointer;
+    transition: background-color var(--button-state-duration) var(--button-state-easing);
   }
 
   .chat-panel-file-preview-trigger:hover {

@@ -271,7 +271,29 @@ defmodule BillingCommerce.RedeemCodes do
          redemption,
          at
        ) do
-    period = current_period(at)
+    {:ok, package_version} =
+      PackageCatalog.get_package_version(%{
+        repo: repo,
+        sql_runner: sql,
+        package_code: code.package_code,
+        version: code.package_version
+      })
+
+    first_period = current_period(at)
+    months = if package_version.billing_period == "year", do: 12, else: 1
+
+    periods =
+      Enum.map(0..(months - 1), fn offset ->
+        starts = DateTime.shift(first_period.valid_from, month: offset)
+
+        %{
+          cycle_key: cycle_key(starts),
+          valid_from: starts,
+          expires_at: DateTime.shift(starts, month: 1),
+          source_event_id: redemption.source_event_id,
+          grant_source_type: "redeem_subscription_cycle"
+        }
+      end)
 
     case Subscriptions.create_subscription(%{
            repo: repo,
@@ -287,15 +309,7 @@ defmodule BillingCommerce.RedeemCodes do
            source_event_id: redemption.source_event_id,
            idempotency_key: redemption.idempotency_key,
            source_metadata: %{"redeem_code_id" => code.id, "redemption_id" => redemption.id},
-           periods: [
-             %{
-               cycle_key: cycle_key(period.valid_from),
-               valid_from: period.valid_from,
-               expires_at: period.expires_at,
-               source_event_id: redemption.source_event_id,
-               grant_source_type: "redeem_subscription_cycle"
-             }
-           ]
+           periods: periods
          }) do
       {:ok, %{subscription: subscription, cycles: cycles}} ->
         redemption = mark_redemption_applied!(repo, sql, redemption, subscription.id)

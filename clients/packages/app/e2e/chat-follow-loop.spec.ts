@@ -45,6 +45,14 @@ test("a downward wheel reads a long reply without jumping to its tail", async ({
     // Finish the outgoing animation before the reader starts a new gesture.
     await page.waitForTimeout(1_250);
     await expect.poll(distanceFromTail).toBeGreaterThan(250);
+    // No reader gesture is required. A long streamed reply leaves the real
+    // bottom while newest-turn following preserves the question at the top.
+    const returnButton = content.getByRole("button", {
+      name: "Back to bottom",
+      exact: true,
+    });
+    await expect(returnButton).toBeVisible();
+    await expect(returnButton).toHaveText("↓ Back to bottom");
     const restingScrollTop = await readScrollTop();
     await viewport.hover();
     await page.mouse.wheel(0, 40);
@@ -75,6 +83,15 @@ test("a downward wheel reads a long reply without jumping to its tail", async ({
     await expect.poll(distanceFromTail).toBeLessThanOrEqual(1);
     expect(await growReply()).toBeGreaterThanOrEqual(47);
     await expect.poll(distanceFromTail).toBeLessThanOrEqual(1);
+    await expect(returnButton).toHaveCount(0);
+    // The button also pins the tail instead of restoring the old turn anchor.
+    await page.mouse.wheel(0, -200);
+    await expect(returnButton).toBeVisible();
+    await returnButton.click();
+    expect(await growReply()).toBeGreaterThanOrEqual(47);
+    // The button leaves only once the viewport measures at the tail.
+    await expect(returnButton).toHaveCount(0);
+    expect(await distanceFromTail()).toBeLessThanOrEqual(1);
   } finally {
     await stub.close();
   }
@@ -281,6 +298,132 @@ test("a wheel over a code block leaves the tail and stays away", async ({ page }
       }
     });
     expect(await distanceFromTail()).toBeGreaterThanOrEqual(200);
+  } finally {
+    await stub.close();
+  }
+});
+
+test("back-to-bottom is available without new messages after scrolling and resizing", async ({
+  page,
+}) => {
+  const stub = await startChatSmokeStub({
+    includeTaskInInbox: true,
+    taskAssistantMessages: Array.from(
+      { length: 30 },
+      (_, index) =>
+        `History ${index + 1}. ${"Existing transcript content. ".repeat(30)}`
+    ),
+    taskStatus: "completed",
+  });
+  try {
+    await installBrowserTestSession(page, {
+      apiBaseUrl: stub.baseUrl,
+      email: "back-bottom@comma.local",
+      token: "comma_sess_back_bottom",
+    });
+    await page.goto("/");
+    await page.locator('[data-slot="task-card"]').first().click();
+    const content = page.getByRole("region", { name: "Content" });
+    const viewport = content.locator(".comma-chat-scroll-viewport:visible");
+    await expect(viewport).toHaveCount(1);
+    const button = content.getByRole("button", { name: "Back to bottom", exact: true });
+    const distance = () =>
+      viewport.evaluate(
+        (node) => node.scrollHeight - node.clientHeight - node.scrollTop
+      );
+    await expect(content.getByText(/^History 30\./)).toBeVisible();
+    await expect(button).toHaveCount(0);
+    await viewport.hover();
+    await page.mouse.wheel(0, -650);
+    await expect(button).toBeVisible();
+    await expect(button).toHaveText("↓ Back to bottom");
+    await page.setViewportSize({ width: 1100, height: 650 });
+    await expect(button).toBeVisible();
+    await button.click();
+    // The button leaves only once the viewport measures at the bottom.
+    await expect(button).toHaveCount(0);
+    expect(await distance()).toBeLessThanOrEqual(1);
+    // Another jump away must not inherit the previous return-to-bottom state.
+    await viewport.hover();
+    await page.mouse.wheel(0, -450);
+    await expect(button).toBeVisible();
+    await button.click();
+    // The button leaves only once the viewport measures at the bottom.
+    await expect(button).toHaveCount(0);
+    expect(await distance()).toBeLessThanOrEqual(1);
+  } finally {
+    await stub.close();
+  }
+});
+
+test("sending a long streaming reply shows return-to-bottom without a scroll gesture", async ({
+  page,
+}) => {
+  const longReply =
+    "Starting the reply.\n\n" +
+    Array.from({ length: 28 }, (_, index) => `Streaming paragraph ${index + 1}.`).join(
+      "\n\n"
+    );
+  const finalReply = `${longReply}\n\nThe stream is complete.`;
+  const stub = await startChatSmokeStub({
+    assistantDraft: "Starting the reply.",
+    assistantReply: finalReply,
+    streamAssistantReply: true,
+  });
+  try {
+    await page.setViewportSize({ width: 1000, height: 600 });
+    await installBrowserTestSession(page, {
+      apiBaseUrl: stub.baseUrl,
+      email: "stream-bottom@comma.local",
+      token: "comma_sess_stream_bottom",
+    });
+    await page.goto("/");
+    const content = page.getByRole("region", { name: "Content" });
+    await content
+      .getByRole("textbox", { name: "AI prompt" })
+      .fill("Write a long reply");
+    await content.getByRole("button", { name: "Send" }).click();
+    await stub.waitForDraft();
+    const draft = content.getByTestId("chat-assistant-draft");
+    await expect(draft).toContainText("Starting the reply.");
+    stub.updateStreamingDraft(longReply);
+    await expect(draft).toContainText("Streaming paragraph 28.");
+    const viewport = content.locator(".comma-chat-scroll-viewport");
+    // Text reaches the DOM a rendering update before the transcript's
+    // ResizeObserver follows it. A new observer's first notification comes in
+    // that update after the transcript's older one, so measure there.
+    const distance = () =>
+      viewport.evaluate(
+        (node) =>
+          new Promise<number>((resolve) => {
+            const observer = new ResizeObserver(() => {
+              observer.disconnect();
+              resolve(node.scrollHeight - node.clientHeight - node.scrollTop);
+            });
+            observer.observe(node);
+          })
+      );
+    const button = content.getByRole("button", { name: "Back to bottom", exact: true });
+    // No wheel, scrollbar, or key navigation has occurred.
+    await expect(button).toHaveText("↓ Back to bottom");
+    expect(await distance()).toBeGreaterThan(1);
+    await expect(
+      content.locator('[data-message-id="msg-assistant-smoke"]')
+    ).toHaveCount(0);
+    await button.click();
+    await expect(button).toHaveCount(0);
+    expect(await distance()).toBeLessThanOrEqual(1);
+    stub.updateStreamingDraft(finalReply);
+    await expect(draft).toContainText("The stream is complete.");
+    // The button leaves only once the viewport measures at the bottom.
+    await expect(button).toHaveCount(0);
+    expect(await distance()).toBeLessThanOrEqual(1);
+    stub.completeStreamingReply();
+    await expect(
+      content.locator('[data-message-id="msg-assistant-smoke"]')
+    ).toContainText("The stream is complete.");
+    await expect(button).toHaveCount(0);
+    expect(await distance()).toBeLessThanOrEqual(1);
   } finally {
     await stub.close();
   }

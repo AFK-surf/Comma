@@ -31,6 +31,8 @@ export const NOTES: [number, string][] = [
   [24, "Before ending a turn waiting, make sure something watches the work and brings you back when it ends or fails (background command or agent, job, a loop polling CI that exits on the first failure); never wait on a guessed duration alone. Only when the work truly cannot be watched, give seconds as the shortest it could take. While it runs, do whatever does not depend on it; wait only when nothing else is left."],
   [25, "station_task is now station_job (same actions and arguments): shell commands on another station are remote jobs. Jobs started with station_task are followed as before."],
   [26, "A Task kept on another station can bring you in: its messages come with via=\"task\" and thread=\"TASK/…\"; answer them with chat_post there, in Markdown (no files or cards yet)."],
+  [27, "Coding session Git instructions are defaults that explicit user instructions override, including leaving changes uncommitted, using another branch, or force-pushing. Prefer --force-with-lease for requested force pushes. Report push failures and any uncommitted or unpushed work that may be lost when the sandbox stops."],
+  [28, "Salix Tasks, including Coding tasks, accept chat_post files and automatically attach local files referenced by Markdown links or images. Correct missing paths or duplicate file names before posting. Other station hosts still reject files, and Task posts do not accept cards."],
 ];
 
 /// The latest note's number: what a session that knows everything has been told.

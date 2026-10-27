@@ -128,7 +128,8 @@ defmodule CommaWeb.ComputeRecoveryHTTPTest do
              "id" => unfinished_id,
              "registration_id" => Repo.get!(Operation, unfinished_id).registration_id,
              "scope_key" => workspace.id,
-             "authorization_status" => "requested"
+             "authorization_status" => "requested",
+             "registration_revocation_reason" => nil
            }
 
     assert Repo.get!(Operation, unfinished_id).delivery_target_id == old["id"]
@@ -280,6 +281,16 @@ defmodule CommaWeb.ComputeRecoveryHTTPTest do
 
     assert [%{"phase" => "ready"}] = Jason.decode!(refreshed_shell.resp_body)["workloads"]
 
+    Repo.update_all(from(w in SalixStore.Compute.Workload, where: w.id == ^"workload-#{suffix}"),
+      set: [observed_state: "pending"]
+    )
+
+    recovering_shell =
+      http(:post, "#{resource_path}/local-workloads", new["token"], %{"target" => target})
+
+    assert [%{"phase" => "starting", "observed_state" => "pending"}] =
+             Jason.decode!(recovering_shell.resp_body)["workloads"]
+
     Repo.update_all(from(b in SalixStore.Compute.ProviderBinding, where: b.id == ^binding.id),
       set: [status: "available", observation: %{}]
     )
@@ -320,14 +331,15 @@ defmodule CommaWeb.ComputeRecoveryHTTPTest do
     assert renamed.status == 200
     assert Jason.decode!(renamed.resp_body)["workload"]["name"] == "Build Shell"
 
-    assert http(:patch, workload_path, new["token"], %{"name" => "lost", "revision" => 1}).status ==
-             409
+    # The last rename wins; a stale revision does not reject it.
+    late = http(:patch, workload_path, new["token"], %{"name" => "Late Shell", "revision" => 1})
+    assert late.status == 200
+    assert Jason.decode!(late.resp_body)["workload"]["name"] == "Late Shell"
 
-    assert http(:patch, workload_path, new["token"], %{"name" => "", "revision" => 2}).status ==
-             400
+    assert http(:patch, workload_path, new["token"], %{"name" => ""}).status == 400
 
     assert Jason.decode!(http(:get, workload_path, new["token"]).resp_body)["workload"]["name"] ==
-             "Build Shell"
+             "Late Shell"
 
     assert http(:post, "#{workload_path}/retry", outsider_session["token"], %{
              "revision" => 2,
@@ -338,23 +350,43 @@ defmodule CommaWeb.ComputeRecoveryHTTPTest do
       set: [observed_state: "failed"]
     )
 
+    # A command with an unknown outcome blocks neither retry nor deletion, and is never replayed.
+    assert {:ok, unknown} =
+             SalixStore.Compute.enqueue_command(%{
+               id: "unknown-#{suffix}",
+               allocation_id: allocation.id,
+               workload_id: "workload-#{suffix}",
+               request_id: "unknown-#{suffix}",
+               kind: "runtime.exec",
+               classification: "side_effecting",
+               target_generation: 1,
+               target_revision: allocation.revision,
+               deadline_at: DateTime.add(SystemsClock.utc_now(), 60, :second),
+               payload: %{}
+             })
+
+    unknown_started_at = SystemsClock.utc_now()
+
+    Repo.update_all(from(c in SalixStore.Compute.Command, where: c.id == ^unknown.id),
+      set: [status: "unknown_outcome", delivery_started_at: unknown_started_at]
+    )
+
+    # Retry is fenced by generation only; the stale revision 1 is ignored.
     retried =
       http(:post, "#{workload_path}/retry", new["token"], %{
-        "revision" => 2,
+        "revision" => 1,
         "generation" => 1
       })
 
     assert retried.status == 202
     assert Jason.decode!(retried.resp_body)["workload"]["id"] == "workload-#{suffix}"
-    assert Jason.decode!(retried.resp_body)["workload"]["revision"] == 3
+    assert Jason.decode!(retried.resp_body)["workload"]["revision"] == 4
 
     assert Repo.get!(SalixStore.Compute.Workload, "workload-#{suffix}").allocation_id ==
              allocation.id
 
-    assert http(:post, "#{workload_path}/retry", new["token"], %{
-             "revision" => 2,
-             "generation" => 1
-           }).status == 409
+    assert http(:post, "#{workload_path}/retry", new["token"], %{"generation" => 2}).status ==
+             409
 
     assert http(:post, "#{workload_path}/deletion", outsider_session["token"], %{
              "request_id" => "delete",
@@ -362,10 +394,15 @@ defmodule CommaWeb.ComputeRecoveryHTTPTest do
              "generation" => 1
            }).status == 403
 
+    assert http(:post, "#{workload_path}/deletion", new["token"], %{
+             "request_id" => "delete",
+             "generation" => 2
+           }).status == 409
+
     deletion =
       http(:post, "#{workload_path}/deletion", new["token"], %{
         "request_id" => "delete",
-        "revision" => 3,
+        "revision" => 1,
         "generation" => 1
       })
 
@@ -392,6 +429,10 @@ defmodule CommaWeb.ComputeRecoveryHTTPTest do
                SalixStore.Repo.get!(SalixStore.Compute.Workload, "workload-#{suffix}")
              )
 
+    assert disposal.kind == "allocation.dispose"
+    unknown = Repo.get!(SalixStore.Compute.Command, unknown.id)
+    assert unknown.status == "unknown_outcome"
+    assert unknown.delivery_started_at == unknown_started_at
     waiting = Jason.decode!(http(:get, workload_path, new["token"]).resp_body)["workload"]
     assert waiting["phase"] == "waiting_connection"
     assert waiting["deletion"]["error"] == "original_device_offline"
@@ -514,6 +555,21 @@ defmodule CommaWeb.ComputeRecoveryHTTPTest do
     assert http(:post, "#{path}/#{operation_id}/recovery/consume", new["token"], %{
              "proof" => proof
            }).status == 409
+
+    current = http(:get, "#{path}/#{operation_id}", new["token"])
+    assert Jason.decode!(current.resp_body)["operation"]["registration_revocation_reason"] == nil
+
+    # Expiry of the 7-day authorization is the one reason the client reinstalls on its own.
+    assert {:ok, _} =
+             SalixStore.AgentVMM.expire_authorizations(
+               32,
+               DateTime.add(SystemsClock.utc_now(), 8 * 86_400, :second)
+             )
+
+    expired = http(:get, "#{path}/#{operation_id}", new["token"])
+
+    assert Jason.decode!(expired.resp_body)["operation"]["registration_revocation_reason"] ==
+             "authorization_expired"
   end
 
   defp wait_for_owner_waiters(expected, attempts \\ 3000)

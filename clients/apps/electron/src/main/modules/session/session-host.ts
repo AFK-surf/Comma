@@ -10,6 +10,7 @@ import type {
   GoogleGrant,
 } from "@comma/core/utility-protocol";
 import { z } from "zod";
+import { clockTimeoutSignal, realMainClock, type MainClock } from "../../clock";
 import type { DesktopGoogleAuthProvider } from "../../google-desktop-auth";
 import type {
   SecureSessionStore,
@@ -44,6 +45,7 @@ export interface MainAuthResponse {
 
 export interface MainSessionHostOptions {
   authorityInstanceId?: string | undefined;
+  clock?: MainClock | undefined;
   fetch?: typeof fetch | undefined;
   googleAuth?: DesktopGoogleAuthProvider | undefined;
   onSnapshotChanged?:
@@ -94,6 +96,7 @@ type Issued = {
  * refuses to close while one is left.
  */
 export class MainSessionHost {
+  readonly #clock: MainClock;
   readonly #gate: MainCredentialGate;
   readonly #fetch: typeof fetch;
   readonly #googleAuth: DesktopGoogleAuthProvider | undefined;
@@ -110,6 +113,7 @@ export class MainSessionHost {
   #closed = false;
 
   constructor(options: MainSessionHostOptions) {
+    this.#clock = options.clock ?? realMainClock;
     this.#store = options.store;
     this.#fetch = options.fetch ?? fetch;
     this.#googleAuth = options.googleAuth;
@@ -175,9 +179,9 @@ export class MainSessionHost {
   settled(withinMs: number): Promise<void> {
     if (this.state().phase !== "initializing") return Promise.resolve();
     return new Promise((resolve) => {
-      const timer = setTimeout(done, withinMs);
+      const cancelTimer = this.#clock.setTimer(withinMs, done);
       function done() {
-        clearTimeout(timer);
+        cancelTimer();
         resolve();
       }
       this.#settledWaiters.add(done);
@@ -528,7 +532,7 @@ export class MainSessionHost {
           method: "POST",
           redirect: "manual",
           // A server that never answers must not hold Main's close.
-          signal: AbortSignal.timeout(5_000),
+          signal: clockTimeoutSignal(this.#clock, 5_000),
         }
       );
       if (response.ok || response.status === 401) this.#issued.delete(ref);

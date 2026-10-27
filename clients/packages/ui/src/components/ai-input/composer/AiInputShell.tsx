@@ -105,7 +105,11 @@ export const AiInputShell = ({
       <div
         className={cx(
           isSmall && "t-resize",
-          isSmall ? aiInputSmallLayout : aiInputComposer
+          isSmall ? aiInputSmallLayout : aiInputComposer,
+          // The drop overlay is inset and rounded: the prompt and its buttons
+          // would show at its corners. Transparent rather than invisible, so the
+          // prompt keeps its focus and caret through the drag.
+          dropActive && "pointer-events-none opacity-0"
         )}
         style={isSmall ? { height: smallComposerHeight } : undefined}
       >

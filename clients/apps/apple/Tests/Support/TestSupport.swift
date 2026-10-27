@@ -9,6 +9,7 @@ final class MemoryRecord: CredentialRecord, @unchecked Sendable {
 
     func read() throws -> Data? { lock.withLock { data } }
     func write(_ data: Data) throws { lock.withLock { self.data = data } }
+    func delete() throws { lock.withLock { data = nil } }
 }
 
 /// Returns once `condition` holds, checking it again each time an observable value it read changes.

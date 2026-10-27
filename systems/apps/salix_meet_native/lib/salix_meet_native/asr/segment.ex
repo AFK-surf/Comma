@@ -1,5 +1,10 @@
 defmodule SalixMeetNative.ASR.Segment do
-  @moduledoc false
+  @moduledoc """
+  One speech segment through the live ASR provider, retried as a whole on a
+  transient failure. The owner gets `{:final, segment, result}` once the
+  segment is recognized. With `interim: true` it also gets each better guess
+  meanwhile, `{:interim, segment, result}` (a retry starts its guesses over).
+  """
   use GenServer
 
   require Logger
@@ -24,6 +29,7 @@ defmodule SalixMeetNative.ASR.Segment do
       owner: owner,
       provider: Keyword.fetch!(opts, :provider),
       config: Keyword.fetch!(opts, :config),
+      interim?: Keyword.get(opts, :interim, false),
       pcm: <<>>,
       sealed?: false,
       reader: nil,
@@ -59,6 +65,11 @@ defmodule SalixMeetNative.ASR.Segment do
 
   def handle_info({:result, id, %{final: true} = result}, %{attempt: %{id: id}} = state),
     do: {:noreply, %{state | final: result}}
+
+  def handle_info({:result, id, result}, %{attempt: %{id: id}, interim?: true} = state) do
+    send(state.owner, {:interim, self(), result})
+    {:noreply, state}
+  end
 
   def handle_info({:result, _id, _result}, state), do: {:noreply, state}
 

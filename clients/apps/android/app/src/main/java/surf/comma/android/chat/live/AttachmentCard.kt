@@ -167,7 +167,10 @@ internal class AttachmentView(context: Context) : FrameLayout(context), Timeline
     }
 
     override val flightCornerRadius: Float get() = resources.getDimension(
-        if (item?.message?.attachment?.display == AttachmentDisplay.IMAGE) R.dimen.radius_4xl else R.dimen.radius_xl,
+        when (item?.message?.attachment?.display) {
+            AttachmentDisplay.IMAGE, AttachmentDisplay.VIDEO -> R.dimen.radius_4xl
+            else -> R.dimen.radius_xl
+        },
     )
 
     override fun setMediaVisible(visible: Boolean) {

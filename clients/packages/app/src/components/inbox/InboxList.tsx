@@ -183,7 +183,6 @@ export function InboxList({
                 workspaceId={item.workspaceId}
                 title={item.title}
                 status={item.status}
-                freshness={item.freshness}
                 updatedAt={item.updatedAt}
                 loop={item.loop}
                 selected={item.conversationId === selectedConversationId}

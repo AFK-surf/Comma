@@ -40,7 +40,7 @@ launchd / 桌面 app
 | `agents` | claude、codex 驱动（命令行、环境、输出解析、失败分类）、runner 接入 |
 | `tools` | MCP 服务（HTTP，Bearer 令牌）和全部工具。工具的副作用经会话队列 |
 | `slack` | Slack HTTP 客户端、Socket Mode、应用和配置令牌、名字缓存 |
-| `accounts` | 凭据（文件/钥匙串）、OAuth 续期、检查、额度、登录 |
+| `accounts` | 凭据（文件/钥匙串）、OAuth 续期、检查、额度、登录；每个桌面 workspace 每个 runtime 的账号来源（`sources.ts`，`config.json` 的 `accountSources`），以及本地管理接口（`local-admin.ts`：`run/local-admin.sock`，Windows 上是按数据目录命名的 named pipe；监听地址写在 `run/local-admin.address`，令牌在 `local-admin.token`） |
 | `jobs` | 后台任务、服务、预览、站间任务 |
 | `tasks` | Task（跨 station 的对话） |
 | `connector` | 与 Salix 的连接（见 [../README.md](../README.md)） |
@@ -73,6 +73,7 @@ launchd / 桌面 app
 - cloud：still.fail cloud 的 `/v1/stations/enroll|connect|notify`、`/v1/feedback`、`/v1/feedback/fixed`、`/v1/telemetry/traces`，Comma 控制面的 `/v1/comma/stations/enroll|connect|notify`，以及它们的签名和头。
 - admin API：全部路由与字段（含给老客户端留的 `decision`、`declared` 旧词、`footprint`、`follows`）、幂等、语言头。
 - MCP：全部工具名和参数、旧写法。
+- 本地管理接口：`run/local-admin.sock`（Windows：`\\.\pipe\stillfail-local-admin-<hash>`）、`run/local-admin.address`、`local-admin.token`（0600）、`/local/accounts` 的路由和视图（RFC43 §3.3）。
 
 ## 已定
 

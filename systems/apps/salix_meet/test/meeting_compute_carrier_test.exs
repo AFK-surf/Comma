@@ -119,6 +119,54 @@ defmodule SalixMeet.MeetingComputeCarrierTest do
 
     assert Repo.get!(Compute.Workload, fixture.workload.id).owner_ref ==
              %{"kind" => "meeting", "id" => "meeting-1"}
+
+    assert {:ok, %{"accepted" => true}} =
+             MeetingComputeCarrier.join(
+               Map.merge(payload, %{
+                 "join_dispatch_generation" => "replacement-claim",
+                 "runtime_target" => %{"source" => "compute_workload"},
+                 "runtime_rejections" => [%{"source" => "connected_runtime"}]
+               })
+             )
+
+    assert Repo.aggregate(ComputeRuntimeCarrier.Input, :count, :id) == 1
+
+    assert {:error, :meeting_join_already_accepted} =
+             MeetingComputeCarrier.release_unaccepted(payload)
+
+    assert {:ok, :unavailable} = MeetingComputeCarrier.session_status(payload)
+  end
+
+  test "a retryable join failure keeps its Workload, and watchdog terminal state stops it",
+       fixture do
+    alias SalixMeet.Store
+    previous_s3 = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    if is_nil(Process.whereis(SalixStore.S3.Fake)), do: start_supervised!(SalixStore.S3.Fake)
+    SalixStore.S3.Fake.reset()
+    on_exit(fn -> SystemsRuntime.put_env(:salix_store, :s3_backend, previous_s3) end)
+    now = SystemsClock.system_time(:millisecond)
+
+    {:ok, _, _} =
+      Store.create_once("meeting-1",
+        state: %{
+          "tenant_id" => fixture.tenant_id,
+          "runtime_source" => "compute_workload",
+          "workload_id" => fixture.workload.id,
+          "compute_environment_id" => fixture.environment.id,
+          "status" => "joining",
+          "end_at" => div(now, 1000) - Store.watchdog_cutoff_s() - 1
+        }
+      )
+
+    {:ok, :claimed, _, _, _} =
+      Store.claim_join_dispatch("meeting-1", %{"generation" => "first", "claimed_by" => "test"})
+
+    assert {:ok, _, _} = Store.checkpoint_join_dispatch("meeting-1", "first", {:failed, :timeout})
+    assert Repo.get!(Compute.Workload, fixture.workload.id).desired_state == "ready"
+    {:ok, generation} = Store.claim_watchdog_probe("meeting-1", "test")
+    assert {:ok, _, _} = Store.mark_runtime_lost("meeting-1", generation: generation)
+    assert Repo.get!(Compute.Workload, fixture.workload.id).desired_state == "stopped"
   end
 
   test "terminal stops the workload and stale frames are rejected", fixture do
@@ -137,6 +185,79 @@ defmodule SalixMeet.MeetingComputeCarrierTest do
     assert stopped.business_terminal_owned_by == "SalixMeet.Meeting"
     assert stopped.workload.desired_state == "stopped"
     assert {:error, :meeting_workload_terminal} = MeetingComputeCarrier.join(payload)
+
+    assert {:ok, :not_found} =
+             MeetingComputeCarrier.terminal(%{
+               "tenant_id" => fixture.tenant_id,
+               "meeting_id" => "never-started"
+             })
+
+    assert Repo.aggregate(Compute.Workload, :count) == 1
+  end
+
+  test "an existing Meeting Workload keeps its original Environment and provider binding",
+       fixture do
+    {:ok, other} =
+      Compute.create_environment(%{
+        id: "another-meeting-environment",
+        tenant_id: fixture.tenant_id,
+        owner_type: "project",
+        owner_id: "another-project",
+        pool_id: fixture.environment.pool_id
+      })
+
+    payload = %{
+      "tenant_id" => fixture.tenant_id,
+      "meeting_id" => "meeting-1",
+      "compute_environment_id" => other.id
+    }
+
+    assert {:error, :meeting_workload_placement_conflict} =
+             MeetingComputeCarrier.ensure_workload(payload)
+
+    assert {:error, :meeting_workload_placement_conflict} =
+             MeetingComputeCarrier.ensure_workload(
+               %{payload | "compute_environment_id" => fixture.environment.id}
+               |> Map.put("compute_provider_binding_id", "another-binding")
+             )
+
+    assert Repo.get!(Compute.Workload, fixture.workload.id).environment_id ==
+             fixture.environment.id
+
+    assert Repo.aggregate(Compute.Workload, :count) == 1
+    refute Repo.exists?(ComputeRuntimeCarrier.Input)
+  end
+
+  test "Compute cleanup failure keeps the terminal commit and later delivery retries it",
+       fixture do
+    alias SalixMeet.Store
+    previous_s3 = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    if is_nil(Process.whereis(SalixStore.S3.Fake)), do: start_supervised!(SalixStore.S3.Fake)
+    SalixStore.S3.Fake.reset()
+    on_exit(fn -> SystemsRuntime.put_env(:salix_store, :s3_backend, previous_s3) end)
+
+    {:ok, _, etag} =
+      Store.create_once("meeting-1",
+        state: %{
+          "tenant_id" => fixture.tenant_id,
+          "runtime_source" => "compute_workload",
+          "workload_id" => fixture.workload.id,
+          "status" => "active"
+        }
+      )
+
+    # Compute owns an in-progress transition and cannot take this stop yet.
+    Repo.update_all(Compute.Workload, set: [desired_state: "draining"])
+
+    assert {:ok, %{"state" => %{"status" => "done"}}, _} =
+             Store.update_state("meeting-1", etag, &Map.put(&1, "status", "done"))
+
+    assert {:ok, :delivery, _, _, _} = Store.claim_terminal_work("meeting-1", "delivery")
+    assert Repo.get!(Compute.Workload, fixture.workload.id).desired_state == "draining"
+    Repo.update_all(Compute.Workload, set: [desired_state: "ready"])
+    assert {:error, :not_claimable} = Store.claim_terminal_work("meeting-1", "delivery")
+    assert Repo.get!(Compute.Workload, fixture.workload.id).desired_state == "stopped"
   end
 
   test "assigns each chat message its own durable dispatch identity", fixture do

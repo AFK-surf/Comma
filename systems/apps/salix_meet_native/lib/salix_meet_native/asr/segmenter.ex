@@ -16,6 +16,15 @@ defmodule SalixMeetNative.ASR.Segmenter do
 
   def sample_rate, do: @sample_rate
 
+  @doc "How long speech sounds in `pcm` (16 kHz s16le): its voiced 40 ms frames, in seconds."
+  @spec voiced_seconds(binary()) :: float()
+  def voiced_seconds(pcm) do
+    voiced =
+      for <<frame::binary-size(@frame_bytes) <- pcm>>, voiced?(frame), reduce: 0, do: (n -> n + 1)
+
+    voiced * @frame_samples / @sample_rate
+  end
+
   @spec push(%__MODULE__{}, non_neg_integer(), binary()) :: {%__MODULE__{}, [action()]}
   def push(%__MODULE__{cursor: nil} = s, start, pcm), do: push(%{s | cursor: start}, start, pcm)
 

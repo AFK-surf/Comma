@@ -127,6 +127,9 @@ defmodule SalixStore.StationsTest do
       def manager_role?(role), do: role == "admin"
 
       @impl true
+      def read_only_role?(_role), do: false
+
+      @impl true
       def workspace_name("tnt_roster", "grp_roster_a"), do: {:ok, "Roster project"}
       def workspace_name(_tenant_id, _group_id), do: :none
 

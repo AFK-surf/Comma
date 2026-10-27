@@ -26,11 +26,13 @@ export function useFileDrop(onDropFiles: AiInputProps["onDropFiles"]) {
       resetDropState();
     };
 
-    window.addEventListener("dragend", handleWindowDragReset);
-    window.addEventListener("drop", handleWindowDragReset);
+    // Captured: a drop target inside the shell or surface that stops its drop
+    // (a question card taking files for its answer) still ends the drag here.
+    window.addEventListener("dragend", handleWindowDragReset, true);
+    window.addEventListener("drop", handleWindowDragReset, true);
     return () => {
-      window.removeEventListener("dragend", handleWindowDragReset);
-      window.removeEventListener("drop", handleWindowDragReset);
+      window.removeEventListener("dragend", handleWindowDragReset, true);
+      window.removeEventListener("drop", handleWindowDragReset, true);
     };
   }, [dropActive, resetDropState]);
 

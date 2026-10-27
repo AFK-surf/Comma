@@ -9,10 +9,10 @@ station=$(cd "$(dirname "$0")/.." && pwd)
 platform=${1:-darwin-arm64}
 version=$(cat "$station/.node-version")
 case "$version-$platform" in
-  24.14.0-darwin-arm64) sum=a1a54f46a750d2523d628d924aab61758a51c9dad3e0238beb14141be9615dd3 ;;
-  24.14.0-linux-arm64) sum=f44740cd218de8127f1c44c41510a3a740fa5c9c8d1cdce1c3bedada79f3cde7 ;;
-  24.14.0-linux-x64) sum=dbf5b8665dec15e59e6359a517fefb47b23fdb9152d8def975b9bca3dfc6d355 ;;
-  24.14.0-win32-x64) sum=63c259c81e5d472b5f11c8d506070130cb04a1ecf84b80377a34ed6ec9048088 ;;
+  24.22.1-darwin-arm64) sum=89c682593d76cd44233fa53b1563264e7de9cbb189cad169135c5b4fadfbc0a7 ;;
+  24.22.1-linux-arm64) sum=33c37be234ba8bee041961047b19160f4d7d0f164e8e246f78bdd10feff148b3 ;;
+  24.22.1-linux-x64) sum=eb6728e77c576a35162c122c45ccadf224d89ff00abc8dae46cc2897c6002d7c ;;
+  24.22.1-win32-x64) sum=d702daa815eabbff763c7d3808e235cf031cf2ca70211b56847bc72f51e240e5 ;;
   *) echo "no pinned Node $version for $platform: add its SHA-256 here" >&2; exit 1 ;;
 esac
 if [ -n "${STILLFAIL_NATIVE_CACHE:-}" ]; then cache=$STILLFAIL_NATIVE_CACHE

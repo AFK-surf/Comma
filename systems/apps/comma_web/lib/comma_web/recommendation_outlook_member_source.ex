@@ -13,24 +13,35 @@ defmodule CommaWeb.RecommendationOutlookMemberSource do
   # A message's own text replaces the 255-character preview, which often ends
   # before the deadline or the consequence. Text bodies of 40 messages fit.
   @mail_bytes 4_000_000
+  # Junk mail is mostly spam. The most recent few reach the judgment, which
+  # sees where they came from.
+  @junk 10
 
   def read(request, now) do
     since = now |> DateTime.add(-@week) |> DateTime.to_iso8601()
     until = now |> DateTime.add(@week) |> DateTime.to_iso8601()
 
-    [profile, mail, calendar] =
+    mail_url = fn folder ->
+      @graph <>
+        "/mailFolders/" <>
+        folder <>
+        "/messages?" <>
+        URI.encode_query(%{
+          "$top" => 40,
+          "$filter" => "receivedDateTime ge #{since}",
+          "$orderby" => "receivedDateTime desc",
+          "$select" =>
+            "id,conversationId,subject,from,receivedDateTime,bodyPreview,uniqueBody,webLink,importance"
+        })
+    end
+
+    mail_opts = [parameters: [ProactiveOutlookMailSource.text_body()], max_bytes: @mail_bytes]
+
+    [profile, mail, calendar, junk] =
       RecommendationMemberRead.map(
         [
           {@graph <> "?$select=id,mail,userPrincipalName", []},
-          {@graph <>
-             "/mailFolders/inbox/messages?" <>
-             URI.encode_query(%{
-               "$top" => 40,
-               "$filter" => "receivedDateTime ge #{since}",
-               "$orderby" => "receivedDateTime desc",
-               "$select" =>
-                 "id,conversationId,subject,from,receivedDateTime,bodyPreview,uniqueBody,webLink,importance"
-             }), [parameters: [ProactiveOutlookMailSource.text_body()], max_bytes: @mail_bytes]},
+          {mail_url.("inbox"), mail_opts},
           {@graph <>
              "/calendarView?" <>
              URI.encode_query(%{
@@ -39,16 +50,18 @@ defmodule CommaWeb.RecommendationOutlookMemberSource do
                "$top" => 40,
                "$select" =>
                  "id,subject,start,end,webLink,organizer,attendees,isCancelled,bodyPreview,location"
-             }), []}
+             }), []},
+          {mail_url.("junkemail"), mail_opts}
         ],
         fn {url, opts} -> request.("GET", url, opts) end,
-        3
+        4
       )
 
     with {:ok, %{"id" => id} = me} when is_binary(id) and id != "" <- profile,
          true <- is_binary(me["mail"]) or is_binary(me["userPrincipalName"]) do
       mailbox = Enum.find([me["mail"], me["userPrincipalName"]], &(is_binary(&1) and &1 != ""))
       {messages, mail_error} = messages(mail)
+      messages = messages ++ junk(junk, messages)
       {events, calendar_error} = events(calendar, mailbox)
       failures = Enum.reject([mail_error, calendar_error], &is_nil/1)
 
@@ -107,6 +120,21 @@ defmodule CommaWeb.RecommendationOutlookMemberSource do
 
   defp messages({:error, reason}), do: {[], reason}
   defp messages(_), do: {[], :member_source_context_unavailable}
+
+  # Junk mail joins the inbox mail, marked as junk. A conversation already in
+  # the inbox stays inbox mail. A failed junk read only leaves junk mail out;
+  # the inbox decides readability.
+  defp junk({:ok, %{"value" => value}} = junk, messages) when is_list(value) do
+    threads = MapSet.new(messages, & &1["threadId"])
+    {items, nil} = messages(junk)
+
+    items
+    |> Enum.reject(&MapSet.member?(threads, &1["threadId"]))
+    |> Enum.take(@junk)
+    |> Enum.map(&Map.put(&1, "memberRelation", "in_your_junk_folder"))
+  end
+
+  defp junk(_junk, _messages), do: []
 
   defp mail_text(message) do
     case ProactiveOutlookMailSource.message_text(message) do

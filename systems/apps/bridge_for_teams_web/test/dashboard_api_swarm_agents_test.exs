@@ -113,7 +113,10 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmAgentsTest do
                  "internal.task.create",
                  %{
                    "connect_id" => "internal",
-                   "params" => %{"content" => "Summarize this week's notes."}
+                   "params" => %{
+                     "runs_on" => %{"kind" => "default"},
+                     "content" => "Summarize this week's notes."
+                   }
                  }
                )
 
@@ -328,6 +331,7 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmAgentsTest do
 
       assert config["available"] == true
       assert config["model_key"] == ""
+      assert config["prompt_editable"] == true
 
       assert %{"key" => "", "choice" => nil, "label" => "Default (" <> _} =
                hd(config["models"])
@@ -347,7 +351,7 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmAgentsTest do
       {:ok, reloaded} = Agents.get_agent(agent.id)
       assert reloaded.role == "router"
       assert reloaded.salix["model"] == opus
-      assert reloaded.salix["system_prompt"] == "Be helpful."
+      assert reloaded.salix["router_system_prompt"] == "Be helpful."
 
       assert %{"model_key" => "catalog:claude-opus-4-8", "system_prompt" => "Be helpful."} =
                conn
@@ -449,6 +453,93 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmAgentsTest do
                )
 
       assert audit.actor_user_id == member.id
+    end
+  end
+
+  describe "instructions" do
+    test "the Router's own instructions win over the shared prompt and replace it when saved", %{
+      conn: conn,
+      org: org,
+      project: project
+    } do
+      {:ok, agent} =
+        create_agent(project, %{
+          "name" => "Router",
+          "role" => "router",
+          "system_prompt" => "Shared rules."
+        })
+
+      {:ok, _record} =
+        BridgeForTeams.Salix.Client.impl().configure_agent(
+          agent.salix_agent_id,
+          org.salix_tenant_id,
+          %{"router_system_prompt" => "Imported rules."}
+        )
+
+      assert %{"system_prompt" => "Imported rules."} =
+               conn
+               |> get(agent_path(org, project, agent, "/config"))
+               |> json_response(200)
+               |> data()
+
+      assert %{"agent" => %{"system_prompt" => "Edited rules."}} =
+               conn
+               |> patch(agent_path(org, project, agent), %{"system_prompt" => "Edited rules."})
+               |> json_response(200)
+               |> data()
+
+      {:ok, reloaded} = Agents.get_agent(agent.id)
+      assert reloaded.salix["router_system_prompt"] == "Edited rules."
+      assert reloaded.salix["system_prompt"] == "Shared rules."
+
+      # Clearing them would only bring the shared prompt back.
+      assert %{"error" => %{"details" => %{"fields" => %{"system_prompt" => [_message]}}}} =
+               conn
+               |> patch(agent_path(org, project, agent), %{"system_prompt" => ""})
+               |> json_response(422)
+    end
+
+    test "an org admin who is not an owner changes the model but not the instructions", %{
+      org: org,
+      project: project
+    } do
+      gpt5 = %{"kind" => "catalog", "model" => "gpt-5", "allow_paid" => false}
+      {:ok, agent} = Agents.current_router(project)
+      admin = user_fixture()
+      {:ok, _} = Memberships.put_org_member(org.id, admin.id, "admin")
+      admin_conn = log_in_user(build_conn(), admin)
+
+      config =
+        admin_conn
+        |> get(agent_path(org, project, agent, "/config"))
+        |> json_response(200)
+        |> data()
+
+      assert config["prompt_editable"] == false
+
+      # The form sends the prompt it showed; unchanged, it is not a change.
+      assert admin_conn
+             |> patch(agent_path(org, project, agent), %{
+               "model" => gpt5,
+               "system_prompt" => config["system_prompt"]
+             })
+             |> json_response(200)
+
+      assert admin_conn
+             |> patch(agent_path(org, project, agent), %{"system_prompt" => "Forged."})
+             |> json_response(403)
+
+      {:ok, reloaded} = Agents.get_agent(agent.id)
+      assert reloaded.salix["model"] == gpt5
+      refute reloaded.salix["router_system_prompt"] == "Forged."
+
+      assert [audit] =
+               Observability.list_audit_logs(org.id,
+                 action: "agent.config_updated",
+                 result: "denied"
+               )
+
+      assert audit.actor_user_id == admin.id
     end
   end
 

@@ -75,11 +75,15 @@ schema version are added in place on open.
   `GET /threads/:id`: threads with their sessions, their people, `firstText`,
   `last` (the last entry's n), `lastMessage` (merged), and the viewer's read
   position and unread count. Unread counts messages after the read position
-  that are not the viewer's own, nor of a Slack user the viewer is.
+  that are not the viewer's own, nor of a Slack user the viewer is. A Task
+  that runs on another station (`task_runs`, [tasks.md](tasks.md)) also has
+  `runsOn`, as its row in `GET /chats` does: `station`, its `session` there,
+  and the `runtime` and `model` it was started with.
 - `GET /threads/:id/entries?after=n` gives what came since. `?before=n&limit=`
   gives older pages (no cursor: the latest page). `?from=a&to=b` gives a gap,
   both ends included. The answer is `{ last, entries }`. Entries carry
-  `authorName`.
+  `authorName`. An agent's post carries `answers`: the n of the last message
+  its session was handed in the chat before it was posted (`deliveries`).
 - `PUT /threads/:id/read {n}` sets the viewer's read position. It only moves
   forward, and the answer says where it is.
 - `POST /threads/:id/messages {text, attachments, quotes, client?}` posts a

@@ -138,13 +138,15 @@ const CommandPaletteItemView = <TValue extends string>({
   onPointerClick,
   onPointerIntent,
   onPointerIntentCancel,
+  onPointerLeave,
   onPointerSelectIntent,
   onSelect,
 }: {
   item: CommandPaletteItem<TValue>;
   onPointerClick: () => void;
-  onPointerIntent: () => void;
+  onPointerIntent: (event: ReactPointerEvent<HTMLElement>) => void;
   onPointerIntentCancel: () => void;
+  onPointerLeave: (event: ReactPointerEvent<HTMLElement>) => void;
   onPointerSelectIntent: (event: ReactPointerEvent<HTMLElement>) => void;
   onSelect: (item: CommandPaletteItem<TValue>) => void;
 }) => (
@@ -155,7 +157,7 @@ const CommandPaletteItemView = <TValue extends string>({
     onClickCapture={onPointerClick}
     onPointerCancel={onPointerIntentCancel}
     onPointerDownCapture={onPointerSelectIntent}
-    onPointerLeave={onPointerIntentCancel}
+    onPointerLeave={onPointerLeave}
     onPointerMoveCapture={onPointerIntent}
     onSelect={() => onSelect(item)}
     value={item.value}
@@ -220,6 +222,36 @@ const CommandPaletteEmpty = ({
   </Command.Empty>
 );
 
+// Filled, borderless keycaps like the tooltip and selection bar ones. A single
+// glyph sits in a square so narrow letters and wide symbols line up; a longer
+// label grows from that square.
+const keycapClassName = {
+  footer:
+    "inline-flex h-xl min-w-xl shrink-0 items-center justify-center rounded-xs bg-quaternary px-xxs font-sans text-micro font-medium leading-none text-tertiary",
+  item: "inline-flex h-2xl min-w-2xl shrink-0 items-center justify-center rounded-xs bg-quaternary px-xs font-sans text-xs font-medium leading-none text-tertiary transition-[background-color,color] duration-[50ms] group-data-[selected=true]:bg-main-panel-bg group-data-[selected=true]:text-secondary motion-reduce:transition-none",
+} as const;
+
+/** Keycaps for a shortcut, as the footer hints and action rows show them. */
+export const CommandPaletteKeycaps = ({
+  keys,
+  size = "item",
+}: {
+  keys: readonly string[];
+  size?: keyof typeof keycapClassName;
+}) => (
+  <span
+    aria-label={keys.join(" ")}
+    className="inline-flex items-center gap-xxs"
+    data-slot="command-palette-keycaps"
+  >
+    {keys.map((key, index) => (
+      <kbd aria-hidden="true" className={keycapClassName[size]} key={`${key}-${index}`}>
+        {key}
+      </kbd>
+    ))}
+  </span>
+);
+
 const CommandPaletteFooter = ({
   hints,
 }: {
@@ -235,16 +267,7 @@ const CommandPaletteFooter = ({
         key={`${hint.label}:${hint.keys.join("+")}`}
       >
         <span>{hint.label}</span>
-        <span className="inline-flex items-center gap-xxs">
-          {hint.keys.map((key, index) => (
-            <kbd
-              className="inline-flex h-xl min-w-xl items-center justify-center rounded-xs border-[length:var(--border-width-0-5)] border-primary bg-main-panel-item-bg px-xxs font-sans text-micro font-medium leading-none text-quaternary shadow-xs"
-              key={`${key}-${index}`}
-            >
-              {key}
-            </kbd>
-          ))}
-        </span>
+        <CommandPaletteKeycaps keys={hint.keys} size="footer" />
       </span>
     ))}
   </footer>
@@ -286,6 +309,7 @@ export function CommandPalette<TValue extends string = string>({
   // handoff waits for a cancelable dwell.
   const pointerIntentTimeoutRef = useRef<CancelUiTimer | undefined>(undefined);
   const pointerIntentValueRef = useRef<TValue | undefined>(undefined);
+  const pointerPositionRef = useRef<{ x: number; y: number } | undefined>(undefined);
   const activeValueRef = useRef(activeValue);
   activeValueRef.current = activeValue;
   const visibleGroups = groups.filter((group) => group.items.length > 0);
@@ -385,6 +409,20 @@ export function CommandPalette<TValue extends string = string>({
     if (pointerIntentValueRef.current !== value) return;
     clearPointerIntent();
     onPointerIntentCancel?.(value);
+  };
+  const recordPointerPosition = (event: ReactPointerEvent<HTMLElement>) => {
+    pointerPositionRef.current =
+      Number.isFinite(event.clientX) && Number.isFinite(event.clientY)
+        ? { x: event.clientX, y: event.clientY }
+        : undefined;
+  };
+  const handlePointerLeave = (value: TValue, event: ReactPointerEvent<HTMLElement>) => {
+    // Chromium also ends a row's hover when the list scrolls or re-lays out
+    // under a resting pointer, at the pointer's unchanged position. The
+    // pointer still rests where it settled, so its pending intent stays.
+    const position = pointerPositionRef.current;
+    if (position?.x === event.clientX && position.y === event.clientY) return;
+    cancelPointerIntent(value);
   };
   const handleOpenChange = (nextOpen: boolean) => {
     if (!nextOpen) clearPointerIntent();
@@ -534,12 +572,16 @@ export function CommandPalette<TValue extends string = string>({
                             item={item}
                             key={item.value}
                             onPointerClick={markPointerChangeSource}
-                            onPointerIntent={() => {
+                            onPointerIntent={(event) => {
+                              recordPointerPosition(event);
                               activatePointerValue(item.value);
                               schedulePointerIntent(item.value);
                             }}
                             onPointerIntentCancel={() =>
                               cancelPointerIntent(item.value)
+                            }
+                            onPointerLeave={(event) =>
+                              handlePointerLeave(item.value, event)
                             }
                             onPointerSelectIntent={(event) => {
                               if (event.button !== 0) return;

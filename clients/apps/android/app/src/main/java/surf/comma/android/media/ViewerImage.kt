@@ -53,7 +53,7 @@ object ViewerImageBundles {
                         putString("conversation_id", source.conversationId)
                         putString("message_id", source.messageId)
                         putInt("index", source.index)
-                        putRef(source.ref)
+                        source.ref?.let { putRef(it) }
                     }
                     is MediaSource.UploadedFile -> {
                         putString("source", "upload")
@@ -73,7 +73,8 @@ object ViewerImageBundles {
                 val source = when (bundle.getString("source")) {
                     "agent" -> MediaSource.AgentResource(bundle.getString("agent_id")!!, bundle.ref())
                     "attachment" -> MediaSource.MessageAttachment(bundle.getString("conversation_id")!!,
-                        bundle.getString("message_id")!!, bundle.getInt("index", -1), bundle.ref())
+                        bundle.getString("message_id")!!, bundle.getInt("index", -1),
+                        bundle.takeIf { it.containsKey("ref_uuid") }?.ref())
                     "upload" -> MediaSource.UploadedFile(bundle.getString("path")!!)
                     else -> return@runCatching null
                 }

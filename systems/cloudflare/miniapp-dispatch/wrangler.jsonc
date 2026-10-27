@@ -1,0 +1,61 @@
+// Mini App dispatch Worker. The only entry to app scripts in the dispatch
+// namespace; it accepts only signed requests from the Comma server.
+// Deploy the outbound Worker (outbound/wrangler.jsonc) of the same env first.
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "miniapp-dispatch",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-06-30",
+  "workers_dev": false,
+  "observability": { "enabled": true, "head_sampling_rate": 1 },
+  "version_metadata": { "binding": "VERSION_METADATA" },
+  "dispatch_namespaces": [
+    {
+      "binding": "DISPATCHER",
+      "namespace": "comma-miniapps-dev",
+      "outbound": { "service": "miniapp-outbound", "parameters": ["egress", "app"] },
+    },
+  ],
+  "durable_objects": {
+    "bindings": [{ "class_name": "ReplayGuard", "name": "ReplayGuard" }],
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ReplayGuard"] }],
+  "env": {
+    "staging": {
+      "name": "miniapp-dispatch-staging",
+      "workers_dev": false,
+      "routes": [{ "pattern": "miniapp-dispatch-staging.afk.surf", "custom_domain": true }],
+      "observability": { "enabled": true, "head_sampling_rate": 1 },
+      "version_metadata": { "binding": "VERSION_METADATA" },
+      "dispatch_namespaces": [
+        {
+          "binding": "DISPATCHER",
+          "namespace": "comma-miniapps-staging",
+          "outbound": { "service": "miniapp-outbound-staging", "parameters": ["egress", "app"] },
+        },
+      ],
+      "durable_objects": {
+        "bindings": [{ "class_name": "ReplayGuard", "name": "ReplayGuard" }],
+      },
+      "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ReplayGuard"] }],
+    },
+    "stable": {
+      "name": "miniapp-dispatch-stable",
+      "workers_dev": false,
+      "routes": [{ "pattern": "miniapp-dispatch-prod.afk.surf", "custom_domain": true }],
+      "observability": { "enabled": true, "head_sampling_rate": 1 },
+      "version_metadata": { "binding": "VERSION_METADATA" },
+      "dispatch_namespaces": [
+        {
+          "binding": "DISPATCHER",
+          "namespace": "comma-miniapps-stable",
+          "outbound": { "service": "miniapp-outbound-stable", "parameters": ["egress", "app"] },
+        },
+      ],
+      "durable_objects": {
+        "bindings": [{ "class_name": "ReplayGuard", "name": "ReplayGuard" }],
+      },
+      "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ReplayGuard"] }],
+    },
+  },
+}

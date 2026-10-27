@@ -1,6 +1,7 @@
 export {
   createMarkdownStreamDocumentNodes,
   MarkdownStream,
+  MarkdownStreamDarkContext,
   MarkdownStreamLinkDecoratorContext,
 } from "./MarkdownStream";
 export type {

@@ -16,8 +16,9 @@ const SOCKET_LABEL_LENGTH = 12;
 /** Desktop builds name the helper for their release flavor. */
 export const COMPUTER_USE_HELPER_APP_NAME = process.env.COMMA_COMPUTER_USE_HELPER_APP_NAME ?? "Comma Computer Use.app";
 
-/** The helper ships beside the station executable, under native/macos. */
+/** The helper ships beside the station executable, under native/macos (Cua Driver under native/windows). */
 export function defaultComputerUseHelperAppPath(executable = process.execPath): string {
+  if (platform.hasWindowsComputerUse) return join(dirname(executable), "native", "windows", "cua-driver.exe");
   if (!platform.hasComputerUse) return "";
   return join(dirname(executable), "native", "macos", COMPUTER_USE_HELPER_APP_NAME);
 }

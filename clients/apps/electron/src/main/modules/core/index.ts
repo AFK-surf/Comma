@@ -1,3 +1,4 @@
+import { DeviceSetupHost } from "../device-setup";
 import {
   MessageChannelMain,
   utilityProcess,
@@ -9,6 +10,7 @@ import {
   nativeCorePortChannel,
   type NativePeerConnectResult,
 } from "@comma/native-bridge";
+import type { FileRange } from "@comma/core/contract";
 import { sessionPresenceExpectationHeader } from "@comma/session-contract";
 import {
   CORE_START,
@@ -23,9 +25,14 @@ import {
   type MeetingAnswer,
   type MeetingCall,
   type MeetingEvent,
+  type VoiceCallSocketEvent,
+  type VoiceCallSocketOp,
+  type SavedStream,
+  type UtilitySessionCall,
   type UtilitySessionStart,
 } from "@comma/core/utility-protocol";
 import { CoreClient, type Opener } from "@comma/core-kernel/client";
+import { realMainClock, type MainClock } from "../../clock";
 import { proxyCommaApiRequest } from "../../protocol";
 import type { MainSessionHost } from "../session/session-host";
 import { getCurrentNativeCallerContext, type WebContentsRegistry } from "../ipc";
@@ -36,6 +43,8 @@ import type { FilesSaveDownloadResult } from "@comma/native-bridge";
 export type { LocalDriveSource } from "./local-drive";
 
 import { localDriveState, runLocalDrive, type LocalDriveSource } from "./local-drive";
+import { FileStreamRegistry, saveApiFile } from "./file-streams";
+import { PartSaves } from "./part-saves";
 
 export const CORE_UTILITY_BUNDLE_FILENAME = "core.js";
 
@@ -48,6 +57,11 @@ export interface CoreMeetingPort {
   command(call: MeetingCall): Promise<MeetingAnswer>;
   /** What the core is told when it (re)starts. */
   events(): MeetingEvent[];
+}
+
+/** Main's voice call socket as the core reaches it (modules/voice-call). */
+export interface CoreVoiceCallPort {
+  command(op: VoiceCallSocketOp): void;
 }
 
 /** Restarts after the core's process exits, growing to this pause. */
@@ -80,6 +94,11 @@ export interface CoreDesktopHost {
     fileName: string;
     content: Uint8Array;
   }): Promise<FilesSaveDownloadResult>;
+  /** Writes a file into the Downloads folder as its chunks arrive (a chat file of any size): its handle. */
+  saveDownloadStream(input: {
+    chunks: AsyncIterable<Uint8Array>;
+    fileName: string;
+  }): Promise<FilesSaveDownloadResult>;
   /** Absent: the app does not update itself. */
   updates?: CoreAppUpdates | undefined;
   /**
@@ -102,14 +121,24 @@ interface Logger {
  * and refuses a request made for a lease its gate does not hold), and the answer streams back. The core never sees a
  * credential. While the core is away (it restarts after a crash), Main's gate keeps the lease the core last confirmed.
  */
+/** Where the core's test clock is after a move, and when its earliest timer falls due (wall clock). */
+export interface CoreClockPosition {
+  now: number;
+  nextDue: number | undefined;
+}
+
 export class CoreHostService {
+  readonly #deviceSetup: DeviceSetupHost;
   readonly #modulePath: string;
+  readonly #clock: MainClock;
   readonly #dataDir: string;
   readonly #legacyTasksPath: string | undefined;
   readonly #legacyMeetingTasksPath: string | undefined;
   #meeting: CoreMeetingPort | null = null;
+  #voiceCall: CoreVoiceCallPort | null = null;
   readonly #session: MainSessionHost;
   readonly #clientPlatform: UtilitySessionStart["clientPlatform"];
+  readonly #appVersion: string | undefined;
   readonly #logger: Logger | undefined;
   readonly #renderImagePreview:
     | ((input: { bytes: Uint8Array; mediaType: string }) => Promise<Uint8Array>)
@@ -121,33 +150,55 @@ export class CoreHostService {
   /** Moves of the core's test clock under way, by id (`advanceClock`). */
   readonly #clockMoves = new Map<
     number,
-    { resolve(): void; reject(error: Error): void }
+    { resolve(position: CoreClockPosition): void; reject(error: Error): void }
   >();
   #nextClockMove = 0;
   #child: UtilityProcess | null = null;
   readonly #requests = new Map<number, AbortController>();
   /** Session ports under way for the core, by id: `abort` gives them up. */
   readonly #sessionCalls = new Map<number, AbortController>();
+  /** The media streams the core opened for windows (`openStream`), served on `comma-file:`. */
+  /** A file only the core reaches streams by asking the core for each range, through Main's own client. */
+  readonly #fileStreams = new FileStreamRegistry(
+    (source, offset, length) =>
+      this.client().call("files.readRange", {
+        source: JSON.parse(source),
+        offset,
+        length,
+      }) as Promise<FileRange>
+  );
+  /** Files the core saves into Downloads a part at a time. */
+  readonly #partSaves = new PartSaves();
   readonly #restartListeners = new Set<() => void>();
   #failures = 0;
   #closed = false;
   #client: CoreClient | null = null;
 
   readonly #localDrive: (() => LocalDriveSource | undefined) | undefined;
+  readonly #localFileUpload:
+    | ((localFileRef: string) => Promise<{ stream: ReadableStream<Uint8Array> }>)
+    | undefined;
+  readonly #localFileRead:
+    | ((localFileRef: string, offset: number, length: number) => Promise<Uint8Array>)
+    | undefined;
 
   constructor(options: {
     modulePath?: string | undefined;
+    /** Main's clock: when a core that exited starts again. */
+    clock?: MainClock | undefined;
     dataDir: string;
     legacyTasksPath?: string | undefined;
     /** Main's meeting journal from before the core (`meeting-tasks.json`), brought over once. */
     legacyMeetingTasksPath?: string | undefined;
     session: MainSessionHost;
+    /** The app's version, as the core's requests report it. */
+    appVersion?: string | undefined;
     logger?: Logger | undefined;
     /** The desktop ports Main answers (absent: the core has none). */
     desktop?: CoreDesktopHost | undefined;
     /**
-     * An Electron e2e's (`COMMA_ELECTRON_E2E_CORE_TEST_CLOCK`, never a release's): the core's clock stands still and
-     * moves only by `advanceClock`.
+     * An Electron e2e's (`COMMA_ELECTRON_E2E_TEST_CLOCK`, never a release's): the core's clock stands still and
+     * moves only by `advanceClock`. It starts where Main's clock is (`clock`), so the two read one time.
      */
     testClock?: boolean | undefined;
     /** An Electron e2e's (never a release's): where its stations listen, by endpoint id. */
@@ -164,12 +215,23 @@ export class CoreHostService {
      * (core drive-catalog.ts); `driveChanged` says when its files changed.
      */
     localDrive?: (() => LocalDriveSource | undefined) | undefined;
+    /** A local file's bytes for an upload the core makes (`fetch` with `localFileRef`), read as the request sends. */
+    localFileUpload?:
+      | ((localFileRef: string) => Promise<{ stream: ReadableStream<Uint8Array> }>)
+      | undefined;
+    /** A part of a local file, for the core to send it up to a station a part at a time (`local-read`). */
+    localFileRead?:
+      | ((localFileRef: string, offset: number, length: number) => Promise<Uint8Array>)
+      | undefined;
   }) {
+    this.#deviceSetup = new DeviceSetupHost(options.dataDir, options.session);
     this.#modulePath = options.modulePath ?? resolveCoreUtilityModulePath();
+    this.#clock = options.clock ?? realMainClock;
     this.#dataDir = options.dataDir;
     this.#legacyTasksPath = options.legacyTasksPath;
     this.#legacyMeetingTasksPath = options.legacyMeetingTasksPath;
     this.#session = options.session;
+    this.#appVersion = options.appVersion;
     this.#clientPlatform =
       process.platform === "darwin"
         ? "macos"
@@ -189,6 +251,8 @@ export class CoreHostService {
     this.#stationPeers = options.stationPeers;
     this.#meshAddon = options.meshAddon;
     this.#localDrive = options.localDrive;
+    this.#localFileUpload = options.localFileUpload;
+    this.#localFileRead = options.localFileRead;
   }
 
   /** The Drive node's files changed: the core indexes them again while Drive search is shown. */
@@ -206,6 +270,7 @@ export class CoreHostService {
     child.on("message", (message: CoreToMain) => this.#receive(child, message));
     child.on("exit", (code) => {
       if (this.#child !== child) return;
+      this.#deviceSetup.close();
       this.#child = null;
       for (const request of this.#requests.values()) request.abort();
       this.#requests.clear();
@@ -226,7 +291,7 @@ export class CoreHostService {
       const pause =
         restartPausesMs[Math.min(this.#failures, restartPausesMs.length - 1)] ?? 0;
       this.#failures += 1;
-      setTimeout(() => this.start(), pause);
+      this.#clock.setTimer(pause, () => this.start());
     });
     this.#post({
       type: CORE_START,
@@ -239,6 +304,7 @@ export class CoreHostService {
       session: {
         apiOrigin: this.#session.apiOrigin,
         clientPlatform: this.#clientPlatform,
+        ...(this.#appVersion ? { appVersion: this.#appVersion } : {}),
         resumed: this.#session.resume(),
       },
       ...(this.#desktop
@@ -249,24 +315,46 @@ export class CoreHostService {
             },
           }
         : {}),
-      ...(this.#testClock ? { testClock: true as const } : {}),
+      ...(this.#testClock
+        ? { testClock: true as const, testClockStart: this.#clock.now() }
+        : {}),
       ...(this.#stationPeers ? { stationPeers: this.#stationPeers } : {}),
       ...(this.#meshAddon ? { meshAddon: this.#meshAddon } : {}),
     });
     for (const event of this.#meeting?.events() ?? []) this.meetingEvent(event);
+    // A call the core before this one made has no one to answer it.
+    this.#voiceCall?.command({ op: "close" });
   }
 
   /**
    * Moves the core's test clock `ms` forward (`testClock`): done once each timer due on the way ran and what it asked
    * of Main was answered, so a test sees what became due as settled. Moves run one after another.
    */
-  advanceClock(ms: number): Promise<void> {
+  /** An e2e's crash of the core: done once its exit was handled (the restart is set), as a real crash's is. */
+  crashForTest(): Promise<void> {
+    const child = this.#child;
+    if (!child) return Promise.reject(new Error("The Comma core is not running."));
+    return new Promise<void>((resolve) => {
+      const stop = this.onExit(() => {
+        stop();
+        resolve();
+      });
+      child.kill();
+    });
+  }
+
+  /** Whether the core's process runs (it is away while it restarts after exiting). */
+  get running(): boolean {
+    return this.#child !== null;
+  }
+
+  advanceClock(ms: number): Promise<CoreClockPosition> {
     if (!this.#testClock)
       return Promise.reject(new Error("The core has no test clock."));
     const child = this.#child;
     if (!child) return Promise.reject(new Error("The Comma core is not running."));
     const id = ++this.#nextClockMove;
-    return new Promise<void>((resolve, reject) => {
+    return new Promise<CoreClockPosition>((resolve, reject) => {
       this.#clockMoves.set(id, { resolve, reject });
       this.#post({ type: "clock", id, ms }, child);
     });
@@ -276,6 +364,16 @@ export class CoreHostService {
   setMeeting(meeting: CoreMeetingPort): void {
     this.#meeting = meeting;
     for (const event of meeting.events()) this.meetingEvent(event);
+  }
+
+  /** Main's voice call socket: the core's commands go to it. */
+  setVoiceCall(voiceCall: CoreVoiceCallPort): void {
+    this.#voiceCall = voiceCall;
+  }
+
+  /** Tells the core what the voice call socket did. */
+  voiceCallEvent(event: VoiceCallSocketEvent): void {
+    this.#post({ type: "voice-call-event", event });
   }
 
   /** Tells the core what Main's meeting parts saw (nothing while it is not running: it hears it all on start). */
@@ -347,6 +445,7 @@ export class CoreHostService {
   }
 
   close() {
+    this.#deviceSetup.close();
     this.#closed = true;
     this.#client?.close();
     for (const request of this.#requests.values()) request.abort();
@@ -372,7 +471,11 @@ export class CoreHostService {
     if (message.type === "clock-done") {
       const move = this.#clockMoves.get(message.id);
       this.#clockMoves.delete(message.id);
-      if (message.error === undefined) move?.resolve();
+      if (message.error === undefined)
+        move?.resolve({
+          now: message.now ?? this.#clock.now(),
+          nextDue: message.nextDue,
+        });
       else move?.reject(new Error(message.error));
       return;
     }
@@ -392,12 +495,39 @@ export class CoreHostService {
       void this.#sessionCall(child, message);
       return;
     }
+    if (message.type === "device-setup") {
+      void this.#deviceSetup.call(message.op, message.input).then(
+        (value) =>
+          this.#post({ type: "device-setup-done", id: message.id, value }, child),
+        (error: unknown) => {
+          if (message.op === "start")
+            this.#logger?.warn("Device Bluetooth setup could not start", {
+              error: error instanceof Error ? error.message : String(error),
+            });
+          this.#post(
+            {
+              type: "device-setup-done",
+              id: message.id,
+              error: "Device setup operation failed",
+            },
+            child
+          );
+        }
+      );
+      return;
+    }
     if (message.type === "meeting") {
       void this.#meetingCall(child, message);
       return;
     }
+    if (message.type === "voice-call") {
+      const { type: _type, ...op } = message;
+      this.#voiceCall?.command(op);
+      return;
+    }
     if (message.type === "fetch") void this.#fetch(child, message);
     if (message.type === "preview") void this.#preview(child, message);
+    if (message.type === "local-read") void this.#localRead(child, message);
     if (message.type === "drive") void this.#driveRead(child, message);
   }
 
@@ -425,6 +555,11 @@ export class CoreHostService {
       };
     }
     if (this.#child === child) this.#post(out, child);
+  }
+
+  /** Answers a `comma-file:` read of a stream the core opened, through the `/v1` proxy under its session. */
+  serveStream(request: Request): Promise<Response> {
+    return this.#fileStreams.serve(request, this.#session);
   }
 
   /** A session port the core asked for: answered to that process only, unless it gave the call up. */
@@ -498,6 +633,26 @@ export class CoreHostService {
               ? { downloadRef: saved.downloadRef, fileName: saved.fileName }
               : null
           );
+      case "saveOpen": {
+        const desktop = this.#desktop;
+        if (!desktop) return Promise.reject(new Error("No Downloads folder."));
+        return Promise.resolve(
+          this.#partSaves.open(message.input.fileName, (file) =>
+            desktop.saveDownloadStream(file)
+          )
+        );
+      }
+      case "saveWrite":
+        return this.#partSaves.write(message.input.id, message.input.bytes);
+      case "saveClose":
+        return this.#partSaves.close(message.input.id, message.input.keep);
+      case "openStream":
+        return Promise.resolve(this.#fileStreams.open(message.input));
+      case "closeStream":
+        this.#fileStreams.close(message.input.url);
+        return Promise.resolve(null);
+      case "saveStream":
+        return this.#saveStream(message.input);
       case "updateStatus":
         return this.#updates(message.op, (updates) => updates.status());
       case "updateCheck":
@@ -507,6 +662,17 @@ export class CoreHostService {
       case "updateApply":
         return this.#updates(message.op, (updates) => updates.apply(message.input));
     }
+  }
+
+  /** A chat file the core asked to save: read under its session, written into Downloads as it arrives. */
+  #saveStream(
+    input: Extract<UtilitySessionCall, { op: "saveStream" }>["input"]
+  ): Promise<SavedStream> {
+    const desktop = this.#desktop;
+    if (!desktop) return Promise.reject(new Error("No Downloads folder."));
+    return saveApiFile(input, this.#session, (file) =>
+      desktop.saveDownloadStream(file)
+    );
   }
 
   /** An update port for the core; a failure is logged here too (the core only retries). */
@@ -569,6 +735,29 @@ export class CoreHostService {
     if (this.#child === child) this.#post(out, child);
   }
 
+  async #localRead(
+    child: UtilityProcess,
+    message: Extract<CoreToMain, { type: "local-read" }>
+  ) {
+    let out: MainToCore;
+    try {
+      if (!this.#localFileRead) throw new Error("Local files are unavailable.");
+      const bytes = await this.#localFileRead(
+        message.localFileRef,
+        message.offset,
+        message.length
+      );
+      out = { type: "local-read-done", id: message.id, bytes };
+    } catch (error) {
+      out = {
+        type: "local-read-done",
+        id: message.id,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+    if (this.#child === child) this.#post(out, child);
+  }
+
   async #fetch(child: UtilityProcess, message: Extract<CoreToMain, { type: "fetch" }>) {
     const { id } = message;
     const controller = new AbortController();
@@ -598,7 +787,20 @@ export class CoreHostService {
         method: message.method,
         signal: controller.signal,
       });
-      const response = await proxyCommaApiRequest(request, url, authority);
+      // An upload of a local file: its bytes go from the file as the request sends them.
+      let upload: ReadableStream<Uint8Array> | undefined;
+      if (message.localFileRef !== undefined) {
+        if (!this.#localFileUpload) throw new Error("Local files are unavailable.");
+        upload = (await this.#localFileUpload(message.localFileRef)).stream;
+      }
+      const response = await proxyCommaApiRequest(
+        request,
+        url,
+        authority,
+        undefined,
+        upload,
+        this.#clock
+      );
       answer({
         type: "head",
         id,

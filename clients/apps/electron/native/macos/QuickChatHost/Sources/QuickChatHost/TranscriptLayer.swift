@@ -319,7 +319,7 @@ final class TranscriptLayer {
         return Float(min(below, above))
     }
 
-    /// Esc: the text goes with the hint.
+    /// Closing without sending: the text goes with the hint.
     func cancel() {
         stopReveal()
         let fade = CABasicAnimation(keyPath: "opacity")

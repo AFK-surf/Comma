@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { format, resolveConfig } from "prettier";
@@ -7,6 +7,7 @@ import ts from "typescript";
 import {
   findHasBeforeUniversalSubjects,
   findNativeSessionAdmissionViolations,
+  findUncappedLoops,
   formatFoundationCheckList,
   foundationCheckId,
 } from "./check-foundation-kernel-lib.mjs";
@@ -203,6 +204,31 @@ check("app and UI stylesheets keep :has() anchors off universal subjects", () =>
   const problems = files.flatMap((file) =>
     findHasBeforeUniversalSubjects(readFileSync(file, "utf8"), file).map(
       (problem) => `${path.relative(clientsRoot, file)}: ${problem}`
+    )
+  );
+  if (problems.length > 0) fail(problems.join("\n"));
+});
+
+check("looping animations move at most 60 times a second", () => {
+  // An endless loop on a 120 or 240 Hz display redraws two or four times as
+  // often as on a 60 Hz one; a running task's shine cost half a core. Loops
+  // use steps() (linear) or a --motion-loop-* staircase (eased, tokens/motion.ts).
+  const roots = ["apps", "packages"].flatMap((group) =>
+    readdirSync(fromClients(group), { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => fromClients(`${group}/${entry.name}/src`))
+  );
+  const files = roots
+    .filter((root) => existsSync(root))
+    .flatMap((root) => listSourceFiles(root, /\.(css|ts|tsx)$/))
+    .filter(
+      (file) =>
+        !/[\\/](test|tests|e2e|__tests__)[\\/]/.test(file) &&
+        !/\.(test|spec|stories)\.tsx?$/.test(file)
+    );
+  const problems = files.flatMap((file) =>
+    findUncappedLoops(readFileSync(file, "utf8")).map(
+      (problem) => `${path.relative(clientsRoot, file)} ${problem}`
     )
   );
   if (problems.length > 0) fail(problems.join("\n"));

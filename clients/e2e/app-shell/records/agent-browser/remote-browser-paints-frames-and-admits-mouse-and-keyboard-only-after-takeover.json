@@ -301,43 +301,6 @@
    "data": {
     "id": 11,
     "subscribe": {
-     "topic": "mentionTasks",
-     "group": "grp-smoke"
-    },
-    "keyed": true
-   }
-  },
-  {
-   "at": 50,
-   "dir": "out",
-   "data": {
-    "id": 12,
-    "subscribe": {
-     "topic": "recommendations",
-     "workspace": "ws-smoke",
-     "reads": "once"
-    },
-    "keyed": true
-   }
-  },
-  {
-   "at": 50,
-   "dir": "out",
-   "data": {
-    "id": 13,
-    "subscribe": {
-     "topic": "plugins",
-     "workspace": "ws-smoke"
-    },
-    "keyed": true
-   }
-  },
-  {
-   "at": 50,
-   "dir": "out",
-   "data": {
-    "id": 14,
-    "subscribe": {
      "topic": "marks",
      "kind": "chatTaskDismissed"
     },
@@ -348,7 +311,7 @@
    "at": 50,
    "dir": "out",
    "data": {
-    "id": 15,
+    "id": 12,
     "subscribe": {
      "topic": "taskLabels",
      "group": "grp-smoke",
@@ -362,7 +325,7 @@
    "at": 50,
    "dir": "out",
    "data": {
-    "id": 16,
+    "id": 13,
     "subscribe": {
      "topic": "chatView",
      "workspace": "ws-smoke",
@@ -377,7 +340,7 @@
    "at": 50,
    "dir": "out",
    "data": {
-    "id": 17,
+    "id": 14,
     "subscribe": {
      "topic": "skills",
      "workspace": "ws-smoke"
@@ -389,7 +352,7 @@
    "at": 50,
    "dir": "out",
    "data": {
-    "id": 18,
+    "id": 15,
     "subscribe": {
      "topic": "meetingRecorder"
     },
@@ -400,7 +363,7 @@
    "at": 50,
    "dir": "out",
    "data": {
-    "id": 19,
+    "id": 16,
     "subscribe": {
      "topic": "profile"
     },
@@ -411,9 +374,46 @@
    "at": 50,
    "dir": "out",
    "data": {
-    "id": 20,
+    "id": 17,
     "subscribe": {
      "topic": "creditWarning",
+     "workspace": "ws-smoke"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 50,
+   "dir": "out",
+   "data": {
+    "id": 18,
+    "subscribe": {
+     "topic": "mentionTasks",
+     "group": "grp-smoke"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 50,
+   "dir": "out",
+   "data": {
+    "id": 19,
+    "subscribe": {
+     "topic": "recommendations",
+     "workspace": "ws-smoke",
+     "reads": "once"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 50,
+   "dir": "out",
+   "data": {
+    "id": 20,
+    "subscribe": {
+     "topic": "plugins",
      "workspace": "ws-smoke"
     },
     "keyed": true
@@ -552,38 +552,6 @@
    "dir": "in",
    "data": {
     "id": 11,
-    "value": null
-   }
-  },
-  {
-   "at": 50,
-   "dir": "in",
-   "data": {
-    "id": 12,
-    "value": {
-     "workspace": "ws-smoke",
-     "envelope": null,
-     "failure": null,
-     "discovering": false,
-     "refreshing": false
-    }
-   }
-  },
-  {
-   "at": 50,
-   "dir": "in",
-   "data": {
-    "id": 13,
-    "value": {
-     "status": "loading"
-    }
-   }
-  },
-  {
-   "at": 50,
-   "dir": "in",
-   "data": {
-    "id": 14,
     "value": {
      "marks": {}
     }
@@ -593,7 +561,7 @@
    "at": 50,
    "dir": "in",
    "data": {
-    "id": 15,
+    "id": 12,
     "value": {
      "catalog": null,
      "error": false,
@@ -605,7 +573,7 @@
    "at": 50,
    "dir": "in",
    "data": {
-    "id": 16,
+    "id": 13,
     "value": {
      "session": {
       "sessionId": "e2e-session:smoke@comma.local",
@@ -645,7 +613,7 @@
    "at": 50,
    "dir": "in",
    "data": {
-    "id": 17,
+    "id": 14,
     "value": {
      "status": "loading",
      "skills": []
@@ -656,7 +624,7 @@
    "at": 50,
    "dir": "in",
    "data": {
-    "id": 18,
+    "id": 15,
     "value": {
      "clientVisible": false,
      "phase": "idle",
@@ -684,7 +652,7 @@
    "at": 50,
    "dir": "in",
    "data": {
-    "id": 19,
+    "id": 16,
     "value": {
      "status": "loading",
      "profile": null
@@ -695,8 +663,48 @@
    "at": 50,
    "dir": "in",
    "data": {
-    "id": 20,
+    "id": 17,
     "value": null
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 18,
+    "value": null
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 19,
+    "value": {
+     "workspace": "ws-smoke",
+     "envelope": null,
+     "failure": null,
+     "discovering": false,
+     "refreshing": false
+    }
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 20,
+    "value": {
+     "status": "loading"
+    }
+   }
+  },
+  {
+   "at": 50,
+   "dir": "out",
+   "data": {
+    "id": 18,
+    "unsubscribe": true
    }
   },
   {
@@ -770,79 +778,7 @@
    "at": 50,
    "dir": "in",
    "data": {
-    "id": 13,
-    "delta": [
-     {
-      "path": [
-       "error"
-      ],
-      "set": {
-       "code": "unhandled GET /v1/comma/workspaces/ws-smoke/plugins",
-       "message": "unhandled GET /v1/comma/workspaces/ws-smoke/plugins",
-       "status": 404,
-       "detail": {
-        "error": "unhandled GET /v1/comma/workspaces/ws-smoke/plugins"
-       }
-      }
-     },
-     {
-      "path": [
-       "status"
-      ],
-      "set": "error"
-     },
-     {
-      "path": [
-       "workspace"
-      ],
-      "set": "ws-smoke"
-     }
-    ]
-   }
-  },
-  {
-   "at": 50,
-   "dir": "in",
-   "data": {
-    "id": 11,
-    "value": []
-   }
-  },
-  {
-   "at": 50,
-   "dir": "in",
-   "data": {
     "id": 12,
-    "delta": [
-     {
-      "path": [
-       "envelope"
-      ],
-      "set": {
-       "settings": {
-        "autoEnableNewSources": true,
-        "schedule": {
-         "enabled": true,
-         "hour": 8,
-         "minute": 0,
-         "timezone": "UTC"
-        },
-        "sourcesCheckedAt": "2026-01-01T00:00:00.000Z",
-        "sourceRevision": 1,
-        "sources": []
-       },
-       "snapshot": null,
-       "state": "empty"
-      }
-     }
-    ]
-   }
-  },
-  {
-   "at": 50,
-   "dir": "in",
-   "data": {
-    "id": 15,
     "value": {
      "catalog": null,
      "error": true,
@@ -854,7 +790,7 @@
    "at": 50,
    "dir": "in",
    "data": {
-    "id": 16,
+    "id": 13,
     "delta": [
      {
       "path": [
@@ -901,6 +837,18 @@
    "data": {
     "id": 25,
     "subscribe": {
+     "topic": "mentionTasks",
+     "group": "grp-smoke"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 50,
+   "dir": "out",
+   "data": {
+    "id": 26,
+    "subscribe": {
      "topic": "taskSummaries",
      "group": "grp-smoke",
      "ids": "cnv_public_task_smoke"
@@ -910,9 +858,22 @@
   },
   {
    "at": 50,
+   "dir": "out",
+   "data": {
+    "id": 27,
+    "subscribe": {
+     "topic": "agentRequests",
+     "group": "grp-smoke",
+     "conversation": "cnv_public_task_smoke"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 50,
    "dir": "in",
    "data": {
-    "id": 17,
+    "id": 14,
     "value": {
      "status": "ready",
      "skills": [
@@ -937,6 +898,63 @@
       }
      ]
     }
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 16,
+    "value": {
+     "status": "ready",
+     "profile": {
+      "avatar_id": null,
+      "email": "smoke@comma.local",
+      "id": "e2e-user:smoke@comma.local",
+      "name": null
+     }
+    }
+   }
+  },
+  {
+   "at": 50,
+   "dir": "out",
+   "data": {
+    "id": 28,
+    "call": "profile.update",
+    "params": {
+     "locale": "en"
+    }
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 19,
+    "delta": [
+     {
+      "path": [
+       "envelope"
+      ],
+      "set": {
+       "settings": {
+        "autoEnableNewSources": true,
+        "schedule": {
+         "enabled": true,
+         "hour": 8,
+         "minute": 0,
+         "timezone": "UTC"
+        },
+        "sourcesCheckedAt": "2026-01-01T00:00:00.000Z",
+        "sourceRevision": 1,
+        "sources": []
+       },
+       "snapshot": null,
+       "state": "empty"
+      }
+     }
+    ]
    }
   },
   {
@@ -967,6 +985,40 @@
    "at": 50,
    "dir": "in",
    "data": {
+    "id": 20,
+    "delta": [
+     {
+      "path": [
+       "error"
+      ],
+      "set": {
+       "code": "unhandled GET /v1/comma/workspaces/ws-smoke/plugins",
+       "message": "unhandled GET /v1/comma/workspaces/ws-smoke/plugins",
+       "status": 404,
+       "detail": {
+        "error": "unhandled GET /v1/comma/workspaces/ws-smoke/plugins"
+       }
+      }
+     },
+     {
+      "path": [
+       "status"
+      ],
+      "set": "error"
+     },
+     {
+      "path": [
+       "workspace"
+      ],
+      "set": "ws-smoke"
+     }
+    ]
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
     "id": 5,
     "value": {
      "status": "ready",
@@ -985,7 +1037,7 @@
    "at": 50,
    "dir": "out",
    "data": {
-    "id": 26,
+    "id": 29,
     "subscribe": {
      "topic": "chatView",
      "workspace": "ws-smoke",
@@ -1000,34 +1052,7 @@
    "at": 50,
    "dir": "in",
    "data": {
-    "id": 19,
-    "value": {
-     "status": "ready",
-     "profile": {
-      "avatar_id": null,
-      "email": "smoke@comma.local",
-      "id": "e2e-user:smoke@comma.local",
-      "name": null
-     }
-    }
-   }
-  },
-  {
-   "at": 50,
-   "dir": "out",
-   "data": {
-    "id": 27,
-    "call": "profile.update",
-    "params": {
-     "locale": "en"
-    }
-   }
-  },
-  {
-   "at": 50,
-   "dir": "in",
-   "data": {
-    "id": 16,
+    "id": 13,
     "delta": [
      {
       "path": [
@@ -1059,8 +1084,62 @@
    "dir": "in",
    "data": {
     "id": 25,
+    "value": []
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 26,
     "value": {
      "summaries": []
+    }
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "value": {
+     "requests": [],
+     "loading": true,
+     "error": false
+    }
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 16,
+    "delta": [
+     {
+      "path": [
+       "profile",
+       "locale"
+      ],
+      "set": "en"
+     }
+    ]
+   }
+  },
+  {
+   "at": 50,
+   "dir": "rest"
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 28,
+    "ok": {
+     "avatar_id": null,
+     "email": "smoke@comma.local",
+     "id": "e2e-user:smoke@comma.local",
+     "name": null,
+     "locale": "en"
     }
    }
   },
@@ -1072,7 +1151,7 @@
    "at": 50,
    "dir": "in",
    "data": {
-    "id": 16,
+    "id": 13,
     "delta": [
      {
       "path": [
@@ -1087,7 +1166,28 @@
    "at": 50,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
+    "delta": [
+     {
+      "path": [
+       "error"
+      ],
+      "set": true
+     },
+     {
+      "path": [
+       "loading"
+      ],
+      "set": false
+     }
+    ]
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 29,
     "value": {
      "session": {
       "sessionId": "e2e-session:smoke@comma.local",
@@ -1127,22 +1227,6 @@
    "at": 50,
    "dir": "in",
    "data": {
-    "id": 19,
-    "delta": [
-     {
-      "path": [
-       "profile",
-       "locale"
-      ],
-      "set": "en"
-     }
-    ]
-   }
-  },
-  {
-   "at": 50,
-   "dir": "in",
-   "data": {
     "id": 10,
     "delta": [
      {
@@ -1175,7 +1259,7 @@
    "at": 50,
    "dir": "in",
    "data": {
-    "id": 25,
+    "id": 26,
     "delta": [
      {
       "path": [
@@ -1206,20 +1290,6 @@
   {
    "at": 50,
    "dir": "rest"
-  },
-  {
-   "at": 50,
-   "dir": "in",
-   "data": {
-    "id": 27,
-    "ok": {
-     "avatar_id": null,
-     "email": "smoke@comma.local",
-     "id": "e2e-user:smoke@comma.local",
-     "name": null,
-     "locale": "en"
-    }
-   }
   },
   {
    "at": 50,
@@ -1267,7 +1337,7 @@
    "at": 50,
    "dir": "in",
    "data": {
-    "id": 16,
+    "id": 13,
     "delta": [
      {
       "path": [
@@ -1300,7 +1370,7 @@
    "at": 50,
    "dir": "out",
    "data": {
-    "id": 28,
+    "id": 30,
     "subscribe": {
      "topic": "sessionBrowser",
      "workspace": "ws-smoke",
@@ -1314,7 +1384,7 @@
    "at": 50,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 29,
     "delta": [
      {
       "path": [
@@ -1356,7 +1426,7 @@
    "at": 50,
    "dir": "in",
    "data": {
-    "id": 16,
+    "id": 13,
     "delta": [
      {
       "path": [
@@ -1371,7 +1441,7 @@
    "at": 50,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 29,
     "delta": [
      {
       "path": [
@@ -1406,7 +1476,7 @@
    "at": 50,
    "dir": "in",
    "data": {
-    "id": 28,
+    "id": 30,
     "value": null
    }
   },
@@ -1446,7 +1516,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 28,
+    "id": 30,
     "value": {
      "browser": null
     }
@@ -1461,6 +1531,10 @@
    "dir": "due"
   },
   {
+   "at": 1100,
+   "dir": "due"
+  },
+  {
    "at": 3050,
    "dir": "due"
   },
@@ -1468,7 +1542,7 @@
    "at": 3050,
    "dir": "in",
    "data": {
-    "id": 16,
+    "id": 13,
     "delta": [
      {
       "path": [
@@ -1483,7 +1557,7 @@
    "at": 3050,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 29,
     "delta": [
      {
       "path": [
@@ -1502,7 +1576,7 @@
    "at": 3050,
    "dir": "in",
    "data": {
-    "id": 16,
+    "id": 13,
     "delta": [
      {
       "path": [
@@ -1517,7 +1591,7 @@
    "at": 3050,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 29,
     "delta": [
      {
       "path": [
@@ -1544,7 +1618,7 @@
    "at": 6050,
    "dir": "in",
    "data": {
-    "id": 16,
+    "id": 13,
     "delta": [
      {
       "path": [
@@ -1559,7 +1633,7 @@
    "at": 6050,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 29,
     "delta": [
      {
       "path": [
@@ -1578,7 +1652,7 @@
    "at": 6050,
    "dir": "in",
    "data": {
-    "id": 16,
+    "id": 13,
     "delta": [
      {
       "path": [
@@ -1593,7 +1667,7 @@
    "at": 6050,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 29,
     "delta": [
      {
       "path": [
@@ -1607,6 +1681,10 @@
   {
    "at": 6050,
    "dir": "rest"
+  },
+  {
+   "at": 6100,
+   "dir": "due"
   },
   {
    "at": 7050,
@@ -1620,7 +1698,7 @@
    "at": 9050,
    "dir": "in",
    "data": {
-    "id": 16,
+    "id": 13,
     "delta": [
      {
       "path": [
@@ -1635,7 +1713,7 @@
    "at": 9050,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 29,
     "delta": [
      {
       "path": [
@@ -1654,7 +1732,7 @@
    "at": 9050,
    "dir": "in",
    "data": {
-    "id": 16,
+    "id": 13,
     "delta": [
      {
       "path": [
@@ -1669,7 +1747,7 @@
    "at": 9050,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 29,
     "delta": [
      {
       "path": [
@@ -1696,7 +1774,7 @@
    "at": 10100,
    "dir": "in",
    "data": {
-    "id": 28,
+    "id": 30,
     "value": {
      "browser": {
       "agent_id": "agent-browser-e2e",
@@ -1722,7 +1800,7 @@
    "at": 12050,
    "dir": "in",
    "data": {
-    "id": 16,
+    "id": 13,
     "delta": [
      {
       "path": [
@@ -1737,7 +1815,7 @@
    "at": 12050,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 29,
     "delta": [
      {
       "path": [
@@ -1756,7 +1834,7 @@
    "at": 12050,
    "dir": "in",
    "data": {
-    "id": 16,
+    "id": 13,
     "delta": [
      {
       "path": [
@@ -1771,7 +1849,7 @@
    "at": 12050,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 29,
     "delta": [
      {
       "path": [
@@ -1790,7 +1868,7 @@
    "at": 12080,
    "dir": "out",
    "data": {
-    "id": 29,
+    "id": 31,
     "subscribe": {
      "topic": "browserView",
      "workspace": "ws-smoke",
@@ -1809,7 +1887,7 @@
    "at": 12080,
    "dir": "in",
    "data": {
-    "id": 29,
+    "id": 31,
     "value": {
      "tabs": [],
      "tab": "",
@@ -1829,7 +1907,7 @@
    "at": 12080,
    "dir": "in",
    "data": {
-    "id": 29,
+    "id": 31,
     "delta": [
      {
       "path": [
@@ -1866,7 +1944,7 @@
    "at": 12080,
    "dir": "in",
    "data": {
-    "id": 29,
+    "id": 31,
     "delta": [
      {
       "path": [
@@ -1916,7 +1994,7 @@
    "at": 12240,
    "dir": "out",
    "data": {
-    "id": 30,
+    "id": 32,
     "call": "browserView.command",
     "params": {
      "workspace": "ws-smoke",
@@ -1935,7 +2013,7 @@
    "at": 12240,
    "dir": "in",
    "data": {
-    "id": 29,
+    "id": 31,
     "delta": [
      {
       "path": [
@@ -1954,7 +2032,7 @@
    "at": 12240,
    "dir": "in",
    "data": {
-    "id": 30,
+    "id": 32,
     "ok": {
      "closed": false
     }
@@ -1964,7 +2042,7 @@
    "at": 12240,
    "dir": "in",
    "data": {
-    "id": 29,
+    "id": 31,
     "delta": [
      {
       "path": [
@@ -1989,7 +2067,7 @@
    "at": 12288,
    "dir": "out",
    "data": {
-    "id": 31,
+    "id": 33,
     "call": "browserView.input",
     "params": {
      "workspace": "ws-smoke",
@@ -2016,7 +2094,7 @@
    "at": 12288,
    "dir": "in",
    "data": {
-    "id": 31,
+    "id": 33,
     "ok": null
    }
   },
@@ -2028,7 +2106,7 @@
    "at": 12304,
    "dir": "out",
    "data": {
-    "id": 32,
+    "id": 34,
     "call": "browserView.input",
     "params": {
      "workspace": "ws-smoke",
@@ -2055,7 +2133,7 @@
    "at": 12304,
    "dir": "in",
    "data": {
-    "id": 32,
+    "id": 34,
     "ok": null
    }
   },
@@ -2067,7 +2145,7 @@
    "at": 12320,
    "dir": "out",
    "data": {
-    "id": 33,
+    "id": 35,
     "call": "browserView.input",
     "params": {
      "workspace": "ws-smoke",
@@ -2094,7 +2172,7 @@
    "at": 12320,
    "dir": "in",
    "data": {
-    "id": 33,
+    "id": 35,
     "ok": null
    }
   },
@@ -2110,7 +2188,7 @@
    "at": 12330,
    "dir": "in",
    "data": {
-    "id": 29,
+    "id": 31,
     "delta": [
      {
       "path": [
@@ -2136,7 +2214,7 @@
    "at": 12336,
    "dir": "out",
    "data": {
-    "id": 34,
+    "id": 36,
     "call": "browserView.input",
     "params": {
      "workspace": "ws-smoke",
@@ -2157,7 +2235,7 @@
    "at": 12336,
    "dir": "out",
    "data": {
-    "id": 35,
+    "id": 37,
     "call": "browserView.input",
     "params": {
      "workspace": "ws-smoke",
@@ -2182,7 +2260,7 @@
    "at": 12336,
    "dir": "in",
    "data": {
-    "id": 34,
+    "id": 36,
     "ok": null
    }
   },
@@ -2190,7 +2268,7 @@
    "at": 12336,
    "dir": "in",
    "data": {
-    "id": 35,
+    "id": 37,
     "ok": null
    }
   },
@@ -2202,7 +2280,7 @@
    "at": 12384,
    "dir": "out",
    "data": {
-    "id": 36,
+    "id": 38,
     "call": "browserView.input",
     "params": {
      "workspace": "ws-smoke",
@@ -2223,7 +2301,7 @@
    "at": 12384,
    "dir": "out",
    "data": {
-    "id": 37,
+    "id": 39,
     "call": "browserView.input",
     "params": {
      "workspace": "ws-smoke",
@@ -2244,7 +2322,7 @@
    "at": 12384,
    "dir": "out",
    "data": {
-    "id": 38,
+    "id": 40,
     "call": "browserView.input",
     "params": {
      "workspace": "ws-smoke",
@@ -2265,7 +2343,7 @@
    "at": 12384,
    "dir": "out",
    "data": {
-    "id": 39,
+    "id": 41,
     "call": "browserView.input",
     "params": {
      "workspace": "ws-smoke",
@@ -2290,22 +2368,6 @@
    "at": 12384,
    "dir": "in",
    "data": {
-    "id": 36,
-    "ok": null
-   }
-  },
-  {
-   "at": 12384,
-   "dir": "in",
-   "data": {
-    "id": 37,
-    "ok": null
-   }
-  },
-  {
-   "at": 12384,
-   "dir": "in",
-   "data": {
     "id": 38,
     "ok": null
    }
@@ -2320,13 +2382,29 @@
   },
   {
    "at": 12384,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "ok": null
+   }
+  },
+  {
+   "at": 12384,
+   "dir": "in",
+   "data": {
+    "id": 41,
+    "ok": null
+   }
+  },
+  {
+   "at": 12384,
    "dir": "rest"
   },
   {
    "at": 12448,
    "dir": "out",
    "data": {
-    "id": 40,
+    "id": 42,
     "call": "browserView.input",
     "params": {
      "workspace": "ws-smoke",
@@ -2348,7 +2426,7 @@
    "at": 12448,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 42,
     "ok": null
    }
   },
@@ -2624,7 +2702,7 @@
    "at": 12528,
    "dir": "out",
    "data": {
-    "id": 41,
+    "id": 43,
     "call": "browserView.command",
     "params": {
      "workspace": "ws-smoke",
@@ -2643,7 +2721,7 @@
    "at": 12528,
    "dir": "in",
    "data": {
-    "id": 29,
+    "id": 31,
     "delta": [
      {
       "path": [
@@ -2662,7 +2740,7 @@
    "at": 12528,
    "dir": "in",
    "data": {
-    "id": 41,
+    "id": 43,
     "ok": {
      "closed": false
     }
@@ -2672,7 +2750,7 @@
    "at": 12528,
    "dir": "in",
    "data": {
-    "id": 29,
+    "id": 31,
     "delta": [
      {
       "path": [
@@ -2707,7 +2785,7 @@
    "at": 12580,
    "dir": "in",
    "data": {
-    "id": 29,
+    "id": 31,
     "delta": [
      {
       "path": [
@@ -2733,7 +2811,7 @@
    "at": 12608,
    "dir": "out",
    "data": {
-    "id": 29,
+    "id": 31,
     "unsubscribe": true
    }
   },
@@ -2929,7 +3007,7 @@
    "at": 15050,
    "dir": "in",
    "data": {
-    "id": 16,
+    "id": 13,
     "delta": [
      {
       "path": [
@@ -2944,7 +3022,7 @@
    "at": 15050,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 29,
     "delta": [
      {
       "path": [
@@ -2963,7 +3041,7 @@
    "at": 15050,
    "dir": "in",
    "data": {
-    "id": 16,
+    "id": 13,
     "delta": [
      {
       "path": [
@@ -2978,7 +3056,7 @@
    "at": 15050,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 29,
     "delta": [
      {
       "path": [
@@ -2997,7 +3075,7 @@
    "at": 15072,
    "dir": "out",
    "data": {
-    "id": 42,
+    "id": 44,
     "subscribe": {
      "topic": "browserView",
      "workspace": "ws-smoke",
@@ -3016,7 +3094,7 @@
    "at": 15072,
    "dir": "in",
    "data": {
-    "id": 42,
+    "id": 44,
     "value": {
      "tabs": [],
      "tab": "",
@@ -3036,7 +3114,7 @@
    "at": 15072,
    "dir": "in",
    "data": {
-    "id": 42,
+    "id": 44,
     "delta": [
      {
       "path": [
@@ -3073,7 +3151,7 @@
    "at": 15072,
    "dir": "in",
    "data": {
-    "id": 42,
+    "id": 44,
     "delta": [
      {
       "path": [
@@ -3109,7 +3187,7 @@
    "at": 15152,
    "dir": "out",
    "data": {
-    "id": 43,
+    "id": 45,
     "call": "browserView.command",
     "params": {
      "workspace": "ws-smoke",
@@ -3128,7 +3206,7 @@
    "at": 15152,
    "dir": "in",
    "data": {
-    "id": 42,
+    "id": 44,
     "delta": [
      {
       "path": [
@@ -3147,7 +3225,7 @@
    "at": 15152,
    "dir": "in",
    "data": {
-    "id": 43,
+    "id": 45,
     "ok": {
      "closed": true
     }
@@ -3157,7 +3235,7 @@
    "at": 15152,
    "dir": "out",
    "data": {
-    "id": 44,
+    "id": 46,
     "call": "sessionBrowser.refresh",
     "params": {
      "workspace": "ws-smoke",
@@ -3170,7 +3248,7 @@
    "at": 15152,
    "dir": "in",
    "data": {
-    "id": 42,
+    "id": 44,
     "delta": [
      {
       "path": [
@@ -3189,7 +3267,7 @@
    "at": 15152,
    "dir": "in",
    "data": {
-    "id": 44,
+    "id": 46,
     "ok": null
    }
   },
@@ -3205,7 +3283,7 @@
    "at": 15202,
    "dir": "in",
    "data": {
-    "id": 28,
+    "id": 30,
     "value": {
      "browser": null
     }
@@ -3215,7 +3293,7 @@
    "at": 15202,
    "dir": "out",
    "data": {
-    "id": 42,
+    "id": 44,
     "unsubscribe": true
    }
   },
@@ -3245,7 +3323,7 @@
    "at": 18050,
    "dir": "in",
    "data": {
-    "id": 16,
+    "id": 13,
     "delta": [
      {
       "path": [
@@ -3260,7 +3338,7 @@
    "at": 18050,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 29,
     "delta": [
      {
       "path": [
@@ -3279,7 +3357,7 @@
    "at": 18050,
    "dir": "in",
    "data": {
-    "id": 16,
+    "id": 13,
     "delta": [
      {
       "path": [
@@ -3294,7 +3372,7 @@
    "at": 18050,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 29,
     "delta": [
      {
       "path": [
@@ -3329,7 +3407,7 @@
    "at": 21050,
    "dir": "in",
    "data": {
-    "id": 16,
+    "id": 13,
     "delta": [
      {
       "path": [
@@ -3344,7 +3422,7 @@
    "at": 21050,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 29,
     "delta": [
      {
       "path": [
@@ -3363,7 +3441,7 @@
    "at": 21050,
    "dir": "in",
    "data": {
-    "id": 16,
+    "id": 13,
     "delta": [
      {
       "path": [
@@ -3378,7 +3456,7 @@
    "at": 21050,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 29,
     "delta": [
      {
       "path": [
@@ -3405,7 +3483,7 @@
    "at": 24050,
    "dir": "in",
    "data": {
-    "id": 16,
+    "id": 13,
     "delta": [
      {
       "path": [
@@ -3420,7 +3498,7 @@
    "at": 24050,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 29,
     "delta": [
      {
       "path": [
@@ -3439,7 +3517,7 @@
    "at": 24050,
    "dir": "in",
    "data": {
-    "id": 16,
+    "id": 13,
     "delta": [
      {
       "path": [
@@ -3454,7 +3532,7 @@
    "at": 24050,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 29,
     "delta": [
      {
       "path": [
@@ -3485,7 +3563,7 @@
    "at": 25202,
    "dir": "in",
    "data": {
-    "id": 28,
+    "id": 30,
     "value": {
      "browser": {
       "agent_id": "agent-browser-e2e",
@@ -3511,7 +3589,7 @@
    "at": 27050,
    "dir": "in",
    "data": {
-    "id": 16,
+    "id": 13,
     "delta": [
      {
       "path": [
@@ -3526,7 +3604,7 @@
    "at": 27050,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 29,
     "delta": [
      {
       "path": [
@@ -3545,7 +3623,7 @@
    "at": 27050,
    "dir": "in",
    "data": {
-    "id": 16,
+    "id": 13,
     "delta": [
      {
       "path": [
@@ -3560,7 +3638,7 @@
    "at": 27050,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 29,
     "delta": [
      {
       "path": [
@@ -3579,7 +3657,7 @@
    "at": 27072,
    "dir": "out",
    "data": {
-    "id": 45,
+    "id": 47,
     "subscribe": {
      "topic": "browserView",
      "workspace": "ws-smoke",
@@ -3598,7 +3676,7 @@
    "at": 27072,
    "dir": "in",
    "data": {
-    "id": 45,
+    "id": 47,
     "value": {
      "tabs": [],
      "tab": "",
@@ -3618,7 +3696,7 @@
    "at": 27072,
    "dir": "in",
    "data": {
-    "id": 45,
+    "id": 47,
     "delta": [
      {
       "path": [
@@ -3655,7 +3733,7 @@
    "at": 27072,
    "dir": "in",
    "data": {
-    "id": 45,
+    "id": 47,
     "delta": [
      {
       "path": [
@@ -3871,7 +3949,7 @@
    "at": 27322,
    "dir": "in",
    "data": {
-    "id": 45,
+    "id": 47,
     "delta": [
      {
       "path": [
@@ -3891,7 +3969,7 @@
    "at": 27392,
    "dir": "out",
    "data": {
-    "id": 46,
+    "id": 48,
     "call": "browserView.command",
     "params": {
      "workspace": "ws-smoke",
@@ -3910,7 +3988,7 @@
    "at": 27392,
    "dir": "in",
    "data": {
-    "id": 45,
+    "id": 47,
     "delta": [
      {
       "path": [
@@ -3929,7 +4007,7 @@
    "at": 27392,
    "dir": "in",
    "data": {
-    "id": 46,
+    "id": 48,
     "ok": {
      "closed": true
     }
@@ -3939,7 +4017,7 @@
    "at": 27392,
    "dir": "out",
    "data": {
-    "id": 47,
+    "id": 49,
     "call": "sessionBrowser.refresh",
     "params": {
      "workspace": "ws-smoke",
@@ -3952,7 +4030,7 @@
    "at": 27392,
    "dir": "in",
    "data": {
-    "id": 45,
+    "id": 47,
     "delta": [
      {
       "path": [
@@ -3971,7 +4049,7 @@
    "at": 27392,
    "dir": "in",
    "data": {
-    "id": 47,
+    "id": 49,
     "ok": null
    }
   },
@@ -4075,7 +4153,7 @@
    "at": 27442,
    "dir": "in",
    "data": {
-    "id": 28,
+    "id": 30,
     "value": {
      "browser": null
     }
@@ -4085,7 +4163,7 @@
    "at": 27442,
    "dir": "out",
    "data": {
-    "id": 45,
+    "id": 47,
     "unsubscribe": true
    }
   },

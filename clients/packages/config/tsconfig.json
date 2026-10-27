@@ -1,6 +1,7 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
+    "lib": ["ES2024", "DOM"],
     "tsBuildInfoFile": "../../../node_modules/.tmp/tsconfig.config.tsbuildinfo",
     "declaration": true,
     "declarationMap": true,

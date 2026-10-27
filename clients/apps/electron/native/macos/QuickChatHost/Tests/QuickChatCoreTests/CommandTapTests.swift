@@ -2,19 +2,20 @@ import Testing
 @testable import QuickChatCore
 
 struct CommandTapTests {
-    private let quiet = CommandTap.Activity(keyDowns: 10, mouseDowns: 4, scrolls: 7)
+    /// The latest key, click or scroll before any of the events below.
+    private let quiet = -5.0
 
-    /// Feeds (event, time, activity) and returns each completed tap with its time.
-    private func taps(_ events: [(CommandTap.Event, Double, CommandTap.Activity)]) -> [(CommandTap.Tap, Double)] {
+    /// Feeds (event, time, last input) and returns each completed tap with its time.
+    private func taps(_ events: [(CommandTap.Event, Double, Double)]) -> [(CommandTap.Tap, Double)] {
         var tap = CommandTap()
-        return events.compactMap { event, time, activity in
-            tap.handle(event, at: time, activity: activity).map { ($0, time) }
+        return events.compactMap { event, time, lastInput in
+            tap.handle(event, at: time, lastInput: lastInput).map { ($0, time) }
         }
     }
 
     /// Two quick ⌘ taps whose second press starts `gap` after the first release.
-    private func pair(gap: Double, between: CommandTap.Activity? = nil) -> [(CommandTap.Event, Double, CommandTap.Activity)] {
-        let second = between ?? quiet
+    private func pair(gap: Double, secondSees lastInput: Double? = nil) -> [(CommandTap.Event, Double, Double)] {
+        let second = lastInput ?? quiet
         return [
             (.commandDown, 0, quiet), (.commandUp, 0.1, quiet),
             (.commandDown, 0.1 + gap, second), (.commandUp, 0.2 + gap, second),
@@ -25,6 +26,8 @@ struct CommandTapTests {
         #expect(taps([(.commandDown, 0, quiet), (.commandUp, 0.15, quiet)]).map(\.0) == [.single])
         // macOS repeats some releases: still one tap.
         #expect(taps([(.commandDown, 0, quiet), (.commandUp, 0.15, quiet), (.commandUp, 0.15, quiet)]).map(\.0) == [.single])
+        // A key typed just before ⌘ went down.
+        #expect(taps([(.commandDown, 0, -0.01), (.commandUp, 0.15, -0.01)]).map(\.0) == [.single])
     }
 
     @Test func aLongPressIsNotATap() {
@@ -52,9 +55,8 @@ struct CommandTapTests {
     }
 
     @Test func anythingBetweenTheTapsBreaksThePair() {
-        // A key, click or scroll between them changes the session's counters.
-        #expect(taps(pair(gap: 0.2, between: CommandTap.Activity(keyDowns: 11, mouseDowns: 4, scrolls: 7))).map(\.0)
-            == [.single, .single])
+        // A key, click or scroll between them.
+        #expect(taps(pair(gap: 0.2, secondSees: 0.2)).map(\.0) == [.single, .single])
         // Shift between them.
         var events = pair(gap: 0.2)
         events.insert((.otherModifier, 0.15, quiet), at: 2)
@@ -62,22 +64,25 @@ struct CommandTapTests {
     }
 
     @Test func chordsAreNotTaps() {
-        // ⌘C, a ⌘-click and ⌘-scroll change the session's counters.
-        for activity in [
-            CommandTap.Activity(keyDowns: 11, mouseDowns: 4, scrolls: 7),
-            CommandTap.Activity(keyDowns: 10, mouseDowns: 5, scrolls: 7),
-            CommandTap.Activity(keyDowns: 10, mouseDowns: 4, scrolls: 8),
-        ] {
-            #expect(taps([(.commandDown, 0, quiet), (.commandUp, 0.15, activity)]).isEmpty)
-            // Nor do they complete a double tap.
-            #expect(taps([
-                (.commandDown, 0, quiet), (.commandUp, 0.1, quiet),
-                (.commandDown, 0.2, quiet), (.commandUp, 0.3, activity),
-            ]).map(\.0) == [.single])
-        }
+        // ⌘C, ⌘Tab, a ⌘-click or ⌘-scroll: input after the press.
+        #expect(taps([(.commandDown, 0, quiet), (.commandUp, 0.15, 0.08)]).isEmpty)
+        // Nor do they complete a double tap.
+        #expect(taps([
+            (.commandDown, 0, quiet), (.commandUp, 0.1, quiet),
+            (.commandDown, 0.2, quiet), (.commandUp, 0.3, 0.25),
+        ]).map(\.0) == [.single])
         // ⌘ with Shift, and both ⌘ keys.
         for event in [CommandTap.Event.otherModifier, .commandDown] {
             #expect(taps([(.commandDown, 0, quiet), (event, 0.05, quiet), (.commandUp, 0.15, quiet)]).isEmpty)
         }
+    }
+
+    @Test func aChordSeenLateIsStillAChord() {
+        // ⌘V then ⌘V, each V a few milliseconds after ⌘: the monitor handles
+        // each ⌘-down after its V went down, so only the timestamps tell.
+        #expect(taps([
+            (.commandDown, 0, 0.005), (.commandUp, 0.1, 0.005),
+            (.commandDown, 0.2, 0.205), (.commandUp, 0.3, 0.205),
+        ]).isEmpty)
     }
 }

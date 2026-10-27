@@ -142,7 +142,16 @@ test("keeps the sidebar profile avatar in sync with name and private avatar upda
   await expect(settingsDialog).toBeVisible();
   await page.getByRole("button", { name: "Appearance", exact: true }).click();
   await page.getByRole("button", { name: /Select theme/ }).click();
-  await page.getByRole("option", { name: "Dark", exact: true }).click();
+  // Chosen from the keyboard: the list may still move as it settles over the
+  // button, and a pointer aimed at a row can land between two.
+  await expect(
+    page.getByRole("option", { name: "Default", exact: true })
+  ).toBeFocused();
+  for (const theme of ["Soft Light", "Signal Light", "Dark"]) {
+    await page.keyboard.press("ArrowDown");
+    await expect(page.getByRole("option", { name: theme, exact: true })).toBeFocused();
+  }
+  await page.keyboard.press("Enter");
   await expect(page.locator("html")).toHaveAttribute("data-theme", "Dark mode");
   await expect(page.getByRole("listbox")).toBeHidden();
   await expect(page.getByRole("button", { name: /Select theme/ })).toBeFocused();
@@ -160,12 +169,12 @@ test("keeps the sidebar profile avatar in sync with name and private avatar upda
   await page.getByRole("button", { name: "Profile", exact: true }).click();
   const avatarRow = page.locator('[data-setting-id="account.avatar"]');
   await page.locator('input[type="file"]').setInputFiles({
-    buffer: Buffer.alloc(2 * 1024 * 1024 + 1),
+    buffer: Buffer.alloc(10 * 1024 * 1024 + 1),
     mimeType: "image/png",
     name: "oversized.png",
   });
   const avatarError = avatarRow.locator(".text-error-primary");
-  await expect(avatarError).toHaveText("JPEG, PNG, or WebP. Maximum 2 MB.");
+  await expect(avatarError).toHaveText("JPEG, PNG, or WebP. Maximum 10 MB.");
   const rowBox = (await avatarRow.boundingBox())!;
   const errorBox = (await avatarError.boundingBox())!;
   const buttonBox = (await avatarRow
@@ -175,12 +184,12 @@ test("keeps the sidebar profile avatar in sync with name and private avatar upda
   expect(errorBox.y).toBeGreaterThanOrEqual(buttonBox.y + buttonBox.height);
   await expect(avatarError).toHaveCSS("text-align", "left");
   await page.screenshot({ path: test.info().outputPath("avatar-error-layout.png") });
-  // A noisy landscape PNG well above the old 100 KB bound and above the
-  // compression target, so it must be cropped square and re-encoded.
+  // A noisy landscape PNG above the 2 MB the server stores, so it must be
+  // cropped square and re-encoded under the compression target.
   const landscape = await page.evaluate(async () => {
     const canvas = document.createElement("canvas");
-    canvas.width = 1200;
-    canvas.height = 800;
+    canvas.width = 1500;
+    canvas.height = 1000;
     const context = canvas.getContext("2d")!;
     const pixels = context.createImageData(canvas.width, canvas.height);
     let seed = 7;
@@ -198,8 +207,8 @@ test("keeps the sidebar profile avatar in sync with name and private avatar upda
     return Array.from(new Uint8Array(await blob.arrayBuffer()));
   });
   const landscapeBuffer = Buffer.from(landscape);
-  expect(landscapeBuffer.length).toBeGreaterThan(200 * 1024);
-  expect(landscapeBuffer.length).toBeLessThanOrEqual(2 * 1024 * 1024);
+  expect(landscapeBuffer.length).toBeGreaterThan(2 * 1024 * 1024);
+  expect(landscapeBuffer.length).toBeLessThanOrEqual(10 * 1024 * 1024);
   const chooserReady = page.waitForEvent("filechooser");
   await page.getByRole("button", { name: "Choose image", exact: true }).click();
   const chooser = await chooserReady;

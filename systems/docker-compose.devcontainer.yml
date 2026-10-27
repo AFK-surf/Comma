@@ -43,6 +43,11 @@ services:
       MIX_DEPS_PATH: /var/lib/comma-dev/mix-deps
       HEX_HOME: /var/lib/comma-dev/hex
       REBAR_CACHE_DIR: /var/lib/comma-dev/rebar
+      CARGO_HOME: /var/lib/comma-dev/cargo-home
+      CARGO_TARGET_DIR: /var/lib/comma-dev/cargo-target
+      STILLFAIL_NATIVE_CACHE: /var/lib/comma-dev/native-cache
+      COMMA_TOOL_CACHE: /var/lib/comma-dev/tool-cache
+      SYSTEMS_TEST_DB_HOST: postgres
     depends_on:
       minio-init:
         condition: service_completed_successfully
@@ -71,6 +76,29 @@ services:
         target: /workspace/Comma/systems/apps/salix_agent/priv
         volume:
           nocopy: true
+      - type: bind
+        source: ./apps/salix_agent/priv/model_catalog.json
+        target: /workspace/Comma/systems/apps/salix_agent/priv/model_catalog.json
+        read_only: true
+      - type: bind
+        source: ./apps/salix_agent/priv/dynamic_ui
+        target: /workspace/Comma/systems/apps/salix_agent/priv/dynamic_ui
+        read_only: true
+      - type: volume
+        source: comma-dev-verified-kernel-lake
+        target: /workspace/Comma/systems/native/verified_kernel/.lake
+        volume:
+          nocopy: true
+      - type: volume
+        source: comma-dev-verified-kernel-build
+        target: /workspace/Comma/systems/native/verified_kernel/.native
+        volume:
+          nocopy: true
+      - type: volume
+        source: comma-dev-verified-kernel-priv
+        target: /workspace/Comma/systems/native/verified_kernel/priv
+        volume:
+          nocopy: true
     healthcheck:
       test:
         [
@@ -86,3 +114,6 @@ services:
 volumes:
   comma-dev-cache:
   comma-dev-salix-agent-priv:
+  comma-dev-verified-kernel-lake:
+  comma-dev-verified-kernel-build:
+  comma-dev-verified-kernel-priv:

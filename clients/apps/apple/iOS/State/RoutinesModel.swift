@@ -76,6 +76,14 @@ final class RoutinesModel {
         }
     }
 
+    /// The member does not want to hear about this row's source item again. The core shows the briefing the server
+    /// answers, without it; a refused request leaves the row where it was.
+    func dismiss(_ item: RecommendationItem, store: CommaStore) async {
+        guard let workspace = store.workspace, let source = item.sourceItem else { return }
+        _ = try? await store.core.call("recommendations.dismiss",
+                                       ["workspace": workspace.id, "sourceId": source.sourceID, "sourceUrl": source.url])
+    }
+
     /// The core follows a run under way by itself while the topic is shown.
     func follow(store: CommaStore) async {}
 }

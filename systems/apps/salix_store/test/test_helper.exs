@@ -15,7 +15,7 @@ if SalixStore.Config.backend() == SalixStore.S3.AWS do
   end
 end
 
-ExUnit.start()
+ExUnit.start(exclude: [:headless_install_e2e])
 
 # Control-plane Postgres: create/migrate/clean the test database and reset the
 # cutover-gate cache (docs/storage-search.md).

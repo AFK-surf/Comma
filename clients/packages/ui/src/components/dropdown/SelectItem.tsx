@@ -56,7 +56,8 @@ export const SelectItem = ({
               "bg-secondary",
             state.isSelected && "text-primary",
             state.isDisabled && "cursor-not-allowed opacity-50",
-            selectRowHeightClassName[size]
+            // A row with a subtitle takes the two lines' height and the row's own padding.
+            subtitle ? "py-md" : selectRowHeightClassName[size]
           )}
           data-slot="dropdown-option-content"
         >
@@ -80,7 +81,7 @@ export const SelectItem = ({
                   className={cx(
                     "block",
                     virtualized ? "truncate" : "whitespace-nowrap",
-                    subtitle && "leading-4"
+                    subtitle && "leading-5"
                   )}
                   data-slot="dropdown-option-label"
                   {...definedProps({ style: fontFamily ? { fontFamily } : undefined })}
@@ -90,7 +91,7 @@ export const SelectItem = ({
                 {subtitle && (
                   <AriaText
                     slot="description"
-                    className="block max-w-72 truncate text-xs leading-4 text-tertiary"
+                    className="mt-xxs block max-w-72 truncate text-xs leading-4 text-tertiary"
                     data-slot="dropdown-option-subtitle"
                     title={subtitle}
                   >

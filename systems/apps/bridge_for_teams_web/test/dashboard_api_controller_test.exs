@@ -44,6 +44,7 @@ defmodule BridgeForTeamsWeb.DashboardAPIControllerTest do
       assert data["org"] == %{"slug" => org.slug, "name" => org.name, "role" => "owner"}
       assert data["capabilities"]["settings"]
       assert data["capabilities"]["operations"]
+      assert data["capabilities"]["daily_brief"]
       assert data["projects"] == [%{"id" => project.id, "name" => "Support Desk"}]
     end
 

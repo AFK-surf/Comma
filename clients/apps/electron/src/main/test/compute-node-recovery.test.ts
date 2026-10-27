@@ -95,7 +95,14 @@ async function fixture() {
     if (path.endsWith("/local-workloads"))
       return Response.json({
         workloads: [
-          { id: "private-workload-id", kind: "shell", observed_state: "ready" },
+          {
+            id: "private-workload-id",
+            kind: "shell",
+            observed_state: "pending",
+            phase: "starting",
+            location: { provider: "agent_vmm", device_id: "dev_here" },
+            problem: { code: "a_new_code", retryable: false },
+          },
         ],
       });
     if (path.endsWith("/candidates")) {
@@ -245,7 +252,15 @@ describe("original compute connection recovery", () => {
     const contents = await f.service.localWorkloads({
       key: matched.environments[0]!.key,
     });
-    expect(contents.workloads).toHaveLength(1);
+    // The row names its device and its problem (an unknown code as `other`), but not the cloud id.
+    expect(contents.workloads).toEqual([
+      {
+        label: "shell kload-id",
+        state: "starting",
+        deviceId: "dev_here",
+        problem: { code: "other", retryable: false },
+      },
+    ]);
     expect(JSON.stringify(contents)).not.toContain("private-workload-id");
     f.change("B", 2);
     await expect(

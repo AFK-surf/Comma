@@ -44,6 +44,10 @@ import {
   makeWorkspaceSignalModel,
   type WorkspaceSignalModel,
 } from "./WorkspaceSignalModel";
+import {
+  makeWorkspaceSandboxLimitModel,
+  type WorkspaceSandboxLimitModel,
+} from "./WorkspaceSandboxLimitModel";
 import { messages } from "@comma/i18n";
 
 type Services = AdminApi | AdminBrowser | AdminShellLinks;
@@ -61,6 +65,8 @@ export interface WorkspaceSections {
   readonly agentModels: WorkspaceAgentModelsModel | undefined;
   /** Present when the Workspace reports a Cloud VM. */
   readonly cloudVm: WorkspaceCloudVmModel | undefined;
+  /** Present when the Workspace is ready. */
+  readonly sandboxLimit: WorkspaceSandboxLimitModel | undefined;
   /** Present when the Workspace is ready. */
   readonly signal: WorkspaceSignalModel | undefined;
 }
@@ -176,6 +182,9 @@ export const makeUserWorkspaceBillingModel = (
                   ready,
                   userId: user.id,
                 })
+              : undefined,
+            sandboxLimit: ready
+              ? yield* makeWorkspaceSandboxLimitModel(user.id)
               : undefined,
             signal: ready ? yield* makeWorkspaceSignalModel(user.id) : undefined,
           };

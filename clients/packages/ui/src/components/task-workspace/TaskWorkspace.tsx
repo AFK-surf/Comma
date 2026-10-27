@@ -14,6 +14,7 @@ import {
   type MouseEvent,
   type ReactNode,
 } from "react";
+import { Focusable } from "react-aria-components";
 import { Button } from "../Button";
 import { Checkbox } from "../checkbox";
 import { ChatPanelMessageItem } from "../chat-panel";
@@ -40,13 +41,12 @@ import {
 } from "../task-board";
 import { TaskChatPanel } from "../task-chat-panel";
 import { TaskListGroup, TaskListItem, type TaskListGroupProps } from "../TaskListItem";
+import { Tooltip } from "../tooltip";
 import { cx } from "../utils";
 import {
   TASK_STATUS_COLUMNS,
   TASK_WORKERS,
   TaskSummaryCard,
-  taskAriaLabel,
-  taskFreshnessLabel,
   taskStatusIcon,
   taskStatusLabel,
   taskUpdatedAtLabel,
@@ -90,7 +90,14 @@ export type TaskWorkspaceProps = {
   onCreateTask?: (() => void) | undefined;
   onExpand?: ((task: TaskWorkspaceTask) => void) | undefined;
   onLoadMore?: (() => Promise<void> | void) | undefined;
-  onOpenTask?: ((task: TaskWorkspaceTask) => void) | undefined;
+  /**
+   * Opens a Task. `shown` is every Task on show, in the order the reader sees
+   * them (column by column, then down each column), so the opened Task's page
+   * can step to its neighbours.
+   */
+  onOpenTask?:
+    | ((task: TaskWorkspaceTask, shown: readonly TaskWorkspaceTask[]) => void)
+    | undefined;
   /** Visible navigation targets, for bounded preparation owned by the runtime. */
   onVisibleTasksChange?: ((tasks: readonly TaskWorkspaceTask[]) => void) | undefined;
   /**
@@ -273,10 +280,35 @@ export function TaskWorkspace({
     };
   }, [degradedError]);
 
+  // Status groups the reader folded in the list. Their Tasks are not on show,
+  // so an opened Task's page does not step into them.
+  const [foldedGroups, setFoldedGroups] = useState<ReadonlySet<TaskStatusBucket>>(
+    () => new Set()
+  );
+  const setGroupOpen = useCallback((bucket: TaskStatusBucket, open: boolean) => {
+    setFoldedGroups((current) => {
+      if (current.has(bucket) !== open) return current;
+      const next = new Set(current);
+      if (open) next.delete(bucket);
+      else next.add(bucket);
+      return next;
+    });
+  }, []);
+  // Read at open time so a press handler does not change with every reorder.
+  const shownRef = useRef({ foldedGroups, sections, view });
+  shownRef.current = { foldedGroups, sections, view };
   const selectTask = useCallback(
     (task: TaskWorkspaceTask) => {
       if (onOpenTask) {
-        onOpenTask(task);
+        const shown = shownRef.current;
+        onOpenTask(
+          task,
+          shown.sections.flatMap(({ column, tasks: sectionTasks }) =>
+            shown.view === "list" && shown.foldedGroups.has(column.bucket)
+              ? []
+              : sectionTasks
+          )
+        );
         return;
       }
       setSelectedTaskId(task.id);
@@ -309,8 +341,8 @@ export function TaskWorkspace({
     });
   }, []);
   // Archive runs each checked Task's own action, the one its card menu
-  // offers; a Task that cannot be archived yet (still running, on a schedule)
-  // is left in place and counted in a notice.
+  // offers; a Task that cannot be archived yet (still running, or a station's)
+  // is left in place, and the button and the notice say why.
   const archivableChecked = useMemo(
     () =>
       checkedTasks.filter(
@@ -318,9 +350,25 @@ export function TaskWorkspace({
       ),
     [checkedTasks]
   );
+  const archiveBlockReasons = useMemo(
+    () => [
+      ...new Set(
+        checkedTasks.flatMap((task) =>
+          task.archiveAction === undefined
+            ? [messages.tasks_archive_not_here()]
+            : task.archiveAction.disabledReason
+              ? [task.archiveAction.disabledReason]
+              : []
+        )
+      ),
+    ],
+    [checkedTasks, messages]
+  );
+  const archiveBlocked = archivableChecked.length === 0;
   const [archivingChecked, setArchivingChecked] = useState(false);
   const archiveChecked = async () => {
     const skipped = checkedTasks.length - archivableChecked.length;
+    const reason = archiveBlockReasons.join(" · ");
     setArchivingChecked(true);
     try {
       await Promise.allSettled(
@@ -332,7 +380,7 @@ export function TaskWorkspace({
     }
     if (skipped > 0) {
       toast.warning(
-        messages.tasks_archive_selected_skipped({ count: String(skipped) }),
+        messages.tasks_archive_selected_skipped({ count: String(skipped), reason }),
         {
           id: "tasks-archive-selected-skipped",
           testId: "tasks-archive-selected-skipped",
@@ -381,9 +429,11 @@ export function TaskWorkspace({
       />
       {/* The empty state offers it itself. */}
       {onCreateTask && !showEmptyState ? (
+        // Sized as Drive's Transfer button, the toolbar button beside its filters.
         <Button
+          className="h-auto gap-xs py-xs pr-lg pl-md text-xs"
           hierarchy="secondary-gray"
-          iconLeading={<PlusSmallIcon className="size-4" />}
+          iconLeading={<PlusSmallIcon className="size-4 text-quaternary" />}
           onPress={onCreateTask}
           size="sm"
         >
@@ -583,10 +633,11 @@ export function TaskWorkspace({
                   <TaskListGroup
                     accent={taskStatusGroupAccent(column.bucket)}
                     count={sectionTasks.length}
-                    defaultOpen
                     icon={column.icon}
                     key={column.bucket}
                     label={taskStatusLabel(column.bucket, locale)}
+                    onOpenChange={(open) => setGroupOpen(column.bucket, open)}
+                    open={!foldedGroups.has(column.bucket)}
                   >
                     {sectionTasks.map((task) => (
                       <TaskWorkspaceListRow
@@ -651,21 +702,38 @@ export function TaskWorkspace({
               {messages.tasks_ask_comma()}
             </span>
           </button>
-          <button
-            className={cx(
-              selectionBarButtonClasses,
-              "px-md disabled:cursor-default disabled:opacity-50"
-            )}
-            data-testid="tasks-archive-selected"
-            disabled={archivingChecked || archivableChecked.length === 0}
-            onClick={() => void archiveChecked()}
-            type="button"
+          {/* Blocked is aria-disabled, not disabled: the button keeps hover and
+              focus so its tooltip can say why nothing can be archived. */}
+          <Tooltip
+            content={archiveBlockReasons[0]}
+            isDisabled={!archiveBlocked}
+            placement="top"
+            {...(archiveBlockReasons.length > 1
+              ? { rows: archiveBlockReasons.map((label) => ({ label })) }
+              : {})}
           >
-            <ArchiveIcon aria-hidden className="size-5" />
-            <span className="px-xxs whitespace-nowrap">
-              {messages.tasks_archive_selected()}
-            </span>
-          </button>
+            <Focusable>
+              <button
+                aria-disabled={archiveBlocked || undefined}
+                className={cx(
+                  selectionBarButtonClasses,
+                  "px-md disabled:cursor-default disabled:opacity-50",
+                  "aria-disabled:cursor-default aria-disabled:opacity-50 aria-disabled:hover:bg-button-secondary-bg aria-disabled:active:scale-100"
+                )}
+                data-testid="tasks-archive-selected"
+                disabled={archivingChecked}
+                onClick={() => {
+                  if (!archiveBlocked) void archiveChecked();
+                }}
+                type="button"
+              >
+                <ArchiveIcon aria-hidden className="size-5" />
+                <span className="px-xxs whitespace-nowrap">
+                  {messages.tasks_archive_selected()}
+                </span>
+              </button>
+            </Focusable>
+          </Tooltip>
         </SelectionBar>
       ) : null}
     </section>
@@ -863,7 +931,6 @@ type TaskWorkspaceRowProps = {
 
 const TaskWorkspaceBoardRow = memo(function TaskWorkspaceBoardRow({
   checked,
-  locale,
   onPress,
   renderTaskBadges,
   selected,
@@ -873,10 +940,9 @@ const TaskWorkspaceBoardRow = memo(function TaskWorkspaceBoardRow({
     <TaskCardReorderItem id={task.id}>
       <TaskArchiveMenu action={task.archiveAction} overlay="task-card">
         <button
-          aria-label={taskAriaLabel(task, locale)}
+          aria-label={task.title}
           className="group/task-card w-full border-0 bg-transparent p-0 text-left"
           data-task-navigation-id={task.id}
-          data-freshness={task.freshness}
           data-checked={checked ? "true" : undefined}
           onClick={(event) => onPress(task, event)}
           type="button"
@@ -907,14 +973,13 @@ const TaskWorkspaceListRow = memo(function TaskWorkspaceListRow({
   onToggleChecked?: ((task: TaskWorkspaceTask, checked: boolean) => void) | undefined;
 }) {
   const messages = useCommaMessages();
-  const freshness = taskFreshnessLabel(task.freshness, locale);
   // With a checkbox inside, the row is a div playing button: a button may
   // not hold another control.
   const rowAs = onToggleChecked ? "div" : "button";
   return (
     <TaskArchiveMenu action={task.archiveAction}>
       <TaskListItem
-        aria-label={taskAriaLabel(task, locale)}
+        aria-label={task.title}
         as={rowAs}
         badges={renderTaskBadges?.(task)}
         style={{
@@ -923,10 +988,10 @@ const TaskWorkspaceListRow = memo(function TaskWorkspaceListRow({
         }}
         checked={checked}
         data-task-navigation-id={task.id}
-        data-freshness={task.freshness}
         icon={taskStatusIcon(task.statusBucket)}
         iconKey={task.statusBucket}
         layout="content"
+        titleIdentity={task.id}
         {...(onToggleChecked
           ? {
               leading: (
@@ -964,24 +1029,11 @@ const TaskWorkspaceListRow = memo(function TaskWorkspaceListRow({
         onClick={(event: MouseEvent) => onPress(task, event)}
         selected={selected}
         tail={
-          <>
-            {freshness ? (
-              <span
-                className={
-                  task.freshness === "stale"
-                    ? "shrink-0 whitespace-nowrap text-fg-warning-secondary"
-                    : "shrink-0 whitespace-nowrap text-tertiary"
-                }
-              >
-                {freshness}
-              </span>
-            ) : null}
-            {task.updatedAt ? (
-              <span className="shrink-0 whitespace-nowrap font-normal text-quaternary">
-                {taskUpdatedAtLabel(task.updatedAt, locale)}
-              </span>
-            ) : null}
-          </>
+          task.updatedAt ? (
+            <span className="shrink-0 whitespace-nowrap font-normal text-quaternary">
+              {taskUpdatedAtLabel(task.updatedAt, locale)}
+            </span>
+          ) : null
         }
         title={task.title}
       />

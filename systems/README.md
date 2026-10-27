@@ -590,7 +590,7 @@ Setup:
    the request URL `<public base URL>/v1/im/lark/events?app_id=<App ID>`.
    Subscribe to `im.message.receive_v1` and `im.message.recalled_v1`. Under
    Callbacks, use the same URL and subscribe to `card.action.trigger`. Without
-   it, confirmation card buttons do nothing.
+   it, confirmation and question card buttons do nothing.
 4. Import the scopes. Use **Copy JSON** in the Lark section of the Swarm
    Connections page, or `bft lark scopes --output text`
    (`BridgeForTeams.LarkScopes`). In Permissions & Scopes, use the batch
@@ -621,17 +621,24 @@ Security and data notes:
   [Feishu cloud documents](../docs/architecture/DOMAIN_CONCEPTS.md#feishu-cloud-documents).
 - A document link must be on a `larksuite.com` host. Feishu links go to a
   Feishu connect.
-- Meetings, their AI notes, transcripts and recordings are read as a person.
-  People sign in with their Lark account on the swarm's Connections page
-  (Accounts). Each sign-in is a Group OAuth Binding of provider `lark`
-  (`SalixStore.OAuth.Adapters.Lark`); the organization's OAuth app for Lark is
-  the bot's Lark app with the redirect URL `/v1/oauth/lark/callback` and the
-  user scopes of the batch import. `lark.search_meetings`, `lark.get_meeting`
-  and `lark.get_note` run as every signed-in account, or as the one named by
-  `account`. Document and Minutes reads take the same `account` parameter.
-  A unified note has no transcript document: `lark.get_note` with
+- People sign in with their Lark account on the swarm's Connections page
+  (Accounts), or from a chat through the link the bot posts. Each sign-in is
+  a Group OAuth Binding of provider `lark` (`SalixStore.OAuth.Adapters.Lark`);
+  the organization's OAuth app for Lark is the bot's Lark app with the
+  redirect URL `/v1/oauth/lark/callback` and the user scopes of the batch
+  import. A person sees what they took part in or may open; the app sees
+  what was shared with it.
+- The bot finds content without a link. `lark.search_docs` (Lark's
+  `search/v2/doc_wiki/search`), `lark.list_drive_files` and
+  `lark.search_meetings` run as the app and then as every signed-in account,
+  and `lark.get_meeting` / `lark.get_note` try them in that order, unless
+  `account` names one (`app` for the app alone). `lark.list_wiki_spaces`,
+  `lark.list_wiki_nodes` and `lark.list_minutes` run as the app unless
+  `account` names a person. The bot reads what it finds with the same
+  `account`. A unified note has no transcript document: `lark.get_note` with
   `include_transcript` reads its transcript page by page from
-  `/vc/v1/notes/:id/unified_note_transcript`.
+  `/vc/v1/notes/:id/unified_note_transcript`, which Lark gives only to a
+  person.
 - A Worker holds the document and Minutes operations of a Lark connect and
   every read operation (chat history, threads, search, chats, members,
   directory). The Router holds all of them.

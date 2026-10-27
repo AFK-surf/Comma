@@ -12,7 +12,6 @@ struct PhoneConversationView: View {
     let pane: ConversationPane
     var composerFocus: FocusState<Bool>.Binding? = nil
     @State var previewURL: URL?
-    @State var previewDirectory: URL?
     @State var downloading = false
     @State var photos: [PhotosPickerItem] = []
     @State var filePickerOpen = false
@@ -83,12 +82,6 @@ struct PhoneConversationView: View {
             Task { await uploadFiles(result) }
         }
         .quickLookPreview($previewURL)
-        .onChange(of: previewURL) { _, value in
-            if value == nil, let directory = previewDirectory {
-                previewDirectory = nil
-                Task { await AttachmentFile.remove(directory) }
-            }
-        }
         .onChange(of: pane.target) { _, _ in previewURL = nil }
         .onChange(of: photos) { _, values in
             Task { await uploadPhotos(values) }

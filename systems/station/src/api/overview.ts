@@ -110,6 +110,7 @@ export async function overview(d: OverviewDeps, viewer: Viewer, lang: Lang): Pro
     logins: d.accounts?.loginsView() ?? [],
     apiProviders: d.accounts?.apiProviders() ?? [],
     machineLogins: d.accounts?.machineLogins() ?? [],
+    machineSignIns: d.accounts?.machineSignInsView() ?? [],
     // It shares profiles and skills with its workspace's other stations (share/index.ts).
     sharing: d.accounts !== undefined,
     updates: d.updates?.get(lang) ?? [],

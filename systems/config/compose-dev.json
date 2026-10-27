@@ -38,6 +38,9 @@
       "rate_limit_secret": "comma-local-rate-limit-secret-not-for-production-00000002"
     }
   },
+  "agent_vmm": {
+    "environment_scoped_bindings_enabled": true
+  },
   "billing": {
     "database": {
       "url": "ecto://postgres:postgres@postgres:5432/billing_core_dev",

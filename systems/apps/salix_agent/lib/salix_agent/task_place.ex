@@ -14,9 +14,9 @@ defmodule SalixAgent.TaskPlace do
   Group's Cloud VM switch is on; the product checks that a station is one of
   its own. Each Task checks the place again when it is created
   (`SalixIM.Ports.TaskCreate.runs_on/2`): the Cloud VM switch on and the VM
-  running, a station connected and ready, and no person's own computer for a
-  Loop Task. A place that fails refuses the Task, which is not moved
-  elsewhere.
+  running, a station connected and ready. A place that fails refuses the
+  Task, which is not moved elsewhere. A Loop Task does not take the default:
+  it runs inside Salix (`SalixIM.TaskPlacement`).
   """
 
   alias SalixStore.{CasRecord, Ids, Keys}

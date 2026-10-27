@@ -384,15 +384,18 @@ for (const [inputLayout, inputText] of [
       Math.abs(first.height - source!.height),
       "initial clip keeps the input height"
     ).toBeLessThan(1);
-    expect(first.slotHeight).toBeLessThan(last.slotHeight);
-    expect(first.turnHeight - 40).toBeLessThan((last.turnHeight - 40) * 0.5);
-    expect(
-      new Set(
-        visible
-          .filter((sample) => sample.flying)
-          .map((sample) => Math.round(sample.turnHeight))
-      ).size
-    ).toBeGreaterThan(5);
+    // The transcript is laid out where the message lands from the first
+    // painted frame: its slot and turn keep their landed size while it flies.
+    for (const sample of visible.filter((candidate) => candidate.flying)) {
+      expect(
+        Math.abs(sample.slotHeight - last.slotHeight),
+        "the slot keeps its landed size"
+      ).toBeLessThan(1);
+      expect(
+        Math.abs(sample.turnHeight - last.turnHeight),
+        "the turn keeps its landed size"
+      ).toBeLessThan(1);
+    }
     expect(Math.abs(first.left - source!.x)).toBeLessThan(5);
     expect(Math.abs(first.top - source!.y)).toBeLessThan(5);
     expect
@@ -890,7 +893,6 @@ for (const historySize of [0, 40]) {
           padding: number;
           tailHeight: number;
           previousY: number;
-          columnAnimations: number;
           destinationY: number | undefined;
         }[] = [];
         let frame = 0;
@@ -915,8 +917,6 @@ for (const historySize of [0, 40]) {
               previousY: document
                 .querySelector('article[data-message-id="user-1"]')!
                 .getBoundingClientRect().top,
-              columnAnimations: turn.closest(".comma-chat-column")!.getAnimations()
-                .length,
             });
           }
           frame = requestAnimationFrame(sample);
@@ -953,7 +953,14 @@ for (const historySize of [0, 40]) {
         Math.max(...destinations) - Math.min(...destinations),
         "the landing position stays fixed throughout the flight"
       ).toBeLessThan(1);
-      expect(samples.every((sample) => sample.columnAnimations === 0)).toBe(true);
+      // The anchor's scroll eases out as the column's glide: the previous
+      // message only climbs, and never jumps back down mid-flight.
+      for (let index = 1; index < samples.length; index++) {
+        expect(
+          samples[index]!.previousY - samples[index - 1]!.previousY,
+          "the previous message does not move back down"
+        ).toBeLessThan(1);
+      }
       expect(
         Math.max(
           ...samples.map((sample) => Math.abs(sample.previousY - samples[0]!.previousY))
@@ -963,12 +970,9 @@ for (const historySize of [0, 40]) {
         Math.min(...samples.map((sample) => sample.tailHeight))
       ).toBeGreaterThanOrEqual(samples[0]!.tailHeight - 1);
       expect(
-        new Set(
-          samples
-            .filter((sample) => sample.minimum > 0 && sample.minimum < 200)
-            .map((sample) => Math.round(sample.minimum))
-        ).size
-      ).toBeGreaterThan(3);
+        samples.every((sample) => sample.minimum === 0 || sample.minimum >= 199),
+        "the latest turn's reserve is laid out at once, never animated"
+      ).toBe(true);
       await expect(page.getByTestId("participant-status-slot")).toHaveAttribute(
         "data-active",
         "true"

@@ -1,5 +1,5 @@
 // Drive's System Files space: the files of a Group Router's Agent VFS under `/memory` and `/imports`, and the Router's
-// effective instructions. The page asks; nothing is kept here. The server decides what is visible and writable.
+// effective instructions, which the Workspace owner may replace. The page asks; nothing is kept here. The server decides what is visible and writable.
 //
 // Bounds: each call is one request; a listing page holds at most 500 files.
 import { CoreError } from "@comma/core-kernel";
@@ -39,7 +39,7 @@ const query = (params: Record<string, string | undefined>) =>
     )
     .join("&");
 
-/** Answers `systemFiles.list`, `.read`, `.write`, `.delete` and `.instructions`. */
+/** Answers `systemFiles.list`, `.read`, `.write`, `.delete`, `.instructions` and `.writeInstructions`. */
 export function registerSystemFiles(ctx: Ctx): void {
   const request = <S extends z.ZodType>(
     method: "GET" | "PUT" | "DELETE",
@@ -117,6 +117,19 @@ export function registerSystemFiles(ctx: Ctx): void {
           `${base(text(p, "group", 256))}/instructions`,
           routerInstructionsSchema
         ),
+    },
+    "systemFiles.writeInstructions": {
+      doing: true,
+      run: (p) => {
+        const content = (p as { content?: unknown } | null)?.content;
+        if (typeof content !== "string") throw CoreError.invalid("content is required");
+        return request(
+          "PUT",
+          `${base(text(p, "group", 256))}/instructions`,
+          routerInstructionsSchema,
+          { content, expected_hash: optional(p, "expectedHash") }
+        );
+      },
     },
   });
 }

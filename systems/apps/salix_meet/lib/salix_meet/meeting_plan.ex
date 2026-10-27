@@ -57,6 +57,7 @@ defmodule SalixMeet.MeetingPlan do
         opts
         |> Keyword.put(:calendar_source_ids, source_ids)
         |> Keyword.put(:publication_target, publication_target)
+        |> channel_notice_policy()
 
       case qualification(item, occurrence, opts) do
         %Result{authorized: true} -> provision(group_id, item, occurrence, opts)
@@ -85,6 +86,7 @@ defmodule SalixMeet.MeetingPlan do
             preparation_lead_minutes: plan["preparation_lead_minutes"] || 10,
             research_enabled: plan["research_enabled"] != false,
             personal_preparation: plan["personal_preparation"] != false,
+            channel_notice: plan["channel_notice"] != false,
             publication_target: plan["publication_target"]
           )
         end
@@ -297,6 +299,10 @@ defmodule SalixMeet.MeetingPlan do
 
           preparation[kind <> "_status"] in ["sent", "abandoned"] ->
             {:settle, :already_settled}
+
+          # A card a node scheduled before the notice was turned off is not sent.
+          kind == "card" and plan["channel_notice"] == false ->
+            settle_card(group_id, plan_id, :channel_notice_off, opts)
 
           authorization == {:error, :meeting_preparation_settings_changed} ->
             settle_card(group_id, plan_id, :meeting_preparation_settings_changed, opts)
@@ -650,6 +656,13 @@ defmodule SalixMeet.MeetingPlan do
           material
         end
 
+      # Only a disabled notice enters the fingerprint, so existing plans keep
+      # their dispatch revision and schedules.
+      material =
+        if opts[:channel_notice] == false,
+          do: Map.put(material, "channel_notice", false),
+          else: material
+
       {:ok,
        material
        |> Map.take(
@@ -662,6 +675,22 @@ defmodule SalixMeet.MeetingPlan do
     else
       false -> {:error, :invalid_meeting_preparation_policy}
       {:error, _} = error -> error
+    end
+  end
+
+  # Without the channel notice the shared report has no audience: research
+  # runs only to prepare personal reminders, and nothing is written back to
+  # the calendar. Joining and minutes do not depend on this plan's triggers.
+  defp channel_notice_policy(opts) do
+    if opts[:channel_notice] == false do
+      opts
+      |> Keyword.put(:calendar_writeback, false)
+      |> Keyword.put(
+        :research_enabled,
+        opts[:research_enabled] != false and opts[:personal_preparation] != false
+      )
+    else
+      opts
     end
   end
 
@@ -738,6 +767,7 @@ defmodule SalixMeet.MeetingPlan do
           "preparation_lead_minutes" => Keyword.get(opts, :preparation_lead_minutes, 10),
           "research_enabled" => opts[:research_enabled] != false,
           "personal_preparation" => opts[:personal_preparation] != false,
+          "channel_notice" => opts[:channel_notice] != false,
           "publication_target" => opts[:publication_target],
           "effective_occurrence" => effective_occurrence(occurrence),
           "preparation" => next,
@@ -835,6 +865,7 @@ defmodule SalixMeet.MeetingPlan do
       get_in(plan, ["publication_target", "provider"]) == "slack" and
         plan["personal_preparation"] != false
 
+  defp trigger_applicable?(%{"channel_notice" => false}, "card"), do: false
   defp trigger_applicable?(plan, "card"), do: is_map(plan["publication_target"])
   defp trigger_applicable?(_plan, _kind), do: true
 
@@ -1380,6 +1411,7 @@ defmodule SalixMeet.MeetingPlan do
              preparation_lead_minutes: plan["preparation_lead_minutes"] || 10,
              research_enabled: plan["research_enabled"] != false,
              personal_preparation: plan["personal_preparation"] != false,
+             channel_notice: plan["channel_notice"] != false,
              publication_target: plan["publication_target"],
              policy_revision: preparation["policy_revision"],
              publication_budget_ms: budget
@@ -1527,7 +1559,7 @@ defmodule SalixMeet.MeetingPlan do
   end
 
   defp render_notice(plan, context, "card") do
-    card = MeetingBriefing.render_card(context)
+    card = MeetingBriefing.render_card(context) <> team_section(plan, context)
 
     with report when is_binary(report) <- get_in(plan, ["preparation", "report"]),
          :ok <- validate_report(plan) do
@@ -1538,6 +1570,20 @@ defmodule SalixMeet.MeetingPlan do
   end
 
   defp render_notice(_plan, context, "personal"), do: MeetingBriefing.render_card(context)
+
+  # The product's follow-up section: the previous meeting's commitments with
+  # their status and the team's open items, rendered from its own records.
+  defp team_section(plan, context) do
+    case SalixMeet.Ports.Followups.team_section(%{
+           "group_id" => plan["group_id"],
+           "calendar_item_id" =>
+             plan["calendar_item_id"] || get_in(context, ["calendar_item", "calendar_item_id"]),
+           "start_ms" => get_in(context, ["effective_occurrence", "start_ms"])
+         }) do
+      "" -> ""
+      section -> "\n\n" <> section
+    end
+  end
 
   defp same_trigger_set?(current, desired),
     do:

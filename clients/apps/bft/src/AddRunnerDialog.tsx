@@ -21,7 +21,11 @@ export function installErrorMessage(error: unknown) {
 }
 
 /** A freshly issued install command. It is never fetched again: shown once. */
-export function InstallCommand({ issued }: { issued: BftInstallCommand }) {
+export function InstallCommand({
+  issued,
+}: {
+  issued: Pick<BftInstallCommand, "command" | "expires_at">;
+}) {
   const time = formatTime(issued.expires_at);
   const relative = formatRelative(issued.expires_at);
   return (

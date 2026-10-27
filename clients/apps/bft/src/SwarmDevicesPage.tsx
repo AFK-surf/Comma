@@ -22,10 +22,12 @@ import type {
   BftAndroidDevice,
   BftCloudVm,
   BftComputeEnvironment,
+  BftComputeInstallCommand,
   BftSwarmDevice,
   BftSwarmDevices,
 } from "./api";
 import { DialogError, writeErrorMessage } from "./dialogs";
+import { InstallCommand, installErrorMessage } from "./AddRunnerDialog";
 import { showFlash } from "./flash";
 import { formatBytes, formatRelative, humanize } from "./format";
 import { messages } from "./messages";
@@ -87,7 +89,7 @@ const deviceName = (device: BftSwarmDevice) => device.name ?? t.unnamed;
 
 /**
  * An Agent Swarm's devices: its Cloud VM (where it runs, its status and the
- * org Runner it uses), the connectors registered to the swarm, Compute
+ * Compute Host it uses), the connectors registered to the swarm, Compute
  * environments and Android setup. While a device request is being
  * provisioned the page polls a cheap status and reads itself again once it
  * is done.
@@ -336,9 +338,8 @@ const locationText = (location: BftCloudVm["next_location"]) => {
 };
 
 /**
- * The swarm's Cloud VM: where it runs and its status, or, before it exists,
- * where a new one goes. An admin turns it on or off and chooses the org
- * Runner a new VM is created on; the choice does not move an existing VM.
+ * The swarm's Cloud VM and its separate VMM Station Host.
+ * An admin controls the Cloud VM switch and the Host authorization.
  */
 function CloudVmSection({
   org,
@@ -806,6 +807,7 @@ function ComputeSection({
   const confirm = useConfirm();
   const manage = data.project.role === "admin";
   const { compute } = data;
+  const [installOpen, setInstallOpen] = useState(false);
   const intent = (environment: BftComputeEnvironment, next: "drain" | "revoke") => {
     api
       .setEnvironmentIntent(org, project, environment.id, next, environment.revision)
@@ -816,7 +818,32 @@ function ComputeSection({
   };
 
   return (
-    <FormSection description={t.computeNote} title={t.computeTitle}>
+    <FormSection
+      description={t.computeNote}
+      title={t.computeTitle}
+      action={
+        manage && !data.cloud_vm.runner ? (
+          <Button
+            hierarchy="secondary-gray"
+            size="sm"
+            onPress={() => setInstallOpen(true)}
+          >
+            {t.installLinux}
+          </Button>
+        ) : undefined
+      }
+    >
+      {installOpen ? (
+        <LinuxComputeInstallDialog
+          key={`${org}:${project}`}
+          org={org}
+          project={project}
+          onClose={() => {
+            setInstallOpen(false);
+            onRetry();
+          }}
+        />
+      ) : null}
       {compute.status === "unavailable" ? (
         <div className="bft-quiet-row bft-quiet-row-flush">
           <p className="bft-quiet bft-quiet-inline">{t.computeUnavailable}</p>
@@ -1136,6 +1163,66 @@ function AddDeviceDialog({
         )}
         <DialogError message={write.error} />
       </div>
+    </Dialog>
+  );
+}
+
+function LinuxComputeInstallDialog({
+  org,
+  project,
+  onClose,
+}: {
+  org: string;
+  project: string;
+  onClose: () => void;
+}) {
+  const api = useApi();
+  const requestId = useRef<string | undefined>(undefined);
+  const [issued, setIssued] = useState<BftComputeInstallCommand>();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
+  const generate = () => {
+    requestId.current ??= crypto.randomUUID();
+    setBusy(true);
+    setError(undefined);
+    void api.createComputeInstallCommand(org, project, requestId.current).then(
+      (answer) => {
+        setIssued(answer);
+        setBusy(false);
+      },
+      (caught: unknown) => {
+        setError(installErrorMessage(caught));
+        setBusy(false);
+      }
+    );
+  };
+  return (
+    <Dialog
+      isOpen
+      isDismissable={!busy}
+      className="bft-dialog-wide"
+      title={t.installLinux}
+      description={t.installLinuxBody}
+      onOpenChange={(open) => {
+        if (!open && !busy) onClose();
+      }}
+      actions={[
+        {
+          label: messages.runners.done,
+          hierarchy: "secondary-gray",
+          onPress: onClose,
+          disabled: busy,
+        },
+      ]}
+    >
+      {issued ? (
+        <InstallCommand issued={issued} />
+      ) : (
+        <Button hierarchy="primary" isDisabled={busy} onPress={generate}>
+          {t.generateLinuxCommand}
+        </Button>
+      )}
+      {error ? <DialogError message={error} /> : null}
     </Dialog>
   );
 }

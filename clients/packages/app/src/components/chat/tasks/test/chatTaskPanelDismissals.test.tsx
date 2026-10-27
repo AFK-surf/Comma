@@ -8,7 +8,10 @@ import {
   useRefreshPanelDismissalsWhenAttended,
 } from "../chatTaskPanelDismissals";
 
-/** The hooks over a core whose `chatTaskDismissed` marks are `marks` (the test changes them with `say`). */
+/**
+ * The hooks, for a panel that shows Tasks cnv-1 and cnv-2, over a core whose `chatTaskDismissed` marks are `marks`
+ * (the test changes them with `say`).
+ */
 function dismissals() {
   let marks: Record<string, number> = {};
   const core = createScriptedCore({
@@ -17,10 +20,15 @@ function dismissals() {
         ? { marks }
         : undefined,
   });
+  let renders = 0;
   const view = renderHook(
     () => {
+      renders += 1;
       useRefreshPanelDismissalsWhenAttended();
-      return { dismissed: useDismissedPanelTasks(), dismiss: usePanelTaskDismissal() };
+      return {
+        dismissed: useDismissedPanelTasks(["cnv-1", "cnv-2"]),
+        dismiss: usePanelTaskDismissal(),
+      };
     },
     { wrapper: ({ children }) => core.wrap(children) }
   );
@@ -28,7 +36,7 @@ function dismissals() {
     marks = next;
     act(() => core.changed("marks"));
   };
-  return { view, core, say };
+  return { view, core, say, renders: () => renders };
 }
 
 describe("chatTaskPanelDismissals", () => {
@@ -58,6 +66,22 @@ describe("chatTaskPanelDismissals", () => {
     await flush();
     expect(view.result.current.dismissed.get("cnv-1")).toBe(1);
     expect(first.get("cnv-1")).toBe(1);
+  });
+
+  it("renders for none of the acknowledgements of Tasks it does not show", async () => {
+    const { view, say, renders } = dismissals();
+    say({ "cnv-1": 1 });
+    await flush();
+    const shown = view.result.current.dismissed;
+    const before = renders();
+    say({ "cnv-1": 1, "cnv-other": 7 });
+    await flush();
+    expect(renders()).toBe(before);
+    expect(view.result.current.dismissed).toBe(shown);
+    expect(view.result.current.dismissed.has("cnv-other")).toBe(false);
+    say({ "cnv-1": 1, "cnv-2": 3, "cnv-other": 7 });
+    await flush();
+    expect(view.result.current.dismissed.get("cnv-2")).toBe(3);
   });
 
   it("reads them again when the reader comes back to the window", async () => {

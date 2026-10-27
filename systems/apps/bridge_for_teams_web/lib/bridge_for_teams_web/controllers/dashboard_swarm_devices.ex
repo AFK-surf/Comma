@@ -144,8 +144,8 @@ defmodule BridgeForTeamsWeb.DashboardSwarmDevices do
   end
 
   @doc """
-  Choose the org Runner the swarm's Cloud VM uses. The choice applies when the
-  VM is first created; a swarm has at most one Runner.
+  Choose the org Runner that prepares the swarm's VMM Station.
+  A swarm has at most one Runner. Its existing Cloudflare VM keeps its identity.
   """
   def choose_runner(org, user, project, role, params) do
     with :ok <- cloud_vm_admin(project, user, role) do
@@ -156,7 +156,7 @@ defmodule BridgeForTeamsWeb.DashboardSwarmDevices do
              text(params["request_id"])
            ) do
         {:ok, _operation} ->
-          {:ok, %{"notice" => gettext("The runner was asked to get ready for the Cloud VM.")}}
+          {:ok, %{"notice" => gettext("The runner was asked to prepare the VMM Station.")}}
 
         {:error, reason} ->
           runner_error(reason)
@@ -199,13 +199,6 @@ defmodule BridgeForTeamsWeb.DashboardSwarmDevices do
       {:error, 409, "runner_already_chosen",
        gettext(
          "This Agent Swarm already has a runner. Remove it before you choose another runner."
-       ), %{}}
-
-  defp runner_error(:cloud_vm_exists),
-    do:
-      {:error, 409, "cloud_vm_exists",
-       gettext(
-         "The Cloud VM already exists. The runner choice applies only when the Cloud VM is first created."
        ), %{}}
 
   defp runner_error(:cloud_vm_on_runner),
@@ -335,7 +328,7 @@ defmodule BridgeForTeamsWeb.DashboardSwarmDevices do
       "vm" => vm,
       "runner" => state["runner"] && Map.take(state["runner"], ~w(name status)),
       "next_location" => state["next_location"],
-      "runner_choosable" => manageable and is_nil(vm) and is_nil(state["runner"]),
+      "runner_choosable" => manageable and is_nil(state["runner"]),
       "runner_removable" =>
         manageable and not is_nil(state["runner"]) and
           not match?(%{"location" => %{"kind" => "runner"}}, vm)

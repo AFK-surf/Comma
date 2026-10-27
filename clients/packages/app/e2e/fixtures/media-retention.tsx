@@ -37,21 +37,45 @@ const loadPreview = async (...args: Parameters<typeof cache.acquire>) => {
     },
   };
 };
-/** A core that answers only `files.read`, with the sample video, counting each read. */
+/**
+ * A core that answers only `files.read` and `files.readRange`, with the sample video, counting each read of it from its
+ * start, and says it cannot stream, as the web's does (`fileStream`).
+ */
 const filesCore = new CoreClient(
   (onMessage) => ({
     post(raw) {
-      const asked = raw as { id: number; call?: string };
-      if (asked.call !== "files.read") return;
-      metrics.videoLoads += 1;
+      const asked = raw as {
+        id: number;
+        call?: string;
+        params?: { offset?: number; length?: number };
+        subscribe?: { topic: string };
+      };
+      if (asked.subscribe?.topic === "fileStream") {
+        onMessage({ id: asked.id, value: { status: "unsupported", url: null } });
+        return;
+      }
+      if (asked.call !== "files.read" && asked.call !== "files.readRange") return;
+      const offset = asked.call === "files.readRange" ? (asked.params?.offset ?? 0) : 0;
+      if (offset === 0) metrics.videoLoads += 1;
       void fetch(videoSource)
         .then((response) => response.arrayBuffer())
-        .then((bytes) =>
+        .then((buffer) => {
+          const bytes = new Uint8Array(buffer);
           onMessage({
             id: asked.id,
-            ok: { bytes: new Uint8Array(bytes), type: "video/mp4" },
-          })
-        );
+            ok:
+              asked.call === "files.read"
+                ? { bytes, type: "video/mp4" }
+                : {
+                    bytes: bytes.slice(
+                      offset,
+                      offset + (asked.params?.length ?? bytes.length)
+                    ),
+                    size: bytes.length,
+                    type: "video/mp4",
+                  },
+          });
+        });
     },
     close() {},
   }),

@@ -22,7 +22,7 @@ import { CommaAppearanceProvider } from "../commaAppearance";
 import { ShellIconButton } from "../ShellIconButton";
 import { TaskDetailsPanel } from "../chat/tasks/TaskDetailsPanel";
 import { panelTabButton } from "../panelTabButton";
-import { useTaskSummary } from "./useTaskArchive";
+import { MiniAppPanel } from "../apps/MiniAppPanel";
 
 const TaskPanelReport = lazy(() =>
   import("./TaskPanelReport")
@@ -43,6 +43,8 @@ type TaskPanelTarget = {
   groupId: string;
   conversationId?: string | undefined;
   workspaceId?: string | undefined;
+  /** An app of `workspaceId` to run instead of the Task view (a Telegram app button). */
+  appId?: string | undefined;
 };
 
 type PanelScreen = "tasks" | "details";
@@ -150,6 +152,14 @@ function AuthenticatedTaskPanel({
 }) {
   const { productLease } = useCommaAuth();
 
+  if (target.appId && target.workspaceId)
+    return (
+      <MiniAppPanel
+        appId={target.appId}
+        key={JSON.stringify(productLease)}
+        workspaceId={target.workspaceId}
+      />
+    );
   // An account switch must discard the prior account's Task data immediately.
   return (
     <TaskPanelReader
@@ -216,12 +226,8 @@ function TaskPanelReader({
         ? "unavailable"
         : "loading";
   const conversation = shown?.status === "ready" ? shown.preview : undefined;
-  // The preview carries no Loop: a Loop Task's Loop comes with its summary.
-  const taskLoop = useTaskSummary(
-    groupId ?? "",
-    screen === "details" ? (conversationId ?? "") : "",
-    { fetch: true }
-  )?.loop;
+  // The panel's session reads only the Group, so a Loop Task's Loop comes with the preview.
+  const taskLoop = shown?.status === "ready" ? shown.loop : undefined;
 
   function openTask(id: string) {
     setConversationId(id);
@@ -535,7 +541,6 @@ function taskSummary(task: GroupTask): TaskSummaryViewModel {
     statusBucket: taskStatusBucket(task.status),
     updatedAt: task.updatedAt,
     activityStatus: task.activityStatus,
-    freshness: task.freshness,
   };
 }
 

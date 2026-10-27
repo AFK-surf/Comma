@@ -31,6 +31,8 @@ Request DNT suppresses route observations, including Tasks, but not account impo
 
 First touch and pageviews record UTM source, medium and campaign (64-character slugs), referrer host, page and `locale`.
 They record no raw URLs, query fields, content or click IDs. Respect DNT. Downloads do not prove installs.
+Website pageviews also send the referrer host as `$referring_domain` (`$direct` without one), which PostHog web analytics reads.
+A website contact form submission records only its page, not its answers. It records an attempt to open the email app. It does not confirm that the app opened or the email was sent.
 
 Marketing reports use full UTC+8 days from production. Use `build_sha`. Activation joins Message IDs to `source_message_id`. D7 needs seven cohort days.
 
@@ -144,6 +146,9 @@ Connector export and import status includes optional phase timings. These are di
 Read the current operation through `GET /v1/admin/vm/archive/operation?group_id=GROUP&operation=OPERATION` with existing admin authorization.
 The response reports current progress and cancellation state, or the owner's last operation result.
 Use that result for cancellation or same-operation recovery. Salix stores no second history of timing summaries.
+A Container that stops by itself loses its disk: Salix logs one `cloud_vm_container_lost` event (`reason` is `rollout`, `exit_code` or `unknown`, never the provider's message) and counts it in `salix_vm_container_loss_total`; the staging policy `comma_alerting:cloud_vm_container_lost` pages on the event, because a rare counter's first sample on a pod is invisible to `increase()`.
+`salix_vm_wake_duration_seconds` times every wake attempt by outcome; `comma_alerting:cloud_vm_wake_slow` pages in staging when the p95 of `ok` wakes over an hour passes 120 seconds (a normal wake is about 10 seconds) or one failed outcome counts three attempts in 30 minutes.
+`salix_vm_transitional_oldest_age_seconds` is the age of the oldest record in `creating`, `waking`, `archiving` or `failed`, by provider and state; `comma_alerting:cloud_vm_stuck_state` pages in staging when it passes an hour for 10 minutes in a state other than `failed`, because the reconciler retries such a record and tells no one. A `failed` record is not retried: it changes only when its Group next uses the Cloud VM, so the alert leaves it out.
 
 ## Cloud VM canary
 
@@ -163,7 +168,7 @@ The canary does not prove that a Router hands a result to a person. It does not 
 Do these steps in this order. `station_task_canary_silent` fires from its release until the canary has answered twice.
 
 1. In staging, create a Workspace for the canary only. Turn its Cloud VM on in Settings > Models. Bind no Runner. Choose a cheap Router model.
-2. Start the Cloud VM and wait until it is `ready`. A Task for a station that is not connected is refused.
+2. The Cloud VM need not be running: a Task made while it sleeps wakes it and is given to it once it is up.
 3. Create a Worker bound to the Cloud VM and its scheduled Task. Ask the Workspace's Router in its chat, for example: "Create a Worker named Canary that runs on the Cloud VM. Give it a Task that repeats every 30 minutes with this command: This is the Cloud VM canary. Reply with chat_post and all_done. Write only the current UTC time and the host name. Do nothing else."
    The Router calls `agent.create_worker` with `runtime {"kind": "cloud_vm"}` and `im_api.internal.task.create` with `schedule {"interval_minutes": 30}`. A bound Worker runs every Task on the VM, so the Task names no `runs_on`.
    Or create the Task over `bin/comma rpc` on a `comma-*` pod, after the Worker exists. This path skips the Router's checks of the place and the model:
@@ -209,6 +214,41 @@ The Router runs one round on the reply. The station's Worker spends a few hundre
 
 To pause the canary, clear the Task's schedule (`SalixCluster.TaskSchedules.update_task_schedule(group, conversation_id, nil)`) or archive the Task. `station_task_canary_silent` fires two hours later.
 To end it, archive the Task and remove the Group from `canary_group_ids`.
+
+### Task Schedule lifecycle
+
+A Task's Schedule definition lives as long as the Task's binding (`schedule.schedule_id`). The Task's status only gates firing:
+
+| Task status at a due window | Receiver answer | Effect |
+| --- | --- | --- |
+| `active` | `fired` | The command is appended; the anchor advances. |
+| `escalated`, `failed`, `ready_for_review`, or any other status that is not an end | `paused` | Nothing is appended; the anchor advances; the definition stays. Logged as `task_schedule_paused` with `task_status`, once per window. Back to `active`, the Task fires at its next window. |
+| `completed`, `cancelled` | `inactive` | The Task is unbound (`schedule_id` becomes `nil`, through `update_task_schedule`) and the definition is deleted. |
+| Binding cleared (archive, `schedule: null`) or Task deleted | `inactive` | The definition is deleted. |
+| Bound to another Schedule | `settled` | This definition is deleted; the Task keeps its binding. |
+
+Every deletion is logged as `task_schedule_deleted` with `group_id`, `conversation_id`, `schedule_id`, `reason` (`inactive`, `settled`, `not_found`) and `unbound`. In Cloud Logging, filter `jsonPayload.event="task_schedule_deleted"`.
+`failed` is not an end: the Router sets it after one failed run and `active` when the work resumes. A scheduled Task in `ready_for_review` stays paused until its Router sets `active`; review acceptance does not apply to it.
+
+### Rebuild a lost Task Schedule
+
+A scheduled Task that does not fire, with `status` `active` and a `schedule_id`, may point at a definition that is gone. Before this rule, a firing on a Task that was not `active` (for example `escalated` after a `task_worker_stopped` notice) deleted the definition and left the binding. Check and rebuild it over `bin/comma rpc` on a `comma-*` pod:
+
+```elixir
+{:ok, task} = SalixIM.Conversations.get_group_conversation(group, conversation_id)
+%{"status" => "active", "schedule" => %{"schedule_id" => schedule_id}} = task
+SalixCluster.Schedules.get(schedule_id)
+```
+
+`{:error, :not_found}` is the lost definition. Rebuild it with the Task's recurrence; the Task keeps its `schedule_id` and the command:
+
+```elixir
+{:ok, _task} = SalixCluster.TaskSchedules.update_task_schedule(group, conversation_id, %{"interval_minutes" => 30})
+{:ok, definition} = SalixCluster.Schedules.get(schedule_id)
+SalixCluster.Schedules.next_fire_ms(definition)
+```
+
+The first window is one interval after the rebuild.
 
 ### Acceptance
 

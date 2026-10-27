@@ -11,6 +11,8 @@ import type { Route, Tools } from "../admin.ts";
 import { tr } from "../../ops/i18n.ts";
 import { log } from "../../ops/log.ts";
 import { find as findMachineSession, roots as machineRoots } from "../../read/machine.ts";
+import { RUNTIMES } from "../../accounts/sources.ts";
+import type { Runtime } from "../../sessions/config.ts";
 import { STILLFAIL_SURFACE } from "../../store/rows.ts";
 import type { Attachment, Quote } from "../../store/rows.ts";
 import type { Store } from "../../store/store.ts";
@@ -334,7 +336,7 @@ export const routes = ({ read, store, agents }: Tools): Route[] => {
           const i = input(r);
           const kind = runtime(r, i);
           const id = text(i.id);
-          const roots = machineRoots();
+          const roots = machineRoots(RUNTIMES.filter((rt) => a.accounts.machineAllowed(rt)));
           const found = findMachineSession(roots, kind, id);
           if (found === null) throw new Refused(404, tr(r.lang, "station.admin.noLocalSession", { id }));
           const [key, chat] = await as(400, () => continueMachineSession(a.hub, roots, found, r.viewer.email, r.lang));
@@ -438,11 +440,12 @@ export const routes = ({ read, store, agents }: Tools): Route[] => {
               session(s, key);
               a.hub.warm(key).catch((e) => log.warn("admin", "warming failed", { session: key, error: (e as Error).message }));
               return ok({ ok: true }, 202);
-            // How the session runs from its next turn on: its profile, model, effort (configure).
+            // How the session runs from its next turn on: its runtime, profile, model, effort (configure).
             default: {
               const i = input(r);
               const pick = (name: string): string | null | undefined => (!(name in i) ? undefined : i[name] === null ? null : text(i[name]));
               const change: SessionChange = {};
+              if (typeof i.runtime === "string") change.runtime = i.runtime;
               const model = pick("model");
               const effort = pick("effort");
               if (model !== undefined) change.model = model;
@@ -513,6 +516,36 @@ export const routes = ({ read, store, agents }: Tools): Route[] => {
           const key = text(input(r).session);
           session(s, key);
           await as(400, () => addToThread(a.hub, t.id, key));
+          return threadView(r, t.id);
+        }),
+    },
+    // Where a chat's Task runs from now on (tasks.ts moveTo, moveHome): `station`, another station of the workspace, as
+    // `runtime`, `model` and `effort` say; or here (none, or this station), on its own session with them. Refused, it
+    // runs as it did.
+    {
+      method: "POST",
+      pattern: /^\/*threads\/+([^/]+)\/+run(?:\/.*)?$/,
+      handle: (r, [rawId]) =>
+        write(async (s, a) => {
+          const t = thread(s, segment(rawId!));
+          if (t.surface !== STILLFAIL_SURFACE) throw new Refused(400, tr(r.lang, "station.admin.postOnlyStillfail"));
+          const i = input(r);
+          const given = (k: string) => (typeof i[k] === "string" && i[k] !== "" ? (i[k] as string) : null);
+          const station = given("station");
+          if (station !== null && station !== a.place()?.station) {
+            const runtime = given("runtime");
+            if (runtime !== null && !RUNTIMES.includes(runtime as Runtime)) throw new Refused(400, tr(r.lang, "station.admin.badRuntime"));
+            const start = { requester: r.viewer.email, title: t.title, runtime: runtime as Runtime | null, model: given("model"), effort: given("effort") };
+            await as(409, () => a.tasks.moveTo(t.id, station, start));
+          } else {
+            await as(409, () => a.tasks.moveHome(t.id));
+            const own = t.home ?? s.threadSessions(t.id)[0]?.session;
+            const change: SessionChange = {};
+            if (given("runtime") !== null) change.runtime = given("runtime")!;
+            if ("model" in i) change.model = given("model");
+            if ("effort" in i) change.effort = given("effort");
+            if (own && Object.keys(change).length > 0) await as(400, () => configure(a.hub, own, change, r.lang));
+          }
           return threadView(r, t.id);
         }),
     },

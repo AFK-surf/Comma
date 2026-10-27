@@ -18,6 +18,7 @@ import {
   chatLeasedAttachLocalFilesInputSchema,
   chatLeasedPickAttachmentsInputSchema,
   chatLeasedTargetSchema,
+  chatGroupImagePreviewSchema,
   chatLocalFileSchema,
   chatReadGroupImageInputSchema,
   chatReleaseInputSchema,
@@ -26,6 +27,7 @@ import {
   chatWorkspaceSkillsInputSchema,
   type ChatCommandReceipt,
   type ChatPickAttachmentsResult,
+  type ChatReadGroupImageInput,
   type ChatRuntimeSnapshot,
   type ChatTarget,
 } from "@comma/chat-contract";
@@ -49,6 +51,7 @@ import { Duration, Effect, Fiber } from "effect";
 const MAX_PROVISIONING_WAIT_SECONDS = 10;
 import { z } from "zod";
 import type { ChatSessionIdentity } from "../contract.ts";
+import { readFile } from "../files.ts";
 import type { Ctx } from "../ctx.ts";
 import type { CommaConversation, CommaLocalFileRef } from "./api.ts";
 import { coreChatEnv } from "./clock.ts";
@@ -58,14 +61,25 @@ import {
   type ChatAttachmentIntakeOutcome,
 } from "./coordinator/ChatCoordinator.ts";
 import { StaleChatSessionError } from "./coordinator/entries/sessionBoundary.ts";
+import { imageMediaTypeOfName } from "./coordinator/workspace/GroupImagePreviews.ts";
 import type { ChatEnv } from "./env.ts";
 import { createChatApi } from "./http.ts";
 import { messageContextInputSchema, readMessageContext } from "./message-context.ts";
 import { prepareInputSchema, readPreparedConversation } from "./prepare.ts";
 import { ChatStore } from "./persist.ts";
 import { asCoreError, parse } from "./calls.ts";
+import { route } from "../api.ts";
 import { pickQuota } from "./model/attachmentQuota.ts";
-import { ChatViews } from "./views.ts";
+import { validateAttachment } from "./model/conversationChannel.ts";
+import {
+  composeMessageWithAttachments,
+  MAX_ATTACHMENTS_PER_MESSAGE,
+} from "./model/protocol.ts";
+import {
+  ChatViews,
+  type ConversationHolder,
+  type HostedConversations,
+} from "./views.ts";
 import { WorkspaceChats } from "./workspace-chat.ts";
 import type { AttachmentUploadInput, ChatMessage } from "./runtime.ts";
 
@@ -88,9 +102,22 @@ export type ChatAppended = {
 };
 
 /**
+ * What a notice or an AirDrop offer calls `conversation`: Comma for Home chat, whose stored server title is not a name
+ * for the person; a Task keeps its own title, the product's name when it has none.
+ */
+function conversationName(
+  conversation: Pick<CommaConversation, "kind" | "title"> | undefined,
+  locale: CommaLocale,
+  productName: string
+): string {
+  return conversation?.kind === "user_chat"
+    ? i18n.electron_notification_router_title({}, { locale })
+    : (conversation?.title ?? "").trim() || productName;
+}
+
+/**
  * The notices for `messages`, new in `conversation`: one for each message the core marks as the Router speaking with
- * words to show (`ChatMessage.notice`; files alone give no banner). The Router speaks as Comma in Home chat, whose
- * server title names storage, not who is talking; a Task keeps its own title, the product's name when it has none.
+ * words to show (`ChatMessage.notice`; files alone give no banner), titled by the conversation's name.
  */
 function noticesFor(
   conversation: Pick<CommaConversation, "kind" | "title">,
@@ -98,10 +125,7 @@ function noticesFor(
   locale: CommaLocale,
   productName: string
 ): ChatNotice[] {
-  const title =
-    conversation.kind === "user_chat"
-      ? i18n.electron_notification_router_title({}, { locale })
-      : (conversation.title ?? "").trim() || productName;
+  const title = conversationName(conversation, locale, productName);
   const replyPlaceholder = i18n.electron_notification_reply_placeholder({}, { locale });
   return messages.flatMap((message) =>
     message.notice?.preview
@@ -127,12 +151,13 @@ function roomOf(
 /**
  * Files the computer received for a window (`chat.intake.receive`): the window, the conversation it showed then, and
  * the lease the core holds on that conversation until the intake ends (a window that changes conversation does not
- * let it go).
+ * let it go); `retained` unless `hosted` holds it, which keeps its drafts without one.
  */
 type Received = {
   surfaceId: string;
   shown: { subscriberId: string; leaseId: string; workspaceId: string };
   lease: z.output<typeof chatRetainInputSchema>;
+  retained: boolean;
 };
 
 const receivedItemSchema = z.discriminatedUnion("kind", [
@@ -186,6 +211,8 @@ const ACCOUNT_WAIT_MS = 10_000;
 
 export class Chat {
   readonly #ctx: Ctx;
+  /** Conversations the coordinator does not hold (a Task a station hosts): their views are shown and acted on there. */
+  hosted: HostedConversations | undefined;
 
   /**
    * What the coordinator answers a call with, as the call's effect: its error as the core's. Work it starts runs in
@@ -283,6 +310,7 @@ export class Chat {
       identity: () => this.#identity(),
       own: (client, input) => this.#own(client, input),
       admit: (name, p) => this.#admit(name, p),
+      hosted: () => this.hosted,
       pick: (input) => this.#pick(input),
     });
     ctx.kernel.calls(this.#views.calls());
@@ -365,7 +393,7 @@ export class Chat {
     if (!intake) return;
     this.#intakes.delete(intakeId);
     intake.claim.releaseIfUnused();
-    if (intake.received)
+    if (intake.received?.retained)
       try {
         this.#coordinator.release(intake.received.lease);
       } catch {
@@ -383,7 +411,7 @@ export class Chat {
   }): void {
     const received = intake.received;
     if (received) {
-      const now = this.#coordinator.incomingAttachmentTarget(received.surfaceId);
+      const now = this.#shownBy(received.surfaceId);
       if (
         !now ||
         now.subscriberId !== received.shown.subscriberId ||
@@ -395,9 +423,30 @@ export class Chat {
     intake.claim.assertCurrent();
   }
 
+  /** Who holds `conversation`'s draft and takes what a window does to it: `hosted` for its own, else the coordinator. */
+  #holder(conversation: string): ConversationHolder {
+    return this.hosted?.owns(conversation) ? this.hosted : this.#coordinator;
+  }
+
+  /** The one conversation window `surfaceId` shows, whoever holds it; undefined when it shows none or several. */
+  #shownBy(surfaceId: string) {
+    return (
+      this.#coordinator.incomingAttachmentTarget(surfaceId) ??
+      this.#views.hostedShownBy(surfaceId)
+    );
+  }
+
   /** What intake `intake`'s draft takes more now. */
   #room(intake: { target: ChatTarget }): NonNullable<ReturnType<typeof pickQuota>> {
     const { workspaceId, groupId, conversationId } = intake.target;
+    if (this.hosted?.owns(conversationId))
+      return (
+        this.hosted.room({
+          workspace: workspaceId,
+          group: groupId,
+          conversation: conversationId,
+        }) ?? { maxFiles: 0, maxTotalSize: 0, maxUploadFiles: 0 }
+      );
     const session = this.#coordinator
       .state()
       .sessions.find(
@@ -421,11 +470,15 @@ export class Chat {
     | { refused: "no_chat" }
     | { refused: "directory"; title: string }
     | { intakeId: string; title: string; workspaceId: string } {
-    const coordinator = this.#coordinator;
-    const shown = coordinator.incomingAttachmentTarget(input.surfaceId);
+    const shown = this.#shownBy(input.surfaceId);
     if (!shown) return { refused: "no_chat" };
+    const title = conversationName(
+      shown.conversation,
+      this.#locale,
+      this.#ctx.host.desktop?.app.productName ?? "Comma"
+    );
     if (input.files.some((file) => file.isDirectory))
-      return { refused: "directory", title: shown.title };
+      return { refused: "directory", title };
     const lease = {
       workspaceId: shown.workspaceId,
       groupId: shown.groupId,
@@ -433,15 +486,17 @@ export class Chat {
       subscriberId: `received:${this.#env.uuid()}`,
       leaseId: this.#env.uuid(),
     };
-    coordinator.retain(lease);
+    const holder = this.#holder(shown.conversationId);
+    const retained = holder === this.#coordinator;
+    if (retained) this.#coordinator.retain(lease);
     let claim: ChatAttachmentIntakeClaim;
     try {
-      claim = coordinator.claimAttachmentIntake({
+      claim = holder.claimAttachmentIntake({
         ...lease,
         surfaceId: input.surfaceId,
       });
     } catch (error) {
-      coordinator.release(lease);
+      if (retained) this.#coordinator.release(lease);
       throw error;
     }
     this.#intakes.set(claim.intakeId, {
@@ -456,11 +511,12 @@ export class Chat {
           workspaceId: shown.workspaceId,
         },
         lease,
+        retained,
       },
     });
     return {
       intakeId: claim.intakeId,
-      title: shown.title,
+      title,
       workspaceId: shown.workspaceId,
     };
   }
@@ -474,18 +530,37 @@ export class Chat {
     const received = intake.received!;
     this.#assertCurrent(intake);
     const target = { ...received.lease, surfaceId: received.surfaceId };
-    let receipt: ChatCommandReceipt = { revision: this.#coordinator.state().revision };
+    return this.#attachItems(target, items) ?? { revision: this.#revision(target) };
+  }
+
+  /** Attaches what a pick or AirDrop gave to `target`'s draft: the last receipt, none when it gave nothing. */
+  #attachItems(
+    target: ChatTarget & { leaseId: string; subscriberId: string; surfaceId: string },
+    items: readonly (
+      | { kind: "upload"; name: string; size: number; bytes: Uint8Array<ArrayBuffer> }
+      | { kind: "local_file"; file: z.output<typeof chatLocalFileSchema> }
+    )[]
+  ): ChatCommandReceipt | undefined {
+    const holder = this.#holder(target.conversationId);
+    let receipt: ChatCommandReceipt | undefined;
     for (const item of items)
       receipt =
         item.kind === "upload"
-          ? this.#coordinator.attach({
+          ? holder.attach({
               ...target,
               bytes: item.bytes,
               name: item.name,
               size: item.size,
             })
-          : this.#coordinator.attachLocalFiles({ ...target, files: [item.file] });
+          : holder.attachLocalFiles({ ...target, files: [item.file] });
     return receipt;
+  }
+
+  /** The revision the views of `target` are at, as a receipt names it. */
+  #revision(target: ChatTarget): number {
+    return this.hosted?.owns(target.conversationId)
+      ? this.hosted.revision()
+      : this.#coordinator.state().revision;
   }
 
   #create(): ChatCoordinator {
@@ -648,9 +723,11 @@ export class Chat {
             return c().release(input);
           }),
       },
-      "chat.attach": sync(chatLeasedAttachInputSchema, (i) => c().attach(i)),
+      "chat.attach": sync(chatLeasedAttachInputSchema, (i) =>
+        this.#holder(i.conversationId).attach(i)
+      ),
       "chat.attachLocalFiles": sync(chatLeasedAttachLocalFilesInputSchema, (i) =>
-        c().attachLocalFiles(i)
+        this.#holder(i.conversationId).attachLocalFiles(i)
       ),
       "chat.resolveWorkspaceChat": sync(
         z.object({
@@ -689,12 +766,20 @@ export class Chat {
       "chat.messageContext": {
         cancellable: true,
         run: (p) =>
-          Effect.suspend(() =>
-            readMessageContext(this.#ctx, parse(messageContextInputSchema, p))
-          ).pipe(Effect.catchDefect((defect) => Effect.fail(asCoreError(defect)))),
+          Effect.suspend(() => {
+            const input = parse(messageContextInputSchema, p);
+            // A Task a station hosts is read back on its station.
+            return this.hosted?.owns(input.conversationId)
+              ? this.hosted.messageContext(
+                  input.groupId,
+                  input.conversationId,
+                  input.messageId
+                )
+              : readMessageContext(this.#ctx, input);
+          }).pipe(Effect.catchDefect((defect) => Effect.fail(asCoreError(defect)))),
       },
       "chat.readGroupImage": sync(chatReadGroupImageInputSchema, (i) =>
-        c().readGroupImage(i)
+        i.source === "attachment" ? this.#readMessageImage(i) : c().readGroupImage(i)
       ),
       /** A reply sent without a view (Main's notification banner). */
       "chat.sendDetached": sync(
@@ -708,6 +793,85 @@ export class Chat {
             },
             i.text
           )
+      ),
+      /**
+       * A file for a cloud Task, checked as a composer attachment is and put in the workspace's Router chat: the
+       * workspace file its first message names (`chat.startTask`).
+       */
+      "chat.uploadTaskFile": sync(
+        z.object({
+          workspaceId: z.string().min(1),
+          name: z.string().min(1).max(1024),
+          bytes: z.instanceof(Uint8Array),
+        }),
+        (i) => {
+          const file = {
+            data: new Blob([i.bytes]),
+            name: i.name,
+            size: i.bytes.byteLength,
+          };
+          // The window holds the count to its Task's message; each file is checked as the composer's are.
+          const invalid = validateAttachment(file, 0, this.#locale, false);
+          if (invalid) return Effect.fail(CoreError.invalid(invalid));
+          return c()
+            .resolveWorkspaceChat(i.workspaceId)
+            .pipe(
+              Effect.flatMap((chat) =>
+                chat.status === "ready"
+                  ? c().uploadDetachedFile(chat.groupId, file)
+                  : Effect.fail(
+                      CoreError.invalid(`the workspace chat is ${chat.status}`)
+                    )
+              ),
+              Effect.map(({ name, path, size }) => ({ name, path, size }))
+            );
+        }
+      ),
+      /**
+       * A Task in Comma's cloud with `model`, its first message `text` and the files `uploads` names, listed as the
+       * composer lists them (`POST /v1/comma/workspaces/:ws/tasks`): the server makes it and shares the files into it
+       * (`SalixIM.ModelMentionTask.start_from_window/5`), and answers the Task, which the window opens at once. Made
+       * once under `key`: made again with it (a call that failed), it is the same Task. A refusal fails `refused`
+       * with why, in the server's words.
+       */
+      "chat.startTask": sync(
+        z
+          .object({
+            workspaceId: z.string().min(1),
+            key: z.string().min(8).max(128),
+            model: z.object({ id: z.string().min(1), name: z.string().min(1) }),
+            text: z.string().trim(),
+            uploads: z
+              .array(z.object({ name: z.string().min(1), path: z.string().min(1) }))
+              .max(MAX_ATTACHMENTS_PER_MESSAGE)
+              .optional(),
+          })
+          .refine((i) => i.text !== "" || (i.uploads?.length ?? 0) > 0, {
+            message: "text is required",
+          }),
+        (i) => {
+          const ctx = this.#ctx;
+          return ctx.session.account().pipe(
+            Effect.flatMap((account) =>
+              ctx.api.request(
+                account,
+                "POST",
+                route`/v1/comma/workspaces/${i.workspaceId}/tasks`,
+                z.object({ task_id: z.string(), group_id: z.string() }),
+                {
+                  client_request_id: i.key,
+                  text: composeMessageWithAttachments(i.text, i.uploads ?? []),
+                  model: { id: i.model.id },
+                }
+              )
+            ),
+            Effect.map((made) => ({
+              groupId: made.group_id,
+              conversationId: made.task_id,
+            })),
+            Effect.mapError((failure) => refusedWithWhy(failure))
+          );
+        }
       ),
       /** The language messages the core words are in (the UI's, or Electron's Main's). */
       "chat.locale": sync(z.object({ locale: z.string() }), ({ locale }) => {
@@ -761,7 +925,9 @@ export class Chat {
               p
             );
             this.#own(call.client, input);
-            const claim = c().claimAttachmentIntake(input);
+            const claim = this.#holder(input.conversationId).claimAttachmentIntake(
+              input
+            );
             this.#intakes.set(claim.intakeId, {
               client: call.client,
               claim,
@@ -870,8 +1036,7 @@ export class Chat {
     const account = this.#ctx.session.current();
     if (!account) throw new StaleChatSessionError();
     const { maxFiles, maxTotalSize, maxUploadFiles, ...target } = input;
-    const coordinator = this.#coordinator;
-    const claim = coordinator.claimAttachmentIntake(target);
+    const claim = this.#holder(target.conversationId).claimAttachmentIntake(target);
     const { intakeId } = claim;
     this.#intakes.set(intakeId, { client: DESKTOP, claim, target });
     // A pick that fails or is given up before it reported settles as failed: a send waiting on it rejects rather
@@ -889,17 +1054,14 @@ export class Chat {
       })
       .pipe(
         Effect.map((picked): ChatPickAttachmentsResult => {
-          let receipt: ChatCommandReceipt = { revision: coordinator.state().revision };
-          for (const item of picked.items)
-            receipt =
+          const receipt = this.#attachItems(
+            target,
+            picked.items.map((item) =>
               item.kind === "upload"
-                ? coordinator.attach({
-                    ...target,
-                    bytes: new Uint8Array(item.bytes),
-                    name: item.name,
-                    size: item.size,
-                  })
-                : coordinator.attachLocalFiles({ ...target, files: [item.file] });
+                ? { ...item, bytes: new Uint8Array(item.bytes) }
+                : item
+            )
+          ) ?? { revision: this.#revision(target) };
           outcome = {
             cancelled: picked.cancelled,
             errorCount: picked.errors.length,
@@ -924,6 +1086,37 @@ export class Chat {
           })
         )
       );
+  }
+
+  /**
+   * The preview of image `index` of a message, read where its conversation keeps it (`files.read`: Comma's server, or
+   * the station of a Task one hosts) and drawn by the host as a workspace image's is.
+   */
+  #readMessageImage(
+    input: Extract<ChatReadGroupImageInput, { source: "attachment" }>
+  ): Effect.Effect<Uint8Array, CoreError> {
+    const ctx = this.#ctx;
+    const hosted = this.hosted;
+    return Effect.gen(function* () {
+      const host = ctx.host;
+      const mediaType = imageMediaTypeOfName(input.fileName);
+      if (!host.renderImagePreview)
+        return yield* Effect.fail(
+          new CoreError("unsupported", "Image previews are unavailable.")
+        );
+      if (!mediaType) return yield* Effect.fail(CoreError.invalid("not an image"));
+      const file = yield* readFile(ctx, hosted, {
+        source: "attachment",
+        group: input.groupId,
+        conversation: input.conversationId,
+        message: input.messageId,
+        index: input.index,
+      });
+      const preview = yield* host
+        .renderImagePreview({ bytes: file.bytes, mediaType })
+        .pipe(Effect.mapError((error) => CoreError.host(error)));
+      return chatGroupImagePreviewSchema.parse(preview);
+    });
   }
 
   /** Whether `client` may act on the open intake `intake`: its own, or Main's client on one the core opened. */
@@ -977,4 +1170,13 @@ export class Chat {
         }),
     };
   }
+}
+
+/** A refusal of the server's (`{error: "refused", message}`) as the core's error, with its words for the person. */
+function refusedWithWhy(failure: Error): Error {
+  const refusal = failure as Partial<CoreError>;
+  const why = (refusal.detail as { message?: unknown } | undefined)?.message;
+  return refusal.code === "refused" && typeof why === "string"
+    ? new CoreError("refused", why, refusal.status)
+    : failure;
 }

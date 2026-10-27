@@ -1751,6 +1751,10 @@ msgid "An existing system prompt cannot be cleared."
 msgstr "已有的系统提示词不能清空。"
 
 #: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
+msgid "Only organization owners can change the system prompt."
+msgstr "只有组织所有者可以修改系统提示词。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
 msgid "Agent runtime rebound."
 msgstr "已重新绑定 Agent 运行时。"
 
@@ -1945,8 +1949,8 @@ msgid "Could not list the runtime's models. Try again shortly."
 msgstr "无法列出运行时的模型。请稍后重试。"
 
 #: lib/bridge_for_teams_web/controllers/dashboard_swarm_devices.ex
-msgid "The runner was asked to get ready for the Cloud VM."
-msgstr "已请求 Runner 为云电脑做好准备。"
+msgid "The runner was asked to prepare the VMM Station."
+msgstr "已请求 Runner 准备 VMM Station。"
 
 #: lib/bridge_for_teams_web/controllers/dashboard_swarm_devices.ex
 msgid "Runner removed from this Agent Swarm."
@@ -1955,10 +1959,6 @@ msgstr "已从此 Agent Swarm 移除 Runner。"
 #: lib/bridge_for_teams_web/controllers/dashboard_swarm_devices.ex
 msgid "This Agent Swarm already has a runner. Remove it before you choose another runner."
 msgstr "此 Agent Swarm 已有 Runner。请先移除它，再选择其他 Runner。"
-
-#: lib/bridge_for_teams_web/controllers/dashboard_swarm_devices.ex
-msgid "The Cloud VM already exists. The runner choice applies only when the Cloud VM is first created."
-msgstr "云电脑已存在。Runner 选择只在首次创建云电脑时生效。"
 
 #: lib/bridge_for_teams_web/controllers/dashboard_swarm_devices.ex
 msgid "The Cloud VM runs on this runner. You cannot remove the runner."

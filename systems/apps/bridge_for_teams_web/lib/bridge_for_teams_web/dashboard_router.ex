@@ -116,6 +116,12 @@ defmodule BridgeForTeamsWeb.DashboardRouter do
   scope "/dashboard/api/v1", BridgeForTeamsWeb do
     pipe_through([:dashboard_api, :dashboard_locale])
 
+    post(
+      "/orgs/:org/projects/:project/compute-nodes/agent-vmm/install-commands",
+      ProjectComputeController,
+      :agent_vmm_install_command
+    )
+
     get("/session", DashboardAPIController, :session)
     get("/orgs/:org/context", DashboardAPIController, :context)
     get("/orgs/:org/overview", DashboardAPIController, :overview)
@@ -310,6 +316,16 @@ defmodule BridgeForTeamsWeb.DashboardRouter do
     put("/orgs/:org/plugins/:plugin_id", DashboardAPIController, :update_plugin)
 
     # Meetings and Data policy: owner/admin pages of one Agent Swarm.
+    get("/orgs/:org/daily-brief", DashboardAPIController, :daily_brief)
+    put("/orgs/:org/daily-brief/settings", DashboardAPIController, :save_daily_brief)
+    post("/orgs/:org/daily-brief/members/sync", DashboardAPIController, :sync_daily_brief_members)
+
+    post(
+      "/orgs/:org/daily-brief/members/:member/send",
+      DashboardAPIController,
+      :request_daily_brief
+    )
+
     get("/orgs/:org/meetings/:project_id", DashboardAPIController, :meetings)
     put("/orgs/:org/meetings/:project_id/settings", DashboardAPIController, :save_meetings)
     get("/orgs/:org/meetings/:project_id/:read", DashboardAPIController, :meetings_read)
@@ -510,6 +526,12 @@ defmodule BridgeForTeamsWeb.DashboardRouter do
 
     get("/orgs/:org/projects/:project/devices", ProjectDeviceController, :index)
     post("/orgs/:org/projects/:project/devices", ProjectDeviceController, :create)
+
+    post(
+      "/orgs/:org/projects/:project/compute-nodes/agent-vmm/install-commands",
+      ProjectComputeController,
+      :agent_vmm_install_command
+    )
 
     get("/orgs/:org/projects/:project/compute", ProjectComputeController, :index)
 
@@ -798,6 +820,7 @@ defmodule BridgeForTeamsWeb.DashboardRouter do
     get("/orgs/:org/meetings", SPAController, :index)
     get("/orgs/:org/meetings/past", SPAController, :index)
     get("/orgs/:org/meetings/settings", SPAController, :index)
+    get("/orgs/:org/daily-brief", SPAController, :index)
     get("/orgs/:org/information-flow", SPAController, :index)
     # Health replaced the Operations console; old tab bookmarks land on it.
     get("/orgs/:org/operations", SPAController, :index)

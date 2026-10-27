@@ -5,6 +5,8 @@ import QuickChatCore
 /// work to admission-waiting requests and retries failed background clips once.
 @MainActor
 final class ClipTranscriptions {
+    /// The longest clip, in seconds of audio.
+    static let clipLength = 60.0
     typealias Encode = @MainActor (Range<Double>) async -> Data?
     private let encode: Encode
     private let transcribe: @MainActor (Data, Bool) async -> String?
@@ -17,7 +19,9 @@ final class ClipTranscriptions {
     private var sending = false
     private(set) var through = 0.0
 
+    /// Clips start at `start` seconds of audio.
     init(
+        from start: Double = 0,
         encode: @escaping Encode,
         transcribe: @escaping @MainActor (Data, Bool) async -> String?,
         completed: @escaping @MainActor (Range<Double>, String?) -> Void
@@ -25,13 +29,14 @@ final class ClipTranscriptions {
         self.encode = encode
         self.transcribe = transcribe
         self.completed = completed
+        through = start
     }
 
     /// A delayed microphone callback can cover several clips. Keep all of them.
     func append(through end: Double) {
         guard !cancelled, end.isFinite else { return }
         while end > through {
-            let next = min(end, through + ExactSpeech.clipLength)
+            let next = min(end, through + Self.clipLength)
             pending.append(through..<next)
             through = next
         }

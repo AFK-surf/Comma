@@ -105,8 +105,6 @@ export function archiveDisabledReason(
   switch (reason) {
     case "not_finished":
       return messages.tasks_archive_not_finished();
-    case "schedule_bound":
-      return messages.tasks_archive_schedule_bound();
     default:
       return messages.tasks_archive_unavailable();
   }

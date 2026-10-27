@@ -172,11 +172,8 @@ test("device cards keep connection and readiness separate and target management 
   const panel = page.locator('[data-slot="device-settings"]');
   const card = panel.getByRole("article").first();
   await expect(card.getByRole("heading", { name: "office-mini" })).toBeVisible();
-  await expect(card.getByText("Connected", { exact: true })).toBeVisible();
-  // The Cloud VM has its own section and is not one of the person's computers.
-  await expect(panel.locator(".comma-devices__summary").first()).toHaveText(
-    "19 of your computers on this page · 18 online"
-  );
+  // The offline computer folds into its own section; the Cloud VM has its own and is not one of the person's computers.
+  await expect(panel.getByRole("region", { name: "Offline (1)" })).toBeVisible();
   const cloud = panel
     .getByRole("region", { name: "Cloud VM" })
     .getByRole("article", { name: "Cloud Workspace", exact: true });
@@ -185,6 +182,9 @@ test("device cards keep connection and readiness separate and target management 
   await expect(page.getByRole("menuitem", { name: "Rename device" })).toBeVisible();
   await expect(page.getByRole("menuitem", { name: "Delete device" })).toHaveCount(0);
   await page.keyboard.press("Escape");
+  // A closing menu stays in the page while it fades (inert, which Playwright's
+  // role locator does not see); the next menu opens after it has gone.
+  await expect(page.locator('[data-slot="menu-popover"]')).toHaveCount(0);
   // Add device is the 28px button of Drive's Transfer: 8px before its icon,
   // 12px after its label.
   const addDevice = panel.getByRole("button", { name: "Add device", exact: true });
@@ -201,55 +201,47 @@ test("device cards keep connection and readiness separate and target management 
   ).toEqual([28, "8px", "12px"]);
   await expect(
     card
-      .locator("summary")
+      .locator(".comma-device__agent-status")
       .getByText("Operations are disabled", { exact: true })
       .first()
   ).toBeVisible();
-  await card.locator("summary").filter({ hasText: "Codex" }).click();
-  await expect(card).toContainText("Version: 1.0.0");
-  await expect(card).toContainText("Authentication: Not signed in");
-  await card.locator("summary").filter({ hasText: "Codex" }).click();
-  const offline = panel.getByRole("article", { name: "Computer 1", exact: true });
+  // Versions, sign-in, hardware and identity are in the computer's details.
+  await card.getByRole("button", { name: /More actions for/ }).click();
+  await page.getByRole("menuitem", { name: "Details" }).click();
+  const details = page.getByRole("dialog", { name: "office-mini", exact: true });
+  await expect(details).toContainText("Version1.0.0");
+  await expect(details).toContainText("AuthenticationNot signed in");
+  await expect(details).toContainText("16 GB");
+  await page.keyboard.press("Escape");
+  const offline = panel
+    .getByRole("region", { name: "Offline (1)" })
+    .getByRole("article", { name: "Computer 1", exact: true });
   const firstCard = (await card.boundingBox())!;
-  const secondCard = (await offline.boundingBox())!;
+  // The offline computers' panel lines up with the cards, after them.
+  const secondCard = (await panel.locator(".comma-devices__offline").boundingBox())!;
   expect(Math.round(secondCard.x)).toBe(Math.round(firstCard.x));
   expect(secondCard.y).toBeGreaterThanOrEqual(firstCard.y + firstCard.height);
 
-  await expect(
-    offline.locator(".comma-device__connection").getByText("Offline", { exact: true })
-  ).toBeVisible();
-
-  await expect(card).toContainText("16 GB");
-  await expect(card).toContainText("Ready for Tasks");
-  await expect(card).not.toContainText("Disconnected at:");
-  await offline.getByRole("button", { name: "Permissions & details" }).click();
-  const permissionDialog = page.getByRole("dialog", {
-    name: "Computer 1",
-    exact: true,
-  });
-  await expect(permissionDialog).toContainText("Disconnected at:");
-  await expect(permissionDialog).toContainText("studio.local");
-  await expect(permissionDialog.getByRole("radio", { name: /^Full/ })).toBeDisabled();
-  await permissionDialog
-    .getByRole("button", { name: "Close", exact: true })
-    .last()
-    .click();
-  await card.getByRole("button", { name: "Permissions & details" }).click();
-  const localPermissions = page.getByRole("dialog", {
-    name: "office-mini",
-    exact: true,
-  });
-  const full = localPermissions.getByRole("radio", { name: /^Full/ });
-  await expect(localPermissions.getByRole("radio", { name: /^Read/ })).toBeChecked();
-  await full.click();
-  await expect(full).toBeChecked();
+  // An offline computer is one line: no agents and no access to change.
+  await expect(offline.getByRole("button", { name: /Access/ })).toHaveCount(0);
+  await expect(card).not.toContainText("Disconnected at");
+  await offline.getByRole("button", { name: /More actions for/ }).click();
+  await page.getByRole("menuitem", { name: "Details" }).click();
+  const offlineDetails = page.getByRole("dialog", { name: "Computer 1", exact: true });
+  await expect(offlineDetails).toContainText("Disconnected at");
+  await expect(offlineDetails).toContainText("studio.local");
+  await page.keyboard.press("Escape");
+  // Access is chosen on the card.
+  const localAccess = card.getByRole("button", { name: /office-mini Access/ });
+  await expect(localAccess).toContainText("Read");
+  await localAccess.click();
+  await page.getByRole("option", { name: /^Full/ }).click();
+  await expect(localAccess).toContainText("Full");
   expect(accessChanges).toEqual(["full"]);
-  await localPermissions
-    .getByRole("button", { name: "Close", exact: true })
-    .last()
-    .click();
   const otherCard = panel.getByRole("article", { name: "Computer 2", exact: true });
-  await expect(otherCard).toContainText("Read-only access");
+  await expect(
+    otherCard.getByRole("button", { name: /Computer 2 Access/ })
+  ).toContainText("Read");
   const title = panel.getByRole("heading", { name: "Devices", exact: true });
   const titlePosition = await title.boundingBox();
   const viewport = panel.locator(".comma-scroll-area__viewport");
@@ -297,20 +289,22 @@ test("device cards keep connection and readiness separate and target management 
     element.scrollTop = 0;
   });
   await expect(card.getByRole("heading", { name: "office-mini" })).toBeInViewport();
-  await expect(
-    card.locator("summary").getByText("Check passed", { exact: true })
-  ).toHaveCount(1);
+  // A working agent says nothing; only Codex, signed out, says so.
+  await expect(card.locator(".comma-device__agent-status")).toHaveCount(1);
+  await expect(card.locator(".comma-device__agent-status")).toHaveText(
+    "Sign in required"
+  );
   failRefresh = true;
   await page.evaluate(() => window.dispatchEvent(new Event("focus")));
   await expect(panel.getByRole("alert")).toBeVisible();
-  await expect(
-    card.locator("summary").getByText("Check passed", { exact: true })
-  ).toHaveCount(0);
+  await expect(card.locator(".comma-device__agent-status")).toHaveCount(2);
   failRefresh = false;
   validUntil = Math.floor(Date.now() / 1000) - 1;
   await page.evaluate(() => window.dispatchEvent(new Event("focus")));
   await expect(
-    card.locator("summary").getByText("Check expired", { exact: true })
+    card
+      .locator(".comma-device__agent-status")
+      .getByText("Check expired", { exact: true })
   ).toHaveCount(1);
   // The refresh dropped the page read when "Computer 18" scrolled into view.
   // Scrolling to the end asks for it again; this time it fails, and the list

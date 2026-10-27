@@ -46,10 +46,9 @@ function recordingSdk() {
 
 function meetingDetection(loadNative: () => Promise<NativeAudioCapture | undefined>) {
   return new MeetingPresenceService({
-    clearInterval: () => undefined,
+    clock: { now: () => 0, setTimer: () => () => undefined },
     loadNative,
     onStateChanged: () => undefined,
-    setInterval: () => 1,
   });
 }
 
@@ -75,7 +74,7 @@ describe("native audio loader", () => {
       },
       importSdk,
       logger,
-      now: () => nowMs,
+      clock: { now: () => nowMs, setTimer: () => () => undefined },
     });
     const detection = meetingDetection(load);
 
@@ -110,7 +109,7 @@ describe("native audio loader", () => {
       },
       importSdk: async () => sdk,
       logger,
-      now: () => 0,
+      clock: { now: () => 0, setTimer: () => () => undefined },
     });
 
     await meetingDetection(load).start();

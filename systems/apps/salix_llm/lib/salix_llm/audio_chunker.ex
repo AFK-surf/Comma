@@ -14,6 +14,9 @@ defmodule SalixLlm.AudioChunker do
   @minimum_mp3_playable_sample_count 47
   @sample_count_tolerance_per_chunk 1
   @sample_probe_remainder_limit 64
+  @silk_sample_rate_hz 24_000
+  @silk_max_packet_bytes 1_024
+  @silk_packets_per_second 50
 
   @type chunk :: %{
           index: non_neg_integer(),
@@ -74,6 +77,7 @@ defmodule SalixLlm.AudioChunker do
     deadline_ms = opts[:deadline_ms]
     ffmpeg = opts[:ffmpeg] || System.find_executable("ffmpeg")
     ffprobe = opts[:ffprobe] || System.find_executable("ffprobe")
+    silk_decoder = opts[:silk_decoder] || System.find_executable("silk-v3-decoder")
 
     with {:ok, ffmpeg} <- available_executable(ffmpeg, :ffmpeg_unavailable),
          {:ok, ffprobe} <- available_executable(ffprobe, :ffprobe_unavailable),
@@ -82,6 +86,7 @@ defmodule SalixLlm.AudioChunker do
            transcode_in_temp(
              ffmpeg,
              ffprobe,
+             silk_decoder,
              dir,
              audio_source,
              source_filename,
@@ -100,6 +105,7 @@ defmodule SalixLlm.AudioChunker do
   defp transcode_in_temp(
          ffmpeg,
          ffprobe,
+         silk_decoder,
          dir,
          audio_source,
          source_filename,
@@ -115,6 +121,9 @@ defmodule SalixLlm.AudioChunker do
 
       with {:ok, input_timeout_ms} <- phase_timeout(timeout_ms, deadline_ms),
            :ok <- write_audio_input_bounded(input, audio_source, input_timeout_ms),
+           {:ok, decode_timeout_ms} <- phase_timeout(timeout_ms, deadline_ms),
+           {:ok, input} <-
+             decode_silk(silk_decoder, input, dir, max_duration_seconds, decode_timeout_ms),
            {:ok, probe_timeout_ms} <- phase_timeout(timeout_ms, deadline_ms),
            {:ok, source_audio} <-
              probe_decoded_source_audio(ffprobe, input, probe_timeout_ms),
@@ -208,6 +217,127 @@ defmodule SalixLlm.AudioChunker do
       {:error, reason} ->
         {:error, {:asr_audio_write_failed, reason}}
     end
+  end
+
+  # WeChat and QQ record voice messages as SILK v3, which ffmpeg cannot decode.
+  # kn007/silk-v3-decoder turns one into raw 24 kHz mono PCM, which gets a WAV
+  # header here so the rest of the pipeline reads it like any other source.
+  # The decoder skips one byte before the "#!SILK_V3" header (WeChat's 0x02),
+  # so a plain file such as QQ's gets that byte in front. It copies its paths
+  # into 150-byte buffers, so it runs in `dir` with short relative names, and
+  # it reports errors on stdout with exit status 0, so no output is a failure.
+  # It is only ever given a stream rebuilt here (see `silk_packets/5`).
+  defp decode_silk(decoder, input, dir, max_duration_seconds, timeout_ms) do
+    pcm = Path.join(dir, "pcm")
+
+    with {:ok, silk} <- silk_payload(input, max_duration_seconds),
+         {:ok, decoder} <- available_executable(decoder, :silk_decoder_unavailable),
+         :ok <- File.write(Path.join(dir, "silk"), silk, [:binary]),
+         {:ok, output} <- run_silk_decoder(decoder, dir, timeout_ms),
+         {:ok, size} <- decoded_silk_size(pcm, output, max_duration_seconds) do
+      write_silk_wav(pcm, Path.join(dir, "silk.wav"), size)
+    else
+      :not_silk -> {:ok, input}
+      {:error, _} = error -> error
+    end
+  end
+
+  defp silk_payload(input, max_duration_seconds) do
+    case File.open(input, [:read, :binary], &IO.binread(&1, 10)) do
+      {:ok, <<"#!SILK_V3", _::binary>>} -> silk_file(input, 9, max_duration_seconds)
+      {:ok, <<_, "#!SILK_V3">>} -> silk_file(input, 10, max_duration_seconds)
+      _ -> :not_silk
+    end
+  end
+
+  defp silk_file(input, header_size, max_duration_seconds) do
+    max_packets = max_duration_seconds * @silk_packets_per_second
+
+    with {:ok, <<_::binary-size(^header_size), packets::binary>>} <- File.read(input),
+         {:ok, packets} <- silk_packets(packets, [], 0, max_packets, max_duration_seconds) do
+      {:ok, [2, "#!SILK_V3" | packets]}
+    else
+      {:error, _} = error -> error
+    end
+  end
+
+  # A SILK stream is packets of a little-endian int16 length and that many
+  # bytes. The decoder reads each length into a fixed 15,360-byte stack buffer
+  # unchecked (three packets at a time), while the SDK decodes at most 1,024
+  # bytes (MAX_ARITHM_BYTES) a packet, however many frames it holds. So the
+  # stream is rebuilt from the packets before its end, a truncated packet or a
+  # negative length (WeChat's end marker), and a longer packet refuses the
+  # file. Every packet decodes to at least one 20 ms frame, which bounds their
+  # number by the longest audio taken.
+  defp silk_packets(_rest, _acc, count, max_packets, max_duration_seconds)
+       when count > max_packets,
+       do:
+         {:error,
+          {:asr_audio_too_long, ceil(count / @silk_packets_per_second), max_duration_seconds}}
+
+  defp silk_packets(<<length::little-signed-16, rest::binary>>, acc, count, max, max_seconds)
+       when length in 0..@silk_max_packet_bytes and byte_size(rest) >= length do
+    <<packet::binary-size(^length), rest::binary>> = rest
+    silk_packets(rest, [packet, <<length::little-16>> | acc], count + 1, max, max_seconds)
+  end
+
+  defp silk_packets(<<length::little-signed-16, _::binary>>, _acc, _count, _max, _max_seconds)
+       when length > @silk_max_packet_bytes,
+       do: {:error, :silk_packet_too_large}
+
+  defp silk_packets(_end, [], _count, _max, _max_seconds), do: {:error, :silk_no_packets}
+  defp silk_packets(_end, acc, _count, _max, _max_seconds), do: {:ok, Enum.reverse(acc)}
+
+  defp run_silk_decoder(decoder, dir, timeout_ms) do
+    args = ["silk", "pcm", "-Fs_API", Integer.to_string(@silk_sample_rate_hz), "-quiet"]
+
+    case run_executable(decoder, args, timeout_ms, cd: dir) do
+      {:ok, output} -> {:ok, output}
+      {:error, :timeout} -> {:error, :silk_decode_timeout}
+      {:error, {:exit_status, status, output}} -> {:error, {:silk_decode_failed, status, output}}
+      {:error, {:start_failed, reason}} -> {:error, {:silk_decoder_start_failed, reason}}
+    end
+  end
+
+  # The decoded PCM stays on disk: it is far larger than the SILK it came from.
+  defp decoded_silk_size(pcm, output, max_duration_seconds) do
+    max_bytes = max_duration_seconds * @silk_sample_rate_hz * 2
+
+    case File.stat(pcm) do
+      {:ok, %{size: size}} when size > max_bytes ->
+        {:error,
+         {:asr_audio_too_long, ceil(size / (@silk_sample_rate_hz * 2)), max_duration_seconds}}
+
+      {:ok, %{size: size}} when size > 0 ->
+        {:ok, size}
+
+      _ ->
+        {:error, {:silk_decode_failed, 0, output}}
+    end
+  end
+
+  defp write_silk_wav(pcm, wav, size) do
+    with {:ok, device} <- File.open(wav, [:write, :binary]) do
+      try do
+        with :ok <- IO.binwrite(device, wav_header(size)),
+             {:ok, ^size} <- :file.copy(pcm, device) do
+          {:ok, wav}
+        end
+      after
+        File.close(device)
+      end
+    end
+    |> case do
+      {:ok, wav} -> {:ok, wav}
+      {:error, reason} -> {:error, {:asr_audio_write_failed, reason}}
+      _ -> {:error, {:asr_audio_write_failed, :short_copy}}
+    end
+  end
+
+  defp wav_header(data_size) do
+    <<"RIFF", data_size + 36::little-32, "WAVEfmt ", 16::little-32, 1::little-16, 1::little-16,
+      @silk_sample_rate_hz::little-32, @silk_sample_rate_hz * 2::little-32, 2::little-16,
+      16::little-16, "data", data_size::little-32>>
   end
 
   # Decode and resample once, then trim on the normalized PCM sample grid. Input
@@ -696,16 +826,12 @@ defmodule SalixLlm.AudioChunker do
     end
   end
 
-  defp run_executable(executable, args, timeout_ms) do
+  defp run_executable(executable, args, timeout_ms, port_opts \\ []) do
     port =
-      Port.open({:spawn_executable, executable}, [
-        :binary,
-        :exit_status,
-        :stderr_to_stdout,
-        :use_stdio,
-        :hide,
-        args: args
-      ])
+      Port.open(
+        {:spawn_executable, executable},
+        [:binary, :exit_status, :stderr_to_stdout, :use_stdio, :hide, args: args] ++ port_opts
+      )
 
     collect_port(port, SystemsClock.monotonic_time(:millisecond) + timeout_ms, "")
   rescue

@@ -42,6 +42,28 @@ if is_binary(compute_runtime_base_url) and compute_runtime_base_url != "" do
     compute_workload_credential_secret: compute_workload_credential_secret
 end
 
+# Coding sandboxes on L4ES (SalixWeb.L4ES): off without a URL. Their stations
+# connect with Workload connect credentials, so they also need
+# SALIX_COMPUTE_WORKLOAD_CREDENTIAL_SECRET above.
+case System.get_env("SALIX_L4ES_URL") do
+  url when is_binary(url) and url != "" ->
+    max_sandboxes =
+      case Integer.parse(System.get_env("SALIX_L4ES_MAX_SANDBOXES") || "5") do
+        {n, ""} when n > 0 -> n
+        _ -> raise "SALIX_L4ES_MAX_SANDBOXES must be a positive integer"
+      end
+
+    config :salix_web, :l4es,
+      url: url,
+      image: System.get_env("SALIX_L4ES_IMAGE"),
+      image_manifest: System.get_env("SALIX_L4ES_IMAGE_MANIFEST"),
+      size: System.get_env("SALIX_L4ES_SIZE"),
+      max_sandboxes: max_sandboxes
+
+  _ ->
+    :ok
+end
+
 if Enum.any?(agent_vmm_gateway, fn {_key, value} -> is_binary(value) and value != "" end) do
   Enum.each(agent_vmm_gateway, fn {key, value} ->
     if not (is_binary(value) and value != "") do
@@ -1054,6 +1076,31 @@ for {key, path} <- [
     is_binary(value) and value != "" do
   config :comma_core, [{key, value}]
 end
+
+# Mini Apps (Comma.MiniApps.Config): the private dispatch Worker, the Workers
+# for Platforms namespace, the pairwise viewer-ID key and the template
+# repository. JSON section `comma.mini_apps`; each value may also come from
+# its COMMA_MINI_APPS_* environment variable. Without the Cloudflare and
+# dispatch settings, deploys with a backend and backend calls are refused.
+comma_mini_apps =
+  for key <-
+        ~w(dispatch_base_url dispatch_secret cloudflare_account_id cloudflare_api_token dispatch_namespace viewer_key template_repo link_base_url app_storage_module_path)a,
+      value =
+        System.get_env("COMMA_MINI_APPS_" <> String.upcase(Atom.to_string(key))) ||
+          SalixStore.ConfigJson.string(salix_config, ["comma", "mini_apps", Atom.to_string(key)]),
+      is_binary(value) and value != "" do
+    {key, value}
+  end
+
+case Keyword.get(comma_mini_apps, :viewer_key) do
+  key when is_binary(key) and byte_size(key) < 32 ->
+    raise "comma.mini_apps.viewer_key must contain at least 32 bytes"
+
+  _ ->
+    :ok
+end
+
+if comma_mini_apps != [], do: config(:comma_core, :mini_apps, comma_mini_apps)
 
 case System.get_env("COMMA_OAUTH_IDP_KEK") do
   nil ->
@@ -2073,4 +2120,9 @@ if :comma_product in enabled do
   if port = System.get_env("COMMA_SSH_LISTEN_PORT") do
     config :comma_ssh, port: String.to_integer(port)
   end
+end
+
+# The daily brief's extraction model runs in Salix on the Swarm Router's model.
+if :salix in enabled and :bridge_for_teams in enabled do
+  config :bridge_for_teams_core, daily_brief_model: Salix.Bindings.DailyBriefModel
 end

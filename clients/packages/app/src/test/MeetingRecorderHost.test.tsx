@@ -49,6 +49,7 @@ const capture = {
   sampleRate: 48000,
   status: "recording" as const,
 };
+const task = { groupId: "group-1", taskId: "task-1", workspaceId: "ws-1" };
 afterEach(() => vi.restoreAllMocks());
 
 /** The core's meeting recorder as a test scripts it: what it shows, and the calls the UI makes. */
@@ -160,7 +161,7 @@ describe("shared meeting recorder surfaces", () => {
     await waitFor(() => expect(block()).not.toBeNull());
   });
 
-  it("keeps a pending receipt until its Task accepts it, then offers Home and Drive", async () => {
+  it("keeps a pending receipt until its Task accepts it, then opens the Task", async () => {
     const h = setup("saving");
     await h.show({
       phase: "idle",
@@ -169,8 +170,11 @@ describe("shared meeting recorder surfaces", () => {
     });
     await waitFor(() => expect(h.saved).toHaveBeenCalled());
     expect(named(h.calls, "meetingRecorder.acknowledgeSaved")).toEqual([]);
+    expect(h.saved.mock.calls.at(-1)![1]!.actions?.map((a) => a.label)).toEqual([
+      "Show in Drive",
+    ]);
     await h.show({
-      saved: { receiptId: 1, recording, smartSummary: true, summary: "queued" },
+      saved: { receiptId: 1, recording, smartSummary: true, summary: "queued", task },
     });
     await waitFor(() =>
       expect(named(h.calls, "meetingRecorder.acknowledgeSaved")).toEqual([
@@ -185,10 +189,13 @@ describe("shared meeting recorder surfaces", () => {
     await act(async () => {
       options.actions![0]!.onPress!();
     });
-    expect(navigate).toHaveBeenCalledWith({ to: "/", search: {} });
+    expect(navigate).toHaveBeenCalledWith({
+      params: { conversationId: "task-1", groupId: "group-1", workspaceId: "ws-1" },
+      to: "/tasks/$workspaceId/$groupId/$conversationId",
+    });
   });
 
-  it("retries a failed submission while keeping Home and Drive", async () => {
+  it("retries a failed submission while keeping the Task and Drive", async () => {
     const h = setup("saving");
     const failed = vi.spyOn(toast, "error").mockImplementation(() => "failed");
     await h.show({
@@ -200,6 +207,7 @@ describe("shared meeting recorder surfaces", () => {
         smartSummary: true,
         summary: "error",
         summaryError: "Meeting submission (submit): HTTP 503.",
+        task,
       },
     });
     await waitFor(() => expect(failed).toHaveBeenCalled());
@@ -214,6 +222,31 @@ describe("shared meeting recorder surfaces", () => {
     });
     await waitFor(() =>
       expect(named(h.calls, "meetingRecorder.retryTaskSync")).toEqual([{}])
+    );
+    expect(named(h.calls, "meetingRecorder.acknowledgeSaved")).toEqual([]);
+  });
+
+  it("tells a Task without summary files apart from one still preparing them and a failed Drive save", async () => {
+    const h = setup("idle");
+    const failed = vi.spyOn(toast, "error").mockImplementation(() => "failed");
+    const saved = { recording, smartSummary: true, summary: "queued" as const, task };
+    await h.show({ saved: { ...saved, receiptId: 1, archive: "missing" } });
+    await waitFor(() => expect(failed).toHaveBeenCalledTimes(1));
+    expect(failed.mock.calls[0]![0]).toBe(
+      "The meeting Task has no summary files yet. Continue the Task, then retry."
+    );
+    expect(failed.mock.calls[0]![1]!.actions?.map((a) => a.label)).toEqual([
+      "Check the summary",
+      "Retry",
+      "Show in Drive",
+    ]);
+    await h.show({ saved: { ...saved, receiptId: 2, archive: "error" } });
+    await waitFor(() => expect(failed).toHaveBeenCalledTimes(2));
+    expect(failed.mock.calls[1]![0]).toMatch(/could not be saved to Drive/);
+    await h.show({ saved: { ...saved, receiptId: 3, archive: "pending" } });
+    await waitFor(() => expect(failed).toHaveBeenCalledTimes(3));
+    expect(failed.mock.calls[2]![0]).toBe(
+      "The meeting Task is still preparing its summary files. Retry later."
     );
     expect(named(h.calls, "meetingRecorder.acknowledgeSaved")).toEqual([]);
   });

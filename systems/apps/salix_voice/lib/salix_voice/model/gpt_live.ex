@@ -103,7 +103,7 @@ defmodule SalixVoice.Model.GptLive do
     audio =
       %{}
       |> maybe_put("format", audio_format(opts.audio_format))
-      |> maybe_put("output", voice(settings["gpt_live_voice"]))
+      |> maybe_put("output", voice(opts[:voice] || settings["gpt_live_voice"]))
 
     %{
       "model" => present(settings["gpt_live_model"]) || "gpt-live-1",
@@ -111,12 +111,27 @@ defmodule SalixVoice.Model.GptLive do
       "delegation" => %{"type" => "client"}
     }
     |> maybe_put("audio", if(audio == %{}, do: nil, else: audio))
+    |> maybe_put("input", input(opts[:input]))
   end
+
+  # Startup history: one text part per message, `input_text` for the user and
+  # `output_text` for the assistant.
+  defp input([_ | _] = messages) do
+    Enum.map(messages, fn %{"role" => role, "text" => text} ->
+      part = if role == "assistant", do: "output_text", else: "input_text"
+      %{"type" => "message", "role" => role, "content" => [%{"type" => part, "text" => text}]}
+    end)
+  end
+
+  defp input(_messages), do: nil
 
   # Twilio's mu-law passes through unchanged. PCM16 24 kHz is the service
   # default, so it needs no format entry.
   defp audio_format(:pcmu_8k), do: %{"type" => "audio/pcmu", "rate" => 8000}
   defp audio_format(_pcm16_24k), do: nil
+
+  # A custom voice is `%{"id" => id}`; a preset is its name.
+  defp voice(%{"id" => id}) when is_binary(id) and id != "", do: %{"voice" => %{"id" => id}}
 
   defp voice(voice) do
     case present(voice) do

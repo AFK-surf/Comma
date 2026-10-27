@@ -26,6 +26,8 @@ defmodule Comma.Data.RecommendationProfile do
     field(:relevance_mode, :string)
     field(:published_member_subjects, :map, default: %{})
     field(:published_metrics, :map, default: %{})
+    # Digest of a dismissed source item (its source and URL) => dismissal time in ms.
+    field(:dismissed_items, :map, default: %{})
     field(:last_error, :string)
     field(:last_requested_at, :utc_datetime_usec)
     field(:last_published_at, :utc_datetime_usec)

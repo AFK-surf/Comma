@@ -39,6 +39,7 @@ import type {
   SynchronicityWriteInput,
 } from "@comma/native-bridge";
 import { z } from "zod";
+import { realMainClock, type MainClock } from "../../clock";
 import {
   prepareDefaultRoot,
   publishedSourcePath,
@@ -163,9 +164,14 @@ export interface SynchronicityNodeServiceOptions {
   /** Injectable direct-control seam for tests; production owns one gRPC client. */
   control?: SynchControlClientLike | undefined;
   runCommand?: RunCommand | undefined;
+  clock?: MainClock | undefined;
 }
 
-const DAEMON_START_TIMEOUT_MS = 20_000;
+/**
+ * `synch daemon start` waits up to 120 s for its daemon (startup recovery may wait out an unreachable cloud peer), then
+ * stops it and says why. Main gives it that long and a margin, so a slow start is still starting, not failed.
+ */
+const DAEMON_START_TIMEOUT_MS = 130_000;
 const DAEMON_START_RETRY_MS = 100;
 const DAEMON_STOP_TIMEOUT_MS = 20_000;
 const COMMAND_TERMINATE_GRACE_MS = 1_000;
@@ -336,6 +342,7 @@ async function runCommand(
   });
 }
 
+// Last resort against a command that ignores its stop: on the real clock, so it fires while a test clock stands still.
 async function terminateCommandProcessTree(child: ChildProcess): Promise<void> {
   if (!child.pid) {
     child.kill();
@@ -348,18 +355,17 @@ async function terminateCommandProcessTree(child: ChildProcess): Promise<void> {
       const done = () => {
         if (finished) return;
         finished = true;
-        clearTimeout(fallback);
+        cancelFallback();
         resolve();
       };
       const killer = spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], {
         stdio: "ignore",
         windowsHide: true,
       });
-      const fallback = setTimeout(() => {
+      const cancelFallback = realMainClock.setTimer(COMMAND_TERMINATE_GRACE_MS, () => {
         child.kill();
         done();
-      }, COMMAND_TERMINATE_GRACE_MS);
-      fallback.unref();
+      });
       killer.once("error", () => {
         child.kill();
         done();
@@ -374,8 +380,8 @@ async function terminateCommandProcessTree(child: ChildProcess): Promise<void> {
     const done = () => {
       if (finished) return;
       finished = true;
-      clearTimeout(force);
-      clearTimeout(fallback);
+      cancelForce();
+      cancelFallback();
       resolve();
     };
     const signalGroup = (signal: NodeJS.Signals) => {
@@ -387,10 +393,10 @@ async function terminateCommandProcessTree(child: ChildProcess): Promise<void> {
     };
     child.once("close", done);
     signalGroup("SIGTERM");
-    const force = setTimeout(() => signalGroup("SIGKILL"), COMMAND_TERMINATE_GRACE_MS);
-    const fallback = setTimeout(done, COMMAND_TERMINATE_GRACE_MS * 2);
-    force.unref();
-    fallback.unref();
+    const cancelForce = realMainClock.setTimer(COMMAND_TERMINATE_GRACE_MS, () =>
+      signalGroup("SIGKILL")
+    );
+    const cancelFallback = realMainClock.setTimer(COMMAND_TERMINATE_GRACE_MS * 2, done);
   });
 }
 
@@ -413,6 +419,7 @@ export class SynchronicityNodeService implements SynchronicityProvider {
     for (const listener of this.#listeners) listener();
   }
 
+  readonly #clock: MainClock;
   readonly #control: SynchControlClientLike;
   readonly #options: SynchronicityNodeServiceOptions;
   readonly #run: RunCommand;
@@ -425,7 +432,7 @@ export class SynchronicityNodeService implements SynchronicityProvider {
   /** The zone this node waits to be named by, while its daemon serves the reduced control service. */
   #waitingOn: string | undefined;
   #waitingSince: number | undefined;
-  #nameRecheck: ReturnType<typeof setTimeout> | undefined;
+  #cancelNameRecheck: (() => void) | undefined;
   #starting: Promise<void> | undefined;
   #lifecycleTail: Promise<void> = Promise.resolve();
   #activeLifecycle: AbortController | undefined;
@@ -442,6 +449,7 @@ export class SynchronicityNodeService implements SynchronicityProvider {
   };
 
   constructor(options: SynchronicityNodeServiceOptions) {
+    this.#clock = options.clock ?? realMainClock;
     this.#options = options;
     this.#localRoot = options.defaultSpace.root;
     this.#run = options.runCommand ?? runCommand;
@@ -525,20 +533,13 @@ export class SynchronicityNodeService implements SynchronicityProvider {
       ...(this.#reason ? { reason: this.#reason } : {}),
     };
     if (this.#status !== "ready") return base;
-    try {
-      const [spaces, pins, origins] = await Promise.all([
-        this.#spaces(),
-        this.#pins(),
-        this.#origins(),
-      ]);
-      return { ...base, origins, pins, spaces };
-    } catch (error) {
-      return {
-        ...base,
-        reason: error instanceof Error ? error.message : String(error),
-        status: "error",
-      };
-    }
+    // A failed read of a running node rejects: `error` says the node could not start, and the core restarts it.
+    const [spaces, pins, origins] = await Promise.all([
+      this.#spaces(),
+      this.#pins(),
+      this.#origins(),
+    ]);
+    return { ...base, origins, pins, spaces };
   }
 
   async list(input: SynchronicityListInput): Promise<SynchronicityListResult> {
@@ -1024,7 +1025,7 @@ export class SynchronicityNodeService implements SynchronicityProvider {
   }
 
   async #refreshIdentity(force = false) {
-    const now = Date.now();
+    const now = this.#clock.now();
     if (!force && now - this.#identityRefreshedAt < IDENTITY_REFRESH_MS) return;
     const id = await this.#control.run({ id: {} });
     const waitingOn = firstField(id.stdout, "waiting on");
@@ -1055,8 +1056,8 @@ export class SynchronicityNodeService implements SynchronicityProvider {
       this.#stopWaitingForName();
       return true;
     }
-    this.#waitingSince ??= Date.now();
-    if (Date.now() - this.#waitingSince >= NAME_WAIT_TIMEOUT_MS) {
+    this.#waitingSince ??= this.#clock.now();
+    if (this.#clock.now() - this.#waitingSince >= NAME_WAIT_TIMEOUT_MS) {
       this.#stopWaitingForName();
       throw new Error(
         `${waitingOn} has not named this device after ${NAME_WAIT_TIMEOUT_MS / 60_000} minutes. ` +
@@ -1076,21 +1077,21 @@ export class SynchronicityNodeService implements SynchronicityProvider {
   }
 
   #scheduleNameRecheck() {
-    clearTimeout(this.#nameRecheck);
-    this.#nameRecheck = setTimeout(() => {
-      this.#nameRecheck = undefined;
+    this.#cancelNameRecheck?.();
+    this.#cancelNameRecheck = this.#clock.setTimer(NAME_RECHECK_MS, () => {
+      this.#cancelNameRecheck = undefined;
       void this.#enqueueLifecycle(async (signal) => {
         // A restart or domain change since this was armed owns the node now.
         if (this.#waitingOn === undefined || this.#status !== "starting") return;
         await this.#reportFailure(this.#finishStart(signal), signal);
         this.#changed();
       }).catch(() => {});
-    }, NAME_RECHECK_MS);
+    });
   }
 
   #stopWaitingForName() {
-    clearTimeout(this.#nameRecheck);
-    this.#nameRecheck = undefined;
+    this.#cancelNameRecheck?.();
+    this.#cancelNameRecheck = undefined;
     this.#waitingOn = undefined;
     this.#waitingSince = undefined;
   }
@@ -1153,10 +1154,10 @@ export class SynchronicityNodeService implements SynchronicityProvider {
     // Control DaemonStop answers before the old process finishes draining its
     // workers and releases the datadir lifecycle lock. Retry only that precise
     // transient; every other launcher failure remains immediate and visible.
-    const deadline = Date.now() + DAEMON_START_TIMEOUT_MS;
+    const deadline = this.#clock.now() + DAEMON_START_TIMEOUT_MS;
     for (;;) {
       this.#assertLifecycleOpen(signal);
-      const remaining = deadline - Date.now();
+      const remaining = deadline - this.#clock.now();
       if (remaining <= 0) throw new Error("synch daemon start timed out");
       const started = await this.#runWithDeadline(
         ["daemon", "start", ...this.#dataDirArgs()],
@@ -1171,11 +1172,12 @@ export class SynchronicityNodeService implements SynchronicityProvider {
       if (!DAEMON_LIFECYCLE_BUSY.test(detail)) {
         throw new Error(`synch daemon start exited with ${started.code}: ${detail}`);
       }
-      if (Date.now() >= deadline) {
+      if (this.#clock.now() >= deadline) {
         throw new Error(`synch daemon start exited with ${started.code}: ${detail}`);
       }
       await waitForAbortableDelay(
-        Math.min(DAEMON_START_RETRY_MS, deadline - Date.now()),
+        this.#clock,
+        Math.min(DAEMON_START_RETRY_MS, deadline - this.#clock.now()),
         signal
       );
     }
@@ -1306,8 +1308,9 @@ export class SynchronicityNodeService implements SynchronicityProvider {
   ) {
     this.#assertSignalActive(signal);
     const deadline = new AbortController();
-    const timer = setTimeout(() => deadline.abort(new Error(message)), timeoutMs);
-    timer.unref();
+    const cancelTimer = this.#clock.setTimer(timeoutMs, () =>
+      deadline.abort(new Error(message))
+    );
     const commandSignal = AbortSignal.any([signal, deadline.signal]);
     try {
       const result = await this.#run(this.#binary(), args, {
@@ -1321,7 +1324,7 @@ export class SynchronicityNodeService implements SynchronicityProvider {
       if (deadline.signal.aborted) throw abortReason(deadline.signal);
       throw error;
     } finally {
-      clearTimeout(timer);
+      cancelTimer();
     }
   }
 
@@ -1362,12 +1365,16 @@ function abortReason(signal: AbortSignal) {
     : new Error("synch command was cancelled");
 }
 
-async function waitForAbortableDelay(timeoutMs: number, signal: AbortSignal) {
+async function waitForAbortableDelay(
+  clock: MainClock,
+  timeoutMs: number,
+  signal: AbortSignal
+) {
   signal.throwIfAborted();
   await new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(done, timeoutMs);
+    const cancelTimer = clock.setTimer(timeoutMs, done);
     const abort = () => {
-      clearTimeout(timer);
+      cancelTimer();
       signal.removeEventListener("abort", abort);
       reject(abortReason(signal));
     };

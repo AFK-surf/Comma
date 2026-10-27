@@ -58,8 +58,8 @@ function harness(
   const published: MeetingPresenceState[] = [];
   const publishWaiters: Array<(state: MeetingPresenceState) => void> = [];
   let nowMs = 1_700_000_000_000;
-  const intervals: Array<() => void> = [];
-  let cleared = 0;
+  const timers: Array<() => void> = [];
+  let cancelled = 0;
   const service = new MeetingPresenceService({
     inactiveGraceMs: 20_000,
     ...(overrides.readBrowserMeetings
@@ -69,13 +69,14 @@ function harness(
     ...(overrides.globalTimers
       ? {}
       : {
-          clearInterval: () => {
-            cleared += 1;
-          },
-          now: () => nowMs,
-          setInterval: (fn: () => void) => {
-            intervals.push(fn);
-            return intervals.length;
+          clock: {
+            now: () => nowMs,
+            setTimer: (_ms: number, run: () => void) => {
+              timers.push(run);
+              return () => {
+                cancelled += 1;
+              };
+            },
           },
         }),
     loadNative: async () => (overrides.nativeAvailable === false ? undefined : native),
@@ -89,8 +90,8 @@ function harness(
     advance: (ms: number) => {
       nowMs += ms;
     },
-    clearedCount: () => cleared,
-    intervals,
+    cancelledCount: () => cancelled,
+    timers,
     native,
     /** Resolves with the next state the service publishes. */
     nextPublished: () => {
@@ -162,7 +163,7 @@ describe("MeetingPresenceService", () => {
     h.advance(20_000);
     await h.service.refresh();
     expect((await h.service.state()).meetings).toEqual([]);
-    expect(h.intervals).toHaveLength(1);
+    expect(h.timers).toHaveLength(1);
     await h.service.close();
   });
 
@@ -214,7 +215,7 @@ describe("MeetingPresenceService", () => {
     const h = harness({ nativeAvailable: false });
     const state = await h.service.start();
     expect(state).toMatchObject({ available: false, meetings: [] });
-    expect(h.intervals).toHaveLength(0);
+    expect(h.timers).toHaveLength(0);
     await h.service.close();
   });
 
@@ -372,9 +373,9 @@ describe("MeetingPresenceService", () => {
   it("stops polling and listening on close", async () => {
     const h = harness();
     await h.service.start();
-    expect(h.intervals).toHaveLength(1);
+    expect(h.timers).toHaveLength(1);
     await h.service.close();
-    expect(h.clearedCount()).toBe(1);
+    expect(h.cancelledCount()).toBe(1);
     expect(h.native.unsubscribed).toBe(1);
   });
 });

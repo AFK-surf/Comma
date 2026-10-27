@@ -52,7 +52,11 @@ export const ChatPanelMediaPreview = ({
   useEffect(() => {
     if (isOpen) setKeyboardClosing(false);
     if (wasOpenRef.current && !isOpen && returnFocusRef?.current) {
-      const focusTimer = uiClock.after(0, () => returnFocusRef.current?.focus());
+      // Back where the reader opened it from, without scrolling a host that
+      // moved on under the preview back to the trigger.
+      const focusTimer = uiClock.after(0, () =>
+        returnFocusRef.current?.focus({ preventScroll: true })
+      );
       wasOpenRef.current = isOpen;
       return () => focusTimer();
     }

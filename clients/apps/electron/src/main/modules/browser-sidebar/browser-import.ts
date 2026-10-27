@@ -12,6 +12,7 @@ import { mkdtemp, open, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { getDomain } from "tldts";
+import { realMainClock, type MainClock } from "../../clock";
 
 /**
  * A Chromium browser keeps its profiles under one data folder and encrypts
@@ -112,7 +113,7 @@ export interface BrowserImportPlatform {
     set(cookie: ImportedCookie): Promise<void>;
     flush(): Promise<void>;
   };
-  now?: () => number;
+  clock?: MainClock;
 }
 
 // Chromium stores times as microseconds since 1601-01-01 UTC.
@@ -446,7 +447,7 @@ export async function importBrowserCookies(
       cookie.value,
     ])
   );
-  const nowSeconds = (platform.now?.() ?? Date.now()) / 1000;
+  const nowSeconds = (platform.clock ?? realMainClock).now() / 1000;
   const result = {
     status: "imported" as const,
     imported: 0,
@@ -590,12 +591,14 @@ interface ElectronCookieStore {
 export function electronBrowserImportPlatform({
   appIcon,
   applicationSupportDirectory,
+  clock,
   cookies,
   readKeychainPassword,
   temporaryDirectory,
 }: {
   appIcon?: BrowserImportPlatform["appIcon"];
   applicationSupportDirectory: string;
+  clock: MainClock;
   cookies: ElectronCookieStore;
   readKeychainPassword: BrowserImportPlatform["readKeychainPassword"];
   temporaryDirectory: string;
@@ -603,6 +606,7 @@ export function electronBrowserImportPlatform({
   return {
     appIcon,
     applicationSupportDirectory,
+    clock,
     temporaryDirectory,
     readKeychainPassword,
     cookies: {

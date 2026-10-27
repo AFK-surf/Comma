@@ -6,6 +6,8 @@ import {
   useProductInboxProjection,
 } from "../../product-inbox";
 import { useSelectWorkspace, useWorkspacePreference } from "../activeWorkspace";
+import { TaskSequenceSourceProvider } from "../tasks/taskSequence";
+import { useInboxFilters } from "./filters/InboxFiltersState";
 import { InboxView } from "./InboxView";
 
 /** Product inbox route backed by the host-owned cross-platform projection. */
@@ -21,6 +23,7 @@ export function InboxRoute() {
   const selectWorkspace = useSelectWorkspace();
   const [chosenWorkspaceId, setSelectedWorkspaceId] = useState<string | undefined>();
   const selectedWorkspaceId = chosenWorkspaceId ?? (activeWorkspaceId || undefined);
+  const [, setFilters] = useInboxFilters();
   const requestedWorkspaceId = useRef<string | undefined>(undefined);
   const { refresh, result } = useProductInboxProjection({
     enabled: activeWorkspaceId !== undefined,
@@ -33,8 +36,11 @@ export function InboxRoute() {
       selectWorkspace(workspaceId);
       setLoadMoreState({ pending: false });
       setSelectedWorkspaceId(workspaceId);
+      // A trigger rule belongs to the workspace's Loops. The other filters
+      // choose by kind, platform, schedule or status, which every workspace has.
+      setFilters((current) => ({ ...current, loopRule: undefined }));
     },
-    [selectWorkspace]
+    [selectWorkspace, setFilters]
   );
 
   useEffect(() => {
@@ -115,10 +121,12 @@ export function InboxWorkspace({ children }: { children?: ReactNode }) {
       className="flex min-h-0 w-full min-w-0 flex-1 bg-main-panel-bg [&_.comma-chat-column]:max-w-none [&_.comma-chat-composer-frame]:max-w-none [&_.comma-chat-thread]:pt-md"
       data-testid="inbox-workspace"
     >
-      <InboxRoute />
-      <div className="flex min-h-0 min-w-0 flex-1" data-testid="inbox-detail-pane">
-        {children ?? <Outlet />}
-      </div>
+      <TaskSequenceSourceProvider>
+        <InboxRoute />
+        <div className="flex min-h-0 min-w-0 flex-1" data-testid="inbox-detail-pane">
+          {children ?? <Outlet />}
+        </div>
+      </TaskSequenceSourceProvider>
     </section>
   );
 }

@@ -27,7 +27,8 @@ type State = Pick<ComputeValue, "creation" | "accepted"> & {
 /** Devices over a core that keeps `state`, answering calls by `answers`. */
 async function openCompute(
   state: State,
-  answers: Record<string, (params: Record<string, unknown>) => unknown> = {}
+  answers: Record<string, (params: Record<string, unknown>) => unknown> = {},
+  devices: DevicesValue["devices"] = []
 ) {
   const calls: [string, Record<string, unknown>][] = [];
   const core = createScriptedCore({
@@ -54,7 +55,7 @@ async function openCompute(
         : topic.topic === "devices"
           ? {
               workspace,
-              devices: [],
+              devices,
               cloud: null,
               hasMore: false,
               loading: false,
@@ -265,7 +266,7 @@ it("freezes the deletion target across a late detail read and keeps the adjacent
     await content().findByRole("button", { name: "Named Shell A" })
   ).toBeInTheDocument();
   expect(t.called("compute.rename")).toEqual([
-    { workspace, id: "shell_A", revision: 1, name: "Named Shell A" },
+    { workspace, id: "shell_A", name: "Named Shell A" },
   ]);
 
   // Shell B's detail read is still out when the reader returns and deletes A.
@@ -278,7 +279,7 @@ it("freezes the deletion target across a late detail read and keeps the adjacent
   await waitFor(() => expect(dialog).toHaveTextContent("Named Shell A"));
   await t.user.click(within(dialog).getByRole("button", { name: "Delete workload" }));
   expect(t.called("compute.delete")).toEqual([
-    { workspace, id: "shell_A", revision: 2, generation: 1 },
+    { workspace, id: "shell_A", generation: 1 },
   ]);
   expect(state.workloads[1]!.deletion).toBeNull();
   await waitFor(() => expect(status(/Deleting/)).toBeDefined());
@@ -302,7 +303,7 @@ it("names the deletion of a retired External Worker Workload without calling it 
   expect(dialog).not.toHaveTextContent("Shell");
   await t.user.click(within(dialog).getByRole("button", { name: "Delete workload" }));
   expect(t.called("compute.delete")).toEqual([
-    { workspace, id: "worker_A", revision: 1, generation: 1 },
+    { workspace, id: "worker_A", generation: 1 },
   ]);
 });
 
@@ -322,7 +323,7 @@ it("says the node name is unavailable only for a Shell whose location is unknown
     return screen.findByRole("dialog", { name: "Delete Shell" });
   };
   const known = await remove(0);
-  expect(known).toHaveTextContent("Mac · device not identified");
+  expect(known).toHaveTextContent("Location: Own device.");
   expect(known).not.toHaveTextContent("The execution node name is unavailable.");
   await t.user.click(within(known).getByRole("button", { name: "Cancel" }));
   const unknown = await remove(1);
@@ -349,4 +350,65 @@ it("says the Mac is not connected when the workspace has no connected node for a
       "This Mac is not connected. Connect it, then create the Shell."
     )
   ).toBeVisible();
+});
+
+it("names the device of a ready service from the devices list", async () => {
+  const service = shell("svc", {
+    name: "Web",
+    kind: "service",
+    observed_state: "ready",
+    phase: "ready",
+    generation: 1,
+    location: {
+      provider: "agent_vmm",
+      registration_id: "reg",
+      device_id: "dev_studio",
+    },
+    problem: null,
+  });
+  await openCompute({ workloads: [service], creation: null, accepted: null }, {}, [
+    { device_id: "dev_studio", name: "Studio Mac" } as DevicesValue["devices"][number],
+  ]);
+  const row = (await content().findByRole("button", { name: "Web" })).parentElement!;
+  expect(row).toHaveTextContent("Ready to use");
+  expect(row).toHaveTextContent("Studio Mac");
+  expect(content().queryByText(/not identified/)).toBeNull();
+});
+
+it("says why each workload is not ready, and offers Retry only when it does not retry by itself", async () => {
+  const reasons = {
+    capacity_unavailable: "The device does not have enough space or resources",
+    image_unavailable: "Cannot prepare the runtime image",
+    runtime_instance_changed: "Reconnecting to the workload after a restart",
+    host_unreachable: "Cannot reach this device",
+    other: "Not ready yet",
+  } as const;
+  const workloads = Object.keys(reasons).map((code, index) =>
+    shell(`w_${code}`, {
+      name: `W ${code}`,
+      phase: "starting",
+      generation: 3,
+      location: { provider: "agent_vmm" },
+      problem: {
+        code: code as keyof typeof reasons,
+        retryable: index !== 0,
+      },
+    })
+  );
+  const t = await openCompute(
+    { workloads, creation: null, accepted: null },
+    { "compute.retry": (params) => workloads.find((w) => w.id === params.id) }
+  );
+  const row = async (code: string) =>
+    (await content().findByRole("button", { name: `W ${code}` })).parentElement!;
+  for (const [code, reason] of Object.entries(reasons))
+    expect(await row(code)).toHaveTextContent(reason);
+  // Only the problem that does not retry by itself has the button.
+  expect(content().getAllByRole("button", { name: "Retry" })).toHaveLength(1);
+  await t.user.click(
+    within(await row("capacity_unavailable")).getByRole("button", { name: "Retry" })
+  );
+  expect(t.called("compute.retry")).toEqual([
+    { workspace, id: "w_capacity_unavailable", generation: 3 },
+  ]);
 });

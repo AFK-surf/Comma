@@ -399,6 +399,20 @@ describe("Menu", () => {
   });
 });
 
+it("names a row by its label and describes it by its note", () => {
+  render(
+    <Menu aria-label="Machine">
+      <MenuItem id="studio" note="Offline">
+        Mac Studio
+      </MenuItem>
+    </Menu>
+  );
+
+  expect(
+    screen.getByRole("menuitem", { name: "Mac Studio", description: "Offline" })
+  ).toBeInTheDocument();
+});
+
 describe('MenuItem selectionIndicator="check"', () => {
   it("marks only the selected row with a checkmark and keeps the slot on the rest", () => {
     const { container } = render(

@@ -10,7 +10,11 @@ import {
 
 const events = "/v1/comma/groups/g/conversations/events";
 
-const statuses = (conversation: string, state: "active" | "stopped", bound = true) => ({
+const statuses = (
+  conversation: string,
+  state: "active" | "error" | "stopped",
+  bound = true
+) => ({
   type: "task_participant_statuses",
   group_id: "g",
   conversation_id: conversation,
@@ -88,11 +92,21 @@ describe("the Workers a chat's activity focus follows", () => {
       t2: {
         active: true,
         avatarId: "actor_worker",
+        failed: false,
         name: "Codex Worker",
         participantId: "ptp_worker",
         vendor: "anthropic",
       },
     });
+  });
+
+  it("marks a Worker that stopped with an error as failed, not working", async () => {
+    const t = setup();
+    const value = t.watch(focus("t1"));
+    await t.time.pass(100);
+    t.api.open(events)!.named("task_participant_statuses", statuses("t1", "error"));
+    await t.time.pass(100);
+    expect(value()?.t1).toMatchObject({ active: false, failed: true });
   });
 
   it("reads a finished long-poll again no sooner than a second after it began, keeps the last snapshot, and stops once unshown", async () => {

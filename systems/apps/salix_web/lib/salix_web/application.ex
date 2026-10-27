@@ -72,6 +72,10 @@ defmodule SalixWeb.Application do
       {SystemsRuntime.TaskSupervisor,
        name: SalixWeb.CloudVM.ImageArchiveSupervisor, max_children: 4},
       background(SalixWeb.CloudVM.ArchiveGC, :cloud_vm_archive_gc),
+      # What this node recently made true in L4ES workspaces.
+      background(SalixWeb.L4ESRecent, :l4es_recent),
+      # Coding Tasks' sandboxes: a bounded check of the due ones on a timer.
+      background(SalixWeb.CodingSandboxes, :coding_sandboxes),
       Salix.Control.PluginCatalogCache,
       # One supervised Redis connection for the global SiteLLM sliding window.
       {SalixWeb.SiteAPI.RateLimit,

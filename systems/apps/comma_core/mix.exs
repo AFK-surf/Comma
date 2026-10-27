@@ -45,7 +45,6 @@ defmodule CommaCore.MixProject do
       {:jose, "~> 1.11"},
       {:boruta, "~> 2.3.8"},
       {:goth, "~> 1.4"},
-      {:google_api_storage, "~> 0.46.1"},
       {:ex_aws, "~> 2.7"},
       {:ex_aws_s3, "~> 2.5"},
       {:sweet_xml, "~> 0.7"},

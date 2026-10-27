@@ -2772,6 +2772,60 @@ defmodule SalixIM.ConversationsTest do
     assert MapSet.new(first_ids ++ second_ids) == MapSet.new(task_ids)
   end
 
+  # A change writes the Conversation's newer list entry before it commits and deletes the older one after. A
+  # listing that ran before the newer entry existed holds only the older one; the Conversation is still listed, once,
+  # at its new place.
+  test "a conversation changed while the list was read is listed at its new place", %{
+    group_id: group_id
+  } do
+    assert {:ok, %{"conversation_id" => older_id}} =
+             SalixIM.ConversationInput.create_group_conversation(group_id, %{
+               "kind" => "user_chat",
+               "title" => "Older chat",
+               "updated_at" => 10
+             })
+
+    assert {:ok, %{"conversation_id" => changed_id}} =
+             SalixIM.ConversationInput.create_group_conversation(group_id, %{
+               "kind" => "user_chat",
+               "title" => "Changed chat",
+               "updated_at" => 20
+             })
+
+    entry_of = fn conversation_id ->
+      assert {:ok, %{objects: objects}} =
+               S3.list(Keys.ctl_group_conversation_list_prefix(group_id))
+
+      Enum.find_value(objects, fn %{key: key} ->
+        assert {:ok, %{body: body}} = S3.get(key)
+        if Jason.decode!(body)["conversation_id"] == conversation_id, do: {key, body}
+      end)
+    end
+
+    {older_key, older_body} = entry_of.(changed_id)
+
+    assert {:ok, _changed} =
+             ConversationServer.update_group_conversation(group_id, changed_id, %{
+               "title" => "Changed chat, renamed"
+             })
+
+    {newer_key, _newer_body} = entry_of.(changed_id)
+    assert newer_key < older_key
+
+    # The store as that listing saw it: the older entry, not the newer one.
+    assert {:ok, _} = S3.put(older_key, older_body)
+    assert :ok = S3.delete(newer_key)
+
+    assert {:ok, %{"data" => listed}} =
+             Conversations.list_group_conversations(group_id, limit: 20)
+
+    assert [
+             %{"conversation_id" => ^changed_id, "title" => "Changed chat, renamed"},
+             %{"conversation_id" => ^older_id}
+           ] =
+             Enum.filter(listed, &(&1["conversation_id"] in [changed_id, older_id]))
+  end
+
   test "deleting a conversation retires its participants and pin after admission", %{
     tenant_id: tenant_id,
     group_id: group_id,
@@ -3245,6 +3299,43 @@ defmodule SalixIM.ConversationsTest do
 
     assert {:ok, %{"status" => "active"}} =
              Conversations.get_group_conversation(group_id, conversation_id)
+  end
+
+  test "TaskWorkerWatch reminds a Worker that recorded only milestones before it stopped", %{
+    group_id: group_id,
+    router_id: router_id,
+    worker_id: worker_id
+  } do
+    {conversation_id, session_id, watch} =
+      start_watched_plain_task(group_id, router_id, worker_id, "task-worker-watch-milestone")
+
+    # A step the Worker finished is progress, not the result it owes.
+    assert {:ok, _message} =
+             append_task_result_message(
+               group_id,
+               conversation_id,
+               worker_id,
+               "task-worker-watch-milestone-step",
+               [%{"type" => "milestone", "title" => "Read the thread"}]
+             )
+
+    stopped_at = SystemsClock.system_time(:millisecond)
+    version = Integer.to_string(stopped_at)
+    TaskSessionActivity.set(worker_id, session_id, "stopped", stopped_at)
+    TaskSessionActivity.notify(worker_id, session_id)
+
+    assert {:scheduled, ^version, :stopped, nil, _timer, token} =
+             eventually_value(fn -> :sys.get_state(watch, :infinity).stop end)
+
+    SystemsRuntime.Proc.send(
+      watch,
+      {:task_worker_stopped_timeout, {worker_id, session_id}, version, token}
+    )
+
+    settle_receive({:captured_agent_delivery, ^worker_id, nudge, _opts})
+    assert nudge.content =~ "publish exactly one result Message"
+    settle_refute_receive({:captured_agent_delivery, ^router_id, _, _}, 100)
+    assert :sys.get_state(watch, :infinity).review == nil
   end
 
   @tag :desktop_meeting
@@ -4135,7 +4226,7 @@ defmodule SalixIM.ConversationsTest do
       "created_at" => "2026-07-01T00:00:00Z",
       "conversation" => %{
         "kind" => "user_chat",
-        "title" => "Bridge chat",
+        "title" => "Comma",
         "participants" => [
           %{
             "actor_type" => "user",

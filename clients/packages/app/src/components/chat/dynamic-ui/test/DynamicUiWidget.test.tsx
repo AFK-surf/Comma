@@ -125,7 +125,18 @@ async function connect(frame: HTMLIFrameElement) {
   return { port: port!, initial: initial! };
 }
 
-const visibilityObservers = new Map<Element, (visible: boolean) => void>();
+/** Each observer's callback by its root margin, the band ("480px 0px") or the view ("0px"), and its target. */
+const intersections = new Map<string, Map<Element, (visible: boolean) => void>>();
+/** Whether a widget is in view as soon as it is observed: reading ahead is tested out of view. */
+let inViewAtObserve = true;
+/** The root each widget observer measures its band from, in the order they were made. */
+const observerRoots: (Element | Document | null | undefined)[] = [];
+/** The reader scrolls the widget across an observer's edge. */
+function cross(margin: string, target: Element, visible: boolean) {
+  act(() => intersections.get(margin)!.get(target)!(visible));
+}
+const band = (target: Element, visible: boolean) => cross("480px 0px", target, visible);
+const inView = (target: Element, visible: boolean) => cross("0px", target, visible);
 
 /** What the core keeps of each widget's saved state, by its key (`dynamicUiState`). */
 const savedStates = new Map<string, { state: string | null; cards: string | null }>();
@@ -171,22 +182,32 @@ beforeEach(() => {
       if (topic.topic === "dynamicUi") widgetReads.push(topic);
     },
   });
-  visibilityObservers.clear();
+  intersections.clear();
+  observerRoots.length = 0;
+  inViewAtObserve = true;
   identity.userId = "alice";
   vi.stubGlobal("MessageChannel", TestChannel);
   vi.stubGlobal(
     "IntersectionObserver",
     class {
-      constructor(private callback: IntersectionObserverCallback) {}
+      constructor(
+        private callback: IntersectionObserverCallback,
+        private options?: IntersectionObserverInit
+      ) {
+        observerRoots.push(options?.root);
+      }
       observe(target: Element) {
-        visibilityObservers.set(target, (visible) =>
+        const margin = this.options?.rootMargin ?? "0px";
+        let targets = intersections.get(margin);
+        if (!targets) intersections.set(margin, (targets = new Map()));
+        targets.set(target, (visible) =>
           this.callback(
             [{ isIntersecting: visible, target } as IntersectionObserverEntry],
             this as unknown as IntersectionObserver
           )
         );
         this.callback(
-          [{ isIntersecting: true, target } as IntersectionObserverEntry],
+          [{ isIntersecting: inViewAtObserve, target } as IntersectionObserverEntry],
           this as unknown as IntersectionObserver
         );
       }
@@ -390,20 +411,215 @@ describe("DynamicUiWidget host boundary", () => {
     );
     expect(capture).toHaveBeenCalledOnce();
     const widget = screen.getByTestId("dynamic-ui-widget");
-    act(() => visibilityObservers.get(widget)!(false));
+    band(widget, false);
     act(() => vi.advanceTimersByTime(500));
     expect(view.container.querySelector("iframe")).toBe(frame);
-    act(() => visibilityObservers.get(widget)!(true));
+    band(widget, true);
     act(() => vi.advanceTimersByTime(1500));
     expect(view.container.querySelector("iframe")).toBe(frame);
-    act(() => visibilityObservers.get(widget)!(false));
+    band(widget, false);
     act(() => vi.advanceTimersByTime(1500));
     expect(view.container.querySelector("iframe")).toBeNull();
     expect(widget.style.minHeight).toBe("900px");
-    act(() => visibilityObservers.get(widget)!(true));
+    band(widget, true);
     await waitFor(() => expect(view.container.querySelector("iframe")).not.toBeNull());
     expect(view.container.querySelector("iframe")!.style.height).toBe("900px");
     expect(widgetReads).toHaveLength(1);
+  });
+
+  it("reads the widget as soon as its message mounts, before the reader nears it", async () => {
+    inViewAtObserve = false;
+    const view = render(
+      <DynamicUiWidget part={part} live groupId="group" workspaceId="workspace" />
+    );
+    const widget = screen.getByTestId("dynamic-ui-widget");
+    await waitFor(() => expect(widgetReads).toHaveLength(1));
+    expect(view.container.querySelector("iframe")).toBeNull();
+    expect(screen.queryByText(part.summary)).toBeNull();
+    band(widget, true);
+    await waitFor(() => expect(view.container.querySelector("iframe")).not.toBeNull());
+    expect(widgetReads).toHaveLength(1);
+  });
+
+  it("holds an empty slot, not the text answer, while the core reads the widget", async () => {
+    const slow = { ...part, contentId: "blob-slow", messageId: "message-slow" };
+    let read = false;
+    widgetValue = () =>
+      read ? { status: "ready", ui: widgetUi } : { status: "loading" };
+    const view = render(
+      <DynamicUiWidget part={slow} live groupId="group" workspaceId="workspace" />
+    );
+    const widget = screen.getByTestId("dynamic-ui-widget");
+    await waitFor(() => expect(widgetReads).toHaveLength(1));
+    expect(view.container.querySelector("iframe")).toBeNull();
+    expect(screen.queryByText(slow.summary)).toBeNull();
+    expect(widget.style.minHeight).toBe("160px");
+    read = true;
+    act(() => widgetCore.changed("dynamicUi"));
+    await waitFor(() => expect(view.container.querySelector("iframe")).not.toBeNull());
+    expect(view.container.querySelector("iframe")!.style.height).toBe("160px");
+  });
+
+  it("shows the text answer in view when the read takes over a second", async () => {
+    const late = { ...part, contentId: "blob-late", messageId: "message-late" };
+    let read = false;
+    widgetValue = () =>
+      read ? { status: "ready", ui: widgetUi } : { status: "loading" };
+    const view = render(
+      <DynamicUiWidget part={late} live groupId="group" workspaceId="workspace" />
+    );
+    const widget = screen.getByTestId("dynamic-ui-widget");
+    await waitFor(() => expect(widgetReads).toHaveLength(1));
+    act(() => vi.advanceTimersByTime(999));
+    expect(screen.queryByText(late.summary)).toBeNull();
+    act(() => vi.advanceTimersByTime(1));
+    expect(screen.getByText(late.summary)).toBeTruthy();
+    expect(widget.style.minHeight).toBe("160px");
+    read = true;
+    act(() => widgetCore.changed("dynamicUi"));
+    await waitFor(() => expect(view.container.querySelector("iframe")).not.toBeNull());
+    expect(screen.queryByText(late.summary)).toBeNull();
+  });
+
+  it("keeps a slow read out of view an empty slot", async () => {
+    inViewAtObserve = false;
+    const away = { ...part, contentId: "blob-away", messageId: "message-away" };
+    widgetValue = () => ({ status: "loading" });
+    render(
+      <DynamicUiWidget part={away} live groupId="group" workspaceId="workspace" />
+    );
+    await waitFor(() => expect(widgetReads).toHaveLength(1));
+    act(() => vi.advanceTimersByTime(5000));
+    expect(screen.queryByText(away.summary)).toBeNull();
+  });
+
+  it("starts a widget it showed before at its last height, slot and frame alike", async () => {
+    const seen = { ...part, contentId: "blob-seen", messageId: "message-seen" };
+    const view = render(
+      <DynamicUiWidget part={seen} live groupId="group" workspaceId="workspace" />
+    );
+    await waitFor(() => expect(view.container.querySelector("iframe")).not.toBeNull());
+    const { port } = await connect(view.container.querySelector("iframe")!);
+    act(() => port.postMessage({ type: "height", value: 900 }));
+    view.unmount();
+
+    inViewAtObserve = false;
+    const next = render(
+      <DynamicUiWidget part={seen} live groupId="group" workspaceId="workspace" />
+    );
+    const widget = screen.getByTestId("dynamic-ui-widget");
+    expect(next.container.querySelector("iframe")).toBeNull();
+    expect(screen.queryByText(seen.summary)).toBeNull();
+    expect(widget.style.minHeight).toBe("900px");
+    band(widget, true);
+    await waitFor(() => expect(next.container.querySelector("iframe")).not.toBeNull());
+    expect(next.container.querySelector("iframe")!.style.height).toBe("900px");
+  });
+
+  it("measures its band from the chat scrollport, not the window", async () => {
+    const view = render(
+      <div data-slot="scroll-area-viewport">
+        <DynamicUiWidget part={part} live groupId="group" workspaceId="workspace" />
+      </div>
+    );
+    await waitFor(() => expect(view.container.querySelector("iframe")).not.toBeNull());
+    const root = view.container.querySelector('[data-slot="scroll-area-viewport"]');
+    expect(observerRoots).toEqual([root, root]);
+  });
+
+  /** Four widgets of their own identity, so no other test's remembered height or frame is theirs. */
+  const pool = (name: string) =>
+    ["a", "b", "c", "d"].map((id) => ({
+      ...part,
+      contentId: `blob-${name}-${id}`,
+      messageId: `message-${name}-${id}`,
+    }));
+  const renderPool = (name: string) => {
+    render(
+      <>
+        {pool(name).map((one) => (
+          <DynamicUiWidget
+            key={one.messageId}
+            part={one}
+            live
+            groupId="group"
+            workspaceId="workspace"
+          />
+        ))}
+      </>
+    );
+    const widgets = screen.getAllByTestId("dynamic-ui-widget");
+    return {
+      widgets,
+      frames: () => widgets.map((widget) => widget.querySelector("iframe") !== null),
+    };
+  };
+
+  it("gives a fourth frame the place of a widget out of view, never one in view", async () => {
+    inViewAtObserve = false;
+    const { widgets, frames } = renderPool("pool");
+    // The first is in view; the others are in the band below it.
+    band(widgets[0]!, true);
+    inView(widgets[0]!, true);
+    band(widgets[1]!, true);
+    band(widgets[2]!, true);
+    await waitFor(() => expect(frames()).toEqual([true, true, true, false]));
+    band(widgets[3]!, true);
+    await waitFor(() => expect(frames()).toEqual([true, false, true, true]));
+    // The widget that gave its place holds an empty slot: nothing to read, nothing to click.
+    expect(widgets[1]!.querySelector("p")).toBeNull();
+    expect(screen.queryByRole("button", { name: /reload/i })).toBeNull();
+    // In view again, it runs again, taking the place of the oldest widget out of view.
+    inView(widgets[1]!, true);
+    await waitFor(() => expect(frames()).toEqual([true, true, false, true]));
+  });
+
+  it("lets a fourth frame in view take the oldest place, which Reload takes back", async () => {
+    inViewAtObserve = false;
+    const { widgets, frames } = renderPool("shown");
+    for (const widget of widgets.slice(0, 3)) {
+      band(widget, true);
+      inView(widget, true);
+    }
+    await waitFor(() => expect(frames()).toEqual([true, true, true, false]));
+    // A fourth out of view waits for its turn, as an empty slot, without booting a frame.
+    const booted = vi.fn();
+    const watch = new MutationObserver((records) => {
+      if (
+        records.some((record) =>
+          [...record.addedNodes].some((n) => n.nodeName === "IFRAME")
+        )
+      )
+        booted();
+    });
+    watch.observe(widgets[3]!, { childList: true });
+    band(widgets[3]!, true);
+    await waitFor(() => expect(frames()).toEqual([true, true, true, false]));
+    await Promise.resolve();
+    expect(booted).not.toHaveBeenCalled();
+    watch.disconnect();
+    expect(screen.queryByRole("button", { name: /reload/i })).toBeNull();
+    // In view, it takes the oldest place; that widget says so, and Reload runs it again.
+    inView(widgets[3]!, true);
+    await waitFor(() => expect(frames()).toEqual([false, true, true, true]));
+    expect(widgets[0]!).toHaveTextContent(part.summary);
+    fireEvent.click(screen.getByRole("button", { name: /reload/i }));
+    await waitFor(() => expect(frames()).toEqual([true, false, true, true]));
+  });
+
+  it("shows the text answer on a static surface and reads nothing", () => {
+    const view = render(
+      <DynamicUiWidget
+        part={part}
+        live={false}
+        groupId="group"
+        workspaceId="workspace"
+      />
+    );
+    expect(screen.getByText(part.summary)).toBeTruthy();
+    expect(view.container.querySelector("iframe")).toBeNull();
+    expect(screen.getByTestId("dynamic-ui-widget").style.minHeight).toBe("");
+    expect(widgetReads).toHaveLength(0);
   });
 
   it("preserves the iframe and its live channel across window visibility changes", async () => {

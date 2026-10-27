@@ -44,6 +44,7 @@ export type {
 export type { MenuPointerOffsets } from "./pointerPosition";
 export type { UseTextEditContextMenuStateOptions } from "./useTextEditContextMenuState";
 export {
+  menuClasses,
   menuCompactClasses,
   menuFilterFieldClasses,
   menuItemClasses,

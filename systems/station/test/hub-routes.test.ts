@@ -45,7 +45,10 @@ function rig(withAgents = true) {
   hub.setJobs(jobs);
   const readers = new Readers(data, 1);
   readers.processes = () => hub.processes();
-  const admin = new Admin(readers, { store, agents: withAgents ? ({ hub, jobs } as any) : undefined });
+  // The runtimes whose local sign-in a Workspace chose (accounts/sources.ts).
+  const local = new Set<string>();
+  const accounts = { machineAllowed: (runtime: string) => local.has(runtime) };
+  const admin = new Admin(readers, { store, agents: withAgents ? ({ hub, jobs, accounts } as any) : undefined });
   const ask = async (method: string, path: string, body?: unknown, query: [string, string][] = []) => {
     const raw = Buffer.isBuffer(body) ? body : Buffer.from(body === undefined ? "" : typeof body === "string" ? body : JSON.stringify(body));
     const r: Request = { method, path, query, headers: {}, body: raw, viewer, lang: "en" };
@@ -59,7 +62,7 @@ function rig(withAgents = true) {
     store.close();
     rmSync(data, { recursive: true, force: true });
   };
-  return { data, store, hub, jobs, claude, codex, ask, close };
+  return { data, store, hub, jobs, claude, codex, ask, close, local };
 }
 
 test("a new chat: its session and its thread, refused without a runtime or with an unknown profile", async () => {
@@ -314,6 +317,11 @@ test("going on with one of the machine's own sessions", async () => {
     writeFileSync(join(dir, `${id}.jsonl`), records.map((x) => JSON.stringify(x)).join("\n") + "\n");
     assert.deepEqual(await r.ask("POST", "/machine-sessions", { runtime: "x", id }), [400, { error: en("station.admin.badRuntime") }]);
     assert.deepEqual(await r.ask("POST", "/machine-sessions", { runtime: "claude", id: "nope" }), [404, { error: en("station.admin.noLocalSession", { id: "nope" }) }]);
+    // Until the local sign-in is chosen, the machine's sessions are not read: none listed, none found.
+    assert.deepEqual(await r.ask("GET", "/machine-sessions"), [200, { sessions: [] }]);
+    assert.equal((await r.ask("POST", "/machine-sessions", { runtime: "claude", id }))[0], 404);
+    r.local.add("claude");
+    assert.deepEqual((await r.ask("GET", "/machine-sessions"))[1].sessions.map((m: any) => m.id), [id]);
     const [status, made] = await r.ask("POST", "/machine-sessions", { runtime: "claude", id });
     assert.equal(status, 200);
     assert.deepEqual(Object.keys(made), ["key", "thread"]);

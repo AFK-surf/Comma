@@ -124,8 +124,11 @@ defmodule Salix.App do
       :"Elixir.BridgeForTeams.TriageDelegation"
     )
 
-    # Whether a BFT Runner is online, before a Cloud VM is created on its Host.
-    SystemsRuntime.put_env(:salix_web, :agent_vmm_runner_mod, :"Elixir.BridgeForTeams.Compute")
+    SystemsRuntime.put_env(
+      :salix_agent,
+      :daily_brief_mod,
+      :"Elixir.BridgeForTeams.DailyBrief.ChatSettings"
+    )
 
     SystemsRuntime.put_env(
       :salix_im,

@@ -1,3 +1,18 @@
+/* The sidebar's width lives in these properties on the aside, which a resize
+   drag rewrites on every frame. Inherited, each write restyled every element
+   in the sidebar (~2,600 for a long Task chat, about 25ms a frame). Only the
+   aside and its surface read them, so they do not inherit; the surface takes
+   the aside's value explicitly (RightSidebar). */
+@property --comma-right-sidebar-rendered-width {
+  syntax: "*";
+  inherits: false;
+}
+
+@property --comma-chat-sidebar-width {
+  syntax: "*";
+  inherits: false;
+}
+
 .comma-chat-sidebar-resize-handle {
   pointer-events: auto;
   -webkit-app-region: no-drag;
@@ -243,27 +258,39 @@
   transition: none;
 }
 
-/* The surface keeps its final width while its parent reveals it. Its layout
-   does not contribute to siblings. Once the exit finishes, skip its hidden
-   content without discarding mounted chat state or restarting subscriptions. */
+/* The surface keeps its width and slides in from the window's edge by
+   transform, which the compositor runs; the aside beside the content takes
+   its width in one step. Its layout does not contribute to siblings. Once the
+   exit finishes, skip its hidden content without discarding mounted chat
+   state or restarting subscriptions. */
 .comma-chat-sidebar > .comma-chat-sidebar-surface {
   contain: layout style;
-  transition: content-visibility 0s 0s allow-discrete;
+  transform: translateX(0);
+  transition:
+    transform var(--motion-duration-panel-enter) var(--motion-easing-surface-smooth-out),
+    content-visibility 0s 0s allow-discrete;
 }
 
 .comma-chat-sidebar[data-open="false"] > .comma-chat-sidebar-surface {
   content-visibility: hidden;
-  transition-delay: 150ms;
+  transform: translateX(100%);
+  transition-delay: 0s, var(--motion-duration-panel-enter);
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .comma-chat-sidebar > .comma-chat-sidebar-surface,
   .comma-chat-sidebar[data-open="false"] > .comma-chat-sidebar-surface {
+    transition-duration: 0s;
     transition-delay: 0s;
   }
 }
 
 :root[data-comma-reduced-motion="true"]
+  .comma-chat-sidebar
+  > .comma-chat-sidebar-surface,
+:root[data-comma-reduced-motion="true"]
   .comma-chat-sidebar[data-open="false"]
   > .comma-chat-sidebar-surface {
+  transition-duration: 0s;
   transition-delay: 0s;
 }

@@ -75,6 +75,10 @@ final class CommaStore {
     @ObservationIgnored let core: any CoreAPI
     /// Where the core keeps the bearer, whose account shows while the core checks it.
     @ObservationIgnored let custody: SessionCustody
+    /// The file a core download names (`download` topic's `path`) in its download directory; nil for one outside it.
+    @ObservationIgnored let downloadedFile: @Sendable (String) -> URL?
+    /// Where picked files wait to upload from disk (`chatView.attachLocalFiles`); nil when the host sends none.
+    @ObservationIgnored let localFiles: HostLocalFiles?
     @ObservationIgnored let apple: AppleSignInSheet
     @ObservationIgnored let workspacePreferences: UserDefaults
     /// Advances with each change of the account shown, so work for the one before writes nothing.
@@ -104,17 +108,22 @@ final class CommaStore {
     @ObservationIgnored private(set) var foreground = true
 
     init(configuration: AppConfiguration, core: any CoreAPI, custody: SessionCustody, apple: AppleSignInSheet,
-         workspacePreferences: UserDefaults = .standard) {
+         workspacePreferences: UserDefaults = .standard,
+         downloadedFile: @escaping @Sendable (String) -> URL? = { _ in nil }, localFiles: HostLocalFiles? = nil) {
         self.configuration = configuration
         self.core = core
         self.custody = custody
+        self.downloadedFile = downloadedFile
+        self.localFiles = localFiles
         self.apple = apple
         self.workspacePreferences = workspacePreferences
     }
 
     convenience init(configuration: AppConfiguration, runtime: CoreRuntime, workspacePreferences: UserDefaults = .standard) {
+        let downloads = runtime.host.downloads
         self.init(configuration: configuration, core: runtime.core, custody: runtime.custody, apple: runtime.apple,
-                  workspacePreferences: workspacePreferences)
+                  workspacePreferences: workspacePreferences, downloadedFile: { downloads.file($0) },
+                  localFiles: runtime.host.localFiles)
     }
 
     /// The session boundary a pane operation captures; sign-in, sign-out and account changes advance it.

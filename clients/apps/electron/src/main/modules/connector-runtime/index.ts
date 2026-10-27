@@ -15,6 +15,8 @@ const CONNECTOR_READY_TIMEOUT_MS = 12_000;
 const CONNECTOR_STATUS_POLL_MS = 150;
 const MAX_CONCURRENT_WORKSPACE_CONNECTORS = 3;
 const CONNECTOR_TOKEN_TTL_SECONDS = 2 * 60 * 60;
+/** The next credential is minted when a quarter of the current one's life remains. */
+const RENEW_AT_LIFE_FRACTION = 0.75;
 const CONNECTOR_REVOKE_TIMEOUT_MS = 5_000;
 const MINT_RETRY_MS = [500, 2_000, 8_000, 30_000] as const;
 const CREDENTIAL_WATCH_MS = 2_000;
@@ -159,6 +161,14 @@ interface WorkspaceConnectorEntry {
   lastError: string | undefined;
   lastUsedAtMs: number;
   mintedToken: string | undefined;
+  /** When the credential in use expires, and when its successor is minted (the runtime's clock). */
+  mintedExpiresAtMs: number;
+  renewAtMs: number;
+  renewAttempts: number;
+  /** Credentials a renewal replaced: each is revoked once it has expired, or when the entry stops. */
+  retiring: { token: string; expiresAtMs: number }[];
+  /** The entry's mints, revocations and connection writes, one at a time (`#oneAtATime`). */
+  credentialWork: Promise<void>;
   renewal: (() => void) | undefined;
   statusPath: string;
   stopped: boolean;
@@ -189,10 +199,13 @@ export interface WorkspaceConnectorEntryState {
  *   user's scope choice (`scope.json`). Missing state allows operations by
  *   default; malformed or unreadable state restricts access to
  *   `local_file_read`.
- * - Every minted credential is full and short-lived: its lifetime bounds when
- *   it can be redeemed, not how long the connection stays. When Salix refuses
- *   it, the old one is revoked and the connection is written again with a new
- *   one.
+ * - Every minted credential is full and short-lived, and its lifetime bounds
+ *   the connection that holds it. A quarter of its life before it expires, the
+ *   next one is minted and written: the station presents it on its live
+ *   connection, which keeps serving past the old one (systems/station/README.md).
+ *   The replaced credential is revoked once it has expired. When Salix refuses
+ *   a credential, the ones held are revoked and the connection is written again
+ *   with a new one.
  * - The Session credential lease is the stop authority: its abort removes the
  *   connection at once, and its credential is revoked while any authorized
  *   Session is available. A connection file left by an earlier run of the app
@@ -329,7 +342,10 @@ export class WorkspaceConnectorRuntimeService implements WorkspaceConnectorRunti
         await this.#persistDesiredScope(normalized, scope);
         const entry = this.#ensureEntry(normalized);
         entry.desiredScope = scope;
-        if (entry.mintedToken) await this.#writeInstance(entry, entry.mintedToken);
+        // After any renewal in flight: the file keeps the credential in use.
+        await this.#oneAtATime(entry, async () => {
+          if (entry.mintedToken) await this.#writeInstance(entry, entry.mintedToken);
+        });
         return this.#waitForScope(entry, scope);
       });
     result = operation;
@@ -511,6 +527,11 @@ export class WorkspaceConnectorRuntimeService implements WorkspaceConnectorRunti
       lastError: undefined,
       lastUsedAtMs: this.#clock.now(),
       mintedToken: undefined,
+      mintedExpiresAtMs: 0,
+      renewAtMs: 0,
+      renewAttempts: 0,
+      retiring: [],
+      credentialWork: Promise.resolve(),
       renewal: undefined,
       statusPath: `${instancePath}.status.json`,
       stopped: false,
@@ -540,12 +561,30 @@ export class WorkspaceConnectorRuntimeService implements WorkspaceConnectorRunti
   }
 
   /**
+   * Runs `work` after the entry's earlier credential work. A revocation fences
+   * every generation up to the one it names, so a mint must not overlap
+   * another: one's revocation could fence the credential the other wrote.
+   */
+  #oneAtATime(
+    entry: WorkspaceConnectorEntry,
+    work: () => Promise<void>
+  ): Promise<void> {
+    const run = entry.credentialWork.then(work);
+    entry.credentialWork = run.catch(() => undefined);
+    return run;
+  }
+
+  /**
    * Mints a credential and writes the connection, retried with backoff. A
    * credential is redeemed when the connection connects; once Salix refuses it
    * (it ran out, or was revoked) the station reports `auth_required` and the
    * connection is written again with a new one.
    */
-  async #connect(entry: WorkspaceConnectorEntry, attempt = 0): Promise<void> {
+  #connect(entry: WorkspaceConnectorEntry, attempt = 0): Promise<void> {
+    return this.#oneAtATime(entry, () => this.#connectNow(entry, attempt));
+  }
+
+  async #connectNow(entry: WorkspaceConnectorEntry, attempt: number): Promise<void> {
     if (entry.stopped || this.#closed) return;
     entry.renewal?.();
     entry.renewal = undefined;
@@ -559,12 +598,14 @@ export class WorkspaceConnectorRuntimeService implements WorkspaceConnectorRunti
         entry.mintedToken = undefined;
         await this.#revoke(entry.workspaceId, previous);
       }
+      await this.#revokeRetiring(entry, Number.POSITIVE_INFINITY);
       const token = await this.#mintConnectorToken(entry);
       if (entry.stopped || this.#closed) {
         await this.#revoke(entry.workspaceId, token.token);
         return;
       }
       entry.mintedToken = token.token;
+      this.#scheduleRenewal(entry);
       // Salix records the device at mint; the next mint re-attaches to it.
       await this.#persistDeviceId(entry, token.device_id);
       await rm(entry.statusPath, { force: true });
@@ -588,9 +629,12 @@ export class WorkspaceConnectorRuntimeService implements WorkspaceConnectorRunti
     }
   }
 
-  /** Reads the connection's status until Salix refuses its credential. */
+  /**
+   * Reads the connection's status until Salix refuses its credential, renews
+   * the credential when it is due, and revokes the replaced ones that expired.
+   */
   #watchCredential(entry: WorkspaceConnectorEntry) {
-    entry.renewal = this.#setTimer(CREDENTIAL_WATCH_MS, async () => {
+    const watch = this.#setTimer(CREDENTIAL_WATCH_MS, async () => {
       if (entry.stopped || this.#closed) return;
       const status = await readStatusFile(entry.statusPath);
       const refused =
@@ -601,10 +645,86 @@ export class WorkspaceConnectorRuntimeService implements WorkspaceConnectorRunti
           `workspace connector credential refused; minting another: workspace=${entry.workspaceId}`
         );
         void this.#connect(entry);
-      } else {
+        return;
+      }
+      await this.#oneAtATime(entry, async () => {
+        // Unless `#connect` took over meanwhile: it watches its own credential.
+        if (entry.renewal !== watch || entry.stopped || this.#closed) return;
+        await this.#revokeRetiring(entry, this.#clock.now());
+        if (this.#clock.now() >= entry.renewAtMs) await this.#renew(entry);
+      });
+      if (entry.renewal === watch && !entry.stopped && !this.#closed) {
         this.#watchCredential(entry);
       }
     });
+    entry.renewal = watch;
+  }
+
+  /**
+   * Mints the next credential before the one in use expires and writes it into
+   * the same connection file, without a new connection: the station presents it
+   * on its live connection. The entry switches to it once the file holds it.
+   * The replaced credential is revoked once it has expired, since the live
+   * connection may still hold it until it switches. A failed mint or write is
+   * retried with backoff while the watch goes on; past the old credential's
+   * expiry, Salix's refusal starts over with `#connect`.
+   */
+  async #renew(entry: WorkspaceConnectorEntry) {
+    const replaced = entry.mintedToken;
+    if (!replaced) return;
+    try {
+      const token = await this.#mintConnectorToken(entry);
+      if (entry.stopped || this.#closed) {
+        await this.#revoke(entry.workspaceId, token.token);
+        return;
+      }
+      try {
+        await this.#persistDeviceId(entry, token.device_id);
+        await this.#writeInstance(entry, token.token, token);
+      } catch (error) {
+        // No connection holds it, but revoking it now would also fence the one
+        // in use (a revocation covers every older generation): it goes once it
+        // has expired.
+        entry.retiring.push({
+          token: token.token,
+          expiresAtMs: this.#clock.now() + this.#tokenTtlSeconds * 1_000,
+        });
+        throw error;
+      }
+      if (entry.stopped || this.#closed) {
+        await this.#revoke(entry.workspaceId, token.token);
+        return;
+      }
+      entry.retiring.push({ token: replaced, expiresAtMs: entry.mintedExpiresAtMs });
+      entry.mintedToken = token.token;
+      this.#scheduleRenewal(entry);
+    } catch (error) {
+      // The connection still holds a valid credential: not the entry's error.
+      this.#log.warn(
+        `workspace connector credential not renewed: workspace=${entry.workspaceId} ${errorText(error)}`
+      );
+      const delay =
+        MINT_RETRY_MS[Math.min(entry.renewAttempts, MINT_RETRY_MS.length - 1)] ??
+        30_000;
+      entry.renewAttempts += 1;
+      entry.renewAtMs = this.#clock.now() + delay;
+    }
+  }
+
+  /** When the credential just minted expires, and when its successor is due. */
+  #scheduleRenewal(entry: WorkspaceConnectorEntry) {
+    const now = this.#clock.now();
+    const lifeMs = this.#tokenTtlSeconds * 1_000;
+    entry.mintedExpiresAtMs = now + lifeMs;
+    entry.renewAtMs = now + Math.floor(lifeMs * RENEW_AT_LIFE_FRACTION);
+    entry.renewAttempts = 0;
+  }
+
+  /** Revokes the replaced credentials that expired by `until`. */
+  async #revokeRetiring(entry: WorkspaceConnectorEntry, until: number) {
+    const due = entry.retiring.filter((retired) => retired.expiresAtMs <= until);
+    entry.retiring = entry.retiring.filter((retired) => retired.expiresAtMs > until);
+    for (const retired of due) await this.#revoke(entry.workspaceId, retired.token);
   }
 
   /** Removes the connection (the station closes it) and revokes its credential. */
@@ -626,6 +746,7 @@ export class WorkspaceConnectorRuntimeService implements WorkspaceConnectorRunti
     const token = entry.mintedToken;
     entry.mintedToken = undefined;
     if (token) await this.#revoke(entry.workspaceId, token);
+    await this.#revokeRetiring(entry, Number.POSITIVE_INFINITY);
   }
 
   async #revoke(workspaceId: string, token: string) {

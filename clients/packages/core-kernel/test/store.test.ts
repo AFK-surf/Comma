@@ -186,3 +186,34 @@ test("a cancellable call stops when its UI cancels it, and says so", async () =>
     [ui, { id: 7, error: { code: "cancelled", message: "cancelled" } }],
   ]);
 });
+
+test("evicting idle topics stops those within their grace and leaves subscribed ones; a new subscriber starts one again", async () => {
+  const { time, kernel } = setup();
+  const started: string[] = [];
+  const stopped: string[] = [];
+  kernel.source("count", {
+    start: (topic) => started.push(String(topic.of)),
+    stop: (topic) => stopped.push(String(topic.of)),
+    compute: (topic) => ({ ok: String(topic.of) }),
+  });
+  const ui = kernel.connect();
+  kernel.receive(ui, { id: 1, subscribe: { topic: "count", of: "shown" } });
+  kernel.receive(ui, { id: 2, subscribe: { topic: "count", of: "left" } });
+  await time.pass(0);
+  kernel.receive(ui, { id: 2, unsubscribe: true });
+  await time.pass(0);
+
+  kernel.store.evictIdle();
+  assert.deepEqual(stopped, ["left"]);
+  assert.deepEqual(
+    kernel.store.liveTopics().map((topic) => topic.of),
+    ["shown"]
+  );
+
+  kernel.receive(ui, { id: 3, subscribe: { topic: "count", of: "left" } });
+  await time.pass(0);
+  assert.deepEqual(started, ["shown", "left", "left"]);
+  // The grace the unsubscribe started ends without evicting the topic that is subscribed again.
+  await time.pass(60_000);
+  assert.deepEqual(stopped, ["left"]);
+});

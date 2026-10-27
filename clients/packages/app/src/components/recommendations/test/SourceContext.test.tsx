@@ -1,15 +1,16 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
+import { recommendationSourceQuote } from "@comma/recommendation-contract";
 import { SourceContext } from "../SourceContext";
 
 it("opens supported source links without executing source markup", () => {
   const open = vi.fn();
   render(
     <SourceContext
-      sourceHref="https://comma.slack.com/archives/C123/p123"
-      text={
-        "<@U123|Alex> <#C123|team> <https://example.com/fix|fix> https://example.com/a(b). <https://user:password@example.com|private> <javascript:alert(1)|unsafe> <img src=x onerror=alert(1)>"
-      }
+      lines={recommendationSourceQuote(
+        "<@U123|Alex> <#C123|team> <https://example.com/fix|fix> https://example.com/a(b). <https://user:password@example.com|private> <javascript:alert(1)|unsafe> <img src=x onerror=alert(1)>",
+        "https://comma.slack.com/archives/C123/p123"
+      )}
       onOpenUrl={open}
     />
   );
@@ -32,10 +33,10 @@ it("shows quote markup as lines, list items, links and literal text", () => {
   const open = vi.fn();
   const { container } = render(
     <SourceContext
-      sourceHref="https://github.com/o/r/pull/1"
-      text={
-        "Fix &lt;upload&gt; test\nChecks failing · Changes requested\nmira: See <https://github.com/o/r/runs/812?a=1&b=2|run 812>\n• Keep &lt;b&gt;bold&lt;/b&gt; and &lt;@U1|Alex&gt; &amp; text\nImage: [https://statici.icloud.com/fmipmobile/deviceImages-4.0/online_2x.png]"
-      }
+      lines={recommendationSourceQuote(
+        "Fix &lt;upload&gt; test\nChecks failing · Changes requested\nmira: See <https://github.com/o/r/runs/812?a=1&b=2|run 812>\n• Keep &lt;b&gt;bold&lt;/b&gt; and &lt;@U1|Alex&gt; &amp; text\nImage: [https://statici.icloud.com/fmipmobile/deviceImages-4.0/online_2x.png]",
+        "https://github.com/o/r/pull/1"
+      )}
       onOpenUrl={open}
     />
   );

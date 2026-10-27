@@ -283,7 +283,7 @@ describe("SynchControlClient", () => {
 
     expect(seenMetadata.length).toBeGreaterThan(0);
     for (const metadata of seenMetadata) {
-      expect(metadata.get(VERSION_HEADER)).toEqual(["6"]);
+      expect(metadata.get(VERSION_HEADER)).toEqual(["8"]);
       const presented = metadata.get(TOKEN_HEADER);
       expect(presented).toHaveLength(1);
       expect(Buffer.from(presented[0] as Buffer)).toEqual(token);

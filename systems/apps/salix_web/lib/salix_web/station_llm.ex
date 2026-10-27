@@ -62,8 +62,12 @@ defmodule SalixWeb.StationLLM do
          {:ok, sealed} <- Base.url_decode64(encoded, padding: false),
          {:ok, %{"group" => group, "device" => device, "run" => run}} <-
            SubscriptionStore.open(tenant, @seal_id, sealed),
-         {:ok, %{"status" => "connected", "connector_run_id" => ^run}} <-
-           SalixEnv.Registry.get_device(tenant, group, device) do
+         {:ok, %{"status" => "connected", "connector_run_id" => ^run} = current} <-
+           SalixEnv.Registry.get_device(tenant, group, device),
+         {:ok, _owner} <-
+           SalixEnv.StationConnection.authorize(
+             SalixStore.ComputeStation.connection(tenant, group, current)
+           ) do
       conn
       |> assign(:auth_role, :station_llm)
       |> assign(:station_llm, %{tenant_id: tenant, group_id: group, device_id: device})

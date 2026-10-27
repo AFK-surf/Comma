@@ -41,6 +41,8 @@ defmodule BridgeForTeams.ContextLifecycle.Operations do
     page_receipts_deleted
     stream_checkpoints_deleted
     channels_deleted
+    events_deleted
+    followups_deleted
   )
   @error_classes ~w(
     unknown
@@ -177,7 +179,7 @@ defmodule BridgeForTeams.ContextLifecycle.Operations do
 
   defp persist_request(bundle_id, command) do
     bundle = lock_bundle(bundle_id)
-    :ok = authorize_admin(command.requested_by_user_id, bundle)
+    :ok = authorize_requester(command, bundle)
 
     case lock_request_by_command(bundle.id, command.command_id) do
       %ContextLifecycleRequest{} = request ->
@@ -723,6 +725,27 @@ defmodule BridgeForTeams.ContextLifecycle.Operations do
       Repo.rollback(:stale_lifecycle_lease)
     end
   end
+
+  # A member may delete a bundle of their own personal data. Every other
+  # request needs an administrator of the bundle's scope.
+  defp authorize_requester(
+         %{kind: "deletion", reason: "user_request", requested_by_user_id: user_id},
+         %{classification: "personal"} = bundle
+       ) do
+    own? =
+      Repo.exists?(
+        from(subject in ContextBundleSubject,
+          where:
+            subject.bundle_id == ^bundle.id and subject.kind == "user" and
+              subject.ref == ^user_id
+        )
+      )
+
+    if own?, do: :ok, else: authorize_admin(user_id, bundle)
+  end
+
+  defp authorize_requester(command, bundle),
+    do: authorize_admin(command.requested_by_user_id, bundle)
 
   defp authorize_admin(user_id, %{project_id: project_id}) when not is_nil(project_id) do
     case Memberships.authorize(user_id, :write, %{

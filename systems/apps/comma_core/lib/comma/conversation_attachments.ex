@@ -7,42 +7,96 @@ defmodule Comma.ConversationAttachments do
   including its workspace path and owner-bound immutable blob ref. This endpoint
   authorizes the Conversation and resolves the exact sent attachment; it does
   not turn a caller-supplied workspace path into a download capability.
+
+  The bytes are streamed from the blob store in bounded chunks, whole or one
+  byte range of them, so an attachment of any size downloads without being held
+  in memory.
   """
 
-  @max_download_bytes 10_000_000
   @max_file_name_bytes 1_024
+  @media_ttl_seconds 60 * 60
   @default_content_type "application/octet-stream"
   @downloadable_types ["file", "image", "dynamic_ui"]
 
   @doc """
-  Bytes for attachment `index` of `message_id`, or `{:error, :not_found}` when
-  that position holds no attachment the sender made downloadable.
+  Attachment `index` of `message_id`, ready to `stream/2`: its content type,
+  file name and size. `{:error, :not_found}` when that position holds no
+  attachment the sender made downloadable.
   """
-  def fetch(group_scope, conversation_id, message_id, index)
+  def open(group_scope, conversation_id, message_id, index)
       when is_map(group_scope) and is_binary(conversation_id) and is_binary(message_id) and
              is_integer(index) and index >= 0 do
-    with {:ok, messages} <-
-           Comma.Salix.Client.impl().get_group_conversation_messages(group_scope, conversation_id),
-         {:ok, message} <- find_message(messages, conversation_id, message_id) do
-      fetch_message(group_scope, message, index)
+    # One indexed read of the message, at any depth of the history: every media
+    # URL and every ranged read opens the attachment again.
+    case Comma.Salix.Client.get_group_conversation_message(
+           group_scope,
+           conversation_id,
+           message_id
+         ) do
+      {:ok, %{"message_id" => ^message_id} = message} -> open_message(group_scope, message, index)
+      {:ok, _other} -> {:error, :not_found}
+      {:error, {:bad_request, _reason}} -> {:error, :not_found}
+      {:error, _reason} = error -> error
     end
   end
 
-  def fetch(_group_scope, _conversation_id, _message_id, _index), do: {:error, :not_found}
+  def open(_group_scope, _conversation_id, _message_id, _index), do: {:error, :not_found}
 
   @doc """
-  Bytes for attachment `index` of one canonical `message` the caller already
-  read under its own authorization.
+  Attachment `index` of one canonical `message` the caller already read under
+  its own authorization, ready to `stream/2`.
   """
-  def fetch_message(group_scope, message, index)
+  def open_message(group_scope, message, index)
       when is_map(group_scope) and is_map(message) and is_integer(index) and index >= 0 do
     with {:ok, block} <- attachment_block(message, index),
-         {:ok, body} <- read_blob(group_scope, message, block) do
-      {:ok, content_type(block), file_name(block), body}
+         {:ok, agent_id} <- sender_agent(message) do
+      {:ok,
+       %{
+         content_type: content_type(block),
+         file_name: file_name(block),
+         size: block["blob_ref"]["size"],
+         source: {group_scope, agent_id, block["blob_ref"]}
+       }}
     end
   end
 
-  def fetch_message(_group_scope, _message, _index), do: {:error, :not_found}
+  def open_message(_group_scope, _message, _index), do: {:error, :not_found}
+
+  @doc """
+  The bytes of an attachment `open/4` gave, as they are read: all of them
+  (`nil`), or `length` bytes from `offset`.
+  """
+  def stream(%{source: {group_scope, agent_id, blob_ref}}, range) do
+    case Comma.Salix.Client.impl().stream_agent_blob(group_scope, agent_id, blob_ref, range) do
+      {:ok, stream, _size} -> {:ok, stream}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  @doc """
+  How long an attachment's media URL (`presign/2`) reads it. The store checks
+  no session, so a URL keeps reading it this long after a sign-out, a
+  revocation or lost membership; a client mints it again before it expires,
+  while shown.
+  """
+  def media_ttl_seconds, do: @media_ttl_seconds
+
+  @doc """
+  A URL a client reads an attachment `open/4` gave from, straight from the
+  blob store and in any byte ranges, for `expires_in` seconds: served as its
+  content type and as a download under its file name.
+  """
+  def presign(%{source: {group_scope, agent_id, blob_ref}} = attachment, expires_in) do
+    Comma.Salix.Client.presign_agent_blob(group_scope, agent_id, blob_ref,
+      expires_in: expires_in,
+      content_type: attachment.content_type,
+      content_disposition: content_disposition(attachment.file_name)
+    )
+  end
+
+  @doc "`Content-Disposition` of an attachment downloaded under `file_name`."
+  def content_disposition(file_name),
+    do: "attachment; filename*=UTF-8''" <> URI.encode(file_name, &URI.char_unreserved?/1)
 
   @doc "Download metadata of a block that `downloadable?/1` accepts."
   def describe(block) when is_map(block) do
@@ -78,17 +132,6 @@ defmodule Comma.ConversationAttachments do
   # Comma returns canonical Salix Message resources unchanged, so the client uses
   # the exact message id it was shown. Authorization of the Conversation read is
   # performed before this lookup.
-  defp find_message(messages, _conversation_id, message_id) when is_list(messages) do
-    messages
-    |> Enum.find(&(&1["message_id"] == message_id))
-    |> case do
-      nil -> {:error, :not_found}
-      message -> {:ok, message}
-    end
-  end
-
-  defp find_message(_messages, _conversation_id, _message_id), do: {:error, :not_found}
-
   defp attachment_block(%{"content" => content}, index) when is_list(content) do
     case Enum.at(content, index) do
       block when is_map(block) ->
@@ -103,18 +146,10 @@ defmodule Comma.ConversationAttachments do
 
   # Blob storage uses global UUID keys. The sender Agent supplies the existing
   # group/Agent authorization context for this owner-bound ref, not a namespace.
-  defp read_blob(group_scope, message, block) do
+  defp sender_agent(message) do
     case message["agent_id"] do
-      agent_id when is_binary(agent_id) and agent_id != "" ->
-        Comma.Salix.Client.impl().read_agent_blob(
-          group_scope,
-          agent_id,
-          block["blob_ref"],
-          @max_download_bytes
-        )
-
-      _missing ->
-        {:error, :not_found}
+      agent_id when is_binary(agent_id) and agent_id != "" -> {:ok, agent_id}
+      _missing -> {:error, :not_found}
     end
   end
 
@@ -123,8 +158,7 @@ defmodule Comma.ConversationAttachments do
   defp valid_blob_ref?(ref) when is_map(ref) do
     is_binary(ref["uuid"]) and ref["uuid"] != "" and
       is_binary(ref["hash"]) and ref["hash"] != "" and
-      is_integer(ref["size"]) and ref["size"] >= 0 and
-      ref["size"] <= @max_download_bytes
+      is_integer(ref["size"]) and ref["size"] >= 0
   end
 
   defp valid_blob_ref?(_ref), do: false

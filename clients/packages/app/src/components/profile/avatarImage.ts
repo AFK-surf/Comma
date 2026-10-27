@@ -1,5 +1,7 @@
 export const avatarTypes = ["image/jpeg", "image/png", "image/webp"];
-/** Largest file the picker accepts; the server enforces the same bound. */
+/** Largest image the picker accepts; it is cropped and re-encoded before upload. */
+export const maxAvatarSourceBytes = 10 * 1024 * 1024;
+/** Largest upload the server accepts. */
 export const maxAvatarBytes = 2 * 1024 * 1024;
 /** Avatars render at 40px or less, so 512px covers dense displays. */
 export const avatarOutputSide = 512;
@@ -22,7 +24,7 @@ export interface AvatarCrop {
 }
 
 export const isAcceptedAvatarFile = (file: File) =>
-  avatarTypes.includes(file.type) && file.size > 0 && file.size <= maxAvatarBytes;
+  avatarTypes.includes(file.type) && file.size > 0 && file.size <= maxAvatarSourceBytes;
 
 /** Largest centered square: the crop the dialog opens with. */
 export const initialAvatarCrop = ({ width, height }: AvatarSource): AvatarCrop => {

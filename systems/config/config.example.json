@@ -284,6 +284,16 @@
     },
     "profile_avatar": {
       "bucket": "example-avatars"
+    },
+    "mini_apps": {
+      "dispatch_base_url": "https://miniapp-dispatch-prod.afk.surf",
+      "dispatch_secret": "replace-with-the-dispatch-worker-secret",
+      "cloudflare_account_id": "replace-with-cloudflare-account-id",
+      "cloudflare_api_token": "replace-with-workers-for-platforms-api-token",
+      "dispatch_namespace": "comma-miniapps-stable",
+      "viewer_key": "replace-with-at-least-32-random-bytes",
+      "template_repo": "AFK-surf/comma-app-template",
+      "link_base_url": "https://app.comma.surf/a/"
     }
   },
   "bridge_for_teams": {

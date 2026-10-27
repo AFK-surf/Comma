@@ -1,5 +1,6 @@
-import { useCall, useTopic } from "@comma/core-client";
-import { useCallback, useEffect, useMemo } from "react";
+import { useCall } from "@comma/core-client";
+import { useCallback, useEffect } from "react";
+import { useMarksOf } from "../../revisionMarks";
 
 /**
  * Settled tasks the user has acknowledged out of the chat task panel, each
@@ -17,8 +18,6 @@ const LEGACY_STORAGE_KEY = "comma.chatTaskPanelDismissed";
 
 /** Task id → when the acknowledged run started (0 when not known). */
 export type DismissedPanelTasks = ReadonlyMap<string, number>;
-
-const NONE: DismissedPanelTasks = new Map();
 
 /** Acknowledgements this window kept in localStorage before the core kept them: handed over once, then dropped. */
 function useLegacyDismissals() {
@@ -47,11 +46,10 @@ function useLegacyDismissals() {
   }, [call]);
 }
 
-export function useDismissedPanelTasks(): DismissedPanelTasks {
+/** The acknowledgements of `ids` alone: the panel renders again only when one of its own Tasks' moves. */
+export function useDismissedPanelTasks(ids: readonly string[]): DismissedPanelTasks {
   useLegacyDismissals();
-  const { value } = useTopic({ topic: "marks", kind: "chatTaskDismissed" });
-  const marks = value?.marks;
-  return useMemo(() => (marks ? new Map(Object.entries(marks)) : NONE), [marks]);
+  return useMarksOf("chatTaskDismissed", ids);
 }
 
 /**

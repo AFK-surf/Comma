@@ -206,6 +206,16 @@
 .compute-resource > .compute-status {
   max-width: 38%;
 }
+.compute-resource-state {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--spacing-xxs);
+  max-width: 38%;
+  font-size: var(--text-xs);
+  line-height: var(--text-xs--line-height);
+  text-align: right;
+}
 .compute-chevron {
   flex-shrink: 0;
   color: var(--compute-muted);
@@ -238,13 +248,16 @@
 .compute-note {
   margin-top: var(--spacing-md) !important;
 }
+/* The recovery result's action sits clearly below its explanation. */
+.compute-recovery-actions {
+  margin-top: var(--spacing-lg);
+}
 .compute-diagnostics {
   margin-top: var(--spacing-2xl);
   color: var(--compute-muted);
   font-size: var(--text-xs);
 }
-.compute-diagnostics summary,
-.compute-history summary {
+.compute-diagnostics summary {
   cursor: var(--cursor-interaction, default);
   padding: var(--spacing-md) 0;
 }
@@ -253,15 +266,6 @@
 }
 .compute-diagnostics .compute-section-heading {
   display: none;
-}
-.compute-history {
-  border-top: var(--compute-hairline);
-  padding-block: var(--spacing-md);
-  color: var(--compute-muted);
-  font-size: var(--text-xs);
-}
-.compute-history > summary {
-  margin-inline: var(--compute-inset);
 }
 .compute-settings dl {
   margin: 0;

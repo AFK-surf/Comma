@@ -30,6 +30,7 @@ defmodule SalixIM.ProviderHTTP do
   }
 
   alias SalixIM.Provider.Slack.TriageCallbackRouter
+  alias SalixIM.Provider.Slack.QuestionCard, as: SlackQuestionCard
   alias SalixIM.Ports.ProviderAppStore
   alias SalixStore.ReadScope
   alias SalixStore.SlackRouterThreadParticipations
@@ -45,6 +46,8 @@ defmodule SalixIM.ProviderHTTP do
     ProviderObservations,
     ProviderRecipientIdentity,
     ProviderReceipts,
+    QuestionCard,
+    SlackMentionAck,
     SlackMessageMirror,
     SlackRouterStatus,
     SlackScopes,
@@ -72,7 +75,10 @@ defmodule SalixIM.ProviderHTTP do
           "bot_user" => %{"display_name" => app_name, "always_online" => false}
         },
         "oauth_config" => %{
-          "redirect_urls" => [redirect_url],
+          "redirect_urls" => [
+            redirect_url,
+            ProviderConnects.public_base_url() <> "/v1/oauth/slack/callback"
+          ],
           "scopes" => %{"bot" => SlackScopes.bot()}
         },
         "settings" => %{
@@ -255,9 +261,16 @@ defmodule SalixIM.ProviderHTTP do
             # other interaction goes through: a declassification is answered by
             # a person pressing a button, and nothing about that button is
             # trusted before Slack's own proof that it came from this app.
-            if SalixIM.IFC.SlackConfirmation.action?(payload),
-              do: SalixIM.IFC.SlackConfirmation.apply_action(connect, payload),
-              else: SlackProvider.apply_checkbox_action(nil, connect, payload)
+            cond do
+              SalixIM.IFC.SlackConfirmation.action?(payload) ->
+                SalixIM.IFC.SlackConfirmation.apply_action(connect, payload)
+
+              SlackQuestionCard.action?(payload) ->
+                answer_slack_question(connect, payload)
+
+              true ->
+                SlackProvider.apply_checkbox_action(nil, connect, payload)
+            end
           end
         end)
 
@@ -268,6 +281,105 @@ defmodule SalixIM.ProviderHTTP do
 
   def handle_slack_interaction(_app_id, _payload, _headers, _raw_body),
     do: {:error, :invalid_envelope}
+
+  # A press on a question card (`SalixIM.QuestionCard`), after the same
+  # signature, app and team checks as every interaction. The answer is said in
+  # the card's thread as the person's own message to the bot: it takes the
+  # human-command lane of an @mention (a direct message in a DM), so it reaches
+  # the Router like anything they write there. Its event ID names the card, so
+  # the receipt takes one answer per card; a later press is told so, only to
+  # the person who pressed. Taken, the card is changed to say who answered
+  # what. That change is presentation: a failed update leaves buttons whose
+  # press is refused by the receipt.
+  defp answer_slack_question(connect, payload) do
+    channel =
+      first_nonblank([at(payload, ["channel", "id"]), at(payload, ["container", "channel_id"])])
+
+    card_ts =
+      first_nonblank([at(payload, ["message", "ts"]), at(payload, ["container", "message_ts"])])
+
+    user = trim(at(payload, ["user", "id"]))
+
+    thread_ts =
+      first_nonblank([
+        at(payload, ["message", "thread_ts"]),
+        at(payload, ["container", "thread_ts"]),
+        card_ts
+      ])
+
+    tell = fn locale, key ->
+      text = QuestionCard.label(locale, key)
+      _ = SlackProvider.post_ephemeral(nil, connect, channel, user, thread_ts, text)
+      {:ok, :accepted}
+    end
+
+    with false <- channel == "" or card_ts == "" or user == "",
+         {:ok, said, locale} <- SlackQuestionCard.answer(payload) do
+      card = %{channel: channel, ts: card_ts, thread_ts: thread_ts}
+
+      case consume_slack_event(connect, slack_question_answer(connect, payload, card, user, said)) do
+        {:ok, :duplicate} ->
+          tell.(locale, :answered_before)
+
+        {:ok, :ignored} ->
+          {:error, {:ignored, :question_answer_not_routed}}
+
+        {:ok, _taken} ->
+          blocks =
+            SlackQuestionCard.answered_blocks(
+              at(payload, ["message", "blocks"]),
+              user,
+              said,
+              locale
+            )
+
+          text = blank_default(at(payload, ["message", "text"]), said)
+          _ = SlackProvider.update_surface(nil, connect, channel, card_ts, text, blocks)
+          {:ok, :accepted}
+
+        {:error, _reason} = error ->
+          error
+      end
+    else
+      true -> {:error, {:ignored, :invalid_interaction_payload}}
+      :choosing -> {:ok, :accepted}
+      {:empty, locale, key} -> tell.(locale, key)
+    end
+  end
+
+  # The person's message a press stands for. The press has no ts of its own
+  # but its action's, and a DM takes no mention.
+  defp slack_question_answer(connect, payload, card, user, said) do
+    action_ts =
+      payload["actions"]
+      |> List.wrap()
+      |> Enum.map(&trim(at(&1, ["action_ts"])))
+      |> Enum.find(card.ts, &(&1 != ""))
+
+    direct? = String.starts_with?(card.channel, "D")
+
+    event =
+      %{
+        "type" => if(direct?, do: "message", else: "app_mention"),
+        "user" => user,
+        "text" => if(direct?, do: said, else: "<@#{trim(connect["bot_user_id"])}> " <> said),
+        "channel" => card.channel,
+        "channel_type" => if(direct?, do: "im", else: "channel"),
+        "ts" => action_ts,
+        "event_ts" => action_ts,
+        "thread_ts" => card.thread_ts,
+        "team" => trim(connect["workspace_id"])
+      }
+
+    %{
+      "type" => "event_callback",
+      "team_id" => trim(connect["workspace_id"]),
+      "api_app_id" => trim(connect["app_id"]),
+      "event_id" => "question:" <> card.channel <> ":" <> card.ts,
+      "event_time" => div(SystemsClock.system_time(:millisecond), 1000),
+      "event" => event
+    }
+  end
 
   def handle_slack_command(params, headers, raw_body) when is_map(params) do
     started = SystemsClock.monotonic_time()
@@ -1716,12 +1828,80 @@ defmodule SalixIM.ProviderHTTP do
         # person pressing a button, and nothing about that button is trusted
         # before Feishu's own proof that it came from this app. A card press
         # carries no message id, so it must be taken before the message path.
-        if FeishuConfirmation.action?(envelope),
-          do: dispatch_feishu_card_action(connect, envelope),
-          else: dispatch_feishu_message_event(connect, envelope)
+        cond do
+          FeishuConfirmation.action?(envelope) ->
+            dispatch_feishu_card_action(connect, envelope)
+
+          QuestionCard.feishu_action?(envelope) and
+              trim(get_in(envelope, ["header", "event_type"])) == "card.action.trigger" ->
+            dispatch_feishu_question_answer(connect, envelope)
+
+          true ->
+            dispatch_feishu_message_event(connect, envelope)
+        end
 
       {:error, :invalid_envelope} = error ->
         error
+    end
+  end
+
+  # A press on a question card (`SalixIM.QuestionCard`), after the same app,
+  # token and decryption checks as every callback. The answer is that
+  # person's message in the card's chat, the card's own message ID standing
+  # for it: the receipt on that ID takes one answer per card, and the Router
+  # replies under the card. The callback's response shows who answered what;
+  # a later press is told so, and the card stays as it is.
+  defp dispatch_feishu_question_answer(connect, envelope) do
+    with :ok <- ensure_active_provider_connect(connect, "feishu") do
+      case QuestionCard.feishu_answer(envelope) do
+        :invalid ->
+          {:ok, %{ok: true, status: "ignored"}}
+
+        {:empty, toast} ->
+          {:ok, toast}
+
+        {:ok, answer} ->
+          message = %{
+            "header" => %{
+              "event_type" => "im.message.receive_v1",
+              "event_id" => "question:" <> answer["message_id"],
+              "tenant_key" => trim(get_in(envelope, ["header", "tenant_key"]))
+            },
+            "event" => %{
+              "sender" => %{
+                "sender_type" => "user",
+                "sender_id" => %{
+                  "open_id" => answer["open_id"],
+                  "union_id" => trim(get_in(envelope, ["event", "operator", "union_id"])),
+                  "user_id" => trim(get_in(envelope, ["event", "operator", "user_id"]))
+                }
+              },
+              "message" => %{
+                "message_id" => answer["message_id"],
+                "chat_id" => answer["chat_id"],
+                "chat_type" => blank_default(answer["chat_type"], "group"),
+                "thread_id" => answer["thread_id"],
+                "message_type" => "text",
+                "content" => Jason.encode!(%{"text" => answer["said"]}),
+                "create_time" => Integer.to_string(SystemsClock.system_time(:millisecond))
+              }
+            }
+          }
+
+          case with_event_receipt(
+                 connect["connect_id"],
+                 "question:" <> answer["message_id"],
+                 &ProviderReceipts.record_feishu/2,
+                 &ProviderReceipts.delete_feishu/2,
+                 fn ->
+                   dispatch_received_feishu_message(connect, message, answer["message_id"])
+                 end
+               ) do
+            {:ok, :duplicate} -> {:ok, QuestionCard.feishu_answered_before(envelope)}
+            {:ok, _status} -> {:ok, answer["response"]}
+            {:error, _reason} = error -> error
+          end
+      end
     end
   end
 
@@ -2772,6 +2952,10 @@ defmodule SalixIM.ProviderHTTP do
             {:lifecycle, :delivered, message.source_message_id}
           )
 
+          if message.bot_mentioned do
+            SlackMentionAck.acknowledge(connect, message.channel_id, message.message_ts)
+          end
+
           :ok
 
         :command ->
@@ -3140,7 +3324,9 @@ defmodule SalixIM.ProviderHTTP do
     end
   end
 
-  defp slack_api_user_profile(connect, user_id) do
+  @doc false
+  # A Slack user's profile through the node's profile cache, as ingress reads it.
+  def slack_api_user_profile(connect, user_id) do
     bot_token = trim(connect["bot_token"])
 
     if bot_token == "" or trim(user_id) == "" do
@@ -4086,6 +4272,11 @@ defmodule SalixIM.ProviderHTTP do
       true -> "provider_error"
     end
   end
+
+  # Walks only through objects: a caller chose every type in a callback.
+  defp at(value, []), do: value
+  defp at(%{} = map, [key | rest]), do: at(Map.get(map, key), rest)
+  defp at(_value, _path), do: nil
 
   defp trim(nil), do: ""
   defp trim(value) when is_binary(value), do: String.trim(value)

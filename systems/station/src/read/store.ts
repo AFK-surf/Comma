@@ -43,14 +43,18 @@ export type ThreadRow = {
 
 /// A session in a thread, and the connect it posts there through.
 export type Membership = { thread: number; session: string; connect: string; joinedAt: number };
+/// A runtime session a session ran in, with the runtime it ran.
+export type RanIn = { id: string; runtime: string };
 
 /// One entry of a thread's log. `agentIdentity`, `options` and `card` are undefined where the Rust has None (and
 /// leaves them out), and may be null where it has Some(Value::Null).
 export type EntryRow = {
-  agentIdentity: Json | undefined; thread: number; n: number; kind: "message" | "edit"; target: number | null;
+  agentIdentity: Json | undefined; thread: number; n: number; kind: "message" | "edit" | "milestone"; target: number | null;
   ts: string | null; authorKind: AuthorKind; author: string; text: string | null; attachments: Json[]; quotes: Json[];
   declared: string | null; client: string | null; profile: string | null; options: Json | undefined; card: Json | undefined;
   at: number;
+  /// The key steps its agent finished (chat_post milestones); none: undefined. A "milestone" entry holds only these.
+  milestones: string[] | undefined;
 };
 
 /// A message as it reads now: its latest edit's words, files and quotes.
@@ -177,6 +181,16 @@ function toThread(r: Json): ThreadRow {
   };
 }
 
+const entryKind = (kind: Json): EntryRow["kind"] => (kind === "edit" ? "edit" : kind === "milestone" ? "milestone" : "message");
+
+/// A stored list of milestones (entries.milestones, an archive file's): undefined for none.
+function storedMilestones(value: Json): string[] | undefined {
+  const list = typeof value === "string" ? parsed(value) : value;
+  if (!Array.isArray(list)) return undefined;
+  const titles = list.filter((t): t is string => typeof t === "string");
+  return titles.length === 0 ? undefined : titles;
+}
+
 const toMembership = (r: Json): Membership => ({ thread: r.thread, session: r.session, connect: r.connect, joinedAt: r.joined_at });
 
 function toEntry(r: Json): EntryRow {
@@ -184,7 +198,7 @@ function toEntry(r: Json): EntryRow {
     agentIdentity: parsed(r.agent_identity),
     thread: r.thread,
     n: r.n,
-    kind: r.kind === "edit" ? "edit" : "message",
+    kind: entryKind(r.kind),
     target: r.target,
     ts: r.ts,
     authorKind: authorKind(r.author_kind),
@@ -198,6 +212,7 @@ function toEntry(r: Json): EntryRow {
     options: parsed(r.options),
     card: parsed(r.card),
     at: r.at,
+    milestones: storedMilestones(r.milestones),
   };
 }
 
@@ -222,14 +237,14 @@ function toMessage(r: Json): MessageRow {
 /// An entry from an archive file, as serde reads EntryRow (null where an Option is: None).
 function archivedEntry(e: Json): EntryRow {
   const kind = e.kind;
-  if (kind !== "message" && kind !== "edit") throw new Error(`unknown entry kind ${kind}`);
+  if (kind !== "message" && kind !== "edit" && kind !== "milestone") throw new Error(`unknown entry kind ${kind}`);
   if (!["person", "agent", "ember", "stillfail"].includes(e.authorKind)) throw new Error(`unknown author kind ${e.authorKind}`);
   const some = (v: Json) => (v === undefined || v === null ? undefined : v);
   return {
     agentIdentity: some(e.agentIdentity), thread: e.thread, n: e.n, kind, target: e.target ?? null, ts: e.ts ?? null,
     authorKind: authorKind(e.authorKind), author: e.author, text: e.text ?? null, attachments: (e.attachments ?? []).map(attachment),
     quotes: (e.quotes ?? []).map(quote), declared: e.declared ?? null, client: e.client ?? null, profile: e.profile ?? null,
-    options: some(e.options), card: some(e.card), at: e.at,
+    options: some(e.options), card: some(e.card), at: e.at, milestones: storedMilestones(e.milestones),
   };
 }
 
@@ -310,14 +325,18 @@ export function listSessions(s: Store): SessionRow[] {
   return all(s, "SELECT * FROM sessions ORDER BY last_active_at DESC").map(toSession);
 }
 
-/// Store::runtimeSessions: the runtime sessions a session has run in, the first first, ending with its current one.
-export function runtimeSessions(s: Store, key: string): string[] {
-  const current = getSession(s, key)?.runtimeSessionId ?? null;
-  let ids: string[] = [];
+/// Store::runtimeSessions: the runtime sessions a session has run in, the first first, ending with its current one;
+/// each with the runtime it ran.
+export function runtimeSessions(s: Store, key: string): RanIn[] {
+  const row = getSession(s, key);
+  const own = row?.runtime ?? "";
+  const current = row?.runtimeSessionId ?? null;
+  let ran: RanIn[] = [];
   try {
-    ids = all(s, "SELECT id FROM runtime_sessions WHERE session_key = ? ORDER BY at, rowid", key).map((r) => r.id);
+    ran = all(s, "SELECT id, runtime FROM runtime_sessions WHERE session_key = ? ORDER BY at, rowid", key).map((r) => ({ id: r.id, runtime: r.runtime ?? own }));
   } catch {} // a database no station of this version has opened yet
-  return current === null ? ids : [...ids.filter((id) => id !== current), current];
+  if (current === null) return ran;
+  return [...ran.filter((r) => r.id !== current), ran.find((r) => r.id === current) ?? { id: current, runtime: own }];
 }
 
 // ── threads ──
@@ -449,6 +468,46 @@ export function entriesBefore(s: Store, thread: number, n: bigint | null, limit:
 export function entriesBetween(s: Store, thread: number, from: bigint, to: bigint): EntryRow[] {
   if (isArchived(s, thread)) return archivedEntries(s, thread).filter((e) => e.n >= from && e.n <= to);
   return all(s, "SELECT * FROM entries WHERE thread = ? AND n >= ? AND n <= ? ORDER BY n", thread, from, to).map(toEntry);
+}
+
+/// The entries Salix's Router wrote into a Task of the station's own (task.say, src/tasks/tasks.ts, keeps each under the
+/// session "task.say" in task_posts): requests made elsewhere, such as in Home.
+export function routerRequests(s: Store, thread: number): Set<number> {
+  return new Set(all(s, "SELECT n FROM task_posts WHERE thread = ? AND session = 'task.say'", thread).map((r) => r.n));
+}
+
+/// What each agent's post among `posts` answers, by its n: the last message its session was handed in the chat before it
+/// was posted (deliveries). A post its session was handed nothing before answers none.
+export function answered(s: Store, thread: number, posts: { n: number; author: string; at: number }[]): Map<number, number> {
+  const out = new Map<number, number>();
+  for (const post of posts) {
+    const handed = one(
+      s,
+      "SELECT n FROM deliveries WHERE thread = ? AND n < ? AND session = ? AND delivered_at IS NOT NULL AND delivered_at <= ? ORDER BY n DESC LIMIT 1",
+      thread, post.n, post.author, post.at,
+    );
+    if (handed !== undefined) out.set(post.n, Number(handed.n));
+  }
+  return out;
+}
+
+/// Where a Task here runs when it is on another station (task_runs, tasks.ts moveTo): the station, its Session there,
+/// and the runtime and model that Session was started with; null when it runs here.
+export function runsElsewhere(s: Store, thread: number): { station: string; session: string | null; runtime: string | null; model: string | null } | null {
+  let run: Json;
+  try {
+    run = one(s, "SELECT station FROM task_runs WHERE thread = ?", thread);
+  } catch {
+    return null; // a database no station of this version has opened yet
+  }
+  if (run === undefined) return null;
+  const part = one(s, "SELECT session, start FROM task_sessions WHERE thread = ? AND station = ? ORDER BY joined_at DESC LIMIT 1", thread, run.station);
+  let start: Json = null;
+  try {
+    start = part?.start ? JSON.parse(part.start) : null;
+  } catch {}
+  const text = (v: unknown) => (typeof v === "string" && v !== "" ? v : null);
+  return { station: run.station, session: part?.session ?? null, runtime: text(start?.runtime), model: text(start?.model) };
 }
 
 /// The latest `limit` messages before n (the latest of all without it), as merged, oldest first.

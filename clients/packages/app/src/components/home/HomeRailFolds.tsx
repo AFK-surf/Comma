@@ -20,7 +20,7 @@ import {
   type CommaHomeRailName,
 } from "../shellGeometry";
 import { isReducedMotionEnabled } from "@comma/ui/tokens";
-import { useOptionalChatSidebar } from "../chat-sidebar/ChatSidebarContext";
+import { useChatSidebarOpen } from "../chat-sidebar/ChatSidebarContext";
 import { useRailFoldSpring } from "../railFoldSpring";
 
 /** The gutter each rail's track carries beside the chat (`--spacing-xl`). */
@@ -64,8 +64,8 @@ export function HomeRailFoldProvider({
  * so a frame restyles those two elements and not the rail's content.
  *
  * A reader's toggle plays the fold spring. A fold the route width forces
- * plays the shell's CSS transition, in step with whatever moved the route
- * (the Chat Sidebar opening, a window drag).
+ * lands at once, in the same layout as whatever moved the route (the Chat
+ * Sidebar opening, a window drag), which moves it in one step too.
  *
  * When the reader shuts a rail, the chat column keeps its current width and
  * rides the growing track, then takes the new width once at rest. The thread
@@ -81,29 +81,10 @@ function useHomeRailFoldMotion(
 ) {
   const previousReaderCollapsed = useRef(readerCollapsed);
   const readerMoved = previousReaderCollapsed.current !== readerCollapsed;
-  // Read once up front: a style read inside the commit that moves the fold
-  // would resolve the new value before the transition is armed, and the rail
-  // would jump instead of moving.
-  const shellMs = useRef(150);
-  useLayoutEffect(() => {
-    shellMs.current = shellTransitionMs(layoutRef.current);
-  }, [layoutRef]);
   const foldProperty = `--comma-home-${rail}-fold`;
-  const transitionAttribute = `data-${rail}-fold-transition`;
   useRailFoldSpring(shut, {
-    read: () => {
-      const layout = layoutRef.current;
-      if (!layout) return undefined;
-      const painted = Number.parseFloat(
-        getComputedStyle(layout).getPropertyValue(foldProperty)
-      );
-      return Number.isFinite(painted) ? painted : undefined;
-    },
     span: () => preferredWidth + commaHomeRailGutter,
-    timing: () =>
-      readerMoved
-        ? { kind: "spring" }
-        : { kind: "transition", durationMs: shellMs.current },
+    timing: () => (readerMoved ? { kind: "spring" } : { kind: "instant" }),
     write: (progress, phase) => {
       const layout = layoutRef.current;
       if (!layout) return;
@@ -113,20 +94,15 @@ function useHomeRailFoldMotion(
       const surface = railElement?.querySelector<HTMLElement>(
         ":scope > .comma-home-rail-surface"
       );
-      // Armed before the value moves, so the change starts the transition.
-      layout.toggleAttribute(transitionAttribute, phase === "transition");
       layout.style.setProperty(foldProperty, String(progress));
       if (phase === "rest") {
         railElement?.removeAttribute("data-fold-moving");
+        surface?.style.removeProperty("--comma-home-rail-fold-progress");
         const chat = layout.querySelector<HTMLElement>(":scope > .comma-home-chat");
         if (chat?.dataset.foldHeldBy === rail) releaseChatWidth(chat);
       } else {
         railElement?.setAttribute("data-fold-moving", phase);
-      }
-      if (phase === "spring") {
         surface?.style.setProperty("--comma-home-rail-fold-progress", String(progress));
-      } else {
-        surface?.style.removeProperty("--comma-home-rail-fold-progress");
       }
     },
   });
@@ -153,17 +129,6 @@ function useHomeRailFoldMotion(
   }, [readerCollapsed]);
 }
 
-/** The shell's own transition length, which the Chat Sidebar also uses. */
-function shellTransitionMs(element: HTMLElement | null) {
-  if (!element) return 150;
-  const raw = getComputedStyle(element).getPropertyValue(
-    "--comma-shell-transition-duration"
-  );
-  const value = Number.parseFloat(raw);
-  if (!Number.isFinite(value)) return 150;
-  return raw.trim().endsWith("ms") ? value : value * 1000;
-}
-
 function releaseChatWidth(chat: HTMLElement) {
   chat.style.removeProperty("width");
   chat.style.removeProperty("justify-self");
@@ -175,10 +140,8 @@ export function HomeLayout({ children }: { children: ReactNode }) {
   const { collapsed, folds, widths } = useContext(HomeRailStateContext);
   const shut = mergeHomeRailFolds(folds, collapsed);
   // React renders only the first value of each fold; the fold motion writes
-  // every later one, after it arms the transition. A value React wrote in the
-  // commit would already be resolved by any layout read in a descendant's
-  // layout effect (a ScrollArea measuring itself), before the transition was
-  // armed, and the rail would jump to its end instead of moving.
+  // every later one. A value React wrote in the commit would land the rail at
+  // its end before a reader's spring could start from where it is.
   const [firstShut] = useState(shut);
   const layoutRef = useRef<HTMLDivElement>(null);
   useHomeRailFoldMotion(
@@ -268,9 +231,7 @@ export function HomeRailFolds({
   // follows the replaced Home DOM. Its first valid measurement must publish
   // even an open state, rather than treating an unmeasured default as truth.
   const publishedRef = useRef<CommaHomeRailFolds | undefined>(undefined);
-  const sidebar = useOptionalChatSidebar();
-  const trailingOpen = sidebar?.isOpen ?? false;
-  const pendingTrailingWidth = sidebar?.pendingTrailingWidth;
+  const trailingOpen = useChatSidebarOpen();
 
   const publishFolds = useCallback(
     (routeWidth: number, preferredGreetWidth = greetWidth) => {
@@ -288,12 +249,10 @@ export function HomeRailFolds({
     [greetWidth, greetCollapsed]
   );
 
-  // The fold has to land while a drag runs — the rail's exit is a transition
-  // played at the threshold, not a correction applied after the pointer
-  // stops. It also has to land in the commit that opens or closes the Chat
-  // Sidebar, from the route width that sidebar leaves once its own width
-  // transition settles (`pendingTrailingWidth`): folding on a frame of that
-  // transition squeezes the chat column first and springs it back after.
+  // The fold has to land while a drag runs, at the threshold, not as a
+  // correction applied after the pointer stops. It also has to land in the
+  // commit that opens or closes the Chat Sidebar, which takes its width in one
+  // step, so the chat column lays out once for both.
   useLayoutEffect(() => {
     const route = routeRef.current;
     if (!active || !route || typeof ResizeObserver === "undefined") return undefined;
@@ -310,7 +269,7 @@ export function HomeRailFolds({
         layout?.style.getPropertyValue("--comma-home-greet-preferred") ?? ""
       );
       publishFolds(
-        route.clientWidth - (pendingTrailingWidth?.(route) ?? 0),
+        route.clientWidth,
         Number.isFinite(preferredGreetWidth) ? preferredGreetWidth : undefined
       );
     };
@@ -319,7 +278,7 @@ export function HomeRailFolds({
     observer.observe(route);
     if (greetRail) observer.observe(greetRail);
     return () => observer.disconnect();
-  }, [active, pendingTrailingWidth, publishFolds, routeRef, trailingOpen]);
+  }, [active, publishFolds, routeRef, trailingOpen]);
 
   return null;
 }

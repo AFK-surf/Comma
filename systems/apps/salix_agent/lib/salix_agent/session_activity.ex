@@ -89,6 +89,20 @@ defmodule SalixAgent.SessionActivity do
     end
   end
 
+  # A Comma-run Agent whose own subscriptions all reached their limit names
+  # the one that refills first (`SalixAgent.AccountPool`).
+  defp issue_detail("quota_exhausted", %{"funding" => %{} = funding}) do
+    reset_at = funding["reset_at"]
+
+    %{
+      "source" => bounded_text(funding["source"]),
+      "profile_id" => bounded_text(funding["profile_id"]),
+      "profile_name" => bounded_text(funding["profile_name"]),
+      "reset_at" => if(is_integer(reset_at) and reset_at > 0, do: reset_at)
+    }
+    |> compact_detail()
+  end
+
   defp issue_detail(issue, session) when issue in ~w(quota_exhausted rate_limited) do
     reset_at = value(session, "reset_at")
 
@@ -133,10 +147,14 @@ defmodule SalixAgent.SessionActivity do
     |> put_optional("version", revision(session))
   end
 
+  # A wait on a running tool call names that tool, and every wait says when it
+  # began. Both are runtime facts, never model text.
   defp minimal_wait(wait) when is_map(wait) do
     wait
     |> Map.take(["reason"])
     |> put_optional("remaining_seconds", remaining_seconds(wait))
+    |> put_optional("tool_name", wait_tool_name(wait))
+    |> put_optional("started_at_ms", started_at_ms(wait))
     |> Enum.reject(fn {_key, value} -> value in [nil, ""] end)
     |> Map.new()
   end
@@ -187,6 +205,23 @@ defmodule SalixAgent.SessionActivity do
 
       true ->
         nil
+    end
+  end
+
+  defp wait_tool_name(wait) do
+    case value(wait, "tool_name") do
+      name when is_binary(name) -> bounded_text(name)
+      _other -> nil
+    end
+  end
+
+  # Waits.build sets the deadline from the moment the wait began.
+  defp started_at_ms(wait) do
+    with deadline_ms when is_integer(deadline_ms) <- value(wait, "deadline_ms"),
+         timeout_seconds when is_integer(timeout_seconds) <- value(wait, "timeout_seconds") do
+      deadline_ms - timeout_seconds * 1_000
+    else
+      _other -> nil
     end
   end
 

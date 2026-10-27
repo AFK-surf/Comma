@@ -7,21 +7,68 @@ import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import type { PDFDocumentProxy } from "pdfjs-dist";
 import { FilePreviewLoading } from "./FilePreviewLoading";
 
-export function PdfFilePreview({ blob }: { blob: Blob }) {
+/** A file read in spans: up to `length` bytes from `offset`, and the whole file's size. */
+export interface RangedFile {
+  read(
+    offset: number,
+    length: number,
+    signal?: AbortSignal
+  ): Promise<{ bytes: Uint8Array; size: number }>;
+}
+
+/** pdf.js asks for spans of this size: a page reads only the spans it needs. */
+const PDF_RANGE_CHUNK = 256 * 1024;
+/** The most one read asks for (`files.readRange` takes at most 10 MB): a whole number of chunks. */
+const PDF_READ_MAX = 32 * PDF_RANGE_CHUNK;
+
+/** Renders a PDF from its bytes, or from spans of a file of any size (`ranged`), a page at a time. */
+export function PdfFilePreview(source: { blob: Blob } | { ranged: RangedFile }) {
   const messages = useCommaMessages();
   const [document, setDocument] = useState<PDFDocumentProxy>();
   const [page, setPage] = useState(1);
   const [failed, setFailed] = useState(false);
   const canvas = useRef<HTMLCanvasElement>(null);
+  const blob = "blob" in source ? source.blob : undefined;
+  const ranged = "ranged" in source ? source.ranged : undefined;
   useEffect(() => {
     let current = true;
+    const reads = new AbortController();
     let loading: ReturnType<(typeof import("pdfjs-dist"))["getDocument"]> | undefined;
     void (async () => {
       const pdfjs = await import("pdfjs-dist");
-      const data = new Uint8Array(await blob.arrayBuffer());
-      if (!current) return;
       pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
-      loading = pdfjs.getDocument({ data, enableXfa: false, maxImageSize: 16_777_216 });
+      const options = { enableXfa: false, maxImageSize: 16_777_216 };
+      if (ranged) {
+        // The first span carries the file's size; the rest are read as pdf.js asks.
+        const first = await ranged.read(0, PDF_RANGE_CHUNK, reads.signal);
+        if (!current) return;
+        const transport = new pdfjs.PDFDataRangeTransport(first.size, first.bytes);
+        // pdf.js may join adjacent chunks into one span larger than a read takes: it is read, and handed on, in
+        // chunk-aligned parts.
+        transport.requestDataRange = (begin: number, end: number) => {
+          for (let from = begin; from < end; from += PDF_READ_MAX) {
+            ranged.read(from, Math.min(PDF_READ_MAX, end - from), reads.signal).then(
+              (span) => {
+                if (current) transport.onDataRange(from, span.bytes);
+              },
+              () => {
+                if (current) setFailed(true);
+              }
+            );
+          }
+        };
+        loading = pdfjs.getDocument({
+          ...options,
+          range: transport,
+          rangeChunkSize: PDF_RANGE_CHUNK,
+          disableAutoFetch: true,
+          disableStream: true,
+        });
+      } else {
+        const data = new Uint8Array(await blob!.arrayBuffer());
+        if (!current) return;
+        loading = pdfjs.getDocument({ ...options, data });
+      }
       const loaded = await loading.promise;
       if (current) setDocument(loaded);
     })().catch(() => {
@@ -29,9 +76,10 @@ export function PdfFilePreview({ blob }: { blob: Blob }) {
     });
     return () => {
       current = false;
+      reads.abort();
       void loading?.destroy();
     };
-  }, [blob]);
+  }, [blob, ranged]);
   useEffect(() => {
     if (!document || !canvas.current) return;
     let current = true;

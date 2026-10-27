@@ -1,6 +1,7 @@
 defmodule SalixIM.Ports.TaskStations do
   @moduledoc """
-  Outbound port to the stations whose Sessions take part in a Task Salix keeps
+  Outbound port to the stations whose Sessions take part in a Task Salix keeps, and the
+  sandboxes of coding Tasks
   (`systems/station/docs/tasks.md`).
 
   SalixIM owns the Task and its Messages. The configured product module
@@ -12,17 +13,78 @@ defmodule SalixIM.Ports.TaskStations do
   @doc """
   Asks a station to start a Session for a Task about to be made. `invite`
   carries `tenant_id`, `group_id`, `conversation_id`, `device_id` and `start`
-  (what the station starts its Session with). Answered at once.
+  (what the station starts its Session with), and `replace: true` when the
+  Task runs another model on a station that takes part in it already: a new
+  Session then takes the place of the one it had. Answered at once: the
+  Session, or `{:ok, :when_connected}` for a station that is not connected
+  now but comes back when Salix wakes it (the Group's Cloud VM): the Task is
+  made, and the station is invited with `start` when it connects
+  (`joined/1`). A person's station that is not connected is
+  `{:error, :device_offline}`.
   """
-  @callback invite(invite :: map()) :: {:ok, String.t()} | {:error, term()}
+  @callback invite(invite :: map()) ::
+              {:ok, String.t()} | {:ok, :when_connected} | {:error, term()}
 
   @doc """
   The station's Session takes part in the Task just made: `row` carries
   `tenant_id`, `group_id`, `conversation_id`, `device_id`, `session`, the
   Worker's `agent_id` (who authors what the Session writes) and the `start` it
   was invited with (a station that lost the Task is invited again with it).
+  With `session` nil, the station is expected (`invite/1` answered
+  `{:ok, :when_connected}`): the product wakes it, invites it with `start`
+  when it connects, and gives it the Task then.
   """
   @callback joined(row :: map()) :: :ok | {:error, term()}
+
+  @doc """
+  Reserves the sandbox of a coding Task about to be made (`runs_on {kind:
+  sandbox}`), in place of inviting a station: no station runs it yet. The
+  product makes the sandbox and invites its station once it connects.
+  `reservation` carries what `joined/1`'s row does but `session`, and the
+  Task's `repo`, the subscription `account_id` it runs on (nil for the
+  default) and its `requester` (a user id or nil).
+  """
+  @callback sandbox(reservation :: map()) :: :ok | {:error, term()}
+
+  @doc "Replaces an existing coding sandbox's GitHub ACL. L4ES owns validation and storage."
+  @callback update_github(String.t(), String.t(), map() | false) ::
+              {:ok, map() | false} | {:error, term()}
+
+  @doc """
+  The web terminal links of those of coding Tasks `conversation_ids` that
+  have a sandbox, by Task id, in one read: what a member opens to work in
+  the sandbox while it runs. A link is no credential.
+  """
+  @callback terminal_urls(group_id :: String.t(), conversation_ids :: [String.t()]) :: %{
+              String.t() => String.t()
+            }
+
+  @doc """
+  A Task's status changed to `status`: a coding Task that ended or was
+  archived gives up its sandbox. Never waits for a provider.
+  """
+  @callback task_status(
+              group_id :: String.t(),
+              conversation_id :: String.t(),
+              status :: String.t()
+            ) ::
+              :ok
+
+  @doc """
+  The Task now runs elsewhere (`SalixIM.TaskRun`): every station that took
+  part leaves it, told so unless it runs it now; `to`, when the Task runs on a
+  station now, is the row `joined/1` takes for its new Session (nil when it
+  runs inside Salix). `move` carries `group_id`, `conversation_id` and `to`.
+  """
+  @callback moved(move :: map()) :: :ok | {:error, term()}
+
+  @doc """
+  The Sessions of stations taking part in a Task, by device: one bounded read
+  of its participation (`SalixIM.TaskRun` asks it before a switch).
+  """
+  @callback sessions(group_id :: String.t(), conversation_id :: String.t()) ::
+              {:ok, %{String.t() => String.t()}} | {:error, term()}
+  @optional_callbacks moved: 1, sessions: 2, terminal_urls: 2, update_github: 3
 
   @doc "A Message was added to a Task. Never waits for a station."
   @callback appended(group_id :: String.t(), conversation_id :: String.t()) :: :ok
@@ -42,7 +104,7 @@ defmodule SalixIM.Ports.TaskStations do
   @callback standing(group_id :: String.t(), conversation_id :: String.t()) ::
               {:ok,
                %{
-                 place: :cloud_vm | :device,
+                 place: :cloud_vm | :sandbox | :device,
                  connected?: boolean(),
                  sent: non_neg_integer(),
                  vm_status: String.t() | nil
@@ -74,7 +136,7 @@ defmodule SalixIM.Ports.TaskStations do
                }}
               | :unknown
 
-  @spec invite(map()) :: {:ok, String.t()} | {:error, term()}
+  @spec invite(map()) :: {:ok, String.t()} | {:ok, :when_connected} | {:error, term()}
   def invite(invite) when is_map(invite) do
     case impl() do
       nil -> {:error, :task_stations_not_configured}
@@ -87,6 +149,67 @@ defmodule SalixIM.Ports.TaskStations do
     case impl() do
       nil -> {:error, :task_stations_not_configured}
       module -> module.joined(row)
+    end
+  end
+
+  @spec sandbox(map()) :: :ok | {:error, term()}
+  def sandbox(reservation) when is_map(reservation) do
+    case impl() do
+      nil -> {:error, :task_stations_not_configured}
+      module -> module.sandbox(reservation)
+    end
+  end
+
+  def update_github(group_id, conversation_id, github) do
+    module = impl()
+
+    if module && function_exported?(module, :update_github, 3),
+      do: module.update_github(group_id, conversation_id, github),
+      else: {:error, :task_stations_not_configured}
+  end
+
+  @spec terminal_urls(String.t(), [String.t()]) :: %{String.t() => String.t()}
+  def terminal_urls(_group_id, []), do: %{}
+
+  def terminal_urls(group_id, conversation_ids) when is_list(conversation_ids) do
+    module = impl()
+
+    if module && function_exported?(module, :terminal_urls, 2),
+      do: module.terminal_urls(group_id, conversation_ids),
+      else: %{}
+  end
+
+  @spec task_status(String.t(), String.t(), String.t()) :: :ok
+  def task_status(group_id, conversation_id, status) do
+    case impl() do
+      nil -> :ok
+      module -> module.task_status(group_id, conversation_id, status)
+    end
+  end
+
+  @spec moved(map()) :: :ok | {:error, term()}
+  def moved(move) when is_map(move) do
+    case impl() do
+      nil ->
+        {:error, :task_stations_not_configured}
+
+      module ->
+        if function_exported?(module, :moved, 1),
+          do: module.moved(move),
+          else: {:error, :task_run_unsupported}
+    end
+  end
+
+  @spec sessions(String.t(), String.t()) :: {:ok, map()} | {:error, term()}
+  def sessions(group_id, conversation_id) do
+    case impl() do
+      nil ->
+        {:ok, %{}}
+
+      module ->
+        if function_exported?(module, :sessions, 2),
+          do: module.sessions(group_id, conversation_id),
+          else: {:ok, %{}}
     end
   end
 

@@ -39,4 +39,15 @@
     <string name="chat_question_replied">已在对话中回复</string>
     <string name="chat_question_skipped">已跳过，由 Agent 判断</string>
     <string name="chat_question_replaced">已被新的问题替代</string>
+    <string name="chat_request_connect_title">连接 %1$s</string>
+    <string name="chat_request_authorize">在浏览器中授权</string>
+    <string name="chat_request_reopen">重新打开</string>
+    <string name="chat_request_decline">拒绝</string>
+    <string name="chat_request_waiting_browser">等你在浏览器里完成授权…</string>
+    <string name="chat_request_connected">已连接 %1$s</string>
+    <string name="chat_request_declined">你没有连接 %1$s</string>
+    <string name="chat_request_expired">请求已过期</string>
+    <string name="chat_request_cancelled">Agent 撤回了这次请求</string>
+    <string name="chat_request_failed">这次请求没有完成</string>
+    <string name="chat_request_decline_failed">没能拒绝，请重试。</string>
 </resources>

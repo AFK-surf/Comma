@@ -24,8 +24,9 @@ Keyless metadata through `web.http_request`:
 Run `yt-dlp` with `env.exec` on the user's device. YouTube asks datacenter IPs
 to sign in, so do not run it on Salix servers.
 - Transcript: `yt-dlp --skip-download --write-auto-subs --sub-langs "zh.*,en.*" --sub-format vtt <url>`.
-- Video: `yt-dlp -f "bv*+ba/b" -o "%(title)s.%(ext)s" <url>`. Add
-  `--cookies-from-browser chrome` for age-restricted or members-only videos.
+- Video: `yt-dlp -S "vcodec:h264,res,acodec:m4a" --merge-output-format mp4 -o "%(title)s.%(ext)s" <url>`
+  (H.264 and AAC, so it plays on any device; YouTube offers H.264 up to 1080p).
+  Add `--cookies-from-browser chrome` for age-restricted or members-only videos.
 Install with `brew install yt-dlp` if it is missing. Copy results with
 `env.copy` when the user needs the file in chat.
 

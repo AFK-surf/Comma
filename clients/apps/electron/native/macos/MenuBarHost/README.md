@@ -40,13 +40,11 @@ items never show together.
 Electron Main owns the menu. `status-menu.show` carries the rows, the path of
 the template icon, the tooltip, and the menu width in points; each new menu
 replaces the shown one. The helper reports a chosen row as `status-menu.select`
-with the row id and runs nothing itself. While Quick Chat runs,
-`status-menu.show` also carries a `clickId`: a left click on the item reports
-that id the same way, and Main has Quick Chat listen; the menu then opens on a
-right click or a Control-click, and when VoiceOver or the keyboard presses the
-item. An `openId` is reported the same way as the menu opens, so Main can say
-times from then and read usage again, and a `closeId` once it has closed, after
-the chosen row's id. Quit is also a row that Main runs. When the helper is lost
+with the row id and runs nothing itself. Any click on the item opens the menu;
+while Quick Chat runs, the menu has its row. An `openId` is reported the same
+way as the menu opens, so Main can say times from then and read usage again,
+and a `closeId` once it has closed, after the chosen row's id. Quit is also a
+row that Main runs. When the helper is lost
 (it exits or cannot start), Main draws the menu with Electron's Tray until the
 menu-bar item is next turned off and on, so the item and its Settings and Quit
 rows stay usable.

@@ -1,7 +1,9 @@
 import { LocalComputeOperator } from "./compute-node/local-operator";
 import { observeDesktopLaunch } from "../analytics-launch";
+import { clockInterval, realMainClock, type MainClock } from "../clock";
 import { ComputeNodeInstallAuthorization } from "./compute-node/install-authorization";
 import { LocalHostMaintenance } from "./compute-node/host-maintenance";
+import { MaintenanceCapabilityProbe } from "./compute-node/host-maintenance-protocol";
 import { homedir } from "node:os";
 import { AccountComputeNodeService } from "./compute-node/account-service";
 import { getCommaReleaseConfig } from "../../release-config";
@@ -22,6 +24,9 @@ import {
   type AirDropPresentationPlatform,
 } from "./airdrop/reception";
 import { defaultLocalRoots } from "./synchronicity/default-root";
+import { resolveLocalDriveTarget } from "./synchronicity/local-path";
+import { FileMacAppsSwitches, MacAppsService } from "./mac-apps";
+import { MacAppsEngine } from "./mac-apps/engine";
 import {
   StatusTrayInProgressTasks,
   statusTrayPreferenceContent,
@@ -35,9 +40,11 @@ import {
   defaultAirDropName,
   airDropStateChangedEvent,
   appPreferencesChangedEvent,
+  voiceCallAudioEvent,
   browserSidebarChangedEvent,
   browserSidebarOpenTabRequestedEvent,
   connectorRuntimeStateChangedEvent,
+  macAppsStateChangedEvent,
   generatedNativeCapabilityManifest,
   messageNotificationsEvent,
   sessionStateChangedEvent,
@@ -49,6 +56,7 @@ import {
   type AppPreferences,
   type CommaOperatingSystem,
 } from "@comma/native-bridge";
+import { existsSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { baseLocale, type CommaLocale } from "@comma/i18n";
@@ -64,7 +72,11 @@ import {
   MessageNotificationsService,
   type MessageNotificationsPlatform,
 } from "./message-notifications";
-import type { ProductInboxListResult, QuickChatMessage } from "@comma/core/contract";
+import type {
+  ProductInboxListResult,
+  QuickChatDictationTicket,
+  QuickChatMessage,
+} from "@comma/core/contract";
 import {
   CoreChannelService,
   CoreHostService,
@@ -113,6 +125,7 @@ import type { DesktopGoogleAuthProvider } from "../google-desktop-auth";
 import { DownloadsService, type FilesProvider } from "./files/downloads";
 import type { FileApplicationsPlatform } from "./files/open-applications";
 import { SynchronicityNodeService, type SynchronicityProvider } from "./synchronicity";
+import { LocalStationAdmin } from "./local-station";
 import {
   CHAT_UPLOAD_IMAGE_EXTENSIONS,
   LocalFilePickerService,
@@ -171,6 +184,7 @@ import {
   type NativeAudioLogger,
 } from "./audio-capture/native-audio";
 import { MeetingRecorderMain } from "./meeting-recorder";
+import { VoiceCallSocket } from "./voice-call";
 import type { MeetingRecorderValue } from "@comma/core/contract";
 import { createMeetingAppIconReader } from "./meeting-presence/app-icon";
 import {
@@ -182,6 +196,8 @@ import {
 const LOCAL_FILE_CLEANUP_INTERVAL_MS = 60 * 60 * 1_000;
 
 export interface ElectronMainRuntimeDeps {
+  /** Main's clock, for every module it constructs; the real one by default. */
+  clock?: MainClock | undefined;
   computerUse?: Pick<
     ConnectorService,
     "getPermissions" | "openComputerUsePermissionFlow"
@@ -198,6 +214,8 @@ export interface ElectronMainRuntimeDeps {
   confirmHostMaintenance?: (
     input: import("@comma/native-bridge").HostMaintenanceInput
   ) => Promise<boolean>;
+  /** Calls `listener` when this Mac's network may have come back, such as after wake from sleep. Returns its removal. */
+  onNetworkRecovered?: (listener: () => void) => () => void;
   resolveMeetingRecovery?: (name: string) => Promise<"resume" | "new">;
   prepareMeetingRecorderWindow?: () => Promise<void>;
   layoutMeetingRecorderWindow?: (input: MeetingRecorderWindowLayout) => void;
@@ -257,6 +275,11 @@ export interface ElectronMainRuntimeDeps {
    * registration reports the connector as unavailable.
    */
   station?: StationHost | undefined;
+  /**
+   * The station's data directory, where its local admin interface listens (RFC43 §3.3): the Agent accounts of this
+   * Mac are read and set there. Absent (tests, unbuilt dev) those calls fail with a retryable error.
+   */
+  stationData?: string | undefined;
   /** The Computer Use helper the app carries, for the connections' Computer Use. */
   computerUseHelperApp?: string | undefined;
   airDropBinaryPath?: string | undefined;
@@ -287,13 +310,18 @@ export interface ElectronMainRuntimeDeps {
   screenAccessStatus?: (() => ScreenAccessStatus) | undefined;
   /** Path to the MicCaptureHost helper; absent means system audio only. */
   microphoneHostPath?: string | undefined;
+  /** Path to MacAppsHost, the Mac apps MCP server; absent or missing means no Mac apps. */
+  macAppsHostPath?: string | undefined;
   /**
-   * Quick Chat on macOS 26 and later: the QuickChatHost helper, the Notch that
-   * shows message delivery, and how its Home opens. Absent (tests) no helper runs.
+   * Quick Chat on macOS 26 and later and on Windows: the QuickChatHost helper,
+   * the Notch that shows message delivery on macOS, and how its Home opens.
+   * Absent (tests) no helper runs.
    */
   quickChat?:
     | {
         hostPath: string;
+        /** Windows: Comma's AppUserModelID, which the helper notifies a failed send as. */
+        appUserModelId?: string;
         notch: QuickChatNotch;
         /** Shows the main window at an app route (Home, a Task's chat). */
         openRoute(route: string): void;
@@ -370,17 +398,18 @@ export interface ElectronMainRuntimeDeps {
     | undefined;
   browserAppBundleIdentifier?: string | undefined;
   browserSitePermissionPlatform?: SitePermissionPlatform | undefined;
+  handleAppLink?: ((url: string) => boolean) | undefined;
   browserImportPlatform?: BrowserImportPlatform | undefined;
   /** Answers passkey requests of browser tabs with a phone. */
   browserHybridPasskeys?: HybridPasskeys | undefined;
   createBrowserSidebarView?: (() => BrowserSidebarViewLike) | undefined;
   createBrowserInspectionComposerView?: (() => BrowserSidebarViewLike) | undefined;
   browserInspectionComposerUrl?: string | undefined;
-  readClipboardImage: () => Uint8Array | null;
-  readClipboardText: () => string;
-  writeClipboardText: (text: string) => void;
+  readClipboardImage: () => Promise<Uint8Array | null>;
+  readClipboardText: () => Promise<string>;
+  writeClipboardText: (text: string) => Promise<void>;
   /** False when the PNG bytes did not decode, so nothing was put on the clipboard. */
-  writeClipboardImage: (pngImage: Uint8Array) => boolean;
+  writeClipboardImage: (pngImage: Uint8Array) => Promise<boolean>;
   openExternalUrl: (url: string) => Promise<void>;
   authorizationReturn?: import("../authorization-return").AuthorizationReturn;
   resolveDownloadsDirectory: () => string;
@@ -407,12 +436,14 @@ export interface ElectronMainContext {
   audioCapture: AudioCaptureRuntime;
   meetingPresence: MeetingPresenceService;
   meetingRecorder: MeetingRecorderMain;
+  voiceCall: VoiceCallSocket | undefined;
   browserSidebar: BrowserSidebarProvider;
   chat: MainChat;
   clipboard: ClipboardProvider;
   connectorRuntime: WorkspaceConnectorRuntimeLike;
   files: FilesProvider;
   synchronicity: SynchronicityProvider;
+  macApps: MacAppsService;
   gateway: IpcGateway;
   localFiles: LocalFileSnapshotStore;
   localFilePicker: LocalFilePickerProvider;
@@ -483,6 +514,7 @@ const onboardingWindowNativePermissions = [
 export async function createElectronMainContext(
   deps: ElectronMainRuntimeDeps
 ): Promise<ElectronMainContext> {
+  const clock = deps.clock ?? realMainClock;
   const webContentsRegistry = new WebContentsRegistry();
   const desktopLaunch = await observeDesktopLaunch({
     appVersion: deps.appVersion,
@@ -549,6 +581,7 @@ export async function createElectronMainContext(
     }
   }
   const nativeEventBus = new NativeEventBus({
+    clock,
     ...(deps.logger ? { logger: deps.logger } : {}),
     ...(deps.observability ? { observability: deps.observability } : {}),
     permissionPolicy: createNativePermissionPolicy({
@@ -600,7 +633,7 @@ export async function createElectronMainContext(
   let chatLocaleChanged: ((locale: CommaLocale) => void) | undefined;
   const currentMainLocale = () => mainLocale;
   let quickChat: QuickChatService | undefined;
-  /** A left click on the menu-bar item starts Quick Chat while it runs. */
+  /** The menu-bar menu has a Quick Chat row while it runs. */
   let quickChatAvailable = false;
   const appPreferencesService = await AppPreferencesService.open({
     filePath: deps.appPreferencesFilePath,
@@ -735,6 +768,7 @@ export async function createElectronMainContext(
   let clientControlCredentials: { endpoint: string; token: string } | undefined;
   let airdropSender: AirDropSender | undefined;
   const airDropReception = new AirDropReception({
+    clock,
     locale: currentMainLocale,
     log: { warn: (message) => deps.logger?.warn(message, { source: "airdrop" }) },
     notch: deps.notch,
@@ -744,10 +778,12 @@ export async function createElectronMainContext(
   let publishedSessionGeneration = 0;
   let coreHost: CoreHostService | undefined;
   let localDrive: LocalDriveSource | undefined;
+  let localFileStore: LocalFileSnapshotStore | undefined;
   let computeNodeSession: AccountComputeNodeService | undefined;
 
   // The client core runs the session lifecycle; Main keeps the credential, its gate, and the Google window.
   const session = new SessionService({
+    clock,
     ...(deps.fetch ? { fetch: deps.fetch } : {}),
     ...(deps.googleAuth ? { googleAuth: deps.googleAuth } : {}),
     onSnapshotChanged: (state) => {
@@ -799,12 +835,14 @@ export async function createElectronMainContext(
   );
   coreHost = deps.coreDataDir
     ? new CoreHostService({
+        clock,
         dataDir: deps.coreDataDir,
         logger: deps.logger,
         modulePath: deps.coreModulePath,
         legacyTasksPath: deps.legacyTasksDatabasePath,
         legacyMeetingTasksPath,
         session,
+        appVersion: deps.appVersion,
         testClock: deps.coreTestClock,
         stationPeers: deps.coreStationPeers,
         meshAddon: deps.coreMeshAddon,
@@ -838,6 +876,7 @@ export async function createElectronMainContext(
           returnToApp: () => deps.authorizationReturn?.open(),
           pickAttachments: (request, signal) => pickForCore(request, signal),
           saveDownload: (input) => fileDownloads.saveDownload(input),
+          saveDownloadStream: (input) => fileDownloads.saveDownloadStream(input),
           updates: deps.appUpdates,
           reset: deps.resetApp,
         },
@@ -846,6 +885,17 @@ export async function createElectronMainContext(
           localFilePicker.renderImagePreview(input, new AbortController().signal),
         // Set once the Drive node below exists; until then the core's reads say Drive is unavailable.
         localDrive: () => localDrive,
+        // Set once the snapshot store below is open; a pick needs it first anyway.
+        localFileUpload: (localFileRef) => {
+          if (!localFileStore)
+            return Promise.reject(new Error("Local files are unavailable."));
+          return localFileStore.openUploadSource(localFileRef);
+        },
+        localFileRead: (localFileRef, offset, length) => {
+          if (!localFileStore)
+            return Promise.reject(new Error("Local files are unavailable."));
+          return localFileStore.readPart(localFileRef, offset, length);
+        },
       })
     : undefined;
   coreHost?.start();
@@ -853,8 +903,10 @@ export async function createElectronMainContext(
   // core that cannot start leaves Main usable (its gate stays shut).
   if (coreHost) await session.settled(15_000);
   const localFiles = await LocalFileSnapshotStore.open({
+    clock,
     rootDir: deps.localFileIndexRoot,
   });
+  localFileStore = localFiles;
   await localFiles.cleanupExpiredSnapshots();
   const localFileStartupCleanup = localFiles.startStartupArtifactCleanup();
   const synchronicityDataDir =
@@ -865,6 +917,7 @@ export async function createElectronMainContext(
   const connectorRuntime =
     deps.connectorRuntime ??
     new WorkspaceConnectorRuntimeService({
+      clock,
       station: deps.station,
       computerUseHelperApp: deps.computerUseHelperApp,
       clientControl: () => clientControlCredentials,
@@ -896,6 +949,7 @@ export async function createElectronMainContext(
   // a `synch` the user runs themselves would hold. It comes up in the
   // background: Main does not wait on a daemon to open a window.
   const synchronicity = new SynchronicityNodeService({
+    clock,
     binaryPath: deps.synchronicity?.binaryPath,
     dataDir: synchronicityDataDir,
     defaultSpace: {
@@ -992,11 +1046,12 @@ export async function createElectronMainContext(
     messagePortRegistered: Boolean(deps.createPeerMessageChannel),
     observabilityLocation: deps.observabilityFileLocation,
   });
-  const recommendationMedia = new RecommendationMediaService();
+  const recommendationMedia = new RecommendationMediaService({ clock });
   const sessionAdmissionGuard = new MainNativeSessionAdmissionGuard(session.authority);
   if (deps.quickChat && coreHost) {
     const host = coreHost;
     quickChat = new QuickChatService({
+      clock,
       sendMessage: async (params) =>
         (await sessionAdmissionGuard.runOwned(() =>
           host.client().call("quickChat.sendMessage", params)
@@ -1007,7 +1062,12 @@ export async function createElectronMainContext(
             host.client().call("recordings.transcribe", { audio, purpose })
           )) as RecordingTranscript
         ).transcript,
+      dictationTicket: async () =>
+        (await sessionAdmissionGuard.runOwned(() =>
+          host.client().call("quickChat.dictationTicket", {})
+        )) as QuickChatDictationTicket,
       hostPath: deps.quickChat.hostPath,
+      appUserModelId: deps.quickChat.appUserModelId,
       locale: currentMainLocale,
       notch: deps.quickChat.notch,
       onAvailableChanged: (available) => {
@@ -1066,10 +1126,12 @@ export async function createElectronMainContext(
   // Audio capture and meeting detection share one SDK load, so the first
   // CoreAudio call is made once, off Main's thread.
   const loadNativeAudio = createNativeAudioCaptureLoader({
+    clock,
     logger: deps.nativeAudioLogger,
   });
   const recordingsDir = join(dirname(deps.localFileIndexRoot), "recordings");
   const audioCapture = new AudioCaptureService({
+    clock,
     loadNative: loadNativeAudio,
     encoder: new HelperRecordingEncoder(deps.microphoneHostPath),
     onSaved: (recording, target, sourcePath) =>
@@ -1081,7 +1143,7 @@ export async function createElectronMainContext(
     openExternalUrl: deps.openExternalUrl,
     recordingsDir,
     microphone: deps.microphoneHostPath
-      ? new HelperMicrophoneCapture({ executablePath: deps.microphoneHostPath })
+      ? new HelperMicrophoneCapture({ clock, executablePath: deps.microphoneHostPath })
       : undefined,
     screenAccessStatus: deps.screenAccessStatus,
     drive: recordingDrive,
@@ -1116,8 +1178,16 @@ export async function createElectronMainContext(
     },
   });
   const meetingRecorderMain = meetingRecorder;
+  let voiceCall: VoiceCallSocket | undefined;
   if (coreHost) {
     const host = coreHost;
+    const socket = new VoiceCallSocket({
+      tell: (event) => host.voiceCallEvent(event),
+      audio: (event) => nativeEventBus.emit(voiceCallAudioEvent, event),
+      ...(deps.logger ? { logger: deps.logger } : {}),
+    });
+    voiceCall = socket;
+    host.setVoiceCall(socket);
     meetingRecorderMain.connect((event) => host.meetingEvent(event));
     host.setMeeting({
       command: (call) => meetingRecorderMain.command(call),
@@ -1130,6 +1200,7 @@ export async function createElectronMainContext(
     );
   }
   const meetingPresence = new MeetingPresenceService({
+    clock,
     browserBundleIdentifier: deps.browserAppBundleIdentifier,
     // Test apps skip the native SDK; otherwise detection shares the worker-first load.
     loadNative: deps.loadMeetingPresenceNative ?? loadNativeAudio,
@@ -1152,12 +1223,21 @@ export async function createElectronMainContext(
     dirname(deps.secureSessionFilePath),
     "local-compute-disposals"
   );
+  const runComputeCommand: typeof runCommand = (
+    file,
+    args,
+    stdin,
+    timeoutMs,
+    options
+  ) => runCommand(file, args, stdin, timeoutMs, { ...options, clock });
   const localCompute = new LocalComputeOperator({
     lifecyclePath: deps.computeNodeLifecyclePath ?? hostConfiguration.lifecyclePath,
     journalDirectory: localComputeJournalDirectory,
-    run: runCommand,
+    run: runComputeCommand,
     ...(deps.confirmLocalDisposal ? { confirm: deps.confirmLocalDisposal } : {}),
   });
+  // One Host capability probe per user action, shared by every lifecycle helper caller.
+  const hostProbe = new MaintenanceCapabilityProbe(runComputeCommand);
   const computeNodeFilePath =
     deps.computeNodeFilePath ??
     join(dirname(deps.secureSessionFilePath), "compute-node-intent.json");
@@ -1167,12 +1247,21 @@ export async function createElectronMainContext(
         deps.computeNodeAdapter ??
         new AgentVMMCommandAdapter(
           deps.computeNodeLifecyclePath ?? hostConfiguration.lifecyclePath,
-          runCommand,
-          true
+          runComputeCommand,
+          hostProbe
         ),
       ...(!deps.computeNodeAdapter && !deps.computeNodeLifecyclePath
-        ? { preparation: new AgentVMMHostPreparation(hostConfiguration, runCommand) }
+        ? {
+            preparation: new AgentVMMHostPreparation(
+              hostConfiguration,
+              runComputeCommand,
+              fetch,
+              clock,
+              hostProbe
+            ),
+          }
         : {}),
+      clock,
       filePath: computeNodeFilePath,
       onStateChanged: (state) =>
         nativeEventBus.emit(computeNodeStateChangedEvent, state),
@@ -1182,14 +1271,25 @@ export async function createElectronMainContext(
     session.state(),
     localCompute,
     new LocalHostMaintenance(
-      new AgentVMMHostPreparation(resolveHostConfiguration("prod", {}), runCommand),
+      new AgentVMMHostPreparation(
+        resolveHostConfiguration("prod", {}),
+        runComputeCommand,
+        fetch,
+        clock,
+        hostProbe
+      ),
       join(homedir(), "Library", "Application Support", "Agent VMM Maintenance"),
-      runCommand,
+      runComputeCommand,
       deps.confirmHostMaintenance,
-      localCompute
+      localCompute,
+      undefined,
+      clock
     )
   );
   computeNodeSession = computeNode;
+  const stopNetworkRecovery = deps.onNetworkRecovered?.(() =>
+    computeNode.networkRecovered()
+  );
   const surfaces = new NativeSurfaceService({
     getNativeInfo: () => nativeInfo.info(),
     getNotchStatus: () => deps.notch.status(),
@@ -1203,6 +1303,8 @@ export async function createElectronMainContext(
   );
   browserSidebarService = deps.createBrowserSidebarView
     ? new NativeBrowserSidebarService({
+        handleAppLink: deps.handleAppLink,
+        clock,
         hybridPasskeys: deps.browserHybridPasskeys,
         createView: deps.createBrowserSidebarView,
         browserImport: deps.browserImportPlatform,
@@ -1239,6 +1341,7 @@ export async function createElectronMainContext(
     browserSidebarService ?? unavailableClientControlBrowser;
   const clientControlToken = randomBytes(32).toString("base64url");
   airdropSender = new AirDropSender({
+    clock,
     binaryPath: deps.airDropSenderBinaryPath,
     ...(deps.spawnAirDropHelper ? { spawn: deps.spawnAirDropHelper } : {}),
     resolveVfs: (path) =>
@@ -1253,6 +1356,7 @@ export async function createElectronMainContext(
   });
   const airDropDataDir = join(dirname(deps.secureSessionFilePath), "airdrop");
   airdrop = new AirDropService({
+    clock,
     binaryPath: deps.airDropBinaryPath,
     ...(deps.spawnAirDropHelper ? { spawn: deps.spawnAirDropHelper } : {}),
     dataDir: airDropDataDir,
@@ -1265,7 +1369,9 @@ export async function createElectronMainContext(
       let name: string | null | undefined;
       try {
         name = await sessionAdmissionGuard.runOwned(() =>
-          coreHost ? profileName(coreHost.client(), 5_000) : Promise.resolve(null)
+          coreHost
+            ? profileName(coreHost.client(), 5_000, clock)
+            : Promise.resolve(null)
         );
       } catch {
         // Offline, AirDrop still works nearby and the email names the account.
@@ -1309,6 +1415,31 @@ export async function createElectronMainContext(
   if (session.state().phase === "signed_in" && airDropShown) {
     void airdrop.start().catch(() => deps.logger?.warn("AirDrop could not start.", {}));
   }
+  const macAppsHostPath = deps.macAppsHostPath;
+  const macApps: MacAppsService = new MacAppsService({
+    clock,
+    engine:
+      process.platform === "darwin" && macAppsHostPath && existsSync(macAppsHostPath)
+        ? new MacAppsEngine({
+            clock,
+            binaryPath: macAppsHostPath,
+            log: (message) => deps.logger?.warn(message, {}),
+          })
+        : undefined,
+    // The switches belong to this Mac, not to an account or workspace.
+    switches: new FileMacAppsSwitches(
+      join(dirname(deps.secureSessionFilePath), "mac-apps", "switches.json")
+    ),
+    driveRoot: async () =>
+      (await resolveLocalDriveTarget(deps.synchronicityProvider ?? synchronicity))
+        .localRoot,
+    openExternal: deps.openExternalUrl,
+    onChange: () => {
+      void macApps
+        .state()
+        .then((snapshot) => nativeEventBus.emit(macAppsStateChangedEvent, snapshot));
+    },
+  });
   const clientControlArtifactRoot = join(
     dirname(deps.secureSessionFilePath),
     "client-control-artifacts"
@@ -1339,6 +1470,10 @@ export async function createElectronMainContext(
       },
     }),
     token: clientControlToken,
+    // Salix reaches the Mac apps through the station's client_mcp.
+    mcpServers: macApps.available
+      ? { "mac-apps": (message) => macApps.handleMcp(message) }
+      : {},
   });
   clientControlCredentials = {
     endpoint: clientControlApi.endpoint,
@@ -1360,6 +1495,7 @@ export async function createElectronMainContext(
       })
     : unavailablePeersProvider;
   const gateway = new IpcGateway({
+    clock,
     ipcMain: deps.ipcMain,
     ...(deps.logger ? { logger: deps.logger } : {}),
     ...(deps.observability ? { observability: deps.observability } : {}),
@@ -1372,10 +1508,13 @@ export async function createElectronMainContext(
       isDevelopment: deps.isDevelopment,
     }),
   });
-  const localFileCleanupTimer = setInterval(() => {
-    void localFiles.cleanupExpiredSnapshots().catch(() => undefined);
-  }, LOCAL_FILE_CLEANUP_INTERVAL_MS);
-  localFileCleanupTimer.unref();
+  const stopLocalFileCleanup = clockInterval(
+    clock,
+    LOCAL_FILE_CLEANUP_INTERVAL_MS,
+    () => {
+      void localFiles.cleanupExpiredSnapshots().catch(() => undefined);
+    }
+  );
 
   return {
     appPreferences,
@@ -1388,11 +1527,13 @@ export async function createElectronMainContext(
     browserSidebar,
     meetingPresence,
     meetingRecorder,
+    voiceCall,
     chat,
     clipboard,
     connectorRuntime,
     files: fileDownloads,
     synchronicity: deps.synchronicityProvider ?? synchronicity,
+    macApps,
     gateway,
     localFiles,
     localFilePicker,
@@ -1424,14 +1565,16 @@ export async function createElectronMainContext(
       // A live tap must not outlive Main; drop it before the snapshot store goes.
       await meetingPresence.close();
       await audioCapture.close();
-      clearInterval(localFileCleanupTimer);
+      stopLocalFileCleanup();
       await localFileStartupCleanup.close();
       // Workspace connector children must not outlive Main; stop them before
       // the snapshot store and Session credential gate go away.
       await connectorRuntime.close();
       stopDriveChanges?.();
+      stopNetworkRecovery?.();
       await synchronicity.close();
       await clientControlApi.close();
+      await macApps.stop();
       await localFiles.close();
       await browserSidebarService?.dispose();
       statusTrayTasks?.follow(undefined);
@@ -1492,6 +1635,14 @@ export function registerNativeBridgeHandlersFromContext(context: ElectronMainCon
     browserSidebar: context.browserSidebar,
     meetingPresence: context.meetingPresence,
     meetingRecorder: context.meetingRecorder,
+    ...(context.voiceCall
+      ? {
+          voiceCall: {
+            microphone: (pcm: Uint8Array) => context.voiceCall?.microphone(pcm),
+            played: ({ name }: { name: string }) => context.voiceCall?.played(name),
+          },
+        }
+      : {}),
     ...(context.runtimeDeps.browserSitePermissionPlatform?.menu
       ? { sitePermissionMenu: context.runtimeDeps.browserSitePermissionPlatform.menu }
       : {}),
@@ -1504,6 +1655,10 @@ export function registerNativeBridgeHandlersFromContext(context: ElectronMainCon
     files: context.files,
     gateway: context.gateway,
     localFiles: context.localFilePicker,
+    localStation: new LocalStationAdmin({
+      data: context.runtimeDeps.stationData,
+      clock: context.runtimeDeps.clock,
+    }),
     nativeInfo: context.nativeInfo,
     notch: context.runtimeDeps.notch,
     recommendationMedia: context.recommendationMedia,
@@ -1515,6 +1670,7 @@ export function registerNativeBridgeHandlersFromContext(context: ElectronMainCon
     transport: context.transport,
     computeNode: context.computeNode,
     connectorRuntime,
+    macApps: context.macApps,
     synchronicity: context.synchronicity,
     windowAppearance: context.windowAppearance,
     windows: context.windows,

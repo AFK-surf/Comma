@@ -125,32 +125,47 @@ it("prevents duplicate requests and fences late reads after mutation completion"
   });
   expect(result.current.state?.operation?.outcome).toBe("succeeded");
 });
-it("resumes the original failed receipt and blocks replacement while outcome is unreadable", async () => {
+it("lets Main decide which request a new one replaces and uninstalls during a running one", async () => {
   const failed = {
     ...operation,
     action: "reinstall" as const,
     dataPolicy: "preserve" as const,
     outcome: "failed" as const,
   };
-  mock.read.mockResolvedValue({ ...installed, operation: failed });
-  mock.resume.mockResolvedValue({
+  const running = {
     ...installed,
-    operation: { ...failed, outcome: "pending" },
-  });
+    operation: { ...failed, outcome: "pending" as const },
+  };
+  mock.read.mockResolvedValue({ ...installed, operation: failed });
+  mock.resume.mockResolvedValue(running);
+  mock.maintain.mockResolvedValue(running);
   const { result } = renderHook(() => useHostMaintenanceCategory(true, 0));
   await act(async () => {});
+  // A failed request does not hold back a new confirmed action: Main supersedes it.
   await act(() => result.current.submit("reinstall"));
-  expect(mock.maintain).not.toHaveBeenCalled();
+  expect(mock.maintain).toHaveBeenLastCalledWith({
+    action: "reinstall",
+    dataPolicy: "preserve",
+  });
   await act(async () => result.current.resume());
   expect(mock.resume).toHaveBeenCalledExactlyOnceWith({
     requestId: operation.requestId,
   });
+  // While a request runs, only uninstall is offered; Main stops a stuck request first.
+  expect(result.current.blocked).toBe(true);
+  expect(result.current.uninstallBlocked).toBe(false);
+  await act(() => result.current.submit("update"));
+  expect(mock.maintain).toHaveBeenCalledTimes(1);
   await act(() => result.current.submit("uninstall"));
-  expect(mock.maintain).not.toHaveBeenCalled();
+  expect(mock.maintain).toHaveBeenLastCalledWith({
+    action: "uninstall",
+    dataPolicy: "preserve",
+  });
   mock.read.mockRejectedValue(new Error("receipt unavailable"));
   await act(() => result.current.refresh());
   await act(() => result.current.submit("clear"));
-  expect(mock.maintain).not.toHaveBeenCalled();
+  await act(() => result.current.submit("uninstall"));
+  expect(mock.maintain).toHaveBeenCalledTimes(2);
 });
 it("requires a read after an ambiguous response instead of replacing the operation", async () => {
   mock.maintain.mockRejectedValue(new Error("IPC disconnected"));

@@ -155,7 +155,10 @@ defmodule SalixWeb.Auth do
     path in ["/live", "/ready", "/health"] or
       String.starts_with?(path, "/site/") or
       String.starts_with?(path, "/v1/device-connection/") or
-      path == "/v1/remote-shell/client.py" or remote_shell_callback_path?(path) or
+      path == "/v1/remote-shell/client.py" or
+      path == "/v1/compute/agent-vmm/install.sh" or
+      path == "/v1/compute/agent-vmm/install-operations/install.sh" or
+      remote_shell_callback_path?(path) or
       path in [
         "/v1/im/slack/oauth/callback",
         "/v1/im/slack/events",

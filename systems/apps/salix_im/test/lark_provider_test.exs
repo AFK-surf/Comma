@@ -1093,6 +1093,96 @@ defmodule SalixIM.LarkProviderTest do
     end
   end
 
+  describe "a question card" do
+    defp question_press(card_id, value, form, open_id) do
+      %{
+        "schema" => "2.0",
+        "header" => %{
+          "event_id" => "evt_press_" <> open_id,
+          "event_type" => "card.action.trigger",
+          "token" => @token,
+          "tenant_key" => "tenant_key_1"
+        },
+        "event" => %{
+          "operator" => %{"open_id" => open_id},
+          "action" => %{"tag" => "button", "value" => value, "form_value" => form},
+          "context" => %{"open_message_id" => card_id, "open_chat_id" => @group}
+        }
+      }
+    end
+
+    test "the first answer is the presser's message to the Router, and the card says so", ctx do
+      assert {:ok, %{"message" => %{"message_id" => card_id}}} =
+               call(ctx, "lark.send_message", %{
+                 "chat_id" => @group,
+                 "text" => "Which line should the station take?",
+                 "question" => %{
+                   "type" => "options",
+                   "options" => [
+                     %{"label" => "Upgrade now", "recommended" => true},
+                     %{"label" => "Wait for Electron", "detail" => "Keeps one Node version"}
+                   ]
+                 }
+               })
+
+      assert_received {:lark_api, "POST", ["im", "v1", "messages"],
+                       %{"msg_type" => "interactive", "content" => content}, _params}
+
+      %{"body" => %{"elements" => elements}} = Jason.decode!(content)
+      %{"elements" => [select, send]} = Enum.find(elements, &(&1["tag"] == "form"))
+
+      # The recommended option is shown last and chosen already.
+      assert Enum.map(select["options"], & &1["text"]["content"]) ==
+               ["Wait for Electron", "Upgrade now"]
+
+      assert select["initial_option"] == "1"
+      [%{"value" => value}] = send["behaviors"]
+
+      # Nothing chosen: only the presser is told, and nothing is said.
+      assert {:ok, %{"toast" => %{"type" => "warning"}} = empty} =
+               deliver(ctx, question_press(card_id, value, %{}, @user))
+
+      refute Map.has_key?(empty, "card")
+      assert router_inputs(ctx, card_id) == []
+
+      assert {:ok, %{"card" => %{"data" => answered}, "toast" => %{"type" => "success"}}} =
+               deliver(
+                 ctx,
+                 question_press(card_id, value, %{"bft_question_choice" => "1"}, @user)
+               )
+
+      assert Jason.encode!(answered) =~ "<at id=#{@user}></at> answered: Upgrade now"
+      refute Jason.encode!(answered) =~ "select_static"
+
+      assert [message] = router_inputs(ctx, card_id)
+      origin = message["agent_input"]["trusted_origin"]
+      assert origin["source_text"] == "Upgrade now"
+      assert origin["provider_context"]["sender_open_id"] == @user
+      assert origin["provider_context"]["chat_id"] == @group
+
+      # A later press is told the card was answered, and says nothing.
+      assert {:ok, %{"toast" => %{"type" => "info"}}} =
+               deliver(
+                 ctx,
+                 question_press(card_id, value, %{"bft_question_choice" => "0"}, "ou_bob")
+               )
+
+      assert [_one] = router_inputs(ctx, card_id)
+    end
+
+    test "a card whose request would pass the size limit is refused before it is sent", ctx do
+      assert {:error, reason} =
+               call(ctx, "lark.send_message", %{
+                 "chat_id" => @group,
+                 "text" => String.duplicate("\\", 7_000),
+                 "question" => %{"type" => "text"}
+               })
+
+      assert reason =~ "interactive request is"
+      refute_received {:lark_api, "POST", ["im", "v1", "messages"], _body, _params}
+    end
+  end
+
   describe "a private message to one person" do
     test "a send that names a person goes to that person", ctx do
       assert {:ok,

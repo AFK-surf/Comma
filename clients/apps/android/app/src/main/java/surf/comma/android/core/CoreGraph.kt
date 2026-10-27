@@ -3,7 +3,9 @@ package surf.comma.android.core
 import android.content.Context
 import android.util.Log
 import okhttp3.OkHttpClient
+import surf.comma.android.BuildConfig
 import surf.comma.android.conversation.SyncDiagnostics
+import surf.comma.android.media.PickedLocalFiles
 import java.io.File
 import java.util.concurrent.TimeUnit
 
@@ -33,6 +35,9 @@ internal object CoreGraph {
         runtime ?: create(context.applicationContext, baseUrl, sealer, google, networkFailure, adoptEarlier).also { runtime = it }
     }
 
+    /** Where the core's downloads are written: the only place the video player and the file provider take them from. */
+    fun downloads(context: Context) = File(context.noBackupFilesDir, "core-downloads")
+
     private fun create(
         context: Context,
         baseUrl: String,
@@ -52,7 +57,8 @@ internal object CoreGraph {
             .build()
         // The core bounds the downloads itself and keeps an index of them: they are not a cache the system may clear.
         val host = CoreHost(client, custody, File(context.noBackupFilesDir, "core"), google,
-            HostDownloads(File(context.noBackupFilesDir, "core-downloads")), networkFailure = networkFailure)
+            HostDownloads(downloads(context)), networkFailure = networkFailure,
+            localFiles = PickedLocalFiles.host(context.contentResolver), appVersion = BuildConfig.VERSION_NAME)
         val script by lazy { context.assets.open(CORE_SCRIPT).use { it.readBytes() } }
         val core = CommaCore(
             engines = { config, engineHost -> HermesEngine(script, config, engineHost) },

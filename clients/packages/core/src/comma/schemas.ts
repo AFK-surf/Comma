@@ -133,6 +133,21 @@ const meetingPhaseSchema = z.enum([
   "discarded",
 ]);
 
+/**
+ * A coding Task's pull request as the list shows it. It decorates the Task's card, so one the client cannot read
+ * leaves the Task without and never fails its list.
+ */
+export const taskPullRequestSchema = z
+  .object({
+    number: z.number().int().positive(),
+    state: z.enum(["open", "draft", "merged", "closed"]),
+    // It opens outside the app (Electron's `shell.openExternal`): a GitHub page, never another scheme.
+    url: z.string().url().startsWith("https://").max(2_048),
+  })
+  .strip()
+  .optional()
+  .catch(undefined);
+
 /** A conversation as the task list reads it; what else the server sends is dropped. */
 export const taskConversationSchema = z
   .object({
@@ -152,6 +167,8 @@ export const taskConversationSchema = z
     kind: z.enum(["user_chat", "agent_task"]),
     origin: z.string().max(256).optional(),
     labels: z.array(z.string()).optional(),
+    /** A coding Task's pull request, as last read from GitHub. */
+    pull_request: taskPullRequestSchema,
     client_platform: z.string().optional(),
     /** The Message the Task was created from, such as the Home request the Router answered with it. */
     parent_message_id: z.string().max(256).optional(),
@@ -790,6 +807,25 @@ export const voiceIntegrationSchema = z
     readiness: z.object({ ready: z.boolean(), reason: z.string().nullish() }).strip(),
     sessions_url: z.string().nullish(),
     readiness_url: z.string().nullish(),
+    /** What the Group's calls speak with, and whether they speak as the Router. */
+    preferences: z
+      .object({
+        voice: z
+          .discriminatedUnion("kind", [
+            z.object({ kind: z.literal("preset"), name: z.string().min(1) }).strip(),
+            z.object({ kind: z.literal("custom") }).strip(),
+          ])
+          .nullable(),
+        custom_voice: z
+          .object({ name: z.string(), description: z.string() })
+          .strip()
+          .nullable(),
+        router_calls: z.boolean(),
+      })
+      .strip()
+      .default({ voice: null, custom_voice: null, router_calls: false }),
+    /** The preset voice names. */
+    voices: z.array(z.string()).default([]),
   })
   .strip();
 
@@ -874,6 +910,8 @@ export const computeWorkloadSchema = z.object({
       provider: z.string(),
       registration_id: z.string().optional(),
       allocation_id: z.string().optional(),
+      /** The Comma Device of an Agent VMM registration (the devices list's `device_id`). */
+      device_id: z.string().optional(),
     })
     .optional(),
   actions: z
@@ -930,6 +968,22 @@ export const computeWorkloadSchema = z.object({
     .optional(),
   phase_observed_at: z.string().optional(),
   updated_at: z.string().optional(),
+  /** Why the current generation is not ready yet; `retryable: false` needs an action. */
+  problem: z
+    .object({
+      code: z
+        .enum([
+          "capacity_unavailable",
+          "image_unavailable",
+          "runtime_instance_changed",
+          "host_unreachable",
+          "other",
+        ])
+        .catch("other"),
+      retryable: z.boolean(),
+    })
+    .nullable()
+    .optional(),
 });
 export const computeProjectionSchema = z.object({
   can_manage: z.boolean().optional(),
@@ -1056,7 +1110,9 @@ export const systemFileDeletedSchema = z
   .object({ path: z.string(), deleted: z.boolean() })
   .strip();
 
-export const routerInstructionsSchema = z.object({ content: z.string() }).strip();
+export const routerInstructionsSchema = z
+  .object({ content: z.string(), hash: z.string().nullable().optional() })
+  .strip();
 
 export const skillFileSchema = z
   .object({ content: z.string(), path: z.string() })
@@ -1454,5 +1510,229 @@ export const historyFrameSchema = z
     server_time_ms: z.number(),
     phase: z.enum(["recent", "update", "checkpoint"]),
     checkpoint: z.string().nullable(),
+  })
+  .strip();
+
+// Mini Apps (miniapps.ts): the app, its Versions, its link, and what the runtime routes answer.
+const miniAppScope = z.enum(["app", "user", "device"]);
+
+export const miniAppSchema = z
+  .object({
+    id: z.string().min(1).max(256),
+    slug: z.string().max(256),
+    workspace_id: z.string().max(256),
+    name: z.string().max(200),
+    description: z
+      .string()
+      .max(8_000)
+      .nullish()
+      .transform((v) => v ?? ""),
+    icon_url: z.string().max(2_048).nullable().default(null),
+    cover_url: z.string().max(2_048).nullable().default(null),
+    repo: z
+      .object({ owner: z.string(), name: z.string() })
+      .strip()
+      .nullish()
+      .transform((v) => v ?? null),
+    visibility: z.enum(["private", "workspace", "link"]),
+    status: z.enum(["active", "disabled"]),
+    live_version: z.number().int().nullable(),
+    latest_version: z.number().int().nullable(),
+    author: z
+      .object({ name: z.string().max(200) })
+      .strip()
+      .nullish()
+      .transform((v) => v ?? { name: "" }),
+    capabilities: z.array(z.string().max(64)).max(64).default([]),
+    egress: z.array(z.string().max(256)).max(64).default([]),
+    secrets: z.array(z.string().max(64)).max(64).default([]),
+    grants: z.array(z.string().max(64)).max(64).default([]),
+    installed: z.boolean().default(false),
+    install: z
+      .object({ pinned_version: z.number().int().nullable() })
+      .strip()
+      .nullish()
+      .transform((v) => v ?? null),
+    storage: z.array(miniAppScope).max(3),
+    has_backend: z.boolean(),
+    created_at: z.string().max(64).default(""),
+    updated_at: z.string().max(64).default(""),
+  })
+  .strip();
+
+export const miniAppVersionSchema = z
+  .object({
+    number: z.number().int().positive(),
+    state: z.enum(["uploading", "ready", "failed"]),
+    commit: z.string().max(64).nullable().default(null),
+    digest: z.string().max(256).nullable().default(null),
+    has_backend: z.boolean().default(false),
+    conversation_id: z.string().max(256).nullable().default(null),
+    message_seq: z.number().int().nullable().default(null),
+    notes: z.string().max(8_000).nullable().default(null),
+    created_at: z.string().max(64).default(""),
+    live: z.boolean().default(false),
+  })
+  .strip();
+
+export const miniAppDetailSchema = miniAppSchema.extend({
+  versions: z.array(miniAppVersionSchema).max(200).default([]),
+});
+
+export const miniAppListSchema = z
+  .object({ data: z.array(miniAppSchema).max(1_000) })
+  .strip();
+
+export const miniAppLinkSchema = z
+  .object({
+    token: z.string().min(1).max(256),
+    url: z.string().max(2_048),
+    created_at: z.string().max(64).default(""),
+  })
+  .strip();
+
+/** GET link: the link, or `{link: null}` when the app has none. */
+export const miniAppLinkReadSchema = z.union([
+  miniAppLinkSchema,
+  z.object({ link: z.null() }).strip(),
+]);
+
+export const miniAppOpenSchema = z
+  .object({
+    app: miniAppSchema,
+    version: z.number().int().positive(),
+    digest: z.string().min(1).max(256),
+    viewer: z
+      .object({
+        id: z.string().max(256),
+        name: z.string().max(200),
+        avatar_url: z.string().max(2_048).nullish(),
+      })
+      .strip(),
+    guest: z.boolean().default(false),
+  })
+  .strip();
+
+export const miniAppLinkResolveSchema = z
+  .object({ app: miniAppSchema, version: z.number().int().positive() })
+  .strip();
+
+export const miniAppRemixSchema = z
+  .object({
+    app: miniAppSchema,
+    task: z
+      .object({ group_id: z.string().max(256), conversation_id: z.string().max(256) })
+      .strip(),
+  })
+  .strip();
+
+export const miniAppSecretsSchema = z
+  .object({ secrets: z.array(z.string().max(64)).max(64) })
+  .strip();
+
+export const miniAppDocSchema = z
+  .object({
+    key: z.string(),
+    value: z.unknown(),
+    version: z.number().int(),
+    updated_at: z.string().nullish(),
+  })
+  .strip();
+
+export const miniAppDocPageSchema = z
+  .object({ data: z.array(miniAppDocSchema).max(1_000), has_more: z.boolean() })
+  .strip();
+
+export const miniAppChatSchema = z
+  .object({
+    message: z.object({ role: z.literal("assistant"), content: z.string() }).strip(),
+  })
+  .strip();
+
+const miniAppDecisionKey = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/);
+const miniAppDecisionText = z.string().refine((value) => value.trim().length > 0);
+const miniAppDecisionQuestion = z.discriminatedUnion("type", [
+  z
+    .object({
+      type: z.literal("choice"),
+      instructions: miniAppDecisionText,
+      criteria: z
+        .record(miniAppDecisionKey, miniAppDecisionText)
+        .refine(
+          (value) => Object.keys(value).length >= 2 && Object.keys(value).length <= 32
+        ),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("noul"),
+      instructions: miniAppDecisionText,
+      criteria: z
+        .object({ true: miniAppDecisionText, false: miniAppDecisionText })
+        .strict()
+        .optional(),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("score"),
+      instructions: miniAppDecisionText,
+      criteria: z.array(miniAppDecisionText).min(2).max(10),
+    })
+    .strict(),
+]);
+
+export const miniAppDecisionRequestSchema = z
+  .object({
+    state: z.union([z.string(), z.record(z.string(), z.json()), z.array(z.json())]),
+    questions: z
+      .record(miniAppDecisionKey, miniAppDecisionQuestion)
+      .refine(
+        (value) => Object.keys(value).length >= 1 && Object.keys(value).length <= 8
+      ),
+  })
+  .strict();
+
+const miniAppProbability = z.number().int().min(0).max(10_000);
+const miniAppDistribution = z.record(miniAppDecisionKey, miniAppProbability);
+export const miniAppDecisionResultSchema = z
+  .object({
+    model: z.string().min(1).max(128),
+    answers: z
+      .record(
+        miniAppDecisionKey,
+        z.discriminatedUnion("type", [
+          z
+            .object({ type: z.literal("noul"), probability_bp: miniAppProbability })
+            .strip(),
+          z
+            .object({
+              type: z.literal("choice"),
+              choice: miniAppDecisionKey,
+              probabilities_bp: miniAppDistribution,
+              confidence_bp: miniAppProbability,
+            })
+            .strip(),
+          z
+            .object({
+              type: z.literal("score"),
+              score_milli: z.number().int().min(0).max(9000),
+              probabilities_bp: miniAppDistribution,
+              confidence_bp: miniAppProbability,
+            })
+            .strip(),
+        ])
+      )
+      .refine(
+        (value) => Object.keys(value).length >= 1 && Object.keys(value).length <= 8
+      ),
+  })
+  .strip();
+
+export const miniAppSearchSchema = z
+  .object({
+    results: z
+      .array(z.object({ title: z.string(), url: z.string(), text: z.string() }).strip())
+      .max(5),
   })
   .strip();

@@ -149,6 +149,24 @@ defmodule SalixStore.S3.Fake do
   @impl SalixStore.S3
   def get(key, opts), do: op_call({:get, key, opts})
 
+  @doc """
+  A URL that names `key` and what it is served as, in place of a store's
+  signature: nothing serves it. A signed URL reads without the store's state
+  changing, so it is no operation of the modeled store.
+  """
+  @impl SalixStore.S3
+  def presign_get(key, opts) do
+    query =
+      [
+        {"expires_in", Keyword.get(opts, :expires_in, 3600)},
+        {"response-content-type", opts[:content_type]},
+        {"response-content-disposition", opts[:content_disposition]}
+      ]
+      |> Enum.reject(fn {_name, value} -> is_nil(value) end)
+
+    {:ok, "https://fake-store.invalid/" <> key <> "?" <> URI.encode_query(query, :rfc3986)}
+  end
+
   @impl SalixStore.S3
   def stream(key, opts) do
     case get(key, opts) do

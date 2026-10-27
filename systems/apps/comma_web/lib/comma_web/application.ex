@@ -40,8 +40,15 @@ defmodule CommaWeb.Application do
     SystemsRuntime.put_env(:salix_env, :device_connect_observer, CommaWeb.DeviceSetupOffers)
     SystemsRuntime.put_env(:salix_agent, :loop_authorization_adapter, CommaWeb.ProactiveWatch)
     SystemsRuntime.put_env(:salix_agent, :stations, CommaWeb.Stations)
+    # The Mac apps MCP runs only for the requests of the member whose Mac it is.
+    SystemsRuntime.put_env(:salix_mcp, :requester_mod, CommaWeb.MacAppsRequester)
     SystemsRuntime.put_env(:salix_env, :station_install, CommaWeb.Stations.DeviceInstall)
     SystemsRuntime.put_env(:salix_web, :station_control_plane, CommaWeb.Stations.CloudStation)
+    # Coding sandboxes on L4ES are admitted with assertions the IdP signs.
+    SystemsRuntime.put_env(:salix_web, :l4es_assertion_signer, CommaWeb.Coding.L4ESAssertions)
+    # A coding sandbox commits as the Comma user who owns its Task.
+    SystemsRuntime.put_env(:salix_web, :coding_git_author, CommaWeb.Coding.GitAuthor)
+    SystemsRuntime.put_env(:salix_web, :coding_members, CommaWeb.Coding.Members)
     SalixStore.StationMembers.register(Comma.Stations.Members)
 
     unless SystemsRuntime.get_env(:comma_web, :station_directory),
@@ -59,11 +66,14 @@ defmodule CommaWeb.Application do
     )
 
     SystemsRuntime.put_env(:salix_web, :comma_oauth_commit_mod, CommaWeb.OAuthCommit)
+    # Salix reaches the Mini App owner through these ports (CommaWeb.MiniAppPort).
+    SystemsRuntime.put_env(:salix_im, :mini_apps, CommaWeb.MiniAppPort)
+    SystemsRuntime.put_env(:salix_web, :mini_app_deploys, CommaWeb.MiniAppPort)
     SystemsRuntime.put_env(:salix_web, :composio_signal_mod, CommaWeb.MemberSourceTriggers)
 
     children =
       maybe_pubsub_child(pubsub_server()) ++
-        [CommaWeb.StationPresence, CommaWeb.StationReleases] ++
+        [CommaWeb.StationPresence, CommaWeb.StationReleases, CommaWeb.DictationSocket] ++
         [{SystemsRuntime.TaskSupervisor, name: CommaWeb.LinearAgent.TaskSupervisor}] ++
         CommaWeb.TelegramOIDC.child_specs() ++
         CommaWeb.IMessageRuntime.child_specs() ++

@@ -1,5 +1,6 @@
 import type { ChatViewValue } from "@comma/core/contract";
 import {
+  draftUploadPreviewRef,
   idleConversationChannelState,
   type ChatMessage,
   type ConversationChannelState,
@@ -26,6 +27,21 @@ const message = (messageId: string, text: string): ChatMessage => ({
   role: "assistant",
   source: "server",
   text,
+});
+
+/** A message still sending with one image, as the core shows it. */
+const sentImage = (
+  attachment: Partial<ChatMessage["attachments"][number]>
+): ChatMessage => ({
+  attachments: [{ blockType: "image", fileName: "photo.png", ...attachment }],
+  clientRequestId: "req_1",
+  delivery: "sending",
+  messageId: "pending:req_1",
+  parts: [{ kind: "markdown", text: "Look" }],
+  refs: [],
+  role: "user",
+  source: "pending",
+  text: "Look",
 });
 
 /**
@@ -114,6 +130,30 @@ describe("a window's channel on a conversation", () => {
     channel.stop();
     await flush();
     expect(view.views.shown).toBe(0);
+  });
+
+  it("tells no one of a view the core publishes again unchanged, as it does when another conversation moves", async () => {
+    installNativeBridgeMock({ self: { role: "main-window", windowId: "win_main" } });
+    const view = scriptView();
+    const channel = open(view.core);
+    const messages = [message("m1", "Hi")];
+    view.show({ messages }, { revision: 1 });
+    await flush();
+    const shown = channel.getSnapshot();
+    const listener = vi.fn();
+    channel.subscribe(listener);
+
+    // Another conversation moved the core's revision: this one's view comes back the same.
+    view.show({ messages }, { revision: 2 });
+    await flush();
+    expect(listener).not.toHaveBeenCalled();
+    expect(channel.getSnapshot()).toBe(shown);
+
+    // A change to this conversation still shows.
+    view.show({ messages: [...messages, message("m2", "There")] }, { revision: 3 });
+    await flush();
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(channel.getSnapshot().messages.map((m) => m.text)).toEqual(["Hi", "There"]);
   });
 
   it("keeps an edit typed here until the core's draft is as new, so a late echo cannot restore deleted text", async () => {
@@ -294,6 +334,107 @@ describe("a window's channel on a conversation", () => {
     expect(view.core.sentTo("chatView.send")).toHaveLength(2);
     await flush();
     expect(sent).toBe(true);
+  });
+
+  it("keeps a sent image's thumbnail as its message reads it by the path it uploaded to", async () => {
+    installNativeBridgeMock({
+      platform: "web",
+      self: { role: "main-window", windowId: "win_main" },
+    });
+    let nextObjectUrl = 0;
+    const createObjectURL = vi
+      .spyOn(URL, "createObjectURL")
+      .mockImplementation(() => `blob:preview-${++nextObjectUrl}`);
+    const revokeObjectURL = vi
+      .spyOn(URL, "revokeObjectURL")
+      .mockImplementation(() => {});
+    const png = Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13]);
+    const view = scriptView((name) => (name === "chat.readGroupImage" ? png : null));
+    const channel = open(view.core);
+    const uploading: DraftAttachment = {
+      error: undefined,
+      id: "att_1",
+      isImage: true,
+      name: "photo.png",
+      path: undefined,
+      size: 12,
+      status: "uploading",
+    };
+    view.show({ draftAttachments: [uploading] });
+    await flush();
+
+    // The Composer previews the upload from the bytes the core holds.
+    const thumbnail = await channel.previewLocalFile(draftUploadPreviewRef("att_1"));
+    expect(thumbnail?.url).toBe("blob:preview-1");
+    expect(view.core.sentTo("chat.readGroupImage")).toMatchObject([
+      { attachmentId: "att_1", groupId: "grp_1", source: "draft-upload" },
+    ]);
+
+    const path = "/uploads/AAAAAAAAAAAAAAAAAAAAAA-photo.png";
+    view.show(
+      { draftAttachments: [{ ...uploading, path, status: "uploaded" }] },
+      { revision: 2 }
+    );
+    await flush();
+
+    // Sent: the Composer's tile leaves and the message mounts in the same
+    // commit, reading the image by its path.
+    thumbnail?.release();
+    const shown = await channel.previewLocalFile(path);
+    await flush();
+    expect(shown?.url).toBe(thumbnail?.url);
+    expect(createObjectURL).toHaveBeenCalledOnce();
+    expect(view.core.sentTo("chat.readGroupImage")).toHaveLength(1);
+    expect(revokeObjectURL).not.toHaveBeenCalled();
+
+    // Once nothing shows it, a later read of the path goes to the core again.
+    shown?.release();
+    await flush();
+    expect(revokeObjectURL).toHaveBeenCalledWith("blob:preview-1");
+    const reread = await channel.previewLocalFile(path);
+    expect(reread?.url).toBe("blob:preview-2");
+    expect(view.core.sentTo("chat.readGroupImage").at(-1)).toMatchObject({
+      path,
+      source: "group-file",
+    });
+    reread?.release();
+    channel.stop();
+    vi.restoreAllMocks();
+  });
+
+  it("keeps the thumbnail of an image sent while it uploaded once its message reads it by its path", async () => {
+    installNativeBridgeMock({
+      platform: "web",
+      self: { role: "main-window", windowId: "win_main" },
+    });
+    let nextObjectUrl = 0;
+    const createObjectURL = vi
+      .spyOn(URL, "createObjectURL")
+      .mockImplementation(() => `blob:preview-${++nextObjectUrl}`);
+    vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+    const png = Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13]);
+    const view = scriptView((name) => (name === "chat.readGroupImage" ? png : null));
+    const channel = open(view.core);
+    // Sent before the upload finished: the message shows from the bytes the core holds.
+    view.show({ messages: [sentImage({ uploadingId: "att_1" })] });
+    await flush();
+    const uploading = await channel.previewLocalFile(draftUploadPreviewRef("att_1"));
+    expect(uploading?.url).toBe("blob:preview-1");
+
+    // Uploaded: the message reads the image by its path, in the commit that drops the upload's ref.
+    const path = "/uploads/AAAAAAAAAAAAAAAAAAAAAA-photo.png";
+    view.show({ messages: [sentImage({ workspacePath: path })] }, { revision: 2 });
+    await flush();
+    uploading?.release();
+    const shown = await channel.previewLocalFile(path);
+    await flush();
+
+    expect(shown?.url).toBe(uploading?.url);
+    expect(createObjectURL).toHaveBeenCalledOnce();
+    expect(view.core.sentTo("chat.readGroupImage")).toHaveLength(1);
+    shown?.release();
+    channel.stop();
+    vi.restoreAllMocks();
   });
 
   it("hands Electron's Main files from disk with the view's lease and room, and sends only once Main attached them", async () => {

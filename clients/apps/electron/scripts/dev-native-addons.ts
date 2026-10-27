@@ -54,6 +54,11 @@ export function devNativeAddons(appDir: string): DevNativeAddon[] {
       output: cableScannerAddonDistPath(appDir),
       buildFlag: "--cable-scanner-only",
     },
+    {
+      label: "device Bluetooth addon",
+      output: resolve(appDir, "dist/native/macos/comma-device-bluetooth.node"),
+      buildFlag: "--device-bluetooth-only",
+    },
   ];
 }
 

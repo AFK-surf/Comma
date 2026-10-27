@@ -16,6 +16,6 @@ pub mod runtime;
 pub mod sources;
 
 pub use model::{Credential, Profile, Quota, Status, Window, model_key, same_model};
-pub use pool::{Request, Signals, Urgency, rank, serves, urgency, usable};
+pub use pool::{Request, Signals, Urgency, rank, refills_at, serves, urgency, usable};
 pub use runtime::{Runtime, RuntimeConfig, codex_overrides, runtime_config, runtimes};
 pub use sources::{Auth, Endpoints, Protocol, Source, SourceKind, endpoints, find, sources};

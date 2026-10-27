@@ -9,6 +9,7 @@
  */
 
 import { Worker } from "node:worker_threads";
+import { realMainClock, type MainClock } from "../../clock";
 
 export interface NativeAudioApplication {
   bundleIdentifier: string;
@@ -85,7 +86,8 @@ export interface NativeAudioCaptureLoaderDeps {
    */
   firstCoreAudioCall?: (() => Promise<void>) | undefined;
   logger?: NativeAudioLogger | undefined;
-  now?: () => number;
+  /** Main's clock: how long the first CoreAudio call took. */
+  clock?: MainClock;
 }
 
 /**
@@ -103,22 +105,22 @@ export function createNativeAudioCaptureLoader({
     ? makeFirstCoreAudioCallInWorker
     : undefined,
   logger,
-  now = () => Date.now(),
+  clock = realMainClock,
 }: NativeAudioCaptureLoaderDeps = {}): () => Promise<NativeAudioCapture | undefined> {
   let load: Promise<NativeAudioCapture | undefined> | undefined;
   return () => {
     load ??= (async () => {
       if (firstCoreAudioCall) {
-        const startedAt = now();
+        const startedAt = clock.now();
         try {
           await firstCoreAudioCall();
           logger?.info("first CoreAudio call finished off Main's thread", {
-            durationMs: now() - startedAt,
+            durationMs: clock.now() - startedAt,
             source: "native-audio",
           });
         } catch (error) {
           logger?.warn("first CoreAudio call failed off Main's thread; Main makes it", {
-            durationMs: now() - startedAt,
+            durationMs: clock.now() - startedAt,
             error: error instanceof Error ? error.message : String(error),
             source: "native-audio",
           });

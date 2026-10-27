@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   CONTEXT_SELECTION_HIGHLIGHT,
+  CONTEXT_SELECTION_SCOPE_ATTRIBUTE,
   clearContextSelectionHighlight,
   paintContextSelectionHighlight,
   snapshotLiveTextSelection,
@@ -18,6 +19,11 @@ const selectText = (element: HTMLElement, endOffset: number) => {
   selection?.addRange(range);
   return range;
 };
+
+/** The elements that hold a highlight's scope now, in document order. */
+const marked = () => [
+  ...document.querySelectorAll(`[${CONTEXT_SELECTION_SCOPE_ATTRIBUTE}]`),
+];
 
 describe("preserveTextSelection", () => {
   afterEach(() => {
@@ -85,5 +91,42 @@ describe("preserveTextSelection", () => {
 
     clearContextSelectionHighlight(second);
     expect(highlights.has(CONTEXT_SELECTION_HIGHLIGHT)).toBe(false);
+  });
+
+  it("marks the element around each highlight's ranges until the last highlight there is cleared", () => {
+    class FakeHighlight {
+      ranges: Range[];
+      constructor(...ranges: Range[]) {
+        this.ranges = ranges;
+      }
+    }
+    vi.stubGlobal("Highlight", FakeHighlight);
+    stubProperty(CSS, "highlights", {
+      configurable: true,
+      value: new Map<string, FakeHighlight>(),
+    });
+    const reply = document.createElement("article");
+    reply.innerHTML = "<p>Agent <strong>reply</strong></p><p>Second paragraph</p>";
+    document.body.append(reply);
+    const [first, second] = [...reply.querySelectorAll("p")];
+    // A range inside one text node: its paragraph holds the scope.
+    const word = document.createRange();
+    word.setStart(first!.firstChild!, 0);
+    word.setEnd(first!.firstChild!, 5);
+    // A range across both paragraphs: the reply around them holds it.
+    const across = document.createRange();
+    across.setStart(first!.firstChild!, 0);
+    across.setEnd(second!.firstChild!, 6);
+
+    const older = paintContextSelectionHighlight([word]);
+    expect(marked()).toEqual([first]);
+    const newer = paintContextSelectionHighlight([across, word]);
+    expect(marked()).toEqual([reply, first]);
+
+    // The older highlight was replaced in the registry: clearing it releases only its own hold.
+    clearContextSelectionHighlight(older);
+    expect(marked()).toEqual([reply, first]);
+    clearContextSelectionHighlight(newer);
+    expect(marked()).toEqual([]);
   });
 });

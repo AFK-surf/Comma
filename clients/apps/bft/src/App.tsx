@@ -16,6 +16,7 @@ import {
   type BftOrgContext,
 } from "./api";
 import { CliLoginPage } from "./CliLoginPage";
+import { DailyBriefPage } from "./DailyBriefPage";
 import { DataPolicyPage } from "./DataPolicyPage";
 import { FlashNotice } from "./flash";
 import { HealthPage } from "./HealthPage";
@@ -127,6 +128,16 @@ function OrgPage({ route }: { route: OrgPageRoute }) {
           {(context) =>
             adminPage(context, "meetings", route.org, (ready) => (
               <MeetingsPage org={route.org} swarms={ready.projects} view={route.view} />
+            ))
+          }
+        </OrgRoute>
+      );
+    case "org-daily-brief":
+      return (
+        <OrgRoute title={messages.dailyBrief.title}>
+          {(context) =>
+            adminPage(context, "daily_brief", route.org, (ready) => (
+              <DailyBriefPage org={route.org} swarms={ready.projects} />
             ))
           }
         </OrgRoute>

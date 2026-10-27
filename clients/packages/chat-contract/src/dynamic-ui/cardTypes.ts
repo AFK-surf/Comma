@@ -164,6 +164,7 @@ export const cardRawTokens = [
   "--font-weight-semibold",
   "--opacity-disabled",
   "--shadow-xs",
+  "--shadow-sm",
   "--motion-duration-feedback-in",
   "--motion-duration-feedback-out",
   "--motion-duration-state-change",

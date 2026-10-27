@@ -71,6 +71,8 @@ export type SharingDeps = {
   env: Env;
   /// A Claude profile's current access token, renewed when about to run out (the accounts module's).
   claudeToken: (profile: Json) => Promise<MachineToken>;
+  /// Whether the machine's own login of a runtime is in use (accounts/sources.ts): one not in use is never lent.
+  machineAllowed?: (runtime: "claude" | "codex") => boolean;
   /// Whether a Codex app-server runs on a profile here now (its login must not be renewed under it).
   codexRunning: (profileId: string) => boolean;
   /// A profile's check and allowance as this station has them (for the stations borrowing it).
@@ -762,6 +764,7 @@ export class Sharing {
   /// A short-lived access token of a shared subscription, renewed here when needed.
   private async lend(p: Json): Promise<Json> {
     if (accessKind(p) !== "subscription") throw new Error("only a subscription is lent");
+    if (isMachine(p) && this.deps.machineAllowed?.(p.runtime) === false) throw new Error("the machine's own login is not in use");
     if (p.runtime === "claude") {
       const t = await this.deps.claudeToken(p);
       return { runtime: "claude", token: t.token, expiresAt: t.expiresAt };

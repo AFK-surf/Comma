@@ -11,7 +11,7 @@ import {
   type TransitionEvent,
 } from "react";
 import { Button as AriaButton } from "react-aria-components";
-import { uiClock, type CancelUiTimer } from "../../clock";
+import { scheduleLayoutRead, uiClock, type CancelUiTimer } from "../../clock";
 import { Collapse, CollapseContent } from "../collapse";
 import { ChevronDownSmallIcon, CircleXIcon } from "../icons";
 import { ScrollArea } from "../scroll-area";
@@ -57,6 +57,8 @@ export interface AiActivityProps extends Omit<HTMLAttributes<HTMLElement>, "chil
   events?: readonly AiActivityEvent[];
   /** A richer trace rendered inside the disclosure instead of event rows. */
   details?: ReactNode;
+  /** A failure's further words and ways out, under its copy inside the notice card. */
+  notice?: ReactNode;
   phase?: AiActivityPhase;
   /** The committed, user-visible answer or artifact. */
   result?: ReactNode;
@@ -136,7 +138,9 @@ function ActivityTextLayer({
   const shimmerActive = snapshot.shimmer && (!ariaHidden || motion === "rest");
   useGradientShimmer(summaryRef, {
     active: shimmerActive,
-    contentIdentity: snapshot.summary,
+    // The activity, not its text: a summary that ticks in place (the seconds
+    // a wait has lasted) must not restart the sweep; the next sweep re-measures.
+    contentIdentity: snapshot.key,
   });
 
   return (
@@ -182,10 +186,28 @@ function ActivityText({
   const currentRef = useRef(snapshot);
   const pendingRef = useRef<ActivitySnapshot | null>(null);
   const previousWidthRef = useRef<number | null>(null);
+  // The text's width as last laid out. A swap starts in the commit that
+  // changed the transcript around it; measuring then would lay the whole
+  // page out inside the commit, so the width is kept from the layouts that
+  // already happened.
+  const textWidthRef = useRef<number | null>(null);
   const swapActiveRef = useRef(false);
   const [current, setCurrent] = useState(snapshot);
   const [outgoing, setOutgoing] = useState<ActivitySnapshot | null>(null);
   const [playing, setPlaying] = useState(false);
+
+  useLayoutEffect(() => {
+    const text = textRef.current;
+    if (!text || typeof ResizeObserver === "undefined") return undefined;
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        textWidthRef.current =
+          entry.borderBoxSize?.[0]?.inlineSize ?? entry.contentRect.width;
+      }
+    });
+    observer.observe(text);
+    return () => observer.disconnect();
+  }, []);
 
   useLayoutEffect(() => {
     const previous = currentRef.current;
@@ -226,7 +248,7 @@ function ActivityText({
       return;
     }
 
-    previousWidthRef.current = textRef.current?.getBoundingClientRect().width ?? null;
+    previousWidthRef.current = textWidthRef.current;
     currentRef.current = next;
     pendingRef.current = null;
     swapActiveRef.current = true;
@@ -235,24 +257,24 @@ function ActivityText({
     setPlaying(false);
   }, [motionKey, shimmer, summary, toolName]);
 
+  // The chevron starts the swap where the previous text left it: its shift is
+  // read and written in the frame's shared layout phase, before the swapped
+  // text first paints, and released two frames later (below).
   useLayoutEffect(() => {
-    if (outgoing == null || previousWidthRef.current == null) return;
-
-    const text = textRef.current;
-    const chevron = text
-      ?.closest<HTMLElement>(".comma-ai-activity-summary-shell")
-      ?.querySelector<HTMLElement>(".comma-ai-activity-chevron");
-    if (!text || !chevron) return;
-
-    const nextWidth = text.getBoundingClientRect().width;
-    const shift = previousWidthRef.current - nextWidth;
-    const summaryElement = chevron.closest<HTMLElement>(
-      ".comma-ai-activity-summary-shell"
-    );
-    if (!summaryElement || Math.abs(shift) < 0.5) return;
-
-    summaryElement.style.setProperty("--ai-activity-chevron-shift", `${shift}px`);
-    chevron.getBoundingClientRect();
+    if (outgoing == null || previousWidthRef.current == null) return undefined;
+    const previousWidth = previousWidthRef.current;
+    return scheduleLayoutRead(() => {
+      const text = textRef.current;
+      const summaryElement = text?.closest<HTMLElement>(
+        ".comma-ai-activity-summary-shell"
+      );
+      if (!text || !summaryElement) return undefined;
+      const shift = previousWidth - text.getBoundingClientRect().width;
+      if (Math.abs(shift) < 0.5) return undefined;
+      return () => {
+        summaryElement.style.setProperty("--ai-activity-chevron-shift", `${shift}px`);
+      };
+    });
   }, [current.key, outgoing]);
 
   const settleCurrentSwap = useCallback((expectedCurrentKey: string) => {
@@ -263,7 +285,7 @@ function ActivityText({
     pendingRef.current = null;
 
     if (pending != null && pending.key !== settled.key && !isReducedMotionEnabled()) {
-      previousWidthRef.current = textRef.current?.getBoundingClientRect().width ?? null;
+      previousWidthRef.current = textWidthRef.current;
       currentRef.current = pending;
       setOutgoing(settled);
       setCurrent(pending);
@@ -445,6 +467,7 @@ export function AiActivity({
   details,
   events = [],
   expanded: controlledExpanded,
+  notice,
   onExpandedChange,
   phase,
   result,
@@ -486,6 +509,17 @@ export function AiActivity({
       summary={summary}
       {...(visibleToolName ? { toolName: visibleToolName } : {})}
     />
+  );
+
+  const copy = (
+    <span
+      aria-live="polite"
+      className={cx(status === "failed" && "comma-chat-notice-card-copy")}
+      id={summaryId}
+      role={status === "failed" ? "alert" : "status"}
+    >
+      {activityText}
+    </span>
   );
 
   useLayoutEffect(() => {
@@ -587,14 +621,14 @@ export function AiActivity({
             {status === "failed" ? (
               <CircleXIcon aria-hidden className="comma-chat-notice-card-icon" />
             ) : null}
-            <span
-              aria-live="polite"
-              className={cx(status === "failed" && "comma-chat-notice-card-copy")}
-              id={summaryId}
-              role={status === "failed" ? "alert" : "status"}
-            >
-              {activityText}
-            </span>
+            {status === "failed" && notice != null ? (
+              <div className="comma-chat-notice-card-content">
+                {copy}
+                {notice}
+              </div>
+            ) : (
+              copy
+            )}
             {hasHistory ? (
               <AriaButton
                 aria-controls={historyId}
@@ -671,7 +705,13 @@ export function AiWorkerActivity({
   const statusLabel = workerStatusLabels[status];
   const accessibleLabel = `${actor}, ${statusLabel}`;
   const workerCopy = (
-    <span aria-hidden className="comma-ai-worker-activity-copy">
+    <span
+      aria-hidden
+      className={cx(
+        "comma-ai-worker-activity-copy",
+        status === "running" && "comma-shine"
+      )}
+    >
       <span className="comma-ai-worker-activity-name">{actor}</span>
       <span className="comma-ai-worker-activity-state">{statusLabel}</span>
     </span>

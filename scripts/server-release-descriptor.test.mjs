@@ -27,6 +27,7 @@ const fixture = () => {
     root,
     serverBuildId: BUILD_ID,
     agentVMMReleaseId: "agent-vmm-release-1",
+    agentVMMLinuxReleaseId: "agent-vmm-linux-release-2",
     darwinSalixConnectReleaseId: "salix-connect-darwin-1",
     computerUseHelperReleaseId: "computer-use-helper-1",
     baseUrl: "https://comma-release.example/server-install-artifacts",
@@ -41,7 +42,12 @@ test("canonical descriptor verifies exact bundled bytes and selects one target",
     assert.deepEqual(verifyBundledArtifacts(root, readDescriptor(join(root, DESCRIPTOR_FILENAME))), descriptor);
     assert.equal(selectArtifact(descriptor, "agent-vmm-host", "darwin-arm64").component, "agent-vmm-host");
     assert.equal(selectArtifact(descriptor, "agent-vmm-host", "darwin-arm64").release_id, "agent-vmm-release-1");
-    assert.throws(() => selectArtifact(descriptor, "agent-vmm-host", "linux-arm64"), /no exact artifact/);
+    const linux = selectArtifact(descriptor, "agent-vmm-host", "linux-arm64");
+    assert.equal(linux.artifact, "Agent-VMM-Host.tar.gz");
+    assert.equal(linux.release_id, "agent-vmm-linux-release-2");
+    const macOnly = { ...descriptor, artifacts: descriptor.artifacts.filter((entry) => entry.component !== linux.component || entry.platform !== linux.platform) };
+    assert.equal(selectArtifact(macOnly, "agent-vmm-host", "darwin-arm64").release_id, "agent-vmm-release-1");
+    assert.throws(() => selectArtifact(macOnly, "agent-vmm-host", "linux-arm64"), /no exact artifact/);
     assert.equal(selectArtifact(descriptor, "salix-connect", "darwin-arm64").release_id, "salix-connect-darwin-1");
     assert.equal(selectArtifact(descriptor, "salix-connect", "linux-arm64").release_id, BUILD_ID);
     const helper = selectArtifact(descriptor, "computer-use-helper", "darwin-arm64");

@@ -17,6 +17,7 @@ import {
   randomBytes,
   timingSafeEqual,
 } from "node:crypto";
+import { realMainClock, type MainClock } from "../../../clock";
 
 export type CableRequestType = "ga" | "mc";
 
@@ -92,10 +93,10 @@ export interface CableQrSession {
 export function createCableQrSession(
   requestType: CableRequestType,
   {
-    now = Date.now(),
+    clock = realMainClock,
     identityPrivateKey,
     qrSecret = randomBytes(16),
-  }: { now?: number; identityPrivateKey?: Buffer; qrSecret?: Buffer } = {}
+  }: { clock?: MainClock; identityPrivateKey?: Buffer; qrSecret?: Buffer } = {}
 ): CableQrSession {
   const identity = createECDH("prime256v1");
   if (identityPrivateKey) identity.setPrivateKey(identityPrivateKey);
@@ -104,7 +105,7 @@ export function createCableQrSession(
     [0, identity.getPublicKey(null, "compressed")],
     [1, qrSecret],
     [2, assignedDomains.length],
-    [3, Math.floor(now / 1000)],
+    [3, Math.floor(clock.now() / 1000)],
     // Linking is not offered for WebAuthn; Chromium always writes the key.
     [4, false],
     [5, requestType],

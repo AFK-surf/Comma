@@ -1,0 +1,218 @@
+{
+  "name": "screencam_junk_2026_10_22",
+  "description": "A ScreenCam error report from a tester landed in the owner's Outlook junk folder on 2026-10-22: capture.diskWriteFailed in 1.0.10 after the owner's fixes the day before. The owner maintains ScreenCam and the same tester's feedback mails are in the inbox. Staging did not read the junk folder and missed it. Read from junk, it concerns the owner's own product and reaches the Router. Phishing in the junk folder that claims a deadline or a loss does not.",
+  "now": "2026-10-22T07:45:00Z",
+  "pending_since": "2026-10-22T07:30:00Z",
+  "locale": "zh-CN",
+  "timezone": "Asia/Singapore",
+  "owner": {
+    "user": "outlook-user-1",
+    "team": "T0TEAM0001",
+    "handle": "kai",
+    "mail": "kai@example.com"
+  },
+  "home": [],
+  "user_md": "# User\n\n- About you · duty: Kai maintains the ScreenCam Windows screen recorder and fixes its recording and saving failures.\n- About you · ongoing: Kai shipped a batch of ScreenCam recording fixes on 2026-10-21 (commit 7a8981acc315) and follows tester feedback on them.\n",
+  "outlook": [
+    {
+      "id": "feedback_1",
+      "conversationId": "c-feedback_1",
+      "subject": "ScreenCam Windows反馈-小红书用户NNNNN",
+      "from": {
+        "emailAddress": {
+          "address": "lin.tester@example.net",
+          "name": "lin.tester"
+        }
+      },
+      "receivedDateTime": "2026-10-21T10:12:00Z",
+      "bodyPreview": "1.鼠标仅放置在悬浮窗icon上，会持续闪动，附件视频为复现 2.添加路径选择，想放在其他盘，并且C盘的图片显示是这样的 3.截图窗口的时候能下视频2里的这样吗 4.这个菜单栏是对的吗",
+      "webLink": "https://outlook.office.com/mail/inbox/id/feedback_1",
+      "importance": "normal",
+      "uniqueBody": {
+        "contentType": "text",
+        "content": "1.鼠标仅放置在悬浮窗icon上，会持续闪动，附件视频为复现\r\n2.添加路径选择，想放在其他盘，并且C盘的图片显示是这样的\r\n3.截图窗口的时候能下视频2里的这样吗\r\n4.这个菜单栏是对的吗"
+      }
+    },
+    {
+      "id": "feedback_2",
+      "conversationId": "c-feedback_2",
+      "subject": "ScreenCam Windows反馈-停止录制后没有保存",
+      "from": {
+        "emailAddress": {
+          "address": "lin.tester@example.net",
+          "name": "lin.tester"
+        }
+      },
+      "receivedDateTime": "2026-10-21T18:48:20Z",
+      "bodyPreview": "停止录制以后有时候文件没保存下来，C盘还剩很多空间。附件是录屏。版本 1.0.9。",
+      "webLink": "https://outlook.office.com/mail/inbox/id/feedback_2",
+      "importance": "normal",
+      "uniqueBody": {
+        "contentType": "text",
+        "content": "停止录制以后有时候文件没保存下来，C盘还剩很多空间。附件是录屏。版本 1.0.9。"
+      }
+    }
+  ],
+  "outlook_junk": [
+    {
+      "id": "screencam_report",
+      "conversationId": "c-screencam_report",
+      "subject": "录制错误报告",
+      "from": {
+        "emailAddress": {
+          "address": "lin.tester@example.net",
+          "name": "lin.tester"
+        }
+      },
+      "receivedDateTime": "2026-10-22T07:35:46Z",
+      "bodyPreview": "​ Saved report: C:\\Users\\Tester\\AppData\\Local\\ScreenCam\\ErrorReports\\error-20261022-073231454-0cf17e57c0b3491dbc3fd9a72f240597.json { \"schemaVersion\": 1, \"reportId\": \"0cf17e57c0b3491dbc3fd9a72f240597\", \"Timestamp\": \"2026-10-22T07:32:31.4469246+00:00\", \"ap",
+      "webLink": "https://outlook.office.com/mail/junkemail/id/screencam_report",
+      "importance": "normal",
+      "uniqueBody": {
+        "contentType": "text",
+        "content": "​\r\nSaved report: C:\\Users\\Tester\\AppData\\Local\\ScreenCam\\ErrorReports\\error-20261022-073231454-0cf17e57c0b3491dbc3fd9a72f240597.json\r\n{ \"schemaVersion\": 1, \"reportId\": \"0cf17e57c0b3491dbc3fd9a72f240597\", \"Timestamp\": \"2026-10-22T07:32:31.4469246+00:00\", \"appVersion\": \"1.0.10\\u002Bsha.7a8981acc315\", \"osVersion\": \"Microsoft Windows NT 10.0.26100.0\", \"architecture\": \"X64\", \"privacy\": \"Saved locally. Review before sharing: the error message may contain a device name or local path. No recording content is included.\", \"error\": { \"Source\": \"ScreenCam.Capture\", \"Code\": \"capture.diskWriteFailed\", \"Message\": \"Writing the recording package failed after the recording stopped.\" } }"
+      }
+    },
+    {
+      "id": "phish_delete",
+      "conversationId": "c-phish_delete",
+      "subject": "Final warning: your mailbox will be permanently deleted in 24 hours",
+      "from": {
+        "emailAddress": {
+          "address": "security-team@mailbox-verify.example",
+          "name": "security-team"
+        }
+      },
+      "receivedDateTime": "2026-10-22T07:36:10Z",
+      "bodyPreview": "Dear user, Your mailbox kai@example.com failed our annual verification. It will be permanently deleted with all messages in 24 hours. Verify your account now to keep your data: http://mailbox-verify.example/kai Mail Administrator",
+      "webLink": "https://outlook.office.com/mail/junkemail/id/phish_delete",
+      "importance": "normal",
+      "uniqueBody": {
+        "contentType": "text",
+        "content": "Dear user,\r\nYour mailbox kai@example.com failed our annual verification. It will be permanently deleted with all messages in 24 hours.\r\nVerify your account now to keep your data: http://mailbox-verify.example/kai\r\nMail Administrator"
+      }
+    },
+    {
+      "id": "phish_signin",
+      "conversationId": "c-phish_signin",
+      "subject": "Unusual sign-in activity detected",
+      "from": {
+        "emailAddress": {
+          "address": "no-reply@acount-security.example",
+          "name": "no-reply"
+        }
+      },
+      "receivedDateTime": "2026-10-22T07:37:02Z",
+      "bodyPreview": "We detected an unusual sign-in to your account from Lagos, Nigeria at 07:20 UTC. If this was not you, secure your account immediately: http://acount-security.example/secure Your account will be locked if you do not act within 12 hours.",
+      "webLink": "https://outlook.office.com/mail/junkemail/id/phish_signin",
+      "importance": "normal",
+      "uniqueBody": {
+        "contentType": "text",
+        "content": "We detected an unusual sign-in to your account from Lagos, Nigeria at 07:20 UTC.\r\nIf this was not you, secure your account immediately: http://acount-security.example/secure\r\nYour account will be locked if you do not act within 12 hours."
+      }
+    },
+    {
+      "id": "phish_parcel",
+      "conversationId": "c-phish_parcel",
+      "subject": "Your parcel could not be delivered",
+      "from": {
+        "emailAddress": {
+          "address": "delivery@parcel-redeliver.example",
+          "name": "delivery"
+        }
+      },
+      "receivedDateTime": "2026-10-22T07:38:40Z",
+      "bodyPreview": "Your parcel could not be delivered because the address was incomplete. Pay the redelivery fee of USD 1.99 today to schedule a new delivery, or the parcel returns to the sender: http://parcel-redeliver.example/pay",
+      "webLink": "https://outlook.office.com/mail/junkemail/id/phish_parcel",
+      "importance": "normal",
+      "uniqueBody": {
+        "contentType": "text",
+        "content": "Your parcel could not be delivered because the address was incomplete.\r\nPay the redelivery fee of USD 1.99 today to schedule a new delivery, or the parcel returns to the sender: http://parcel-redeliver.example/pay"
+      }
+    }
+  ],
+  "labels": {
+    "feedback_1": "https://outlook.office.com/mail/inbox/id/feedback_1",
+    "feedback_2": "https://outlook.office.com/mail/inbox/id/feedback_2",
+    "screencam_report": "https://outlook.office.com/mail/junkemail/id/screencam_report",
+    "phish_delete": "https://outlook.office.com/mail/junkemail/id/phish_delete",
+    "phish_signin": "https://outlook.office.com/mail/junkemail/id/phish_signin",
+    "phish_parcel": "https://outlook.office.com/mail/junkemail/id/phish_parcel"
+  },
+  "matters": [
+    {
+      "subject": "ScreenCam Windows反馈-停止录制后没有保存",
+      "state": "quiet",
+      "urgency": "normal",
+      "decision": "quiet",
+      "reason": "用户反馈停止录制后偶尔没保存，没有错误码或复现条件，留待简报",
+      "changedAt": "2026-10-21T18:52:00Z"
+    }
+  ],
+  "scenarios": [
+    {
+      "name": "screencam_report_in_junk",
+      "only": [
+        "feedback_1",
+        "feedback_2",
+        "screencam_report"
+      ],
+      "read_channels": false,
+      "expect": {
+        "routed_any": [
+          "screencam_report"
+        ],
+        "urgency_any": [
+          "critical",
+          "high",
+          "ask"
+        ]
+      }
+    },
+    {
+      "name": "screencam_report_among_phishing",
+      "read_channels": false,
+      "expect": {
+        "routed_any": [
+          "screencam_report"
+        ]
+      }
+    },
+    {
+      "name": "phish_delete_alone",
+      "only": [
+        "phish_delete"
+      ],
+      "read_channels": false,
+      "expect": {
+        "not_routed": [
+          "phish_delete"
+        ]
+      }
+    },
+    {
+      "name": "phish_signin_alone",
+      "only": [
+        "phish_signin"
+      ],
+      "read_channels": false,
+      "expect": {
+        "not_routed": [
+          "phish_signin"
+        ]
+      }
+    },
+    {
+      "name": "phish_parcel_alone",
+      "only": [
+        "phish_parcel"
+      ],
+      "read_channels": false,
+      "expect": {
+        "not_routed": [
+          "phish_parcel"
+        ]
+      }
+    }
+  ]
+}

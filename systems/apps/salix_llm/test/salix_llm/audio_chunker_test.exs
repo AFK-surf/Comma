@@ -568,6 +568,124 @@ defmodule SalixLlm.AudioChunkerTest do
     assert after_dirs == before_dirs
   end
 
+  # The decoder is a stand-in with kn007/silk-v3-decoder's command line and
+  # exit status 0 on errors.
+  @tag :ffmpeg
+  test "decodes a SILK voice message through the SILK decoder before ffmpeg" do
+    ffmpeg = System.find_executable("ffmpeg") || flunk("ffmpeg is required for meeting audio")
+
+    dir =
+      Path.join(
+        System.tmp_dir!(),
+        "salix-audio-silk-#{SystemsRuntime.Proc.unique_integer([:positive])}"
+      )
+
+    File.mkdir_p!(dir)
+    on_exit(fn -> File.rm_rf!(dir) end)
+    pcm = Path.join(dir, "speech.pcm")
+
+    {_output, 0} =
+      System.cmd(
+        ffmpeg,
+        [
+          "-hide_banner",
+          "-loglevel",
+          "error",
+          "-f",
+          "lavfi",
+          "-i",
+          "sine=frequency=440:duration=2:sample_rate=24000",
+          "-f",
+          "s16le",
+          pcm
+        ],
+        stderr_to_stdout: true
+      )
+
+    File.write!(Path.join(dir, "header"), <<2, "#!SILK_V3">>)
+
+    decoder =
+      fake_silk_decoder(dir, "decoder", """
+      [ "$*" = "silk pcm -Fs_API 24000 -quiet" ] || exit 2
+      head -c 10 silk | cmp -s - #{dir}/header || { echo "Error: no SILK header"; exit 0; }
+      cp #{pcm} pcm
+      """)
+
+    for silk <- [<<"#!SILK_V3", 1::little-16, "f">>, <<2, "#!SILK_V3", 1::little-16, "f">>] do
+      assert {:ok, [%{source_duration_seconds: 2}, %{source_duration_seconds: 2}]} =
+               AudioChunker.with_mp3_chunks(silk, "voice.silk", &{:ok, &1},
+                 segment_seconds: 1,
+                 silk_decoder: decoder
+               )
+    end
+
+    received = Path.join(dir, "received")
+    recorder = fake_silk_decoder(dir, "recorder", "cp silk #{received}\ncp #{pcm} pcm")
+
+    decode =
+      &AudioChunker.with_mp3_chunks(&1, "voice.silk", fn _ -> :ok end, silk_decoder: recorder)
+
+    frame = fn bytes -> <<byte_size(bytes)::little-16, bytes::binary>> end
+    rebuilt = <<2, "#!SILK_V3">> <> frame.("abc") <> frame.("") <> frame.("de")
+
+    # WeChat's end marker, a truncated last frame and trailing bytes are not
+    # passed on; every frame before them is.
+    for tail <- [<<-1::little-signed-16, "trailing">>, <<5::little-16, "abc">>, <<9>>, ""] do
+      assert :ok =
+               decode.(<<2, "#!SILK_V3">> <> frame.("abc") <> frame.("") <> frame.("de") <> tail)
+
+      assert File.read!(received) == rebuilt
+    end
+
+    File.rm!(received)
+    too_large = frame.(:binary.copy("x", 1_025))
+
+    assert {:error, :silk_packet_too_large} = decode.("#!SILK_V3" <> frame.("abc") <> too_large)
+    assert {:error, :silk_no_packets} = decode.(<<"#!SILK_V3", -1::little-signed-16, "abc">>)
+    assert {:error, :silk_no_packets} = decode.("#!SILK_V3" <> <<3::little-16, "ab">>)
+    # Every packet is at least 20 ms, so more than 50 a second over the
+    # longest audio taken is refused before decoding.
+    assert {:error, {:asr_audio_too_long, 2, 1}} =
+             AudioChunker.with_mp3_chunks(
+               "#!SILK_V3" <> :binary.copy(frame.("a"), 101),
+               "voice.silk",
+               fn _ -> :ok end,
+               silk_decoder: recorder,
+               segment_seconds: 1,
+               max_chunks: 1
+             )
+
+    refute File.exists?(received)
+
+    # The 2 s of decoded PCM is over a 1 s limit: refused before it is read.
+    assert {:error, {:asr_audio_too_long, 2, 1}} =
+             AudioChunker.with_mp3_chunks(
+               <<"#!SILK_V3", 1::little-16, "f">>,
+               "voice.silk",
+               fn _ -> :ok end,
+               silk_decoder: recorder,
+               segment_seconds: 1,
+               max_chunks: 1
+             )
+
+    broken = fake_silk_decoder(dir, "broken", "echo 'Error: bad frame'")
+
+    assert {:error, {:silk_decode_failed, 0, "Error: bad frame\n"}} =
+             AudioChunker.with_mp3_chunks(
+               <<"#!SILK_V3", 1::little-16, "f">>,
+               "voice.silk",
+               &{:ok, &1},
+               silk_decoder: broken
+             )
+  end
+
+  defp fake_silk_decoder(dir, name, body) do
+    path = Path.join(dir, name)
+    File.write!(path, "#!/bin/sh\n" <> body)
+    File.chmod!(path, 0o755)
+    path
+  end
+
   defp decoded_mono_16k_pcm(ffmpeg, path) do
     {pcm, 0} =
       System.cmd(

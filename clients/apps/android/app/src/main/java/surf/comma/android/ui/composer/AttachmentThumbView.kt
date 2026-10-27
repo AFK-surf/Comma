@@ -7,33 +7,45 @@ import android.graphics.Outline
 import android.graphics.Paint
 import android.graphics.RectF
 import android.graphics.drawable.GradientDrawable
+import android.media.MediaMetadataRetriever
 import android.net.Uri
+import android.text.TextUtils
+import android.util.Size
 import android.view.Gravity
 import android.view.View
 import android.view.ViewOutlineProvider
 import android.view.animation.AnimationUtils
 import android.widget.FrameLayout
 import android.widget.ImageView
+import android.widget.LinearLayout
+import android.widget.TextView
 import surf.comma.android.R
 import surf.comma.android.platform.logging.AppLog
 import kotlinx.coroutines.*
 import android.graphics.drawable.BitmapDrawable
+import surf.comma.android.media.FileKind
 import surf.comma.android.media.MediaGraph
 import surf.comma.android.media.ViewerImage
+import surf.comma.android.media.file.FileCardView
+import surf.comma.android.ui.Background
 import surf.comma.android.ui.theme.DesignMotion
+import surf.comma.android.ui.theme.DesignTypography
 
 /**
- * One attached image above the text: a rounded thumbnail, its upload state drawn on top, and a
- * remove button in the corner. A failed upload is retried by tapping the thumbnail.
+ * One attachment above the text: a rounded thumbnail (an image itself, a video's first frame, or
+ * another file's glyph and name), its upload state drawn on top, and a remove button in the
+ * corner. A failed upload is retried by tapping the thumbnail.
  */
 internal class AttachmentThumbView(
     context: Context,
     private val style: ComposerStyle,
-    val attachmentId: String,
-    val uri: Uri,
+    attachment: ComposerAttachment,
     onRemove: (String) -> Unit,
     onRetry: (String) -> Unit,
 ) : FrameLayout(context) {
+    val attachmentId: String = attachment.id
+    val uri: Uri = attachment.uri
+    private val kind = attachment.file.kind
 
     private val image = ImageView(context)
     private val overlay = UploadOverlay(context, style)
@@ -65,6 +77,12 @@ internal class AttachmentThumbView(
             }
         }
         addView(image, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
+        when (kind) {
+            FileKind.IMAGE -> Unit
+            FileKind.VIDEO -> addView(playBadge(), LayoutParams(style.dp(20), style.dp(20), Gravity.BOTTOM or Gravity.START)
+                .apply { bottomMargin = style.dp(4); marginStart = style.dp(4) })
+            else -> addView(fileLabel(attachment.file.name), LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
+        }
         addView(overlay, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
 
         val remove = ImageView(context).apply {
@@ -99,21 +117,74 @@ internal class AttachmentThumbView(
     }
 
     private fun load() {
+        if (kind != FileKind.IMAGE && kind != FileKind.VIDEO) return
         if (!isAttachedToWindow || owner != null || bitmap != null) return
         owner = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate).also { scope ->
             scope.launch {
                 try {
-                    // Providers may return pre-cropped loadThumbnail pixels. Ask the shared loader
-                    // for the original URI, oriented by its decoder, with bounded full-image size.
-                    val decoded = MediaGraph.get(context).images().load(
-                        ViewerImage.Local(uri, "image/*", null), PREVIEW_EDGE, PREVIEW_EDGE)
+                    bitmap = if (kind == FileKind.VIDEO) withContext(Background.files) { videoFrame() } else {
+                        // Providers may return pre-cropped loadThumbnail pixels. Ask the shared loader
+                        // for the original URI, oriented by its decoder, with bounded full-image size.
+                        val decoded = MediaGraph.get(context).images().load(
+                            ViewerImage.Local(uri, "image/*", null), PREVIEW_EDGE, PREVIEW_EDGE)
+                        (decoded as? BitmapDrawable)?.bitmap
+                    }
                     ensureActive()
-                    bitmap = (decoded as? BitmapDrawable)?.bitmap
                     image.setImageBitmap(bitmap)
                 } catch (cancelled: CancellationException) { throw cancelled }
                 catch (error: Exception) { AppLog.debug(TAG, error, "Thumbnail failed") }
             }
         }
+    }
+
+    /** The video's own thumbnail from its provider, else its first frame. */
+    private fun videoFrame(): Bitmap? {
+        try {
+            return context.contentResolver.loadThumbnail(uri, Size(PREVIEW_EDGE, PREVIEW_EDGE), null)
+        } catch (_: Exception) {
+            // Not every provider has thumbnails; read the frame from the video itself.
+        }
+        val retriever = MediaMetadataRetriever()
+        return try {
+            retriever.setDataSource(context, uri)
+            retriever.getScaledFrameAtTime(0, MediaMetadataRetriever.OPTION_CLOSEST_SYNC, PREVIEW_EDGE, PREVIEW_EDGE)
+        } catch (_: RuntimeException) {
+            null
+        } finally {
+            retriever.release()
+        }
+    }
+
+    private fun playBadge() = ImageView(context).apply {
+        setImageResource(R.drawable.ic_media_play)
+        setColorFilter(style.onBrand)
+        val pad = style.dp(5)
+        setPadding(pad, pad, pad, pad)
+        background = GradientDrawable().apply {
+            shape = GradientDrawable.OVAL
+            setColor(style.scrim)
+        }
+    }
+
+    /** A file without a picture: its kind's glyph over its name. */
+    private fun fileLabel(name: String) = LinearLayout(context).apply {
+        orientation = LinearLayout.VERTICAL
+        gravity = Gravity.CENTER
+        val pad = style.dp(6)
+        setPadding(pad, pad, pad, pad)
+        addView(ImageView(context).apply {
+            setImageResource(FileCardView.iconFor(kind))
+            setColorFilter(style.fgQuaternary)
+        }, LinearLayout.LayoutParams(style.dp(22), style.dp(22)))
+        addView(TextView(context).apply {
+            text = name
+            style.applyText(this, DesignTypography.Level.MICRO)
+            setTextColor(style.textTertiary)
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.MIDDLE
+            gravity = Gravity.CENTER
+        }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+            .apply { topMargin = style.dp(4) })
     }
 
     /** Scrim plus a ring: still while pending, an arc while uploading, a retry glyph on failure. */

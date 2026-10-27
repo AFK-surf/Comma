@@ -122,13 +122,13 @@ describe("Drive on a device with a node", () => {
       "Skills/Write-notes.md",
       "Instructions.md",
     ]);
-    // Only memory files are written; Comma's notebook is read-only.
+    // Memory files and the instructions are written; Comma's notebook and the skills are read-only.
     expect(
       t
         .value()
         .files.filter((f) => f.spaceId === SYSTEM_SPACE && f.writable)
         .map((f) => f.name)
-    ).toEqual(["index.md"]);
+    ).toEqual(["index.md", "Instructions.md"]);
   });
 
   it("enrolls a node named by its key once, and lists it under its zone", async () => {
@@ -320,13 +320,48 @@ describe("Drive on a device with a node", () => {
     );
   });
 
-  it("restarts a node that could not start", async () => {
+  it("restarts a node that could not start once Drive is shown", async () => {
+    const t = setup();
+    t.drive.status = "error";
+    t.drive.reason = "start timed out";
+    t.watch();
+    await t.settle();
+    await t.settle(DRIVE_POLL_MS);
+    expect(t.value().node).toEqual({ status: "ready" });
+    expect(t.drive.ran.filter(([op]) => op === "restart")).toHaveLength(1);
+  });
+
+  it("restarts a node that still cannot start after a backoff, five times each time Drive comes back", async () => {
     const t = setup();
     t.drive.status = "error";
     t.drive.reason = "no disk";
+    t.drive.refuse.add("restart");
+    const restarts = () => t.drive.ran.filter(([op]) => op === "restart").length;
     t.watch();
     await t.settle();
+    await t.settle(DRIVE_POLL_MS);
+    expect(restarts()).toBe(1);
     expect(t.value().node).toEqual({ status: "error", reason: "no disk" });
+    // Again after 5, 10, 20 and 40 s.
+    for (const [index, wait] of [5_000, 10_000, 20_000, 40_000].entries()) {
+      await t.settle(wait / 2);
+      expect(restarts()).toBe(index + 1);
+      await t.settle(wait / 2 + DRIVE_POLL_MS);
+      expect(restarts()).toBe(index + 2);
+    }
+    // Five is the most: the error stays until Drive comes back to the front or is asked.
+    await t.settle(DRIVE_REFRESH_MS * 4);
+    expect(restarts()).toBe(5);
+    expect(t.value().node).toEqual({ status: "error", reason: "no disk" });
+    expect(
+      t.host.time!.sleeps.filter((ms) =>
+        [5_000, 10_000, 20_000, 40_000, 80_000].includes(ms)
+      )
+    ).toEqual([5_000, 10_000, 20_000, 40_000]);
+    await t.client.call("drive.refresh", {});
+    await t.settle(DRIVE_POLL_MS);
+    expect(restarts()).toBe(6);
+    t.drive.refuse.delete("restart");
     await t.client.call("drive.restart", {});
     await t.settle();
     expect(t.value().node).toEqual({ status: "ready" });
@@ -424,5 +459,46 @@ describe("Drive's System Files", () => {
     ).toMatchObject({
       hash: "h3",
     });
+  });
+
+  it("replaces the Router's instructions if they still hold what was read, and clears them on delete", async () => {
+    const t = setup(null);
+    const instructions = { content: "Be kind.", hash: "i1" };
+    t.host.api.on("GET", "/v1/comma/groups/grp_w1/drive/tree", { entries: [] });
+    t.host.api.on("GET", `${SYSTEM}/instructions`, () => json(200, instructions));
+    t.host.api.on("PUT", `${SYSTEM}/instructions`, (request) => {
+      const body = request.body as { content: string; expected_hash?: string };
+      if (body.expected_hash !== instructions.hash)
+        return json(409, { code: "conflict" });
+      instructions.content = body.content;
+      instructions.hash = `i-${body.content}`;
+      return json(200, instructions);
+    });
+    t.watch();
+    await t.settle();
+    const listed = () =>
+      t.value().files.find((f) => f.id === "system:Instructions.md")!;
+    expect(listed().system).toMatchObject({ kind: "instructions", hash: "i1" });
+    await t.client.call("drive.write", {
+      space: SYSTEM_SPACE,
+      name: "Instructions.md",
+      bytes: new TextEncoder().encode("Be brief."),
+      expectedHash: "i1",
+    });
+    await t.settle();
+    expect(listed().system).toMatchObject({ hash: "i-Be brief." });
+    // An edit from the earlier read does not overwrite the saved one.
+    await expect(
+      t.client.call("drive.write", {
+        space: SYSTEM_SPACE,
+        name: "Instructions.md",
+        bytes: new TextEncoder().encode("Be long."),
+        expectedHash: "i1",
+      })
+    ).rejects.toMatchObject({ code: "changed", detail: { hash: "i-Be brief." } });
+    await t.client.call("drive.delete", { files: ["system:Instructions.md"] });
+    await t.settle();
+    expect(instructions.content).toBe("");
+    expect(listed().system).toMatchObject({ hash: "i-" });
   });
 });

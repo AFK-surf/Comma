@@ -18,6 +18,7 @@ export type {
 } from "./settingsRegistry";
 export { DeviceSettings } from "./DeviceSettings";
 export { CreatedSecretPanel } from "./CreatedSecretPanel";
+export { DeviceSetupStatus, DeviceSetupHelp } from "./DeviceSetupContent";
 export { NotchWidthSetting } from "./NotchWidthSetting";
 export type {
   NotchWidthSettingLabels,

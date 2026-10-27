@@ -11,6 +11,9 @@ import {
   AUTO, type AuthorKind, type EntryRow, type JobRow, MANUAL, type NewMessage, SCHEMA_VERSION, Store, type StoreChange, newMessage,
 } from "../src/store/store.ts";
 import { MERGED, SCHEMA } from "../src/store/schema.ts";
+import { Effect, Scope } from "effect";
+import { TestClock } from "effect/testing";
+import * as read from "../src/read/store.ts";
 
 const dirs: string[] = [];
 const stores: Store[] = [];
@@ -383,6 +386,62 @@ test("a database made before clients gains the column and a message keeps its ap
   open(path);
 });
 
+test("a database made before milestones gains the column, its rows kept; milestones stay on their entries through archiving", () => {
+  const dir = tempdir();
+  const path = join(dir, "ember.db");
+  const archive = join(dir, "archive");
+  {
+    // A station's database from before milestones: a chat with something said in it, and no column for them.
+    const before = open(path, archive);
+    session(before, "a");
+    const thread = before.openThread("ember", "EMBER", "1.1", null, null);
+    before.joinThread(thread.id, "a", "ember");
+    say(before, thread.id, "1.2", "person", "local", "ship it");
+    before.close();
+    const db = new DatabaseSync(path);
+    db.exec("ALTER TABLE entries DROP COLUMN milestones");
+    db.close();
+  }
+  const store = open(path, archive);
+  const thread = store.threadAt("ember", "EMBER", "1.1")!;
+  const kept = () => store.entriesAfter(thread.id, 0).map((e) => [e.n, e.kind, e.text, e.milestones]);
+  assert.deepEqual(kept(), [[1, "message", "ship it", undefined]]);
+  // Milestones alone are an entry of their own, with no text; with words, the message carries them. Given again (a
+  // put), milestones alone are one entry too.
+  const alone: NewMessage = { ...newMessage(thread.id, "1.3", "agent", "a", ""), milestones: ["Built 1.2.3"] };
+  assert.deepEqual(store.insertMessage(alone), [2, true]);
+  assert.deepEqual(store.insertMessage(alone), [2, false]);
+  store.insertMessage({ ...newMessage(thread.id, "1.4", "agent", "a", "shipped"), milestones: ["Published 1.2.3", "Told the team"] });
+  const expected = [
+    [1, "message", "ship it", undefined],
+    [2, "milestone", null, ["Built 1.2.3"]],
+    [3, "message", "shipped", ["Published 1.2.3", "Told the team"]],
+  ];
+  assert.deepEqual(kept(), expected);
+  // No list of messages holds milestones alone: not the chat's messages, its last, or what is unread.
+  assert.deepEqual(store.messagesBefore(thread.id, null, 10).map((m) => m.text), ["ship it", "shipped"]);
+  store.insertMessage({ ...newMessage(thread.id, "1.5", "agent", "a", ""), milestones: ["Archived the build"] });
+  assert.equal(store.lastMessage(thread.id)!.text, "shipped");
+  assert.equal(store.unreadCount("local", thread.id), 1);
+  expected.push([4, "milestone", null, ["Archived the build"]]);
+  // The pages read them the same way, from the database and from the archive.
+  const reads = () => {
+    const r = read.makeStore(new DatabaseSync(path, { readOnly: true }), dir);
+    try {
+      return read.entriesAfter(r, thread.id, 0n).map((e) => [e.n, e.kind, e.text, e.milestones]);
+    } finally {
+      r.db.close();
+    }
+  };
+  assert.deepEqual(reads(), expected);
+  store.setArchived("a", true, MANUAL);
+  assert.ok(existsSync(archiveFile(store, thread.id)));
+  assert.deepEqual(kept(), expected);
+  assert.deepEqual(reads(), expected);
+  store.setArchived("a", false, MANUAL);
+  assert.deepEqual(kept(), expected);
+});
+
 test("a widget's state is kept by session and path, its model told once until it changes", () => {
   const store = memory();
   session(store, "a");
@@ -644,4 +703,53 @@ test("usage: a call is recorded once, its output grown; turns tell whom they wer
   store.usageChanged();
   assert.deepEqual(h.changes, [{ type: "usage" }]);
   h.stop();
+});
+
+test("an agent's post answers the last message its session was handed before it", async () => {
+  const dir = tempdir();
+  const path = join(dir, "station.db");
+  const clock = Effect.runSync(Scope.provide(TestClock.make(), Effect.runSync(Scope.make())));
+  const time = { adjust: (ms: number) => Effect.runPromise(clock.adjust(`${ms} millis`)) };
+  const store = Store.open(path, null, clock);
+  stores.push(store);
+  session(store, "a");
+  const thread = store.openThread("ember", "EMBER", "1.1", null, null);
+  store.joinThread(thread.id, "a", "ember");
+  const handed = async (ts: string, text: string) => {
+    const [n] = say(store, thread.id, ts, "person", "U1", text);
+    store.deliver(thread.id, n, ["a"]);
+    await time.adjust(1);
+    store.markDelivered("a", [[thread.id, n]]);
+    await time.adjust(1);
+    return n;
+  };
+  const posted = async (ts: string, text: string) => {
+    const [n] = say(store, thread.id, ts, "agent", "a", text);
+    await time.adjust(1);
+    return n;
+  };
+  const first = await handed("1.2", "fix it");
+  const fixing = await posted("1.3", "on it");
+  // Written while its agent works: not handed yet, so what it posts meanwhile answers the first.
+  const [later] = say(store, thread.id, "1.4", "person", "U1", "and the docs");
+  store.deliver(thread.id, later, ["a"]);
+  await time.adjust(1);
+  const fixed = await posted("1.5", "fixed");
+  store.markDelivered("a", [[thread.id, later]]);
+  await time.adjust(1);
+  const docs = await posted("1.6", "docs too");
+  const r = read.makeStore(new DatabaseSync(path, { readOnly: true }), dir);
+  try {
+    const posts = read.entriesAfter(r, thread.id, 0n).filter((e) => e.authorKind === "agent");
+    assert.deepEqual(
+      [...read.answered(r, thread.id, posts)],
+      [
+        [fixing, first],
+        [fixed, first],
+        [docs, later],
+      ],
+    );
+  } finally {
+    r.db.close();
+  }
 });

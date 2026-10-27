@@ -1,6 +1,8 @@
 import { z } from "zod";
 import { supportedLocales } from "@comma/i18n";
 import type { RecommendationSettings } from "@comma/recommendation-contract";
+import { pullRequestSchema, usageSchema } from "../coding-wire.ts";
+import { computeWorkloadSchema } from "./schemas.ts";
 export { recommendationSettingsSchema as commaRecommendationSettingsSchema } from "@comma/recommendation-contract";
 export type {
   RecommendationEnvelope as CommaRecommendationEnvelope,
@@ -184,7 +186,89 @@ export const salixMessageSchema = z
   })
   .passthrough();
 
+export const commaChatSuggestionSchema = z
+  .object({
+    id: z.string().min(1),
+    label: z.string().min(1),
+    prompt: z.string().min(1),
+  })
+  .passthrough();
+
 export const commaConversationKindSchema = z.enum(["user_chat", "agent_task"]);
+
+/**
+ * Where a Task runs and the model it runs, which Task panels show instead of
+ * its Agent. A server before it sends none; a value of an unknown kind is
+ * dropped.
+ */
+const commaTaskRunSchema = z
+  .object({
+    place: z.discriminatedUnion("kind", [
+      z.object({ kind: z.literal("salix") }).strip(),
+      z.object({ kind: z.literal("cloud_vm") }).strip(),
+      z
+        .object({
+          kind: z.literal("station"),
+          device_id: z.string().min(1),
+          name: z.string().nullable().optional(),
+        })
+        .strip(),
+      // A coding Task: its own cloud sandbox, with a GitHub repository checked out.
+      z
+        .object({
+          kind: z.literal("sandbox"),
+          repo: z
+            .object({
+              owner: z.string(),
+              name: z.string(),
+              base_ref: z.string().optional(),
+              branch: z.string().optional(),
+            })
+            .strip(),
+          state: z.string(),
+          reason: z.string().nullable().optional(),
+        })
+        .strip(),
+    ]),
+    model: z
+      .discriminatedUnion("kind", [
+        z.object({ kind: z.literal("platform") }).strip(),
+        z
+          .object({
+            kind: z.literal("catalog"),
+            name: z.string().min(1),
+            vendor: z.string().nullable().optional(),
+          })
+          .strip(),
+        z
+          .object({
+            kind: z.literal("runtime"),
+            provider: z.string().nullable().optional(),
+            name: z.string().nullable().optional(),
+            vendor: z.string().nullable().optional(),
+          })
+          .strip(),
+      ])
+      .nullable()
+      .optional(),
+    // A coding Task's: what its sandbox and GitHub answered last, each part once read. One the client cannot read
+    // leaves the run as it is.
+    facts: z
+      .object({
+        usage: usageSchema.nullable().optional(),
+        changes: z
+          .object({ files: z.number(), additions: z.number(), deletions: z.number() })
+          .strip()
+          .optional(),
+        pull_request: pullRequestSchema.nullable().optional(),
+      })
+      .strip()
+      .optional()
+      .catch(undefined),
+  })
+  .strip();
+export type CommaTaskRun = z.output<typeof commaTaskRunSchema>;
+const optionalTaskRunSchema = commaTaskRunSchema.optional().catch(undefined);
 
 export const commaConversationSchema = z
   .object({
@@ -220,6 +304,10 @@ export const commaConversationSchema = z
     updated_at: z.number().optional(),
     /** An `agent_task` has an active public share link. */
     shared: z.boolean().optional(),
+    /** A coding Task's run (its sandbox and model) with its detail; other Tasks' runs come with the status stream. */
+    run: optionalTaskRunSchema,
+    /** On a send's answer: the message the send made (sent again under its request, the same one). */
+    accepted_message_id: z.string().min(1).optional(),
   })
   .passthrough();
 
@@ -228,50 +316,6 @@ const commaBoundWorkerSchema = z.object({
   actor_id: z.string().optional(),
   name: z.string(),
 });
-
-/**
- * Where a Task runs and the model it runs, which Task panels show instead of
- * its Agent. A server before it sends none; a value of an unknown kind is
- * dropped.
- */
-const commaTaskRunSchema = z
-  .object({
-    place: z.discriminatedUnion("kind", [
-      z.object({ kind: z.literal("salix") }).strip(),
-      z.object({ kind: z.literal("cloud_vm") }).strip(),
-      z
-        .object({
-          kind: z.literal("station"),
-          device_id: z.string().min(1),
-          name: z.string().nullable().optional(),
-        })
-        .strip(),
-    ]),
-    model: z
-      .discriminatedUnion("kind", [
-        z.object({ kind: z.literal("platform") }).strip(),
-        z
-          .object({
-            kind: z.literal("catalog"),
-            name: z.string().min(1),
-            vendor: z.string().nullable().optional(),
-          })
-          .strip(),
-        z
-          .object({
-            kind: z.literal("runtime"),
-            provider: z.string().nullable().optional(),
-            name: z.string().nullable().optional(),
-            vendor: z.string().nullable().optional(),
-          })
-          .strip(),
-      ])
-      .nullable()
-      .optional(),
-  })
-  .strip();
-export type CommaTaskRun = z.output<typeof commaTaskRunSchema>;
-const optionalTaskRunSchema = commaTaskRunSchema.optional().catch(undefined);
 
 export const commaConversationPreviewSchema = z
   .object({
@@ -294,6 +338,8 @@ export const commaConversationPreviewSchema = z
     bound_worker: commaBoundWorkerSchema.nullable().optional(),
     /** Comes with `bound_worker`: where the Task runs and its model. */
     run: optionalTaskRunSchema,
+    /** Comes with `bound_worker`: a Loop Task's Loop; read it with `taskLoop`. */
+    loop: jsonValueSchema.optional(),
   })
   .strip();
 
@@ -347,6 +393,7 @@ export const commaConversationEventSchema = z
     draft_id: z.string().optional(),
     conversation_id: z.string().optional(),
     goal: z.string().optional(),
+    target: z.string().optional(),
     message_id: z.string().optional(),
     participant_id: z.string().min(1).optional(),
     // Realtime decoding must not make the independently owned canonical
@@ -375,6 +422,8 @@ export const commaConversationEventSchema = z
         loop_wake: z.boolean().optional(),
         working_conversation_ids: z.array(z.string()).optional(),
         waiting: z.boolean().optional(),
+        wait_tool: z.string().optional(),
+        wait_started_at: z.number().optional(),
       })
       .nullish()
       .catch(undefined),
@@ -650,6 +699,7 @@ export type CommaSkillDetail = z.output<typeof commaSkillDetailSchema>;
 export type CommaSkillFile = z.output<typeof commaSkillFileSchema>;
 export type CommaGroupFile = z.output<typeof commaGroupFileSchema>;
 export type SalixMessage = z.output<typeof salixMessageSchema>;
+export type CommaChatSuggestion = z.output<typeof commaChatSuggestionSchema>;
 export type CommaConversationKind = z.output<typeof commaConversationKindSchema>;
 export type CommaConversation = z.output<typeof commaConversationSchema>;
 
@@ -755,6 +805,13 @@ export const computeLocalWorkloadsSchema = z.object({
           ])
           .optional(),
         updated_at: z.string().optional(),
+        location: z
+          .object({
+            provider: z.string().max(80),
+            device_id: z.string().max(200).optional(),
+          })
+          .optional(),
+        problem: computeWorkloadSchema.shape.problem,
       })
     )
     .max(32),

@@ -7,7 +7,8 @@
     "emitDeclarationOnly": true,
     "outDir": "dist",
     "noEmit": false,
-    "rootDir": "."
+    "rootDir": ".",
+    "lib": ["ES2024", "DOM"]
   },
   "include": ["src/**/*.ts", "src/**/*.tsx", "src/**/*.json", "catalog/*.json"],
   "exclude": ["**/*.test.*", "**/*.spec.*", "**/*.stories.*"]

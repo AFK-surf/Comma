@@ -46,6 +46,20 @@ export function TaskDetailsPopover(props: TaskDetailsPopoverProps) {
                   props.onRevealActivityStep?.(messageId);
                 })
               }
+              onOpenCodingChanges={
+                props.onOpenCodingChanges &&
+                ((file) => {
+                  close();
+                  props.onOpenCodingChanges?.(file);
+                })
+              }
+              onOpenCodingTerminal={
+                props.onOpenCodingTerminal &&
+                ((url) => {
+                  close();
+                  props.onOpenCodingTerminal?.(url);
+                })
+              }
               open
             />
           )}

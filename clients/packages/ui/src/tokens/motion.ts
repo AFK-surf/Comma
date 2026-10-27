@@ -253,6 +253,84 @@ export const motionEasing = {
   lightSweep: "cubic-bezier(0.65, 0, 0.35, 1)",
 } as const;
 
+/** Updates a second that a looping animation moves at most, whatever the display's refresh rate. */
+export const motionLoopRate = 60;
+
+/**
+ * `curve` over a keyframe segment of `ms`, as a `linear()` staircase that holds
+ * each value for a frame of `motionLoopRate`: the same motion, but a 120 or 240
+ * Hz display draws it no more often than a 60 Hz one. Looping animations use
+ * these (`pnpm check:foundation` holds them to it); a timing function applies
+ * to each keyframe segment, so `ms` is a segment's duration, not the loop's.
+ */
+export function loopEasing(curve: string, ms: number): string {
+  const ease = easingFunction(curve);
+  const count = Math.max(2, Math.floor((ms * motionLoopRate) / 1000));
+  const holds = Array.from({ length: count }, (_, index) => {
+    const from = round((index / count) * 100, 3);
+    const to = round(((index + 1) / count) * 100, 3);
+    return `${round(ease(index / (count - 1)), 4)} ${from}% ${to}%`;
+  });
+  return `linear(${holds.join(", ")})`;
+}
+
+const round = (value: number, digits: number) => Number(value.toFixed(digits));
+
+const bezier = (t: number, a: number, b: number) =>
+  3 * a * t * (1 - t) ** 2 + 3 * b * t ** 2 * (1 - t) + t ** 3;
+
+const namedCurves: Record<string, string> = {
+  ease: "cubic-bezier(0.25, 0.1, 0.25, 1)",
+  "ease-in": "cubic-bezier(0.42, 0, 1, 1)",
+  "ease-out": "cubic-bezier(0, 0, 0.58, 1)",
+  "ease-in-out": "cubic-bezier(0.42, 0, 0.58, 1)",
+  linear: "cubic-bezier(0, 0, 1, 1)",
+};
+
+function easingFunction(curve: string): (progress: number) => number {
+  const match = /^cubic-bezier\(([^)]*)\)$/.exec(namedCurves[curve] ?? curve);
+  const points = match?.[1]?.split(",").map(Number) ?? [];
+  if (points.length !== 4 || points.some((point) => !Number.isFinite(point)))
+    throw new RangeError(
+      `loopEasing needs a cubic-bezier or a named curve, not ${curve}`
+    );
+  const [x1, y1, x2, y2] = points as [number, number, number, number];
+  return (progress) => {
+    // x(t) rises with t, so bisection finds the t at this progress.
+    let low = 0;
+    let high = 1;
+    for (let step = 0; step < 40; step += 1) {
+      const middle = (low + high) / 2;
+      if (bezier(middle, x1, x2) < progress) low = middle;
+      else high = middle;
+    }
+    return bezier((low + high) / 2, y1, y2);
+  };
+}
+
+/**
+ * Timing functions of the eased loops, each over its keyframe segment
+ * (`loopEasing`). Linear loops use `steps()`, one per frame of `motionLoopRate`.
+ */
+export const motionLoop = {
+  /** The mascot's eyes drifting between two poses, one way per loading shine. */
+  mascotDrift: loopEasing(motionEasing.softInOut, motionDuration.loadingShine),
+  /** The mascot's eyes swaying between two poses, one way per caret blink. */
+  mascotSway: loopEasing(motionEasing.softInOut, motionDuration.caretBlink),
+  /** The mascot's eyes pulsing out and back, each half of a caret blink. */
+  mascotPulse: loopEasing(motionEasing.softInOut, motionDuration.caretBlink / 2),
+  /** The squeezed mascot's eyes shaking, a few frames each way. */
+  mascotShake: loopEasing(motionEasing.softInOut, motionDuration.caretBlink * 0.06),
+  /** The thinking bubble swelling and settling, 1.8 s each way. */
+  thinkingBreathe: loopEasing(motionEasing.spatialMove, 1800),
+  /** The Comma mark's 2 s zoom into the next comma. */
+  logoZoom: loopEasing(motionEasing.spatialMove, 2000),
+  /** A shortcut being recorded wiggling, one way per state change. */
+  shortcutWiggle: loopEasing(motionEasing.iconSwap, motionDuration.stateChange),
+  /** A skeleton's shimmer crossing it. */
+  skeletonShimmer: loopEasing(motionEasing.iconSwap, 1400),
+} as const;
+
 export const motionScale = {
   pressed: 0.98,
   tactilePressed: 0.96,

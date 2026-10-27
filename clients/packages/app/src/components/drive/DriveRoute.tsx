@@ -18,7 +18,7 @@ import { commaDriveSpaceRailWidth } from "../shellGeometry";
 import { useCall } from "@comma/core-client";
 import {
   driveSidebarHost,
-  useChatSidebar,
+  useChatSidebarActions,
   useRegisterChatSidebarHost,
 } from "../chat-sidebar/ChatSidebarContext";
 import { isStaleChatSessionError, useChatRegistry } from "../chat/ChatProvider";
@@ -167,7 +167,7 @@ export function DriveRoute() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   // File previews are tabs of the shell's one right sidebar, not a second
   // sidebar: registering this host is what points that sidebar at Drive.
-  const { closeDrivePreview, openDrivePreview } = useChatSidebar();
+  const { closeDrivePreview, openDrivePreview } = useChatSidebarActions();
   useRegisterChatSidebarHost(driveSidebarHost);
 
   const selectedSpace = snapshot.spaces.find(

@@ -41,7 +41,9 @@ export function MeetingRecorderHost({
     if (
       receipt.summary === "pending" ||
       receipt.summary === "error" ||
-      receipt.archive === "error"
+      receipt.archive === "error" ||
+      receipt.archive === "missing" ||
+      receipt.archive === "pending"
     )
       return;
     void call("meetingRecorder.acknowledgeSaved", {

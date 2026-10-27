@@ -6,6 +6,8 @@ import android.view.animation.PathInterpolator
 import surf.comma.android.scroll.widget.DiffUtil
 import surf.comma.android.scroll.widget.ListAdapter
 import surf.comma.android.scroll.widget.RecyclerView
+import surf.comma.android.chat.live.AgentRequestCardHost
+import surf.comma.android.chat.live.AgentRequestCardView
 import surf.comma.android.chat.live.AttachmentView
 import surf.comma.android.chat.live.QuestionCardHost
 import surf.comma.android.chat.live.QuestionCardView
@@ -26,6 +28,8 @@ class ChatTimelineAdapter :
     internal var onReplyAction: ((ReplyAction, PreparedChatMessage) -> Boolean)? = null
     /** What question cards do on this page; null shows each card as its receipt. */
     internal var questionHost: QuestionCardHost? = null
+    /** What an Agent's request cards do on this page; null leaves an open card without its actions. */
+    internal var requestHost: AgentRequestCardHost? = null
     /** Rows mid-reveal; cells read their caret from it, card rows their opacity. */
     internal var reveals: TextRevealBook? = null
     /** Rows drawn by the send flight instead of by themselves; kept invisible through rebinds. */
@@ -59,6 +63,7 @@ class ChatTimelineAdapter :
             if (view is AttachmentView) view.onSendFailed = { onSendFailed?.invoke(it) }
             if (view is ReplyActionsRow) view.onAction = { action, item -> onReplyAction?.invoke(action, item) == true }
             if (view is QuestionCardView) view.hostOf = { questionHost }
+            if (view is AgentRequestCardView) view.hostOf = { requestHost }
             cardViews[view] = renderer
             CardHolder(view, renderer)
         } else {

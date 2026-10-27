@@ -129,7 +129,6 @@ function task(
   return {
     activityStatus: id,
     conversationId: `conversation-${id}`,
-    freshness: "fresh",
     groupId: "group-1",
     id,
     messages: [],

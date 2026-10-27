@@ -12,10 +12,22 @@ import type { Account } from "./account.ts";
 import { route } from "./api.ts";
 import { clientTimezone } from "./chat/http.ts";
 import { commaConversationSchema } from "./comma/api-schemas.ts";
-import type { QuickChatMessage, TaskWorkspace } from "./contract.ts";
+import type {
+  QuickChatDictationTicket,
+  QuickChatMessage,
+  TaskWorkspace,
+} from "./contract.ts";
 import type { Ctx } from "./ctx.ts";
 import type { Tasks } from "./tasks.ts";
 import type { Workspaces } from "./workspaces.ts";
+
+const dictationTicketSchema = z
+  .object({
+    url: z.string().min(1).max(2048),
+    ticket: z.string().min(1).max(512),
+    expires_at: z.number(),
+  })
+  .strip();
 
 const receiptSchema = z
   .object({
@@ -60,7 +72,33 @@ export class QuickChat {
             optionalString(p, "workspace")
           ),
       },
+      "quickChat.dictationTicket": {
+        run: () =>
+          ctx.session
+            .account()
+            .pipe(
+              Effect.flatMap(
+                (account): Effect.Effect<QuickChatDictationTicket, CoreError> =>
+                  ctx.api.request(
+                    account,
+                    "POST",
+                    "/v1/comma/me/dictation/tickets",
+                    dictationTicketSchema,
+                    {}
+                  )
+              )
+            ),
+      },
     });
+  }
+
+  /** Sends `text` to the Home of `workspace` (else the one in focus), as `quickChat.sendMessage` does. */
+  send(
+    request: string,
+    text: string,
+    workspace: string | undefined
+  ): Effect.Effect<QuickChatMessage, CoreError> {
+    return this.#send(request, text, workspace);
   }
 
   #send(

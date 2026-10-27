@@ -13,6 +13,7 @@ extension ChatTranscriptView {
 
     func openThread(_ row: ChatRow) {
         guard let message = row.message else { return }
+        replyFrames.opening = replyFrames.current
         withAnimation(CommaMotion.replyThread(reduced: reduceMotion)) { pane.openReplyThread(on: message) }
         onReplyOpened()
     }
@@ -43,7 +44,7 @@ extension ChatTranscriptView {
     }
 
     /// The open thread: its rows, related among themselves, gathered at the bottom over a material backdrop. Each
-    /// row shares its transcript row's matched geometry, so opening and closing move the bubbles between the two.
+    /// row flies from its transcript position without moving the transcript's hidden placeholder.
     func threadLayer(_ thread: ReplyThreadSelection) -> some View {
         let members: [ChatRow] = ChatTranscriptModel.thread(rows, root: thread.rootID)
         return GeometryReader { geometry in
@@ -90,10 +91,68 @@ extension ChatTranscriptView {
         }
     }
 
+    var replyLayerTransition: AnyTransition {
+        guard !reduceMotion else { return .opacity }
+        return .asymmetric(
+            insertion: .modifier(active: ReplyFlightTransition(progress: 0, opening: true),
+                                 identity: ReplyFlightTransition(progress: 1, opening: true)),
+            removal: .modifier(active: ReplyFlightTransition(progress: 0, opening: false),
+                               identity: ReplyFlightTransition(progress: 1, opening: false)))
+            .combined(with: .opacity)
+    }
+
     private func threadRow(_ row: ChatRow, after previous: ChatRow?, proxy: ScrollViewProxy) -> some View {
         rowView(row, proxy: proxy)
-            .matchedGeometryEffect(id: row.id, in: threadSpace, isSource: true)
+            .modifier(ReplyBubbleFlight(frames: replyFrames, id: row.id))
+            .transition(replyFrames.opening[row.id] == nil ? transition(for: row) : .identity)
             .padding(.top, previous.map { spacing(before: row, after: $0) } ?? 0)
-            .transition(transition(for: row))
+    }
+}
+
+/// Geometry reports keep only mounted transcript rows; changing them does not invalidate the transcript.
+@MainActor final class ReplyFlightFrames {
+    var current: [String: CGRect] = [:]
+    var opening: [String: CGRect] = [:]
+}
+
+/// Animate a visual offset only. Shared geometry across the transcript and reply containers can retarget
+/// the flight while the keyboard is up, taking a bubble past its destination before pulling it back.
+private struct ReplyBubbleFlight: ViewModifier {
+    let frames: ReplyFlightFrames
+    let id: String
+    @Environment(\.replyFlightPhase) private var phase
+
+    func body(content: Content) -> some View {
+        let source = (phase.opening ? frames.opening : frames.current)[id]
+        let progress = phase.progress
+        content.visualEffect { effect, geometry in
+            let target = geometry.frame(in: .global)
+            return effect
+                .offset(x: ((source?.midX ?? target.midX) - target.midX) * (1 - progress),
+                        y: ((source?.midY ?? target.midY) - target.midY) * (1 - progress))
+                .opacity(source == nil ? Double(progress) : 1)
+        }
+    }
+}
+
+private struct ReplyFlightPhase {
+    var progress: CGFloat = 1
+    var opening = true
+}
+
+private extension EnvironmentValues {
+    @Entry var replyFlightPhase = ReplyFlightPhase()
+}
+
+/// The container owns the transition, so all rows fly back when the whole thread closes, including new replies.
+private struct ReplyFlightTransition: ViewModifier, @preconcurrency Animatable {
+    var progress: CGFloat
+    let opening: Bool
+    var animatableData: CGFloat {
+        get { progress }
+        set { progress = newValue }
+    }
+    func body(content: Content) -> some View {
+        content.environment(\.replyFlightPhase, ReplyFlightPhase(progress: progress, opening: opening))
     }
 }

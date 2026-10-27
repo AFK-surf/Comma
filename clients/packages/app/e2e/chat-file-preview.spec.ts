@@ -40,8 +40,15 @@ test("a chat Markdown attachment opens a shared sidebar tab without fetching doc
       email: "preview@comma.local",
       token: "comma_sess_preview",
     });
+    // As the attachment endpoint answers: as an attachment under its own name, which a browser downloading from the
+    // media URL (the stub's is this address) saves.
     await page.route("**/messages/msg_preview/attachments/0", (route) =>
-      route.fulfill({ status: 200, contentType: "text/markdown", body: markdown })
+      route.fulfill({
+        status: 200,
+        contentType: "text/markdown",
+        headers: { "content-disposition": "attachment; filename*=UTF-8''report.md" },
+        body: markdown,
+      })
     );
     await page.route("**/preview-invalid.example/**", (route) => {
       resourceRequests.push(route.request().url());
@@ -113,18 +120,20 @@ async function startPreview(page: Page, files: PreviewFixture[]) {
         },
       ],
     })),
+    // As the attachment endpoint answers: whole or the byte range asked for, as a download under the file's own name.
+    // A browser saving a media file goes to its media URL, which the stub answers with this address.
+    attachmentFiles: Object.fromEntries(
+      files.map((file, index) => [
+        `${file.id ?? `msg_file_${index}`}:0`,
+        { bytes: Buffer.from(file.body), contentType: file.mime, fileName: file.name },
+      ])
+    ),
   });
   await installBrowserTestSession(page, {
     apiBaseUrl: stub.baseUrl,
     email: "preview-media@comma.local",
     token: "comma_sess_preview_media",
   });
-  for (const [index, file] of files.entries()) {
-    await page.route(
-      `**/messages/${file.id ?? `msg_file_${index}`}/attachments/0`,
-      (route) => route.fulfill({ status: 200, contentType: file.mime, body: file.body })
-    );
-  }
   await page.goto(
     `/#/inbox/${chatSmokeWorkspace.id}/${chatSmokeWorkspace.group_id}/${chatSmokeTaskConversation.id}`
   );
@@ -232,7 +241,7 @@ test("the file sidebar renders a bounded PDF page and changes pages", async ({
   }
 });
 
-test("image, MP3 and MP4 attachments use local blob media previews", async ({
+test("image attachments preview from their bytes, and MP3 and MP4 attachments play from their media URL", async ({
   page,
 }) => {
   const image = await readFile(
@@ -279,13 +288,16 @@ test("image, MP3 and MP4 attachments use local blob media previews", async ({
         inlineVideo.evaluate((element: HTMLVideoElement) => element.videoWidth)
       )
       .toBeGreaterThan(0);
-    expect(await inlineVideo.getAttribute("src")).toMatch(/^blob:/);
+    // The web's media element reads the attachment in ranges, never as a whole read.
+    expect(await inlineVideo.getAttribute("src")).toMatch(
+      /^http:\/\/127\.0\.0\.1:\d+\/v1\/.*\/messages\/msg_file_2\/attachments\/0$/
+    );
   } finally {
     await stub.close();
   }
 });
 
-test("SVG Preview context menu uploads original bytes, copies a PNG and saves the SVG with Toast feedback", async ({
+test("SVG Preview context menu attaches the original, copies a PNG and saves the SVG with Toast feedback", async ({
   page,
 }) => {
   const svg =
@@ -310,10 +322,16 @@ test("SVG Preview context menu uploads original bytes, copies a PNG and saves th
     ]);
     await expect(menu.locator("svg")).toHaveCount(0);
     await expect(menu.getByRole("separator")).toHaveCount(1);
+    // The original attachment, stored by reference: the shown preview is not what goes.
+    const stored = page.waitForResponse((response) =>
+      response.url().endsWith("/messages/msg_file_0/attachments/0/workspace-file")
+    );
     await menu.getByRole("menuitem", { name: "Add to Context" }).click();
-    await expect
-      .poll(() => stub.uploads.map((file) => file.filename))
-      .toEqual(["drawing.svg"]);
+    expect((await stored).status()).toBe(201);
+    expect(
+      stub.storedAttachments.map(({ messageId, index }) => [messageId, index])
+    ).toEqual([["msg_file_0", 0]]);
+    expect(stub.uploads).toEqual([]);
     await image.click({ button: "right" });
     await menu.getByRole("menuitem", { name: "Copy image", exact: true }).click();
     await expect(page.getByTestId("image-copy")).toContainText("Image copied");
@@ -389,25 +407,33 @@ test("Chat inline images retain their original source in messages and full-windo
       '[data-message-id="msg_menu_images"] .comma-chat-inline-images'
     );
     const menu = page.getByRole("menu", { name: "Image actions" });
+    // Add to Context names the original attachment, which the server stores by reference: nothing is read or uploaded.
+    const addToContext = async (index: number) => {
+      const stored = page.waitForResponse((response) =>
+        response
+          .url()
+          .endsWith(`/messages/msg_menu_images/attachments/${index}/workspace-file`)
+      );
+      await menu.getByRole("menuitem", { name: "Add to Context" }).click();
+      expect((await stored).status()).toBe(201);
+    };
     await group.getByRole("img", { name: "image-0.png" }).click({ button: "right" });
-    await menu.getByRole("menuitem", { name: "Add to Context" }).click();
-    await expect
-      .poll(() => stub.uploads.map((file) => file.filename))
-      .toEqual(["image-0.png"]);
+    await addToContext(0);
     await group.getByRole("img", { name: "image-1.png" }).click({ button: "right" });
-    await menu.getByRole("menuitem", { name: "Add to Context" }).click();
-    await expect
-      .poll(() => stub.uploads.map((file) => file.filename))
-      .toEqual(["image-0.png", "image-1.png"]);
+    await addToContext(1);
     await group.getByRole("img", { name: "image-2.png" }).click();
     const dialog = page.getByRole("dialog");
     await dialog.getByRole("img", { name: "image-2.png" }).click({ button: "right" });
-    await menu.getByRole("menuitem", { name: "Add to Context" }).click();
-    await expect
-      .poll(() => stub.uploads.map((file) => file.filename))
-      .toEqual(["image-0.png", "image-1.png", "image-2.png"]);
-    expect(originals).toEqual([0, 1, 2]);
-    expect(stub.uploads.map((file) => file.bytes)).toEqual(originalBytes.slice(0, 3));
+    await addToContext(2);
+    expect(
+      stub.storedAttachments.map(({ messageId, index }) => [messageId, index])
+    ).toEqual([
+      ["msg_menu_images", 0],
+      ["msg_menu_images", 1],
+      ["msg_menu_images", 2],
+    ]);
+    expect(originals).toEqual([]);
+    expect(stub.uploads).toEqual([]);
     await expect(menu).toBeHidden();
     await page.keyboard.press("Escape");
     await expect(dialog).toBeHidden();
@@ -417,7 +443,7 @@ test("Chat inline images retain their original source in messages and full-windo
     const file = await downloaded;
     expect(file.suggestedFilename()).toBe("image-3.png");
     expect(await readFile((await file.path())!)).toEqual(originalBytes[3]);
-    expect(originals).toEqual([0, 1, 2, 3]);
+    expect(originals).toEqual([3]);
 
     await group.getByRole("img", { name: "image-3.png" }).click({ button: "right" });
     await expect(menu).toBeVisible();
@@ -433,7 +459,7 @@ test("Chat inline images retain their original source in messages and full-windo
     // A real outside press reaches the modal underlay, not the obscured thread.
     await page.mouse.click(viewport!.x + 4, viewport!.y + 4);
     await expect(menu).toBeHidden();
-    expect(originals).toEqual([0, 1, 2, 3]);
+    expect(originals).toEqual([3]);
   } finally {
     await stub.close();
   }
@@ -443,7 +469,7 @@ for (const [extension, mime] of [
   ["mp4", "video/mp4"],
   ["mov", "video/quicktime"],
 ] as const) {
-  test(`${extension} Preview uploads and saves the original video and copies a paused frame`, async ({
+  test(`${extension} Preview attaches and saves the original video and copies a paused frame`, async ({
     page,
   }) => {
     const name = `motion.${extension}`;
@@ -464,9 +490,10 @@ for (const [extension, mime] of [
         ? page.locator(".comma-chat-inline-video")
         : page.getByTestId("file-preview-panel");
       const video = panel.locator("video");
+      // A streamed player (`preload="metadata"`) has its metadata; the rest may wait until it plays.
       await expect
         .poll(() => video.evaluate((v) => (v as HTMLVideoElement).readyState))
-        .toBeGreaterThanOrEqual(2);
+        .toBeGreaterThan(0);
       await video.hover();
       // Hover slides the controls in. A press during that slide focuses the
       // button, focus-within ends the transition and moves the controls under
@@ -503,10 +530,16 @@ for (const [extension, mime] of [
       ).toEqual({ width: 320, height: 180 });
       expect(await video.evaluate((v) => (v as HTMLVideoElement).paused)).toBe(true);
       await video.click({ button: "right" });
+      // The server stores the message's video by reference: its bytes are not read again or uploaded.
+      const stored = page.waitForResponse((response) =>
+        response.url().endsWith("/messages/msg_file_0/attachments/0/workspace-file")
+      );
       await menu.getByRole("menuitem", { name: "Add to Context" }).click();
-      await expect
-        .poll(() => stub.uploads.map((file) => file.filename))
-        .toEqual([name]);
+      expect((await stored).status()).toBe(201);
+      expect(
+        stub.storedAttachments.map(({ messageId, index }) => [messageId, index])
+      ).toEqual([["msg_file_0", 0]]);
+      expect(stub.uploads).toEqual([]);
       await expect(menu).toBeHidden();
       await video.click({ button: "right" });
       const downloadPromise = page.waitForEvent("download");

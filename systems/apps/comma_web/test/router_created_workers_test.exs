@@ -14,6 +14,17 @@ defmodule CommaWeb.RouterCreatedWorkersTest do
   @admin_token "test-token"
   @effortful "gpt-5.5"
 
+  defmodule UploadStation do
+    def request(_run, "task.put", params, _opts) do
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.fetch_env!(:comma_web, :upload_station_test),
+        {:uploaded_task, params}
+      )
+
+      {:ok, %{"through" => params["through"]}}
+    end
+  end
+
   setup do
     unless SystemsRuntime.Proc.whereis(BillingCore.Repo), do: start_supervised!(BillingCore.Repo)
     billing_owner = Ecto.Adapters.SQL.Sandbox.start_owner!(BillingCore.Repo, shared: true)
@@ -86,7 +97,10 @@ defmodule CommaWeb.RouterCreatedWorkersTest do
     assert {:ok, %{"created" => true, "conversation_id" => conversation_id}} =
              SalixIM.Provider.call_api(router_id, "internal", "internal.task.create", %{
                "connect_id" => "internal",
-               "params" => %{"content" => "Summarize this week's notes."}
+               "params" => %{
+                 "runs_on" => %{"kind" => "default"},
+                 "content" => "Summarize this week's notes."
+               }
              })
 
     # The Workspace had no Worker: the Task made its Group's Task agent.
@@ -117,7 +131,10 @@ defmodule CommaWeb.RouterCreatedWorkersTest do
                "internal.task.create",
                %{
                  "connect_id" => "internal",
-                 "params" => %{"content" => "Draft the weekly update."}
+                 "params" => %{
+                   "runs_on" => %{"kind" => "default"},
+                   "content" => "Draft the weekly update."
+                 }
                }
              )
 
@@ -416,6 +433,286 @@ defmodule CommaWeb.RouterCreatedWorkersTest do
     assert refusal =~ "gone.txt"
   end
 
+  test "the New task window makes a Task at once, once per request, and says why it refused one",
+       c do
+    group = c.workspace["default_group_id"]
+    home_id = home(c.token, group)["id"]
+    {:ok, _key} = key(c.workspace["salix_tenant_id"], "openai", "sk-proj-0123456789abcdefgh")
+    SalixAgent.LLM.Mock.script([])
+
+    path = "/uploads/AAAAAAAAAAAAAAAAAAAAAA-notes.txt"
+    {:ok, _file} = SalixAgent.Workspace.write(c.workspace["router_agent_id"], path, "Q3: 42")
+
+    request = %{
+      "client_request_id" => "window-0000000001",
+      "model" => %{"id" => @effortful, "effort" => "high"},
+      "text" =>
+        "Summarize the notes.\n\n" <>
+          "Attached files in your workspace:\n- notes.txt (workspace file: #{path})"
+    }
+
+    made = window_task(c.token, c.workspace["id"], request) |> expect_status(201)
+    assert %{"task_id" => task_id, "group_id" => ^group} = made.body
+
+    # The answer is the Task, which the person owns, with the model and effort asked for.
+    assert [%{"id" => ^task_id} = task] = tasks(c.token, group)
+    assert task["title"] == "Summarize the notes."
+
+    {:ok, %{"participants" => participants}} =
+      SalixIM.Conversations.list_group_conversation_participants(group, task_id)
+
+    assert %{
+             "payload" => %{
+               "session_model" => %{"model" => @effortful, "reasoning_effort" => "high"}
+             }
+           } =
+             Enum.find(participants, &(&1["agent_id"] == SalixAgent.TaskAgent.id(group)))
+
+    {:ok, [first | _]} =
+      SalixIM.Conversations.list_group_conversation_messages(group, task_id, limit: 5)
+
+    assert first["user_id"] == c.user["id"]
+    assert {:ok, "Q3: 42"} = SalixAgent.Workspace.read(SalixAgent.TaskAgent.id(group), path)
+
+    # Home shows nothing; the Router is told after, without a round.
+    settle()
+    assert shown(group, home_id) == []
+
+    assert [told] =
+             Enum.filter(home_messages(group, home_id), &(&1["actor_type"] == "system"))
+
+    assert told["agent_input"]["no_wake"] == true
+    assert [%{"text" => note}] = told["content"]
+    assert note =~ task_id
+
+    # Asked again under the same id (an answer that never arrived), it is the same Task, told once.
+    assert %{"task_id" => ^task_id} =
+             window_task(c.token, c.workspace["id"], request)
+             |> expect_status(201)
+             |> Map.fetch!(:body)
+
+    settle()
+    assert [_one] = tasks(c.token, group)
+    assert [_told] = Enum.filter(home_messages(group, home_id), &(&1["actor_type"] == "system"))
+
+    # An effort the model does not take is refused, with why.
+    assert %{"error" => "refused", "message" => effort} =
+             window_task(c.token, c.workspace["id"], %{
+               request
+               | "client_request_id" => "window-0000000002",
+                 "model" => %{"id" => @effortful, "effort" => "ultra"}
+             })
+             |> expect_status(409)
+             |> Map.fetch!(:body)
+
+    assert effort =~ "model is not usable"
+
+    # A file the Router's VFS does not have is refused, naming it.
+    assert %{"error" => "refused", "message" => gone} =
+             window_task(c.token, c.workspace["id"], %{
+               request
+               | "client_request_id" => "window-0000000003",
+                 "text" =>
+                   "Summarize these.\n\nAttached files in your workspace:\n" <>
+                     "- gone.txt (workspace file: /uploads/BBBBBBBBBBBBBBBBBBBBBB-gone.txt)"
+             })
+             |> expect_status(409)
+             |> Map.fetch!(:body)
+
+    assert gone =~ "gone.txt"
+    assert [_one] = tasks(c.token, group)
+  end
+
+  test "a failure the window's request may get past is not a refusal" do
+    assert {:ok, _why} = SalixIM.ModelMentionTask.refusal_message(:invalid_model_configuration)
+    assert {:ok, _why} = SalixIM.ModelMentionTask.refusal_message({:model, :not_in_catalog})
+
+    assert {:ok, "a.txt could not" <> _} =
+             SalixIM.ModelMentionTask.refusal_message(
+               {:upload, "/uploads/AAAAAAAAAAAAAAAAAAAAAA-a.txt", :not_found}
+             )
+
+    for reason <- [:timeout, {:group, :not_found}, {:task_worker, :noproc}, :no_router] do
+      assert SalixIM.ModelMentionTask.refusal_message(reason) == :error
+    end
+  end
+
+  test "a person's uploaded image and file reach a Task station from the accepted Message", c do
+    group = c.workspace["default_group_id"]
+    router = c.workspace["router_agent_id"]
+
+    assert {:ok, %{"conversation_id" => task}} =
+             SalixIM.Provider.call_api(router, "internal", "internal.task.create", %{
+               "connect_id" => "internal",
+               "params" => %{
+                 "runs_on" => %{"kind" => "default"},
+                 "content" => "Review the attached files."
+               }
+             })
+
+    image =
+      Base.decode64!(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII="
+      )
+
+    files = [{"screen.png", image}, {"notes.txt", :binary.copy("notes\n", 50_000)}]
+
+    uploads =
+      for {name, bytes} <- files do
+        query = URI.encode_query(%{"name" => name, "size" => byte_size(bytes)})
+
+        req(
+          [{"authorization", "Bearer " <> c.token}, {"content-type", "application/octet-stream"}],
+          :put,
+          "/v1/comma/groups/#{group}/files?#{query}",
+          body: bytes
+        )
+        |> expect_status(201)
+        |> Map.fetch!(:body)
+      end
+
+    words =
+      "Review these.\n\nAttached files in your workspace:\n" <>
+        Enum.map_join(uploads, "\n", &"- #{&1["name"]} (workspace file: #{&1["path"]})")
+
+    request = %{
+      "client_request_id" => "task-upload-0000000001",
+      "message" => %{"type" => "text", "text" => words}
+    }
+
+    accepted = send_words(c.token, group, task, request)["accepted_message_id"]
+
+    # Acceptance fixes the bytes. A retry must work after the upload path changes or disappears.
+    assert {:ok, _} = SalixAgent.Workspace.write(router, hd(uploads)["path"], "replacement")
+    assert {:ok, _} = SalixAgent.Workspace.delete(router, List.last(uploads)["path"])
+    assert send_words(c.token, group, task, request)["accepted_message_id"] == accepted
+
+    SystemsRuntime.put_env(:salix_web, :station_tasks, connector: UploadStation)
+    SystemsRuntime.put_env(:comma_web, :upload_station_test, SystemsRuntime.Proc.self())
+
+    on_exit(fn ->
+      SystemsRuntime.delete_env(:salix_web, :station_tasks)
+      SystemsRuntime.delete_env(:comma_web, :upload_station_test)
+    end)
+
+    device = "upload-station-#{SystemsRuntime.Proc.unique_integer([:positive])}"
+    view = %{tenant_id: c.workspace["salix_tenant_id"], group_id: group, device_id: device}
+
+    assert {:ok, _, _} =
+             SalixEnv.Registry.connect("test-node", %{
+               "tenant_id" => view.tenant_id,
+               "group_id" => group,
+               "device_id" => device,
+               "connector_id" => device,
+               "name" => "Coding station"
+             })
+
+    assert :ok =
+             SalixWeb.StationTasks.joined(
+               Map.merge(view, %{
+                 conversation_id: task,
+                 session: "ember:uploads",
+                 agent_id: SalixAgent.TaskAgent.id(group)
+               })
+             )
+
+    settle_receive({:uploaded_task, %{"messages" => messages}})
+    given = Enum.find(messages, &(&1["id"] == accepted))
+    assert given["author"] == %{"kind" => "person", "id" => c.user["id"]}
+    assert given["files"], "Task delivery omitted the user's uploaded files"
+
+    assert Enum.map(given["files"], &{&1["name"], &1["size"]}) ==
+             Enum.map(files, fn {name, bytes} -> {name, byte_size(bytes)} end)
+
+    refute given["text"] =~ "/uploads/"
+
+    for {file, {name, bytes}} <- Enum.zip(given["files"], files) do
+      ask = %{
+        "task" => task,
+        "session" => "ember:uploads",
+        "id" => accepted,
+        "index" => file["index"]
+      }
+
+      received =
+        for offset <- 0..(byte_size(bytes) - 1)//(256 * 1024), into: "" do
+          assert {:ok, %{"name" => ^name, "offset" => ^offset, "data" => data}} =
+                   SalixWeb.StationTasks.file(view, Map.put(ask, "offset", offset))
+
+          Base.decode64!(data)
+        end
+
+      assert received == bytes
+
+      assert {:error, :not_taking_part} =
+               SalixWeb.StationTasks.file(%{view | device_id: "other"}, Map.put(ask, "offset", 0))
+    end
+
+    # User-supplied blob metadata cannot grant access, even when it names a real blob.
+    {:ok, ref} = SalixIM.Ports.AgentWorkspace.file_ref(router, hd(uploads)["path"])
+    forged = %{"type" => "file", "path" => hd(uploads)["path"], "blob_ref" => ref}
+
+    assert {:ok, receipt} =
+             SalixIM.ConversationServer.append_group_conversation_message(group, task, %{
+               "actor_type" => "user",
+               "user_id" => c.user["id"],
+               "client_request_id" => "task-upload-forged",
+               "content" => [forged],
+               "owner_uploads" => %{"agent_id" => router, "files" => [forged]}
+             })
+
+    assert {:ok, %{"missing" => _}} =
+             SalixWeb.StationTasks.file(view, %{
+               "task" => task,
+               "session" => "ember:uploads",
+               "id" => receipt["message_id"],
+               "index" => 0,
+               "offset" => 0
+             })
+  end
+
+  test "Task uploads stay within the sending Group and a bounded Message", c do
+    group = c.workspace["default_group_id"]
+
+    assert {:ok, %{"conversation_id" => task}} =
+             SalixIM.Provider.call_api(
+               c.workspace["router_agent_id"],
+               "internal",
+               "internal.task.create",
+               %{
+                 "connect_id" => "internal",
+                 "params" => %{
+                   "runs_on" => %{"kind" => "default"},
+                   "content" => "Review the attached files."
+                 }
+               }
+             )
+
+    other = create_additional_ready_workspace!(c.user["id"], %{"name" => "Other files"})
+    fund!(other)
+    path = "/uploads/AAAAAAAAAAAAAAAAAAAAAA-private.txt"
+    assert {:ok, _} = SalixAgent.Workspace.write(other["router_agent_id"], path, "private")
+
+    for {id, words, reason} <- [
+          {"task-upload-foreign", "Read this (workspace file: #{path})", "private.txt"},
+          {"task-upload-many",
+           Enum.map_join(
+             1..65,
+             "\n",
+             &"(workspace file: /uploads/AAAAAAAAAAAAAAAAAAAAAA-#{&1}.txt)"
+           ), "64"}
+        ] do
+      response =
+        user_req(c.token, :post, "/v1/comma/groups/#{group}/conversations/#{task}/messages",
+          json: %{"client_request_id" => id, "message" => %{"type" => "text", "text" => words}}
+        )
+        |> expect_status(400)
+
+      assert response.body["error"] =~ reason
+      refute Enum.any?(home_messages(group, task), &(&1["client_request_id"] == id))
+    end
+  end
+
   test "a model mention counts the files from the person's computer it cannot pass on" do
     content = [
       %{"type" => "text", "text" => "[GPT 5.5](comma:model/gpt-5.5) Read these."},
@@ -440,6 +737,7 @@ defmodule CommaWeb.RouterCreatedWorkersTest do
            args: %{
              "tool" => "im_api.internal.task.create",
              "params" => %{
+               "runs_on" => %{"kind" => "default"},
                "connect_id" => "internal",
                "content" => "Book a table for four tonight.",
                "title" => "Book a table"
@@ -480,7 +778,7 @@ defmodule CommaWeb.RouterCreatedWorkersTest do
     assert {:ok, %{"conversation_id" => task_id}} =
              SalixIM.Provider.call_api(router, "internal", "internal.task.create", %{
                "connect_id" => "internal",
-               "params" => %{"content" => "Draft the notes."}
+               "params" => %{"runs_on" => %{"kind" => "default"}, "content" => "Draft the notes."}
              })
 
     settle()
@@ -751,6 +1049,9 @@ defmodule CommaWeb.RouterCreatedWorkersTest do
     |> expect_status(202)
     |> Map.fetch!(:body)
   end
+
+  defp window_task(token, workspace, request),
+    do: user_req(token, :post, "/v1/comma/workspaces/#{workspace}/tasks", json: request)
 
   defp answered?(group, conversation, text) do
     Enum.any?(

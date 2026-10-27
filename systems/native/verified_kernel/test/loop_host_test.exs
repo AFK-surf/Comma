@@ -105,7 +105,7 @@ defmodule SalixVerifiedKernel.LoopHostTest do
       refute Enum.any?(failed, &(&1["type"] == "provider_reply_obligation_resolved"))
     end
 
-    test "a Task creation adds a card candidate unless it is a Triage delegation" do
+    test "a Task creation adds a card candidate unless it is a Triage delegation or has no card" do
       create = fn params ->
         %{
           id: "c1",
@@ -130,6 +130,19 @@ defmodule SalixVerifiedKernel.LoopHostTest do
         })
 
       refute Enum.any?(triage, &(&1["type"] == "provider_card_obligation_added"))
+
+      # TaskCard reports that a Slack bot or app source gets no card.
+      no_card =
+        ~s({"created":true,"conversation_id":"task-1","task_card":{"status":"not_applicable"}})
+
+      {:ok, bot, _hwm} =
+        Session.query(session(), :tool_batch_events, {
+          %{},
+          [%{create.(%{}) | content: no_card}],
+          %{}
+        })
+
+      refute Enum.any?(bot, &(&1["type"] == "provider_card_obligation_added"))
     end
   end
 

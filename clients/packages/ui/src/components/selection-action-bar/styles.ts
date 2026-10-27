@@ -34,3 +34,23 @@ export const selectionActionBarWideKey = `${selectionActionBarKeyBase} h-[calc(1
 
 export const selectionActionBarSeparator =
   "h-4 shrink-0 self-center border-l-[length:var(--border-width-0-5)] border-primary";
+
+/**
+ * With a reply field the pill grows into a card: the selected text on top,
+ * the field and the actions on one row under it.
+ */
+export const selectionActionBarReply =
+  "w-[360px] flex-col items-stretch gap-xs rounded-xl p-sm";
+
+export const selectionActionBarExcerpt =
+  "m-0 line-clamp-2 whitespace-pre-wrap border-l-2 border-primary px-md text-sm leading-5 text-secondary [overflow-wrap:anywhere]";
+
+/** A question that wraps grows the field upward; the actions stay on its last line. */
+export const selectionActionBarReplyRow = "flex min-w-0 items-end gap-xs";
+
+/** Wraps long questions and grows with them, up to six lines before it scrolls. */
+export const selectionActionBarReplyInput =
+  "field-sizing-content block max-h-[calc(6_*_20px_+_2_*_var(--spacing-xs))] min-w-0 flex-1 resize-none border-0 bg-transparent px-md py-xs text-sm leading-5 text-primary outline-none [overflow-wrap:anywhere] placeholder:text-placeholder";
+
+export const selectionActionBarReplyError =
+  "m-0 px-md text-xs leading-[18px] text-error-primary";

@@ -6,7 +6,7 @@ import { uiClock, type CancelUiTimer } from "@comma/ui/clock";
 import { memo, useEffect, useRef, useState } from "react";
 import { Button as AriaButton } from "react-aria-components";
 import { copyTextToClipboard } from "../inline/linkActions";
-import { MessagePlatformBadge, QuickChatBadge } from "../../MessagePlatformBadge";
+import { MessagePlatformBadge } from "../../MessagePlatformBadge";
 
 // Shared id so copying several messages in a row updates one toast in place
 // instead of stacking, and a failure replaces the success it invalidates.
@@ -17,14 +17,11 @@ export const MessageCopyAction = memo(function MessageCopyAction({
   copyText,
   messageId,
   platform,
-  quickChat = false,
 }: {
   ariaLabel: string;
   copyText: string;
   messageId: string;
   platform?: string | undefined;
-  /** The message is a person's words that Quick Chat sent. */
-  quickChat?: boolean;
 }) {
   const messagesApi = useCommaMessages();
   const [copied, setCopied] = useState(false);
@@ -72,7 +69,6 @@ export const MessageCopyAction = memo(function MessageCopyAction({
       data-testid={`chat-message-actions-${messageId}`}
     >
       <MessagePlatformBadge platform={platform} />
-      {quickChat ? <QuickChatBadge /> : null}
       <Tooltip content={messagesApi.common_copy()} placement="bottom">
         <AriaButton
           aria-label={copied ? messagesApi.chat_copied() : ariaLabel}

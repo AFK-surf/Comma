@@ -49,6 +49,8 @@ defmodule SalixWeb.ConnectorSocket do
   @max_chunked_response_bytes 4 * 1024 * 1024
   # A gateway's longest HTTP timeout, for a request that names none.
   @default_chunked_http_seconds 30
+  # A Mini App deploy reads up to ~90 MB from its station and uploads it.
+  @app_deploy_timeout_ms 300_000
 
   defmodule State do
     @moduledoc false
@@ -65,11 +67,15 @@ defmodule SalixWeb.ConnectorSocket do
       :device_id,
       :connector_id,
       :credential_generation,
+      :token_expires_at,
       :process_instance_id,
       :connection_generation,
       :tenant_id,
       :group_id,
       :managed_compute,
+      :workload_id,
+      :workload_generation,
+      :workload_owner,
       :owner_user_id,
       :scope,
       :last_peer_heartbeat_ms,
@@ -108,11 +114,15 @@ defmodule SalixWeb.ConnectorSocket do
       device_id: Keyword.get(opts, :device_id),
       connector_id: Keyword.get(opts, :connector_id),
       credential_generation: Keyword.get(opts, :credential_generation),
+      token_expires_at: Keyword.get(opts, :token_expires_at),
       process_instance_id: Keyword.get(opts, :process_instance_id),
       connection_generation: connection_generation,
       tenant_id: Keyword.get(opts, :tenant_id),
       group_id: Keyword.get(opts, :group_id),
       managed_compute: Keyword.get(opts, :managed_compute, false),
+      workload_id: Keyword.get(opts, :workload_id),
+      workload_generation: Keyword.get(opts, :workload_generation),
+      workload_owner: Keyword.get(opts, :workload_owner),
       owner_user_id: Keyword.get(opts, :owner_user_id),
       scope: Keyword.get(opts, :scope),
       last_peer_heartbeat_ms: monotonic_ms()
@@ -122,7 +132,14 @@ defmodule SalixWeb.ConnectorSocket do
       cond do
         state.managed_compute and
             Enum.all?([state.tenant_id, state.group_id, state.device_id], &is_binary/1) ->
-          %{tenant_id: state.tenant_id, group_id: state.group_id, device_id: state.device_id}
+          Map.take(state, [
+            :tenant_id,
+            :group_id,
+            :device_id,
+            :workload_id,
+            :workload_generation,
+            :connector_run_id
+          ])
 
         state.managed_compute ->
           :invalid_managed_scope
@@ -161,23 +178,43 @@ defmodule SalixWeb.ConnectorSocket do
 
   defp socket_credential_active?(token_hash, state) do
     SalixEnv.ConnectorTokens.credential_active?(token_hash) and
-      match?(
-        {:ok, true},
-        Registry.connector_run_credential_active?(
-          state.tenant_id,
-          state.group_id,
-          state.device_id,
-          state.connector_id,
-          state.credential_generation,
-          state.connector_run_id,
-          state.connection_generation
-        )
-      )
+      match?({:ok, true}, run_active(state))
+  end
+
+  defp run_active(state) do
+    Registry.connector_run_active?(
+      state.tenant_id,
+      state.group_id,
+      state.device_id,
+      state.connector_run_id,
+      state.connection_generation
+    )
+  end
+
+  # It may invite the station to its Task, which waits on the station: not here.
+  # The station takes the Task with the account it is lent, so it is sent its
+  # profiles first.
+  defp sandbox_connected(state) do
+    connection = station_connection(state)
+
+    SystemsRuntime.TaskSupervisor.start_child(SalixWeb.StationTasks.Supervisor, fn ->
+      case SalixWeb.StationProfiles.push(connection) do
+        :ok ->
+          :ok
+
+        error ->
+          Logger.warning(
+            "station profiles not sent: run=#{connection.connector_run_id} #{inspect(error)}"
+          )
+      end
+
+      SalixWeb.CodingSandboxes.connected(connection)
+    end)
   end
 
   defp finish_admitted_init(env_id, opts, state) do
     schedule_heartbeat()
-    schedule_token_expiry(Keyword.get(opts, :token_expires_at))
+    schedule_token_expiry(state.token_expires_at)
 
     SalixWeb.ConnectorRecovery.notify_ready(%{
       connector_run_id: state.connector_run_id,
@@ -195,8 +232,14 @@ defmodule SalixWeb.ConnectorSocket do
     # A Workload's station is given the workspace's accounts it runs with, once it is connected,
     # and is placed in its Group's station roster (SalixWeb.StationPlace).
     if state.managed_compute do
-      send(self(), :push_station_profiles)
-      send(self(), :push_station_place)
+      # A coding Task's sandbox is reached through Salix only, not placed in a
+      # roster; its Task is told it is up (`SalixWeb.CodingSandboxes`).
+      if state.workload_owner == "coding_task" do
+        sandbox_connected(state)
+      else
+        send(self(), :push_station_profiles)
+        send(self(), :push_station_place)
+      end
     end
 
     {:push,
@@ -208,12 +251,14 @@ defmodule SalixWeb.ConnectorSocket do
         "connector_id" => state.connector_id,
         "owner_user_id" => state.owner_user_id,
         "connection_generation" => state.connection_generation,
-        "relay_challenge" => challenge
+        "relay_challenge" => challenge,
+        # A run admitted by a connector credential may present the device's next one.
+        "credential_renewal" => is_binary(Keyword.get(opts, :token_hash))
       })}, %{state | relay_challenge: challenge}}
   end
 
   defp push_station_profiles(state) do
-    connection = Map.take(state, [:tenant_id, :group_id, :device_id, :connector_run_id])
+    connection = station_connection(state)
     run = connection.connector_run_id
 
     SystemsRuntime.TaskSupervisor.start_child(SalixWeb.ConnectorRequestTaskSupervisor, fn ->
@@ -224,8 +269,32 @@ defmodule SalixWeb.ConnectorSocket do
     end)
   end
 
+  # The station of this run, as SalixWeb.StationProfiles lends to it: a Workload's, or its owner's device station.
+  defp station_connection(%State{managed_compute: true} = state),
+    do:
+      Map.take(state, [
+        :tenant_id,
+        :group_id,
+        :device_id,
+        :connector_run_id,
+        :workload_id,
+        :workload_generation
+      ])
+
+  defp station_connection(state),
+    do: Map.take(state, [:tenant_id, :group_id, :device_id, :connector_run_id, :owner_user_id])
+
   defp push_station_place(state) do
-    connection = Map.take(state, [:tenant_id, :group_id, :connector_run_id, :connector_id])
+    connection =
+      Map.take(state, [
+        :tenant_id,
+        :group_id,
+        :connector_run_id,
+        :connector_id,
+        :workload_id,
+        :workload_generation,
+        :device_id
+      ])
 
     SystemsRuntime.TaskSupervisor.start_child(SalixWeb.ConnectorRequestTaskSupervisor, fn ->
       SalixWeb.StationPlace.push(connection)
@@ -275,7 +344,7 @@ defmodule SalixWeb.ConnectorSocket do
          %State{scope: "local_file_read"} = state
        )
        when is_binary(id) and
-              method in ~w(runtime_subscription_access runtime_proxy agent_runtime_catchup meeting_runtime_event meeting_runtime_capabilities task.post task.hello task.index relay_register) do
+              method in ~w(runtime_subscription_access runtime_proxy agent_runtime_catchup meeting_runtime_event meeting_runtime_capabilities task.post task.hello task.file task.index task.app_deploy task.app_logs relay_register) do
     reply = %{
       "id" => id,
       "type" => "error",
@@ -321,8 +390,23 @@ defmodule SalixWeb.ConnectorSocket do
          ) do
       {:ok, relay} ->
         reply = %{"id" => id, "type" => "response", "result" => %{"ok" => true}}
+
+        # A device's run is a station's once it proves one: it is given the workspace's accounts then, without
+        # placement. A Workload's station was given them at connect.
+        if is_nil(state.relay) and state.managed_compute != true,
+          do: send(self(), :push_station_profiles)
+
         # The proven endpoint id is the station's id: the Device records which station it runs.
         patch = %{"station_id" => SalixWeb.StationTaskIndex.station_id(relay)}
+
+        SalixStore.StationDeviceLookup.record(
+          state.tenant_id,
+          state.group_id,
+          state.device_id,
+          patch["station_id"],
+          state.owner_user_id
+        )
+
         state = enqueue_control(%{kind: :metadata, patch: patch}, %{state | relay: relay})
         {:push, {:text, Protocol.encode(reply)}, state}
 
@@ -332,16 +416,53 @@ defmodule SalixWeb.ConnectorSocket do
     end
   end
 
-  # A Workload's station asks for what Salix lends it of the workspace's accounts (SalixWeb.StationProfiles).
+  # The station presents the device's next connector credential on this socket
+  # before the one the run holds expires. Electron Main minted it with the
+  # user's Session, as for a new connection; the run, its socket and its work
+  # stay, and the socket then closes when the new credential expires.
   defp handle_message(
-         %{"type" => "request", "method" => "share." <> _ = method, "id" => id} = m,
-         %State{managed_compute: true} = state
+         %{"type" => "request", "method" => "connector_credential_renew", "id" => id} = m,
+         state
        )
        when is_binary(id) do
-    connection = Map.take(state, [:tenant_id, :group_id, :device_id, :connector_run_id])
+    {reply, state} =
+      case renew_credential(get_in(m, ["params", "token"]), state) do
+        {:ok, state} ->
+          {%{
+             "id" => id,
+             "type" => "response",
+             "result" => %{"expires_at" => state.token_expires_at}
+           }, state}
 
-    start_request_reply(id, state, fn ->
-      case SalixWeb.StationProfiles.handle(connection, method, m["params"] || %{}) do
+        {:error, reason} ->
+          Logger.warning(
+            "connector credential not renewed: env=#{state.env_id} reason=#{renewal_reason(reason)}"
+          )
+
+          {%{"id" => id, "type" => "error", "error" => "connector credential not renewed"}, state}
+      end
+
+    {:push, {:text, Protocol.encode(reply)}, state}
+  end
+
+  # A Workload's station, or a station this device's run proved, asks for what Salix lends it of the workspace's
+  # accounts (SalixWeb.StationProfiles).
+  defp handle_message(
+         %{"type" => "request", "method" => "share." <> _ = method, "id" => id} = m,
+         %State{managed_compute: managed, relay: relay} = state
+       )
+       when is_binary(id) and (managed == true or not is_nil(relay)) do
+    connection = station_connection(state)
+
+    start_request_reply(id, state, fn owner ->
+      result =
+        if managed do
+          SalixWeb.StationProfiles.handle(connection, owner, method, m["params"] || %{})
+        else
+          SalixWeb.StationProfiles.handle(connection, method, m["params"] || %{})
+        end
+
+      case result do
         {:ok, result} -> %{"id" => id, "type" => "response", "result" => result}
         {:error, reason} -> %{"id" => id, "type" => "error", "error" => reason}
       end
@@ -354,21 +475,54 @@ defmodule SalixWeb.ConnectorSocket do
          %{"type" => "request", "method" => method, "id" => id} = m,
          state
        )
-       when is_binary(id) and method in ["task.post", "task.hello"] do
+       when is_binary(id) and method in ["task.post", "task.hello", "task.file"] do
     params = m["params"] || %{}
-    view = %{tenant_id: state.tenant_id, group_id: state.group_id, device_id: state.device_id}
+    # A post's files are read back over this connection (`task.posted_file`).
+    view = station_connection(state)
 
     start_request_reply(id, state, fn ->
       result =
-        if method == "task.hello",
-          do: SalixWeb.StationTasks.hello(view, params),
-          else: SalixWeb.StationTasks.post(view, params)
+        case method do
+          "task.hello" -> SalixWeb.StationTasks.hello(view, params)
+          "task.file" -> SalixWeb.StationTasks.file(view, params)
+          "task.post" -> SalixWeb.StationTasks.post(view, params)
+        end
 
       case result do
         {:ok, result} -> %{"id" => id, "type" => "response", "result" => result}
         {:error, reason} -> %{"id" => id, "type" => "error", "error" => inspect(reason)}
       end
     end)
+  end
+
+  # A Mini App build Task's Session deploys its app, or reads its logs
+  # (`SalixWeb.StationTasks.app_deploy/2`). A deploy reads its files back over
+  # this connection (`task.posted_file`) and uploads them, so it has longer.
+  defp handle_message(
+         %{"type" => "request", "method" => method, "id" => id} = m,
+         state
+       )
+       when is_binary(id) and method in ["task.app_deploy", "task.app_logs"] do
+    params = m["params"] || %{}
+    view = station_connection(state)
+
+    start_request_reply(
+      id,
+      state,
+      fn ->
+        result =
+          case method do
+            "task.app_deploy" -> SalixWeb.StationTasks.app_deploy(view, params)
+            "task.app_logs" -> SalixWeb.StationTasks.app_logs(view, params)
+          end
+
+        case result do
+          {:ok, result} -> %{"id" => id, "type" => "response", "result" => result}
+          {:error, reason} -> %{"id" => id, "type" => "error", "error" => inspect(reason)}
+        end
+      end,
+      if(method == "task.app_deploy", do: @app_deploy_timeout_ms)
+    )
   end
 
   # A page of the station's Task index (`SalixWeb.StationTaskIndex`), from
@@ -378,7 +532,7 @@ defmodule SalixWeb.ConnectorSocket do
     case SalixWeb.StationTaskIndex.admit(state.task_index_window, monotonic_ms()) do
       {:ok, window} ->
         station_id = SalixWeb.StationTaskIndex.station_id(state.relay)
-        view = %{tenant_id: state.tenant_id, group_id: state.group_id, device_id: state.device_id}
+        view = station_connection(state)
         params = m["params"] || %{}
 
         start_request_reply(id, %{state | task_index_window: window}, fn ->
@@ -562,16 +716,37 @@ defmodule SalixWeb.ConnectorSocket do
     }
   end
 
-  defp start_request_reply(id, state, reply_fun) do
+  defp start_request_reply(id, state, reply_fun, timeout_ms \\ nil) do
     if map_size(state.request_tasks) >= socket_request_task_limit() do
       push_request_overload(id, state)
     else
-      {:ok, next_state, _token} = start_request_task(id, :request, state, reply_fun)
+      # Admission happens in the operation worker, not when its asynchronous
+      # callback was queued. Pass one snapshot to grant-producing handlers.
+      guarded = fn ->
+        result =
+          if state.managed_compute do
+            SalixEnv.StationConnection.with_current(station_connection(state), fn owner ->
+              invoke_reply(reply_fun, owner)
+            end)
+          else
+            invoke_reply(reply_fun, :unmanaged)
+          end
+
+        case result do
+          {:error, reason} -> %{"id" => id, "type" => "error", "error" => inspect(reason)}
+          reply -> reply
+        end
+      end
+
+      {:ok, next_state, _token} = start_request_task(id, :request, state, guarded, timeout_ms)
       {:ok, next_state}
     end
   end
 
-  defp start_request_task(id, kind, state, reply_fun, timeout_ms \\ nil) do
+  defp invoke_reply(reply_fun, owner) when is_function(reply_fun, 1), do: reply_fun.(owner)
+  defp invoke_reply(reply_fun, _owner), do: reply_fun.()
+
+  defp start_request_task(id, kind, state, reply_fun, timeout_ms) do
     token = SystemsRuntime.Proc.make_ref()
     socket = self()
 
@@ -819,15 +994,7 @@ defmodule SalixWeb.ConnectorSocket do
          %{"method" => "read_ref"}
        )
        when is_integer(generation) and generation > 0 do
-    case Registry.connector_run_credential_active?(
-           state.tenant_id,
-           state.group_id,
-           state.device_id,
-           state.connector_id,
-           generation,
-           state.connector_run_id,
-           state.connection_generation
-         ) do
+    case run_active(state) do
       {:ok, active?} -> active?
       {:error, _} -> false
     end
@@ -838,16 +1005,64 @@ defmodule SalixWeb.ConnectorSocket do
 
   defp read_stream_credential_active?(_state, _message), do: true
 
-  # A credential's TTL must bound the run it opened, not only future
-  # connects: the socket closes itself when the admitting token expires, so a
-  # pre-expiry WebSocket cannot keep serving indefinitely.
+  # The credential a run holds bounds it, not only future connects: the socket
+  # closes itself when that credential expires, so a WebSocket cannot keep
+  # serving without a credential minted with the user's Session at least once
+  # per credential lifetime. A renewal moves the bound to the new credential.
   defp schedule_token_expiry(expires_at) when is_integer(expires_at) do
     delay_ms = max(expires_at - SystemsClock.system_time(:second), 0) * 1_000
-    SystemsClock.send_after(self(), :connector_token_expired, delay_ms)
+    SystemsClock.send_after(self(), {:connector_token_expired, expires_at}, delay_ms)
     :ok
   end
 
   defp schedule_token_expiry(_expires_at), do: :ok
+
+  # Only the device's newest credential, for this run's own device and scope,
+  # replaces the one the run holds; `SalixEnv.Registry.renew_run_credential/6`
+  # checks both against the device record in one write.
+  defp renew_credential(
+         token,
+         %State{managed_compute: false, credential_generation: held} = state
+       )
+       when is_binary(token) and token != "" and is_integer(held) do
+    with {:ok, tenant_id, record} <- SalixEnv.ConnectorTokens.validate_connector_token(token),
+         :ok <- same_device_credential(tenant_id, record, state),
+         :ok <- SalixEnv.ConnectorTokens.admit_registration(record["token_hash"]),
+         {:ok, _device} <-
+           Registry.renew_run_credential(
+             state.tenant_id,
+             state.group_id,
+             state.device_id,
+             state.connector_run_id,
+             state.connection_generation,
+             record
+           ) do
+      schedule_token_expiry(record["expires_at"])
+
+      {:ok,
+       %{
+         state
+         | connector_id: record["connector_id"],
+           credential_generation: record["credential_generation"],
+           token_expires_at: record["expires_at"]
+       }}
+    end
+  end
+
+  defp renew_credential(_token, _state), do: {:error, :credential_not_renewable}
+
+  defp same_device_credential(tenant_id, record, state) do
+    if tenant_id == state.tenant_id and record["group_id"] == state.group_id and
+         record["device_id"] == state.device_id and
+         (record["scope"] || "") == (state.scope || ""),
+       do: :ok,
+       else: {:error, :credential_not_renewable}
+  end
+
+  # Never log what came with the frame: only this module's own reasons.
+  defp renewal_reason(reason) when is_atom(reason), do: reason
+  defp renewal_reason({:ambiguous, _}), do: :ambiguous
+  defp renewal_reason(_reason), do: :other
 
   defp pending_rpc_limit do
     case SystemsRuntime.get_env(:salix_web, :connector_socket_pending_rpc_limit, 256) do
@@ -2000,9 +2215,15 @@ defmodule SalixWeb.ConnectorSocket do
     {:stop, {:shutdown, :connector_draining}, state}
   end
 
-  def handle_info(:connector_token_expired, state) do
+  def handle_info(
+        {:connector_token_expired, expires_at},
+        %State{token_expires_at: expires_at} = state
+      ) do
     {:stop, {:shutdown, :connector_token_expired}, state}
   end
+
+  # The timer of a credential this run no longer holds.
+  def handle_info({:connector_token_expired, _expires_at}, state), do: {:ok, state}
 
   def handle_info({:push_encoded_frame, encoded}, state), do: {:push, {:text, encoded}, state}
 

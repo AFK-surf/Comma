@@ -176,6 +176,14 @@ function textOf(nodes: MarkdownNode[]): string {
   return nodes.map((node) => (typeof node.raw === "string" ? node.raw : "")).join("");
 }
 
+/** Whether the tree is one code block and nothing else: a message that is only code. */
+export function isCodeBlockOnly(tree: MarkdownTree): boolean {
+  const [only] = tree;
+  return (
+    tree.length === 1 && Array.isArray(only) && only[0] === MARKDOWN_KINDS.code_block
+  );
+}
+
 /** The application elements a tree shows, by key: those a part put there and the parse kept. */
 export function markdownTreeElements(tree: MarkdownTree): Set<string> {
   const keys = new Set<string>();

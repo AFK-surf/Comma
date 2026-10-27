@@ -63,12 +63,14 @@ import type { ChatAttachmentIntakeOutcome, MainChat } from "../chat";
 import type { BrowserSidebarProvider } from "../browser-sidebar";
 import type { FilesProvider } from "../files/downloads";
 import type { SynchronicityProvider } from "../synchronicity";
+import type { MacAppsProvider } from "../mac-apps";
 import type { LocalFilePickerProvider } from "../local-files/picker";
 import type { RecommendationMediaProvider } from "../recommendation-media";
 import type { AudioCaptureProvider } from "../audio-capture";
 import type { MeetingPresenceProvider } from "../meeting-presence";
 import type { MeetingRecorderWindowProvider } from "../meeting-recorder";
 import type { AirDropReceptionProvider } from "../airdrop/reception";
+import { LocalStationAdmin, type LocalStationProvider } from "../local-station";
 import { getCurrentNativeCallerContext, NativeCallerBindingError } from "../ipc";
 import { MainSessionHost } from "../session";
 
@@ -180,6 +182,7 @@ export interface ComputeNodeProvider {
   resumeHostMaintenance(input: {
     requestId: string;
   }): Promise<import("@comma/native-bridge").HostMaintenanceState>;
+  resetLocalRecord(input: void): Promise<ComputeNodeState>;
   recoveryCandidates(input: {
     workspaceId: string;
     cursor?: string;
@@ -250,11 +253,11 @@ export interface ClipboardProvider {
 }
 
 export class ElectronClipboardService implements ClipboardProvider {
-  readonly #readText: () => string;
-  readonly #readImage: () => Uint8Array | null;
-  readonly #writeText: (text: string) => void;
+  readonly #readText: () => Promise<string>;
+  readonly #readImage: () => Promise<Uint8Array | null>;
+  readonly #writeText: (text: string) => Promise<void>;
   /** False when the bytes did not decode, so the renderer can say so. */
-  readonly #writeImage: (pngImage: Uint8Array) => boolean;
+  readonly #writeImage: (pngImage: Uint8Array) => Promise<boolean>;
 
   constructor({
     readImage,
@@ -262,10 +265,10 @@ export class ElectronClipboardService implements ClipboardProvider {
     writeImage,
     writeText,
   }: {
-    readImage: () => Uint8Array | null;
-    readText: () => string;
-    writeImage: (pngImage: Uint8Array) => boolean;
-    writeText: (text: string) => void;
+    readImage: () => Promise<Uint8Array | null>;
+    readText: () => Promise<string>;
+    writeImage: (pngImage: Uint8Array) => Promise<boolean>;
+    writeText: (text: string) => Promise<void>;
   }) {
     this.#readImage = readImage;
     this.#readText = readText;
@@ -273,21 +276,21 @@ export class ElectronClipboardService implements ClipboardProvider {
     this.#writeText = writeText;
   }
 
-  readImage() {
-    return { pngImage: this.#readImage() };
+  async readImage() {
+    return { pngImage: await this.#readImage() };
   }
 
-  readText() {
-    return { text: this.#readText() };
+  async readText() {
+    return { text: await this.#readText() };
   }
 
-  writeText({ text }: ClipboardWriteTextInput) {
-    this.#writeText(text);
+  async writeText({ text }: ClipboardWriteTextInput) {
+    await this.#writeText(text);
     return { ok: true } as const;
   }
 
-  writeImage({ pngImage }: ClipboardWriteImageInput) {
-    return this.#writeImage(pngImage)
+  async writeImage({ pngImage }: ClipboardWriteImageInput) {
+    return (await this.#writeImage(pngImage))
       ? ({ status: "copied" } as const)
       : ({ status: "unavailable" } as const);
   }
@@ -435,6 +438,14 @@ export function createSessionBoundChatProvider(
   };
 }
 
+/** The desktop voice call's audio from the main window (modules/voice-call): its microphone and the marks it played. */
+export interface VoiceCallProvider {
+  microphone(input: Uint8Array): void;
+  played(input: { name: string }): void;
+}
+
+const noVoiceCall: VoiceCallProvider = { microphone() {}, played() {} };
+
 export function registerNativeBridgeHandlers({
   airDrop,
   core,
@@ -451,6 +462,7 @@ export function registerNativeBridgeHandlers({
   files,
   gateway,
   localFiles,
+  localStation = new LocalStationAdmin({ data: undefined }),
   nativeInfo,
   notch,
   recommendationMedia,
@@ -462,7 +474,9 @@ export function registerNativeBridgeHandlers({
   transport,
   computeNode,
   connectorRuntime,
+  macApps,
   synchronicity,
+  voiceCall = noVoiceCall,
   windowAppearance,
   windows,
 }: {
@@ -484,6 +498,8 @@ export function registerNativeBridgeHandlers({
   files: FilesProvider;
   gateway: GatewayLike;
   localFiles: LocalFilePickerProvider;
+  /** This Mac's station's admin interface. Absent: no station, and its calls fail. */
+  localStation?: LocalStationProvider;
   nativeInfo: NativeInfoProvider;
   notch: NotchProvider;
   recommendationMedia: RecommendationMediaProvider;
@@ -495,7 +511,10 @@ export function registerNativeBridgeHandlers({
   transport: TransportStatusProvider;
   computeNode: ComputeNodeProvider;
   connectorRuntime: ConnectorRuntimeProvider;
+  macApps: MacAppsProvider;
   synchronicity: SynchronicityProvider;
+  /** Absent: no call socket (no core), and the window's audio goes nowhere. */
+  voiceCall?: VoiceCallProvider;
   windowAppearance: WindowAppearanceProvider;
   windows: WindowsProvider;
 }) {
@@ -517,6 +536,7 @@ export function registerNativeBridgeHandlers({
       clipboard,
       files,
       localFiles,
+      localStation,
       nativeInfo,
       notch,
       recommendationMedia,
@@ -527,7 +547,9 @@ export function registerNativeBridgeHandlers({
       transport,
       computeNode,
       connectorRuntime,
+      macApps,
       synchronicity,
+      voiceCall,
       windowAppearance,
       windows,
     },

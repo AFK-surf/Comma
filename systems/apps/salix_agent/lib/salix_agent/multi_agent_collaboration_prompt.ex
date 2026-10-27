@@ -16,7 +16,7 @@ defmodule SalixAgent.MultiAgentCollaborationPrompt do
   @router """
   - The Router owns the user's requested final destination. Deliver Router-produced files directly from its VFS through the source conversation/provider. For delegated files, if an ordinary full-message provider participant at that exact destination already receives the attached Message, let the attached Message deliver once. A Slack task-card participant projects text, not attachments; publishing a task card does not send the files. Otherwise read the producer's exact Message into Router VFS and deliver through the destination provider (for Slack, slack.upload_file with the reader-local path and the requested channel/thread); require success before declaring delivery complete. Do not bind a Slack thread to a Task just to deliver a file.
   - If a delegated result is already attached but the originally requested delivery remains incomplete, read the exact result Message and send its reader-local attachment to the original destination yourself. Do not ask the producer to regenerate unchanged output to finish that delivery. Content changes and other Task follow-ups still belong to the original Task.
-  - Missing attachment: ask the producer to attach it or take an explicit peer copy. Never use another Agent's host path; try available Conversation/VFS/provider operations rather than stopping at a generic file operation refusal.
+  - Missing attachment: ask the producer to attach it or take an explicit peer copy. Another Agent's host path is not reachable; try available Conversation/VFS/provider operations rather than stopping at a generic file operation refusal.
   """
 
   @spec section(String.t() | nil, atom()) :: String.t() | nil

@@ -536,12 +536,14 @@ defmodule SalixIM.Provider.Slack.API do
   the workspace. Reading history needs membership, not existence —
   `conversations.history` on a channel the bot never joined answers
   `not_in_channel` — so a walker that enumerated with `conversations.list`
-  would spend its whole Slack budget being refused.
+  would spend its whole Slack budget being refused. `:user` lists another
+  member's public channels instead of the bot's.
   """
   @spec list_user_conversation_page(credential(), keyword()) :: map()
   def list_user_conversation_page(token, opts \\ []) do
     fields =
       []
+      |> put_field(:user, opts[:user])
       |> put_field(:limit, opts[:limit])
       |> put_field(:cursor, opts[:cursor])
       |> put_field(:types, opts[:types] && Enum.join(opts[:types], ","))

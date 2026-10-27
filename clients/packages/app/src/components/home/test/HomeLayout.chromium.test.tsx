@@ -28,7 +28,6 @@ function Home({ folded }: { folded: boolean }) {
         toggleCollapsed: () => {},
       }}
     >
-      {/* The shell sets the fold's transition length. */}
       <div className="comma-app-shell">
         <HomeLayout>
           <MeasuresLayout folded={folded} />
@@ -38,16 +37,18 @@ function Home({ folded }: { folded: boolean }) {
   );
 }
 
-it("moves a fold the route forces even when a descendant measures the layout in the same commit", () => {
+// The route width that forces a fold (the Chat Sidebar opening, a window drag)
+// changes in one step, so the fold lands in that same layout: the chat column
+// lays out once for both instead of following a fold frame by frame.
+it("lands a fold the route forces in the same commit, even when a descendant measures the layout", () => {
   const view = render(<Home folded={false} />);
   view.rerender(<Home folded />);
 
-  const fold = document
-    .getAnimations()
-    .find(
-      (animation): animation is CSSTransition =>
-        animation instanceof CSSTransition &&
-        animation.transitionProperty === "--comma-home-tasks-fold"
-    );
-  expect(fold).toBeDefined();
+  const layout = document.querySelector<HTMLElement>(
+    '[data-testid="home-responsive-layout"]'
+  )!;
+  expect(
+    getComputedStyle(layout).getPropertyValue("--comma-home-tasks-fold").trim()
+  ).toBe("1");
+  expect(document.getAnimations()).toEqual([]);
 });

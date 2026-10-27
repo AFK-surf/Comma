@@ -41,10 +41,11 @@ defmodule SalixIM.TaskWorkerWatch do
       keyed to. A Task that gave its Worker nothing, and whose Worker has
       published nothing, is left alone: a desktop meeting's entry goes to no
       participant, so its Worker owes nothing until the recording arrives.
-    * The Worker "responded" when any Worker-authored Message has a `seq`
-      above the epoch. A responded Worker is never reminded or reported,
-      whatever its session state: stopping after a reply is the normal end
-      of a turn.
+    * The Worker "responded" when any Worker-authored Message other than
+      one carrying only milestones has a `seq` above the epoch. A milestone
+      shows the Worker at work; it answers no one. A responded Worker is
+      never reminded or reported, whatever its session state: stopping
+      after a reply is the normal end of a turn.
     * Per epoch: at most one reminder (`task_worker_nudge`), then at most
       one Router notification (`task_worker_stopped`). Both are appended
       with epoch-keyed idempotency keys, so a crash between the decision
@@ -446,6 +447,12 @@ defmodule SalixIM.TaskWorkerWatch do
         (worker_agent != nil and m["agent_id"] == worker_agent)
     end
 
+    # Milestones alone show the Worker at work, not a reply: a Worker that
+    # records a step and then fails still owes the Task its result.
+    replied? = fn m ->
+      by_worker?.(m) and not SalixIM.ConversationMilestone.only_milestones?(m["content"])
+    end
+
     watch_type = fn m -> get_in(m, ["metadata", "message_type"]) end
     watch? = fn m -> watch_type.(m) in [@nudge_type, @notify_type, @status_type] end
     seq = fn m -> if is_integer(m["seq"]), do: m["seq"], else: 0 end
@@ -464,7 +471,7 @@ defmodule SalixIM.TaskWorkerWatch do
     cond do
       # Nothing given, nothing published: the Worker owes no result.
       delegations == [] and not Enum.any?(messages, by_worker?) -> :none
-      since.(by_worker?) -> review(messages, epoch, by_worker?, seq)
+      since.(replied?) -> review(messages, epoch, replied?, seq)
       since.(&(watch_type.(&1) == @notify_type)) -> :none
       kind == :error and issue in @blocking_failure_issues -> {:notify, epoch, issue}
       # The reminder answered this very stop: nothing new has happened, even
@@ -477,10 +484,10 @@ defmodule SalixIM.TaskWorkerWatch do
 
   # The Worker's latest result above the epoch, unless the Router was already
   # told about that very result.
-  defp review(messages, epoch, by_worker?, seq) do
+  defp review(messages, epoch, replied?, seq) do
     result =
       messages
-      |> Enum.filter(&(seq.(&1) > epoch and by_worker?.(&1)))
+      |> Enum.filter(&(seq.(&1) > epoch and replied?.(&1)))
       |> Enum.max_by(seq)
 
     result_seq = seq.(result)

@@ -31,6 +31,9 @@ export type SessionRow = {
   shownAt: number | null;
 };
 
+/// A runtime session a session ran in, with the runtime it ran (Store::runtimeSessions).
+export type RanIn = { id: string; runtime: string };
+
 /// A session as it is first recorded (what NewSession::default leaves out may be left out).
 export type NewSession = {
   key: string; connect: string; scope?: SessionScope | null; title?: string | null; createdBy?: string | null;
@@ -67,7 +70,9 @@ export type Membership = { thread: number; session: string; connect: string; joi
 
 /// "ember" is the station itself (named, stored and sent as before the rename).
 export type AuthorKind = "person" | "agent" | "ember";
-export type EntryKind = "message" | "edit";
+/// "milestone": an agent's post that only records milestones (onlyMilestones): no transcript shows it, it is handed to
+/// no session and tells no person; a Task's Activity reads it.
+export type EntryKind = "message" | "edit" | "milestone";
 
 export type Quote = { author: string; text: string; comment: string; ts?: string; role?: string; file?: string };
 export type Attachment = { name: string; path: string; size: number; width?: number; height?: number; thumbhash?: string };
@@ -78,6 +83,8 @@ export type EntryRow = {
   authorKind: AuthorKind; author: string; text: string | null; attachments: Attachment[]; quotes: Quote[];
   declared: string | null; client: string | null; profile: string | null; options: Json | undefined; card: Json | undefined;
   at: number;
+  /// The key steps its agent finished (chat_post milestones), in order; none: undefined.
+  milestones: string[] | undefined;
 };
 
 /// A message as it reads now: its latest edit's words, files and quotes.
@@ -121,8 +128,29 @@ export type ProcessRow = { pgid: number; startedAt: number; runtime: string; lab
 export type NewMessage = {
   thread: number; ts: string; authorKind: AuthorKind; author: string; text: string; attachments?: Attachment[];
   quotes?: Quote[]; declared?: string | null; client?: string | null; profile?: string | null; card?: Json | null;
-  options?: Json | null; at?: number | null;
+  options?: Json | null; at?: number | null; milestones?: string[] | null;
 };
+
+/// At most this many milestones in one post, each at most this many characters on one line (the Salix contract's).
+export const MAX_MILESTONES = 20;
+export const MAX_MILESTONE_CHARS = 80;
+
+/// Milestones as given (chat_post's argument, a Message from another Station): each title on one line (its spaces
+/// made one), of 1 to MAX_MILESTONE_CHARS characters, at most MAX_MILESTONES; null for none. Throws what is wrong.
+export function milestoneTitles(value: Json): string[] | null {
+  if (value === undefined || value === null) return null;
+  if (!Array.isArray(value)) throw new Error("milestones must be a list of titles");
+  if (value.length > MAX_MILESTONES) throw new Error(`a post carries at most ${MAX_MILESTONES} milestones: one per batch when the items are many`);
+  const titles = value.map((title) => (typeof title === "string" ? title.split(/\s+/).filter((w) => w !== "").join(" ") : ""));
+  if (titles.some((t) => t === "" || Array.from(t).length > MAX_MILESTONE_CHARS)) {
+    throw new Error(`each milestone is one line of 1 to ${MAX_MILESTONE_CHARS} characters naming what was finished`);
+  }
+  return titles.length === 0 ? null : titles;
+}
+
+/// A post that only records milestones: no words, files or card. It is kept as a "milestone" entry.
+export const onlyMilestones = (m: NewMessage): boolean =>
+  (m.milestones?.length ?? 0) > 0 && m.text === "" && (m.attachments?.length ?? 0) === 0 && (m.card ?? null) === null && (m.options ?? null) === null;
 
 export const newMessage = (thread: number, ts: string, authorKind: AuthorKind, author: string, text: string): NewMessage => ({
   thread, ts, authorKind, author, text,
@@ -288,11 +316,22 @@ export const toMembership = (r: Json): Membership => ({ thread: r.thread, sessio
 
 export function toEntry(r: Json): EntryRow {
   return {
-    agentIdentity: parsed(r.agent_identity), thread: r.thread, n: r.n, kind: r.kind === "edit" ? "edit" : "message",
+    agentIdentity: parsed(r.agent_identity), thread: r.thread, n: r.n, kind: entryKind(r.kind),
     target: r.target, ts: r.ts, authorKind: authorKind(r.author_kind), author: r.author, text: r.text,
     attachments: fromJsonList(r.attachments, attachment), quotes: fromJsonList(r.quotes, quote), declared: r.declared,
     client: r.client, profile: r.profile, options: parsed(r.options), card: parsed(r.card), at: r.at,
+    milestones: storedMilestones(r.milestones),
   };
+}
+
+export const entryKind = (kind: Json): EntryKind => (kind === "edit" ? "edit" : kind === "milestone" ? "milestone" : "message");
+
+/// A stored list of milestones (entries.milestones, an archive file's): undefined for none.
+export function storedMilestones(value: Json): string[] | undefined {
+  const list = typeof value === "string" ? parsed(value) : value;
+  if (!Array.isArray(list)) return undefined;
+  const titles = list.filter((t): t is string => typeof t === "string");
+  return titles.length === 0 ? undefined : titles;
 }
 
 export function toMessage(r: Json): MessageRow {

@@ -174,6 +174,50 @@ defmodule CommaWeb.CommaSystemFilesTest do
     assert {:ok, "Rewritten.\n"} = AgentWorkspace.read(c.router, "/memory/episodes/2026-01-02.md")
   end
 
+  test "the owner replaces the Router's instructions; a stale edit or one only the shared prompt would answer is refused",
+       c do
+    tenant = c.workspace["salix_tenant_id"]
+
+    assert %{"content" => "", "hash" => empty} = get!(c, "/instructions") |> ok_body()
+
+    assert %{"content" => "Answer briefly.", "hash" => saved} =
+             put_instructions!(c, "Answer briefly.", empty) |> ok_body()
+
+    assert {:ok, %{"router_system_prompt" => "Answer briefly."}} =
+             SalixAgent.Control.get(c.router, tenant)
+
+    assert %{"content" => "Answer briefly.", "hash" => ^saved} =
+             get!(c, "/instructions") |> ok_body()
+
+    # An edit based on the read before the save does not overwrite it.
+    put_instructions!(c, "Answer at length.", empty) |> expect_status(409)
+
+    # Clearing them leaves the Router with none.
+    assert %{"content" => ""} = put_instructions!(c, "", saved) |> ok_body()
+
+    # With a shared prompt, clearing would only bring it back.
+    {:ok, _router} =
+      SalixAgent.Control.configure(c.router, %{"system_prompt" => "Shared rules."}, tenant)
+
+    assert %{"content" => "Shared rules."} = get!(c, "/instructions") |> ok_body()
+    put_instructions!(c, "Own rules.") |> ok_body()
+    put_instructions!(c, " ") |> expect_status(400)
+    assert %{"content" => "Own rules."} = get!(c, "/instructions") |> ok_body()
+
+    # Only the owner's full session writes them.
+    outsider = %{c | token: session!(create_user!("instructions-outsider"))}
+    put_instructions!(outsider, "Taken.") |> expect_status(404)
+
+    restricted = %{
+      c
+      | token:
+          session!(c.owner, %{"restricted" => true, "group_id" => c.workspace["default_group_id"]})
+    }
+
+    put_instructions!(restricted, "Taken.") |> expect_status(403)
+    assert %{"content" => "Own rules."} = get!(c, "/instructions") |> ok_body()
+  end
+
   test "with the check on, a scoped note is visible only to its readers and keeps its label", c do
     SystemsRuntime.put_env(:salix_agent, :ifc_facts_mod, Facts)
 
@@ -267,6 +311,12 @@ defmodule CommaWeb.CommaSystemFilesTest do
     body = %{"path" => path, "content" => content}
     body = if expected_hash, do: Map.put(body, "expected_hash", expected_hash), else: body
     user_req(c.token, :put, c.base <> "/content", json: body)
+  end
+
+  defp put_instructions!(c, content, expected_hash \\ nil) do
+    body = %{"content" => content}
+    body = if expected_hash, do: Map.put(body, "expected_hash", expected_hash), else: body
+    user_req(c.token, :put, c.base <> "/instructions", json: body)
   end
 
   defp delete!(c, path, expected_hash \\ nil) do

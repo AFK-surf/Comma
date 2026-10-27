@@ -63,6 +63,12 @@ export class TestTime {
     return this.#base + this.#slept + this.#now;
   }
 
+  /// When the earliest sleep under way is due, on the wall clock `now` reads; undefined when none is.
+  nextDue(): number | undefined {
+    const next = this.#sleepers[0];
+    return next ? this.#base + this.#slept + next.due : undefined;
+  }
+
   /// The wall clock moves `ms` on while no timer runs, as when the computer sleeps: what reads the time sees it, and a
   /// timer still waits its full time. A run that slept is not played again (a replay's clock does not sleep).
   sleepThrough(ms: number): void {

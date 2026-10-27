@@ -5,11 +5,17 @@ import Foundation
 struct PerfOptions: Sendable {
     /// `--perf-long-chat`: the router chat holds `PerfChat`'s 150 Markdown messages instead of 30 lines.
     var longChat = false
+    /// `--perf-varied-chat`: the router chat holds `PerfChat.varied`'s 600 messages, from one line to long reports,
+    /// and its reads answer with the newest 500, as a device's kept transcript holds them.
+    var variedChat = false
     /// `--perf-hold-stream`: event streams stay open after their snapshot, as a live server's do, instead of
     /// finishing at once and making every pane reconnect each 250 ms.
     var holdStream = false
     /// `--perf-stream`: after its snapshot the router stream waits for `PerfSignal.stream`, then drafts a reply.
     var stream = false
+    /// `--hold-earlier`: the router's reads answer with at most its 24 newest messages, and a read of earlier ones
+    /// answers only once the test posts `PerfSignal.releaseEarlier`, so the test decides what happens meanwhile.
+    var holdEarlier = false
     /// `--perf-latency=<ms>`: the delay before each response and each stream.
     var latency: Duration = .zero
     /// `--perf-probe`: `FramePacingProbe` listens for the tests' begin and end signals.
@@ -17,9 +23,11 @@ struct PerfOptions: Sendable {
 
     init(arguments: [String] = ProcessInfo.processInfo.arguments) {
         longChat = arguments.contains("--perf-long-chat")
+        variedChat = arguments.contains("--perf-varied-chat")
         holdStream = arguments.contains("--perf-hold-stream")
         stream = arguments.contains("--perf-stream")
         probe = arguments.contains("--perf-probe")
+        holdEarlier = arguments.contains("--hold-earlier")
         let prefix = "--perf-latency="
         if let argument = arguments.first(where: { $0.hasPrefix(prefix) }), let ms = Int(argument.dropFirst(prefix.count)) {
             latency = .milliseconds(ms)

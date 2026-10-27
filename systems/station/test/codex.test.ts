@@ -228,6 +228,19 @@ describe("the Codex driver", { concurrency: true }, () => {
     assert.equal(starts(p.dump).length, 2);
   });
 
+  test("a thread resumed while loaded with its station tools failed is loaded again, with them", async () => {
+    const d = driver();
+    const p = profile();
+    // Loaded while the station's door was closed: its MCP connection failed, and it stays loaded.
+    const before = await d.open(options(p, { mcpUrl: "http://127.0.0.1:1/mcp" }), () => {});
+    const { events, push, until } = listen();
+    const session = await d.open(options(p, { resume: before.id() }), push);
+    assert.equal(session.id(), before.id());
+    await session.prompt("mcp");
+    await until(ended(1));
+    assert.deepEqual(deltas(events), ["connected"]);
+  });
+
   test("a profile edit restarts its app-server only once no thread uses it", async () => {
     const d = driver();
     const p = profile();

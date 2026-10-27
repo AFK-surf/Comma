@@ -99,6 +99,14 @@ extension ChatTranscriptView {
                                 alone ? [ChatAnchorID(row: row.id, part: .content): $0] : [:]
                             }
                     }
+                    if let message = row.message, let requests = pane.requestPlacement.byMessage[message.id] {
+                        // After the reply's text and question, outside its long press and swipe like the question card.
+                        ForEach(requests) { request in
+                            AgentRequestCard(request: request, pane: pane)
+                                .frame(maxWidth: 560, alignment: .leading)
+                                .padding(.top, 2)
+                        }
+                    }
                 }
                 Spacer(minLength: 42)
             }
@@ -115,19 +123,6 @@ extension ChatTranscriptView {
             .fill(CommaTheme.brandSolid.opacity(highlighted == row.id ? 0.1 : 0))
             .padding(-6)
             .animation(.easeOut(duration: 0.14), value: highlighted)
-    }
-
-    private func reveal(_ id: String, proxy: ScrollViewProxy) {
-        guard rows.contains(where: { $0.id == id }) else {
-            if hasOlderMessages { loadEarlier() }
-            return
-        }
-        withAnimation(reduceMotion ? nil : CommaMotion.spatialMove) { proxy.scrollTo(id, anchor: .center) }
-        highlighted = id
-        Task {
-            try? await Task.sleep(for: .milliseconds(900))
-            if highlighted == id { withAnimation(.linear(duration: 0.4)) { highlighted = nil } }
-        }
     }
 
     /// Router identity is implied in the router chat; Tasks show who wrote each group.

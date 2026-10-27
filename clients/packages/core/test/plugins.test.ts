@@ -86,6 +86,23 @@ describe("the plugin catalog", () => {
     });
   });
 
+  it("tells the server what the app is and what this core can do, so it offers nothing an older app cannot use", async () => {
+    const host = new FakeHost();
+    host.client = { kind: "electron", platform: "macos", version: "1.0.8" };
+    host.api.on("GET", catalogPath, { data: [plugin("github")] });
+    const t = setup(host);
+    t.core.observeSession(signedIn());
+    t.watch<PluginsValue>({ topic: "plugins", workspace: WS });
+    await t.time.pass(100);
+    const [request] = t.api.seen("GET", catalogPath);
+    expect(request?.headers).toEqual(
+      expect.arrayContaining([
+        ["x-comma-client", "electron/macos/1.0.8"],
+        ["x-comma-client-capabilities", "device-plugins"],
+      ])
+    );
+  });
+
   it("says why a first read failed, and reads again every 10 s until it can", async () => {
     const t = setup();
     t.api.on("GET", catalogPath, json(503, { error: "upstream_unavailable" }));

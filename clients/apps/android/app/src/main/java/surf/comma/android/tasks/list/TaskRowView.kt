@@ -28,7 +28,7 @@ import surf.comma.android.ui.theme.DesignTypography.Level
 
 /**
  * A compact Task row, the same on Home, in Search, in the Archive and in the Inbox: the status glyph and a
- * two-line title, then a pin when pinned and the caller's details (the Inbox's staleness and age). The Inbox's
+ * two-line title, then a pin when pinned and the caller's details (the Inbox's age). The Inbox's
  * unread dot sits before the glyph in room only it has. The press surface appears the moment a finger lands.
  */
 class TaskRowView(context: Context) : FrameLayout(context) {
@@ -38,9 +38,6 @@ class TaskRowView(context: Context) : FrameLayout(context) {
     private val status = TaskStatusIconView(context)
     private val title = context.label(Level.REGULAR, R.color.token_text_primary, lines = 2)
     private val pin = context.glyph(R.drawable.ic_action_pin_fill, R.color.token_text_placeholder)
-    private val stale = context.label(Level.MINI, R.color.token_fg_attention, surf.comma.android.ui.theme.DesignFonts.medium).apply {
-        setText(R.string.task_stale)
-    }
     private val age = context.label(Level.MINI, R.color.token_text_tertiary).apply {
         fontFeatureSettings = "tnum"
     }
@@ -73,7 +70,6 @@ class TaskRowView(context: Context) : FrameLayout(context) {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             addView(pin, LinearLayout.LayoutParams(context.dp(14), context.dp(14)))
-            addView(stale, LinearLayout.LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT).apply { marginStart = context.dp(6) })
             addView(age, LinearLayout.LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT).apply { marginStart = context.dp(6) })
         }
         content.addView(trailing, LinearLayout.LayoutParams(LayoutParams.WRAP_CONTENT, context.dp(24)).apply { marginStart = context.dp(6) })
@@ -100,14 +96,12 @@ class TaskRowView(context: Context) : FrameLayout(context) {
             title.background = null
         }
         pin.isVisible = pinned
-        stale.isVisible = age != null && task.isStale
         this.age.isVisible = age != null
         this.age.text = age
         val parts = listOfNotNull(
             if (unread == true) context.getString(R.string.shell_unread) else null,
             task.title, theme.statusLabel(bucket),
             if (pinned) context.getString(R.string.task_pinned) else null,
-            if (age != null && task.isStale) context.getString(R.string.task_stale) else null,
             age,
         )
         contentDescription = parts.joinToString(", ")

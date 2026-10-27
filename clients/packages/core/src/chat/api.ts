@@ -1,6 +1,6 @@
 // The Comma API as chat uses it: the requests a conversation, its sends, its files and the workspace's chat make.
 // The core answers them through the host (chat/http.ts), for the account's session; nothing here holds a credential.
-import type { ManualTaskStatus } from "@comma/chat-contract";
+import type { ChatTaskRunChoice, ManualTaskStatus } from "@comma/chat-contract";
 import { Data, type Effect } from "effect";
 import type {
   CommaConversation,
@@ -79,6 +79,12 @@ export interface ChatApi {
     status: ManualTaskStatus,
     expectedUpdatedAt: number
   ): Effect.Effect<CommaConversation, Error>;
+  /** Runs a Task on another model, perhaps in another place; refused (422 `task_run_refused`) with why. */
+  setTaskRun(
+    groupId: string,
+    conversationId: string,
+    run: ChatTaskRunChoice
+  ): Effect.Effect<CommaConversation, Error>;
   pollConversation(
     groupId: string,
     conversationId: string,
@@ -102,6 +108,19 @@ export interface ChatApi {
   uploadGroupFile(
     groupId: string,
     attrs: { data: Blob; name: string }
+  ): Effect.Effect<CommaGroupFile, Error>;
+  /**
+   * Uploads a file a pick left with the host (`localFileRef`), its bytes read from there as they are sent. Absent where
+   * the host cannot (`Host.uploadsLocalFiles`).
+   */
+  uploadLocalFile?(
+    groupId: string,
+    attrs: { localFileRef: string; name: string; size: number }
+  ): Effect.Effect<CommaGroupFile, Error>;
+  /** Stores attachment `index` of a message in the Group as a composer file, by reference to its blob. */
+  storeConversationFile(
+    groupId: string,
+    file: { conversationId: string; messageId: string; index: number }
   ): Effect.Effect<CommaGroupFile, Error>;
   fetchGroupFile(groupId: string, path: string): Effect.Effect<Blob, Error>;
   fetchAgentBlob(

@@ -10,7 +10,8 @@ defmodule SalixStore.StationMembers do
   Groups of different products never overlap.
 
   A role is the product's own role name. `manager?/3` is whether the role may
-  enroll, rename and remove the Group's stations. The product also names the
+  rename and remove the Group's stations, and `enroller?/3` whether it may
+  enroll one (any role but a read-only one). The product also names the
   Group as its stations show it (`workspace_name/2`): a Comma Workspace's
   name, a BridgeForTeams Project's name.
 
@@ -27,6 +28,9 @@ defmodule SalixStore.StationMembers do
   @doc "Whether `role` manages the Group's stations."
   @callback manager_role?(role :: String.t()) :: boolean()
 
+  @doc "Whether `role` is read-only: it may not enroll a station or be lent the Group's accounts."
+  @callback read_only_role?(role :: String.t()) :: boolean()
+
   @doc "The name of the product's workspace that is this Group, or `:none`."
   @callback workspace_name(tenant_id :: String.t(), group_id :: String.t()) ::
               {:ok, String.t()} | :none
@@ -37,6 +41,21 @@ defmodule SalixStore.StationMembers do
   """
   @callback workspace_active?(tenant_id :: String.t(), group_id :: String.t()) ::
               boolean() | :none
+
+  @doc "Map a sealed provider principal through the product's existing identity binding."
+  @callback requester(String.t(), String.t(), map(), String.t()) :: {:ok, String.t()} | :none
+  @optional_callbacks requester: 4
+
+  def requester(tenant, group, connect, subject) do
+    Enum.find_value(implementations(), {:error, :requester_required}, fn module ->
+      if function_exported?(module, :requester, 4) do
+        case module.requester(tenant, group, connect, subject) do
+          {:ok, user} -> if enroller?(tenant, group, user), do: {:ok, user}
+          :none -> nil
+        end
+      end
+    end)
+  end
 
   @doc "Adds `module` to the registered implementations."
   def register(module) when is_atom(module) do
@@ -67,6 +86,22 @@ defmodule SalixStore.StationMembers do
   end
 
   def manager?(_tenant_id, _group_id, _user_id), do: false
+
+  @doc """
+  Whether the user may enroll a station in the Group: any role but a
+  read-only one. The same rule says whether the user's device station is
+  lent the workspace's accounts (`SalixWeb.StationProfiles`).
+  """
+  @spec enroller?(String.t(), String.t(), String.t()) :: boolean()
+  def enroller?(tenant_id, group_id, user_id)
+      when is_binary(tenant_id) and is_binary(group_id) and is_binary(user_id) do
+    case answer(tenant_id, group_id, user_id) do
+      {module, role} -> not module.read_only_role?(role)
+      nil -> false
+    end
+  end
+
+  def enroller?(_tenant_id, _group_id, _user_id), do: false
 
   @doc "The Group's name as its stations show it; empty when no product names it."
   @spec workspace_name(String.t(), String.t()) :: String.t()

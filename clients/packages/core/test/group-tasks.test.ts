@@ -82,7 +82,6 @@ describe("the Task panel's list of a Group's Tasks", () => {
           status: "active",
           updatedAt: 1790100000,
           activityStatus: "idle",
-          freshness: "unknown",
         },
         expect.objectContaining({ id: "cnv_2" }),
       ],
@@ -235,5 +234,31 @@ describe("the Task panel's Task", () => {
     const gone = t.watch<GroupTaskValue>(task("3"));
     await t.time.pass(100);
     expect(gone()).toEqual({ status: "failed" });
+  });
+
+  it("carries a Loop Task's Loop from the preview, with no other read", async () => {
+    const t = setup();
+    const loop = {
+      state: "paused",
+      reason: "budget",
+      cadence: { every_minutes: 30 },
+      started_at: 1790100000,
+      wake_count: 2,
+    };
+    t.api.on("GET", PREVIEW, { ...preview("active"), loop });
+    const shown = t.watch<GroupTaskValue>(task("1"));
+    await t.time.pass(100);
+    expect(shown()).toMatchObject({
+      status: "ready",
+      loop: {
+        state: "paused",
+        reason: "budget",
+        cadence: { everyMinutes: 30 },
+        wakeCount: 2,
+      },
+    });
+    expect(t.api.requests.map((r) => r.path)).toEqual([
+      `${PREVIEW}?include_worker=true`,
+    ]);
   });
 });

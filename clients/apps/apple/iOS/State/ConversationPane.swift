@@ -58,10 +58,15 @@ final class ConversationPane {
     private(set) var questionAttachments: [String: [ChatDraftAttachment]] = [:]
     /// The pictures of the images picked for question cards on this phone, by the core's attachment id.
     private(set) var questionThumbnails: [String: Data] = [:]
+    /// The Agent's requests in this conversation (the core's `agentRequests` topic), for their cards.
+    private(set) var requests: [AgentRequest] = []
+    /// The requests whose page was opened on this phone: their cards wait for the browser.
+    var openedRequests: Set<String> = []
 
     @ObservationIgnored weak var store: CommaStore?
     @ObservationIgnored private(set) var closed = false
     @ObservationIgnored private var showing: Task<Void, Never>?
+    @ObservationIgnored private var requestWatch: Task<Void, Never>?
     @ObservationIgnored private var foreground = true
     @ObservationIgnored private var draftRestored = false
     @ObservationIgnored private var draftSave: Task<Void, Never>?
@@ -160,6 +165,7 @@ final class ConversationPane {
         revisionWaiters = []
         for waiter in waiting { waiter.resume.resume() }
         showing?.cancel(); showing = nil
+        requestWatch?.cancel(); requestWatch = nil
         labelWatch?.cancel(); labelWatch = nil
         summaryWatch?.cancel(); summaryWatch = nil
         replyRows = ReplyRowIdentity()
@@ -174,6 +180,7 @@ final class ConversationPane {
     private func show() {
         guard !closed, foreground, let store else {
             showing?.cancel(); showing = nil
+            requestWatch?.cancel(); requestWatch = nil
             return
         }
         guard showing == nil else { return }
@@ -190,6 +197,32 @@ final class ConversationPane {
                 case .failed(let failure): self.present(failure, as: .server)
                 }
             }
+        }
+        let requestUpdates = store.core.subscribe(["topic": "agentRequests", "group": workspace.groupID,
+                                                   "conversation": conversationID], read: AgentRequest.list)
+        requestWatch = Task { [weak self] in
+            for await value in requestUpdates {
+                guard let self, !self.closed, self.store?.isCurrent(boundary) == true else { return }
+                if case .value(let next) = value, next != self.requests { self.requests = next }
+            }
+        }
+    }
+
+    /// Where the request cards go among the messages shown.
+    var requestPlacement: AgentRequestPlacement {
+        requests.isEmpty ? AgentRequestPlacement() : AgentRequestPlacement(requests: requests, messages: messages)
+    }
+
+    /// Declines the Agent's request `id`; its waiting call returns that the person declined, and the card closes as
+    /// the core reads the ending. False when the core refused.
+    func declineRequest(_ id: String) async -> Bool {
+        guard let store, !closed else { return false }
+        do {
+            _ = try await store.core.call("agentRequests.decline",
+                                          ["group": workspace.groupID, "conversation": conversationID, "request": id])
+            return true
+        } catch {
+            return false
         }
     }
 
@@ -469,6 +502,28 @@ final class ConversationPane {
         }
     }
 
+    /// Adds a file a pick left with the app (`HostLocalFiles`, its `ref`) to the draft: the core uploads it from disk as
+    /// it is read, of any size the server takes. The draft row's id is its ref.
+    @discardableResult
+    func attachLocalFile(ref: String, name: String, size: Int64, mediaType: String) -> Task<Void, Never> {
+        guard attachmentRoom > 0 else {
+            store?.localFiles?.release(ref)
+            showError(String(localized: "You can attach up to eight files to a message."))
+            return Task {}
+        }
+        return Task {
+            do {
+                let receipt = try await call("attachLocalFiles", [
+                    "files": [["localFileRef": ref, "mediaType": mediaType, "name": name, "size": size]],
+                ])
+                await reach(receipt.object?.int("revision") ?? 0)
+            } catch {
+                store?.localFiles?.release(ref)
+                present(error, as: .local)
+            }
+        }
+    }
+
     /// Uploads a failed file of the draft, or of question card `questionMessageID`, again.
     func retryAttachment(_ id: String, questionMessageID: String? = nil) {
         var params: [String: Any] = ["attachmentId": id]
@@ -479,6 +534,8 @@ final class ConversationPane {
     /// Removes a file from the draft, or from question card `questionMessageID`.
     func removeAttachment(_ id: String, questionMessageID: String? = nil) {
         localFiles[id] = nil
+        // A file picked from Files waits on disk under its row's id; nothing else is held for it.
+        store?.localFiles?.release(id)
         questionThumbnails[id] = nil
         var params: [String: Any] = ["attachmentId": id]
         if let questionMessageID { params["questionMessageId"] = questionMessageID }

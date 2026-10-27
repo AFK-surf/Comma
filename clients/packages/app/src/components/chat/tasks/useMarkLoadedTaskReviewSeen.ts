@@ -1,5 +1,5 @@
 import { useEffect, useSyncExternalStore } from "react";
-import { useProductInboxSnapshot } from "../../../product-inbox/react";
+import { useProductInboxItem } from "../../../product-inbox/react";
 import { useMarkTaskReviewSeen } from "../../tasks/taskReviewAttention";
 
 const subscribeDocumentVisibility = (listener: () => void) => {
@@ -33,20 +33,18 @@ export function useMarkLoadedTaskReviewSeen({
   renderedUpdatedAt?: number | undefined;
   workspaceId?: string | undefined;
 }) {
-  const productInbox = useProductInboxSnapshot();
+  // This Task's row alone: the list's other changes render nothing here.
+  const item = useProductInboxItem(groupId ?? "", conversationId ?? "");
   const markTaskReviewSeen = useMarkTaskReviewSeen();
   const visible = useSyncExternalStore(
     subscribeDocumentVisibility,
     documentIsVisible,
     documentIsVisible
   );
-  const projectionUpdatedAt = productInbox?.items.find(
-    (item) =>
-      item.kind === "agent_task" &&
-      item.workspaceId === workspaceId &&
-      item.groupId === groupId &&
-      item.conversationId === conversationId
-  )?.updatedAt;
+  const projectionUpdatedAt =
+    item?.kind === "agent_task" && item.workspaceId === workspaceId
+      ? item.updatedAt
+      : undefined;
   const renderedRevision = normalizeRevision(renderedUpdatedAt);
   const seenRevision =
     projectionUpdatedAt !== undefined &&

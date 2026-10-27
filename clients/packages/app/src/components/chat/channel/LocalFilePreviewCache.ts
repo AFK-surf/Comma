@@ -14,6 +14,8 @@ type PreviewWaiter = {
 };
 
 type PreviewEntry = {
+  /** Other keys this entry answers for (`alias`), dropped with it. */
+  aliases: Set<string>;
   key: string;
   leaseCount: number;
   previewRef: ChatImagePreviewRef;
@@ -34,9 +36,17 @@ type PreviewEntry = {
  * hand the same preview to its pending/canonical message in one React commit.
  * There is no idle or negative cache: the next later acquisition returns to
  * Main, where owner and lifecycle authorization is evaluated again.
+ *
+ * One image can be named by two refs over that handoff: a draft upload is
+ * previewed from the bytes the core holds, and the message it is sent in reads
+ * it by the path it uploaded to. `alias` joins the second name to the entry
+ * the first already holds, so the handoff shares the URL instead of reading
+ * the image again.
  */
 export class LocalFilePreviewCache {
   readonly #entries = new Map<string, PreviewEntry>();
+  /** An alias key, and the key of the held entry it is served by. */
+  readonly #aliases = new Map<string, string>();
   readonly #load: LocalFilePreviewLoader;
   #activeLoads = 0;
   #pendingEntries = 0;
@@ -54,7 +64,7 @@ export class LocalFilePreviewCache {
     if (this.#disposed || signal?.aborted) return Promise.resolve(undefined);
 
     const key = imagePreviewRefKey(previewRef);
-    const existing = this.#entries.get(key);
+    const existing = this.#entries.get(key) ?? this.#readyAliasedEntry(key);
     if (existing?.state === "ready") {
       // Invalidate any last-release microtask that has not run yet.
       existing.retirement += 1;
@@ -69,6 +79,7 @@ export class LocalFilePreviewCache {
     }
 
     const entry: PreviewEntry = {
+      aliases: new Set(),
       key,
       leaseCount: 0,
       previewRef,
@@ -85,15 +96,42 @@ export class LocalFilePreviewCache {
     return preview;
   }
 
+  /**
+   * `previewRef` names the image `ofPreviewRef` is held as: acquisitions of
+   * it share that entry once it is ready, while it lives. Nothing is loaded
+   * here; without a held entry (never acquired, or retired since) nothing is
+   * kept, and a later acquisition of `previewRef` loads it on its own. A load
+   * still to come is not joined: its ref can stop answering (an upload's bytes
+   * are let go once its message takes it) while `previewRef` still does, so
+   * an acquisition before the entry is ready loads `previewRef` itself.
+   */
+  alias(previewRef: ChatImagePreviewRef, ofPreviewRef: ChatImagePreviewRef) {
+    if (this.#disposed) return;
+    const key = imagePreviewRefKey(previewRef);
+    const targetKey = imagePreviewRefKey(ofPreviewRef);
+    if (key === targetKey || this.#entries.has(key)) return;
+    const target = this.#entries.get(targetKey);
+    if (!target) return;
+    const previousTargetKey = this.#aliases.get(key);
+    if (previousTargetKey === targetKey) return;
+    if (previousTargetKey !== undefined) {
+      this.#entries.get(previousTargetKey)?.aliases.delete(key);
+    }
+    this.#aliases.set(key, targetKey);
+    target.aliases.add(key);
+  }
+
   dispose() {
     if (this.#disposed) return;
     this.#disposed = true;
     this.#queue = [];
+    this.#aliases.clear();
 
     const entries = [...this.#entries.values()];
     this.#entries.clear();
     this.#pendingEntries = 0;
     for (const entry of entries) {
+      entry.aliases.clear();
       entry.retirement += 1;
       if (entry.url) this.#revoke(entry.url);
       entry.url = undefined;
@@ -222,10 +260,31 @@ export class LocalFilePreviewCache {
     }
   }
 
+  /**
+   * The ready entry an alias key is served by. One still loading serves it
+   * not (yet); a stale alias is dropped.
+   */
+  #readyAliasedEntry(key: string) {
+    const targetKey = this.#aliases.get(key);
+    if (targetKey === undefined) return undefined;
+    const target = this.#entries.get(targetKey);
+    if (target) return target.state === "ready" ? target : undefined;
+    this.#aliases.delete(key);
+    return undefined;
+  }
+
+  #forget(entry: PreviewEntry) {
+    this.#entries.delete(entry.key);
+    for (const alias of entry.aliases) {
+      if (this.#aliases.get(alias) === entry.key) this.#aliases.delete(alias);
+    }
+    entry.aliases.clear();
+  }
+
   #retireUnavailable(entry: PreviewEntry) {
     if (this.#entries.get(entry.key) === entry) {
       this.#pendingEntries -= 1;
-      this.#entries.delete(entry.key);
+      this.#forget(entry);
     }
     entry.state = "retired";
     this.#resolveWaiters(entry, undefined);
@@ -244,7 +303,7 @@ export class LocalFilePreviewCache {
         return;
       }
 
-      this.#entries.delete(entry.key);
+      this.#forget(entry);
       entry.state = "retired";
       const url = entry.url;
       entry.url = undefined;
@@ -292,7 +351,7 @@ export class LocalFilePreviewCache {
       return;
     }
     this.#pendingEntries -= 1;
-    this.#entries.delete(entry.key);
+    this.#forget(entry);
     entry.state = "retired";
     const queueIndex = this.#queue.indexOf(entry);
     if (queueIndex >= 0) this.#queue.splice(queueIndex, 1);
@@ -331,6 +390,8 @@ function previewMediaType(bytes: Uint8Array) {
 
 function imagePreviewRefKey(ref: ChatImagePreviewRef) {
   if (typeof ref === "string") return `string:${ref}`;
+  if (ref.kind === "attachment")
+    return ["attachment", ref.messageId, ref.index, ref.fileName].join(":");
   return [
     "agent-blob",
     ref.agentId,

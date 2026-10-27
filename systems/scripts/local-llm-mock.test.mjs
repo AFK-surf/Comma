@@ -991,6 +991,7 @@ Inbound message source:
     });
     assert.equal(task.args.tool, "im_api.internal.task.create");
     assert.equal(task.args.params.agent_id, undefined);
+    assert.deepEqual(task.args.params.runs_on, { kind: "default" });
     assert.deepEqual(task.args.params.model, {
       kind: "catalog",
       model: "gpt-5.5",

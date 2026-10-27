@@ -3,9 +3,18 @@
 // (`GET /v1/comma/station-relay`, one for each Workspace, each in its Group) carry them. Salix passes a packet only to
 // a peer in the Group of the socket it came on, so a peer's packets go on the socket that peer was last heard on;
 // until it is heard, on every socket. While no socket carries them, they are dropped, as any lost path's are: QUIC
-// sends them again, and iroh tries its other paths.
-import { createPrivateKey, sign, type KeyObject } from "node:crypto";
-import type { NativeEndpoint } from "./station-native.ts";
+// sends them again, and iroh tries its other paths. Nothing here is Node's: the desktop's endpoint (station-native.ts)
+// and the browser's (web.ts) each give it theirs and how to sign with its key.
+
+/** The part of an endpoint bound with `salixRelay` the relay works: its id, and its packets both ways. */
+export interface RelayEndpoint {
+  id(): string;
+  relayIncoming(from: string, data: Uint8Array): void;
+  relayOutgoing(max: number): Promise<Array<{ to: string; data: Uint8Array }>>;
+}
+
+/** Signs `message` with the endpoint's key (Ed25519): the proof Salix asks each socket for. */
+export type RelaySigner = (message: Uint8Array) => Uint8Array | Promise<Uint8Array>;
 
 /** A binary frame's kind: a packet, after the peer's endpoint id (32 bytes). */
 const FRAME = 1;
@@ -16,8 +25,12 @@ const MAX_ROUTES = 4096;
 const PING_MS = 60_000;
 /** A socket not registered by then is given up. */
 const REGISTER_MS = 30_000;
-/** An Ed25519 private key's PKCS #8 form is this, then its 32-byte seed. */
-const PKCS8_ED25519 = Buffer.from("302e020100300506032b657004220420", "hex");
+
+const hex = (bytes: Uint8Array) =>
+  Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+const fromHex = (text: string) =>
+  Uint8Array.from(text.match(/../g) ?? [], (pair) => Number.parseInt(pair, 16));
+const base64 = (bytes: Uint8Array) => btoa(String.fromCharCode(...bytes));
 
 /** The part of a WebSocket the relay uses. */
 export interface RelaySocket {
@@ -58,29 +71,17 @@ export interface RelayCarry {
 }
 
 export class SalixRelay {
-  readonly #endpoint: NativeEndpoint;
-  readonly #key: KeyObject;
+  readonly #endpoint: RelayEndpoint;
+  readonly #sign: RelaySigner;
   readonly #open: OpenRelaySocket;
   readonly #carriers = new Set<Carrier>();
   /** The socket each peer was last heard on. */
   readonly #heard = new Map<string, Carrier>();
 
-  /** Whether `endpoint`'s addon carries packets through Salix (an older one does not). */
-  static supported(endpoint: NativeEndpoint): boolean {
-    return (
-      typeof endpoint.relayOutgoing === "function" &&
-      typeof endpoint.relayIncoming === "function"
-    );
-  }
-
-  /** Carries what `endpoint` (bound with `salixRelay` and `secretKey`) sends through Salix until it closes. */
-  constructor(endpoint: NativeEndpoint, secretKey: Uint8Array, open = openWebSocket) {
+  /** Carries what `endpoint` (bound with `salixRelay`) sends through Salix until it closes; `sign` signs with its key. */
+  constructor(endpoint: RelayEndpoint, sign: RelaySigner, open = openWebSocket) {
     this.#endpoint = endpoint;
-    this.#key = createPrivateKey({
-      key: Buffer.concat([PKCS8_ED25519, secretKey]),
-      format: "der",
-      type: "pkcs8",
-    });
+    this.#sign = sign;
     this.#open = open;
     void this.#pump();
   }
@@ -105,17 +106,15 @@ export class SalixRelay {
         signal?.removeEventListener("abort", abandon);
       };
       const carrier: Carrier = (to, data) => socket?.send(frame(to, data));
-      const register = (challenge: string) => {
-        const proof = sign(
-          null,
-          Buffer.from(`comma-salix-relay-v1:${ticketId}:${challenge}`),
-          this.#key
+      const register = async (challenge: string) => {
+        const proof = await this.#sign(
+          new TextEncoder().encode(`comma-salix-relay-v1:${ticketId}:${challenge}`)
         );
         socket?.send(
           JSON.stringify({
             type: "register",
             endpoint_id: this.#endpoint.id(),
-            signature: proof.toString("base64"),
+            signature: base64(proof),
           })
         );
       };
@@ -128,7 +127,7 @@ export class SalixRelay {
           if (registered) return;
           const said = parse(data);
           if (said?.type === "challenge" && typeof said.challenge === "string") {
-            register(said.challenge);
+            void register(said.challenge).catch(abandon);
           } else if (said?.type === "registered") {
             registered = true;
             settled();
@@ -154,13 +153,13 @@ export class SalixRelay {
 
   #incoming(data: Uint8Array, via: Carrier): void {
     if (data.length < 33 || data[0] !== FRAME) return;
-    const from = Buffer.from(data.subarray(1, 33)).toString("hex");
+    const from = hex(data.subarray(1, 33));
     this.#heard.delete(from);
     this.#heard.set(from, via);
     if (this.#heard.size > MAX_ROUTES)
       this.#heard.delete(this.#heard.keys().next().value!);
     try {
-      this.#endpoint.relayIncoming?.(from, Buffer.from(data.subarray(33)));
+      this.#endpoint.relayIncoming(from, data.slice(33));
     } catch {
       // The endpoint closed.
     }
@@ -174,11 +173,9 @@ export class SalixRelay {
   }
 
   async #pump(): Promise<void> {
-    const outgoing = this.#endpoint.relayOutgoing;
-    if (!outgoing) return;
     try {
       for (;;) {
-        const packets = await outgoing.call(this.#endpoint, BATCH);
+        const packets = await this.#endpoint.relayOutgoing(BATCH);
         if (packets.length === 0) return;
         for (const packet of packets) this.#send(packet.to, packet.data);
       }
@@ -191,7 +188,7 @@ export class SalixRelay {
 function frame(to: string, data: Uint8Array): Uint8Array<ArrayBuffer> {
   const out = new Uint8Array(33 + data.length);
   out[0] = FRAME;
-  out.set(Buffer.from(to, "hex"), 1);
+  out.set(fromHex(to), 1);
   out.set(data, 33);
   return out;
 }

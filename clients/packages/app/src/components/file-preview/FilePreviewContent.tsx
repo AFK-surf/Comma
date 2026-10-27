@@ -4,7 +4,7 @@ import { MarkdownStream } from "@comma/ui/components/markdown-stream";
 import { useEffect, useMemo, useState } from "react";
 import DOMPurify from "dompurify";
 import { FilePreviewLoading } from "./FilePreviewLoading";
-import { PdfFilePreview } from "./PdfFilePreview";
+import { PdfFilePreview, type RangedFile } from "./PdfFilePreview";
 import { useDriveObjectUrl } from "../drive/useDriveObjectUrl";
 
 type PreviewKind =
@@ -16,7 +16,9 @@ type PreviewKind =
   | "html"
   | "text"
   | "unknown";
-const textLimit = 256 * 1024;
+/** How much of a text file a preview shows; a longer one says it was cut. */
+export const textPreviewLimit = 256 * 1024;
+const textLimit = textPreviewLimit;
 
 export function filePreviewKind(name: string, mime = ""): PreviewKind {
   const extension = name.split(".").at(-1)?.toLowerCase();
@@ -155,6 +157,8 @@ export function FilePreviewContent({
   mimeType,
   blob,
   mediaUrl,
+  mediaKey,
+  ranged,
   error,
   placeholder,
   onOpenBrowser,
@@ -162,8 +166,12 @@ export function FilePreviewContent({
   fileName: string;
   mimeType?: string | undefined;
   blob?: Blob | undefined;
-  /** A CORS-enabled URL serving audio or video in ranges; plays without the whole file. */
+  /** A CORS-enabled URL serving audio, video or an image in ranges; shows without the whole file. */
   mediaUrl?: string | undefined;
+  /** The file `mediaUrl` reads, when that URL can be renewed: a new URL of it keeps the playback position. */
+  mediaKey?: string | undefined;
+  /** The file read in spans: a PDF renders its pages without the whole file. */
+  ranged?: RangedFile | undefined;
   error?: string | undefined;
   placeholder?: string | undefined;
   onOpenBrowser: (url: string) => void;
@@ -171,7 +179,26 @@ export function FilePreviewContent({
   if (error) return <p role="alert">{error}</p>;
   const kind = filePreviewKind(fileName, mimeType || blob?.type);
   if (mediaUrl && (kind === "audio" || kind === "video"))
-    return <MediaPreview crossOrigin fileName={fileName} kind={kind} url={mediaUrl} />;
+    return (
+      <MediaPreview
+        crossOrigin
+        fileName={fileName}
+        kind={kind}
+        sourceKey={mediaKey}
+        url={mediaUrl}
+      />
+    );
+  // The browser decodes the image as it arrives, at any size.
+  if (mediaUrl && kind === "image")
+    return (
+      <img
+        alt={fileName}
+        className="max-h-full max-w-full rounded-lg object-contain"
+        crossOrigin="anonymous"
+        src={mediaUrl}
+      />
+    );
+  if (ranged && kind === "pdf") return <PdfFilePreview ranged={ranged} />;
   if (!blob)
     return placeholder === undefined ? <FilePreviewLoading /> : <p>{placeholder}</p>;
   return (
@@ -220,18 +247,28 @@ function MediaPreview({
   crossOrigin = false,
   fileName,
   kind,
+  sourceKey,
   url,
 }: {
   crossOrigin?: boolean;
   fileName: string;
   kind: "audio" | "video";
+  sourceKey?: string | undefined;
   url: string;
 }) {
-  if (kind === "audio") return <ChatPanelAudio className="w-full" src={url} />;
+  if (kind === "audio")
+    return (
+      <ChatPanelAudio
+        className="w-full"
+        src={url}
+        {...(sourceKey ? { sourceKey } : {})}
+      />
+    );
   return (
     <ChatPanelVideo
       className="w-full max-w-full"
       crossOrigin={crossOrigin ? "anonymous" : undefined}
+      {...(sourceKey ? { sourceKey } : {})}
       src={url}
       poster=""
       alt={fileName}

@@ -39,7 +39,7 @@ import { makeWebSocketWriter } from "./websocket-writer.ts";
 import { Sockets as SocketsService } from "./sockets.ts";
 import { RuntimeInventory } from "./runtime-inventory.ts";
 import { MAX_RUNTIME_TARGETS, type RuntimeTarget, discoverAgentRuntimeTargets, runtimeObservation } from "./runtime-discovery.ts";
-
+import { COMMA_CLIENT_CONTROL_TOKEN_ENV, COMMA_CLIENT_CONTROL_URL_ENV, ClientControl, liveClientControl } from "./comma-client-cli.ts";
 
 export type { Message } from "./message.ts";
 export type { Session } from "./session.ts";
@@ -74,7 +74,17 @@ export const MAX_RECONNECT_BACKOFF_MS = 30_000;
 export const RUNTIME_NOT_QUIET = "runtime is not quiet";
 /** What a parked station still serves: the archive of its quiet state. */
 const PARKED_METHODS = new Set(["archive_export", "archive_status", "archive_cancel"]);
+/** MCP servers the desktop app's Main serves to Salix through `client_mcp`. */
+const CLIENT_MCP_SERVERS = new Set(["mac-apps"]);
+/** Main answers a Mac apps call within its own deadline (25 seconds); past this, Main is not answering. */
+export const CLIENT_MCP_TIMEOUT = Duration.seconds(30);
 export const SALIX_REQUEST_TIMEOUT = Duration.seconds(30);
+/// A Task post that names files: Salix reads them from here (task.posted_file) before it answers.
+export const SALIX_FILE_POST_TIMEOUT = Duration.minutes(30);
+/**
+ * Salix sends a heartbeat every 15 seconds. A connection that hears nothing for this long is gone, even when its socket
+ * has not noticed (the computer slept, its network changed): it is closed and dialed again.
+ */
 export const WEBSOCKET_READ_TIMEOUT = Duration.seconds(45);
 export const CONNECTOR_INSTANCE_HEADER = "X-Salix-Connector-Instance-ID";
 /** Says which kind of credential the bearer is: absent for a device's connector token, `workload` for a Workload's. */
@@ -132,10 +142,13 @@ export type StationTasks = {
 };
 
 /**
- * The workspace's accounts Salix lends a Workload's station: Salix sends their profiles (`station_profiles`), and the
- * station asks it, while connected, for what it lends of them (`share.*`, as of another station's share).
+ * The workspace's accounts Salix lends a Workload's station, or a desktop app's connection to one of its Workspaces
+ * (`device`): Salix sends their profiles (`station_profiles`), and the station asks it, while connected, for what it
+ * lends of them (`share.*`, as of another station's share).
  */
 export type StationProfiles = {
+  /// A desktop app's connection takes them too (on a device token).
+  device?: boolean;
   received(profiles: unknown): void;
   attach(ask: ((request: Record<string, unknown>) => Promise<unknown>) | null): void;
 };
@@ -356,17 +369,18 @@ export function makeConnector(input: Partial<ConnectorConfig> = {}, services?: L
         return Effect.tryPromise({ try: () => tasks.handle(method, params), catch: (e) => (e instanceof Error ? e : new Error(String(e))) });
       }),
     );
-  // Only a Workload's station takes Salix's profiles: a device's are its own.
+  // A Workload's station takes Salix's profiles, and a desktop app's connection: another device's are its own.
+  const takesProfiles = () => station.profiles !== undefined && (station.profiles.device === true || !!cfg.workloadCredential);
   const profilesCall = (params: Record<string, unknown>): Effect.Effect<Record<string, unknown>, Error> =>
     Effect.suspend(() => {
-      if (!cfg.workloadCredential && !workloadCredential) return Effect.fail(new Error("not a managed runtime connector"));
       if (!station.profiles) return Effect.fail(new Error("this station takes no profiles"));
+      if (!takesProfiles()) return Effect.fail(new Error("not a managed runtime connector"));
       return Effect.try({ try: () => (station.profiles!.received(params.profiles), { received: true }), catch: (e) => (e instanceof Error ? e : new Error(String(e))) });
     });
   // Only a Workload's station is placed by Salix: a device joins its workspace by enrolling.
   const placeCall = (call: (place: StationPlace) => Record<string, unknown>): Effect.Effect<Record<string, unknown>, Error> =>
     Effect.suspend(() => {
-      if (!cfg.workloadCredential && !workloadCredential) return Effect.fail(new Error("not a managed runtime connector"));
+      if (!cfg.workloadCredential) return Effect.fail(new Error("not a managed runtime connector"));
       if (!station.place) return Effect.fail(new Error("this station is not placed by Salix"));
       return Effect.try({ try: () => call(station.place!), catch: (e) => (e instanceof Error ? e : new Error(String(e))) });
     });
@@ -383,7 +397,7 @@ export function makeConnector(input: Partial<ConnectorConfig> = {}, services?: L
   const busy = () => requestSlots > 1 || [...processes.processes.values()].some((p) => p.isRunning()) || station.agentsIdle?.() === false;
   const lifecycle = (method: string, params: Record<string, unknown>): Effect.Effect<Record<string, unknown>, Error> =>
     Effect.suspend((): Effect.Effect<Record<string, unknown>, Error> => {
-      if (!cfg.workloadCredential && !workloadCredential) return Effect.fail(new Error("not a managed runtime connector"));
+      if (!cfg.workloadCredential) return Effect.fail(new Error("not a managed runtime connector"));
       parkExpired();
       const token = stringParam(params, "token");
       if (!token || token.length > 128) return Effect.fail(new Error("invalid idle request"));
@@ -427,7 +441,7 @@ export function makeConnector(input: Partial<ConnectorConfig> = {}, services?: L
     : null;
   const archiveCall = (call: (archive: NonNullable<typeof durable>) => Effect.Effect<Record<string, unknown>, Error>) =>
     Effect.suspend(() => {
-      if (!cfg.workloadCredential && !workloadCredential) return Effect.fail(new Error("not a managed runtime connector"));
+      if (!cfg.workloadCredential) return Effect.fail(new Error("not a managed runtime connector"));
       return durable ? call(durable) : Effect.fail(new Error("this station keeps no durable archive"));
     });
 
@@ -478,7 +492,14 @@ export function makeConnector(input: Partial<ConnectorConfig> = {}, services?: L
     "task.read": (_s, _id, p) => tasksCall("task.read", p),
     "task.say": (_s, _id, p) => tasksCall("task.say", p),
     "task.status": (_s, _id, p) => tasksCall("task.status", p),
+    "task.diff": (_s, _id, p) => tasksCall("task.diff", p),
+    "task.save": (_s, _id, p) => tasksCall("task.save", p),
+    "task.pull_request": (_s, _id, p) => tasksCall("task.pull_request", p),
+    "task.history": (_s, _id, p) => tasksCall("task.history", p),
+    "task.leave": (_s, _id, p) => tasksCall("task.leave", p),
+    "task.posted_file": (_s, _id, p) => tasksCall("task.posted_file", p),
     device_access: (_s, _id, p) => deviceAccess(p),
+    client_mcp: (_s, _id, p) => clientMcp(p),
     runtime_probe: (s, _id, p) => runtimesOnly(probeRuntimes(s, p)),
     meeting_join: (_s, _id, p) => runtimesOnly(meeting.join(p)),
     meeting_send_chat: (_s, _id, p) => runtimesOnly(meeting.sendChat(p)),
@@ -490,8 +511,9 @@ export function makeConnector(input: Partial<ConnectorConfig> = {}, services?: L
   const dispatchSession = (session: Session, id: string, method: string, params: Record<string, unknown> = {}): Effect.Effect<unknown, Error> =>
     Effect.suspend(() => {
       // The scope gate precedes every method: a read-only connector serves read_ref, a read-only device also reads
-      // its files unless its access is off, and access itself stays manageable.
-      const deviceRead = cfg.deviceMode && (method === "device_access" || (["read", "list", "stat", "read_stream"].includes(method) && deviceAccessLevel() !== "off"));
+      // its files unless its access is off, and access itself stays manageable. client_mcp reaches only Main,
+      // which allows the Mac apps the user turned on in Plugins; like a read, it stops when access is off.
+      const deviceRead = cfg.deviceMode && (method === "device_access" || (["read", "list", "stat", "read_stream", "client_mcp"].includes(method) && deviceAccessLevel() !== "off"));
       if (method !== "read_ref" && !deviceRead && scope === SCOPE_LOCAL_FILE_READ) {
         return Effect.fail(new Error(`method "${method}" is not permitted for a ${SCOPE_LOCAL_FILE_READ} connector`));
       }
@@ -708,6 +730,7 @@ export function makeConnector(input: Partial<ConnectorConfig> = {}, services?: L
         capabilities.device_access = true;
         capabilities.access = deviceAccessLevel();
         capabilities.lan_gateway = lanGatewayCapability();
+        capabilities.client_mcp = clientMcpServers();
       }
       return { type: "metadata", capabilities, skills: [], system_info: deviceSystemInfo(), connector_health: connectorHealth() };
     }
@@ -735,6 +758,7 @@ export function makeConnector(input: Partial<ConnectorConfig> = {}, services?: L
     if (station.index) capabilities.task_index = 1;
     if (cfg.deviceMode) {
       capabilities.device_access = true;
+      capabilities.client_mcp = clientMcpServers();
       // Salix sends `device_access {access}` (off | read | full) to a device that says its access.
       capabilities.access = deviceAccessLevel();
     }
@@ -844,6 +868,38 @@ export function makeConnector(input: Partial<ConnectorConfig> = {}, services?: L
       return { access: next, allows_operations: next === "full" };
     });
 
+  /** A desktop's Main serves MCP servers (the Mac apps); a standalone device has no Main. */
+  const clientMcpServers = () => (cfg.deviceMode && cfg.configPath ? [...CLIENT_MCP_SERVERS] : []);
+
+  /** `client_mcp`: one JSON-RPC message to an MCP server in Main, answered by Main's reply (null for a notification). */
+  const clientMcp = (params: Record<string, unknown>): Effect.Effect<unknown, Error> =>
+    Effect.gen(function* () {
+      const server = params.server;
+      if (typeof server !== "string" || !clientMcpServers().includes(server)) {
+        return yield* Effect.fail(new Error(`client MCP server "${String(server)}" is not served by this device`));
+      }
+      const message = params.message;
+      if (message === null || typeof message !== "object" || Array.isArray(message)) {
+        return yield* Effect.fail(new Error("message must be a JSON-RPC object"));
+      }
+      const endpoint = (cfg.env[COMMA_CLIENT_CONTROL_URL_ENV] ?? "").trim().replace(/\/+$/, "");
+      const token = cfg.env[COMMA_CLIENT_CONTROL_TOKEN_ENV] ?? "";
+      if (!endpoint || !token) return yield* Effect.fail(new Error("the Comma app is not running on this device"));
+      const provided = yield* Effect.serviceOption(ClientControl);
+      const control = provided._tag === "Some" ? provided.value : yield* Effect.provide(Effect.service(ClientControl), liveClientControl(endpoint));
+      if (!control.mcp) return yield* Effect.fail(new Error("the Comma app does not serve MCP"));
+      // A tool call that got no answer may still have been made (a message sent, an event created): the error says so,
+      // and the request to Main is aborted.
+      const reply = yield* control.mcp(token, server, message).pipe(
+        Effect.timeoutOrElse({
+          duration: CLIENT_MCP_TIMEOUT,
+          orElse: () =>
+            Effect.fail(new Error(`the Comma app did not answer in ${Duration.toSeconds(CLIENT_MCP_TIMEOUT)} seconds; a change it was making may or may not have been made`)),
+        }),
+      );
+      return { message: reply };
+    });
+
   /** The app's private control pipe: `set_scope` lines carrying this run's exact nonce. */
   const watchScopeControl = (input: AsyncIterable<unknown> | NodeJS.ReadableStream): Effect.Effect<void> =>
     Effect.gen(function* () {
@@ -893,24 +949,39 @@ export function makeConnector(input: Partial<ConnectorConfig> = {}, services?: L
 
   const processInstanceId = randomInstanceId();
 
-  // The credential the connection presents: the device's connector token, or a Compute Workload's credential. A
-  // workload's bootstrap credential is used once: `connected` replaces it with a short-lived one, kept in memory only
-  // and renewed over the connection before it runs out.
-  let workloadCredential = cfg.workloadCredential;
-  let workloadCredentialExpiresMs = 0;
+  // The credential the connection presents: the device's connector token, or a Compute Workload's connect credential.
+  // Every connection presents the same one: it has no expiry, and it ends when its Workload's generation advances.
   const credentialHeaders = (): Record<string, string> =>
-    workloadCredential ? { authorization: `Bearer ${workloadCredential}`, [CREDENTIAL_KIND_HEADER]: "workload" } : { authorization: `Bearer ${cfg.token}` };
-  const takeWorkloadCredential = (given: Message["workload_credential"]) => {
-    if (!given?.token) return false;
-    workloadCredential = given.token;
-    const expires = typeof given.expires_at === "number" ? given.expires_at * 1000 : Date.parse(String(given.expires_at ?? ""));
-    workloadCredentialExpiresMs = Number.isFinite(expires) ? expires : 0;
-    // The bootstrap credential leaves the environment the agents' processes inherit.
-    cfg.workloadCredential = "";
-    delete process.env.SALIX_WORKLOAD_CREDENTIAL;
-    delete cfg.env.SALIX_WORKLOAD_CREDENTIAL;
-    return true;
-  };
+    cfg.workloadCredential ? { authorization: `Bearer ${cfg.workloadCredential}`, [CREDENTIAL_KIND_HEADER]: "workload" } : { authorization: `Bearer ${cfg.token}` };
+  // The connection to Salix while it is up: its socket, and once Salix said `connected`, the carrier its requests ride
+  // and whether Salix takes the device's next credential over it (`credential_renewal`).
+  let live: { close: Effect.Effect<void>; carrier: RuntimeCarrier | null; renewal: boolean } | null = null;
+  /**
+   * The device's next connector credential, which the app wrote before the current one expires: the next dial presents
+   * it, and the live connection presents it to Salix (`connector_credential_renew`) so that it keeps serving, with its
+   * requests and processes, past the credential it holds now. A Salix that refuses it, does not take one, or has not yet
+   * confirmed the connection gets a new connection with it at once.
+   */
+  const renewCredential = (token: string): Effect.Effect<void> =>
+    Effect.sync(() => {
+      if (!token || token === cfg.token) return;
+      cfg.token = token;
+      const current = live;
+      if (!current) return;
+      fork(
+        Effect.gen(function* () {
+          if (current.carrier && current.renewal && !current.carrier.closed) {
+            const request = { id: transport.nextRequestId("credential_"), type: "request", method: "connector_credential_renew", params: { token } };
+            const reply = yield* Effect.exit(transport.request(current.carrier, request, SALIX_REQUEST_TIMEOUT));
+            if (Exit.isSuccess(reply) && reply.value.type !== "error") return;
+          }
+          if (live !== current) return;
+          // This connection ends, and its socket with it: the next dial presents the new credential.
+          if (activeConnection) activeConnection.close(new Error("connector credential renewed"));
+          else yield* current.close;
+        }),
+      );
+    });
   // Salix as the relay of last resort: the station proves its endpoint id, then its packets go in binary frames.
   let relaySocket: { sendBinary?(data: Buffer): Effect.Effect<void, Error> } | null = null;
   const registerRelay = (carrier: RuntimeCarrier, challenge: string): Effect.Effect<void> =>
@@ -973,21 +1044,6 @@ export function makeConnector(input: Partial<ConnectorConfig> = {}, services?: L
       }
     }).pipe(Effect.scoped, Effect.raceFirst(Deferred.await(carrier.done)), Effect.asVoid);
 
-  /** Renews the workload credential at half its remaining life, for as long as `carrier` is the live connection. */
-  const renewWorkloadCredential = (carrier: RuntimeCarrier): Effect.Effect<void> =>
-    Effect.gen(function* () {
-      while (!carrier.closed && workloadCredentialExpiresMs > 0) {
-        const left = workloadCredentialExpiresMs - clock.nowMs();
-        yield* Effect.sleep(Duration.millis(Math.max(1_000, Math.floor(left / 2))));
-        if (carrier.closed) return;
-        const reply = yield* Effect.exit(transport.request(carrier, { id: transport.nextRequestId("credential_"), type: "request", method: "workload_credential_renew" }, SALIX_REQUEST_TIMEOUT));
-        if (Exit.isFailure(reply) || reply.value.type === "error" || !takeWorkloadCredential(reply.value.result as Message["workload_credential"])) {
-          // Unrenewed: the next connection presents what it has, and Salix decides.
-          return;
-        }
-      }
-    }).pipe(Effect.raceFirst(Deferred.await(carrier.done)), Effect.asVoid);
-
   /** The host a connection generation is served with. */
   const connectionHost = () => ({
     claim: (send: (m: Message) => Effect.Effect<void, unknown>, writer: ReturnType<typeof makeWebSocketWriter> extends Effect.Effect<infer W, any, any> ? W : never) =>
@@ -1016,9 +1072,9 @@ export function makeConnector(input: Partial<ConnectorConfig> = {}, services?: L
     systemInfoLoop: (session: Session) => systemInfoLoop(() => session.send(metadataMessage()), cfg.server),
     onConnected: (session: Session, carrier: RuntimeCarrier, frame: Message) =>
       Effect.gen(function* () {
-        if (takeWorkloadCredential(frame.workload_credential)) fork(renewWorkloadCredential(carrier));
+        if (live) Object.assign(live, { carrier, renewal: frame.credential_renewal === true });
         if (typeof frame.relay_challenge === "string" && frame.relay_challenge) fork(registerRelay(carrier, frame.relay_challenge));
-        if (station.profiles && (cfg.workloadCredential || workloadCredential)) {
+        if (station.profiles && takesProfiles()) {
           station.profiles.attach(async (request) => {
             if (carrier.closed) throw new Error("not connected to Salix");
             const reply = await Effect.runPromise(provide(transport.request(carrier, { id: transport.nextRequestId("share_"), type: "request", method: String(request.method), params: request }, SALIX_REQUEST_TIMEOUT)));
@@ -1029,7 +1085,8 @@ export function makeConnector(input: Partial<ConnectorConfig> = {}, services?: L
         if (station.tasks && externalRuntimesEnabled() && scope !== SCOPE_LOCAL_FILE_READ) {
           station.tasks.attach(async (request) => {
             if (carrier.closed) throw new Error("not connected to Salix");
-            const reply = await Effect.runPromise(provide(transport.request(carrier, { id: transport.nextRequestId("task_"), type: "request", method: String(request.method), params: request }, SALIX_REQUEST_TIMEOUT)));
+            const timeout = Array.isArray(request.files) && request.files.length > 0 ? SALIX_FILE_POST_TIMEOUT : SALIX_REQUEST_TIMEOUT;
+            const reply = await Effect.runPromise(provide(transport.request(carrier, { id: transport.nextRequestId("task_"), type: "request", method: String(request.method), params: request }, timeout)));
             if (reply.type === "error") throw new Refused(String(reply.error ?? "Salix refused"));
             return reply.result;
           });
@@ -1050,11 +1107,20 @@ export function makeConnector(input: Partial<ConnectorConfig> = {}, services?: L
       Effect.flatMap((o) => (o._tag === "Some" ? Effect.void : Effect.fail(new Error("websocket write deadline exceeded")))),
     );
 
+  /** Each read: the next frame within the read timeout. */
+  const readBounded = (receive: Effect.Effect<unknown, Error>) =>
+    receive.pipe(
+      Effect.timeoutOrElse({
+        duration: WEBSOCKET_READ_TIMEOUT,
+        orElse: () => Effect.fail(new Error(`websocket read deadline exceeded: nothing from Salix in ${Duration.toSeconds(WEBSOCKET_READ_TIMEOUT)} seconds`)),
+      }),
+    );
+
   const serve = (socket: FrameSocket) =>
     Effect.scoped(
       Effect.gen(function* () {
         const writer = yield* makeWebSocketWriter(socketWriter(socket, writeBounded));
-        return yield* serveConnection(connectionHost(), socket, writer);
+        return yield* serveConnection(connectionHost(), { ...socket, receive: readBounded(socket.receive) }, writer);
       }),
     );
 
@@ -1066,6 +1132,8 @@ export function makeConnector(input: Partial<ConnectorConfig> = {}, services?: L
     const url = connectUrl(cfg.server);
     const sockets = yield* SocketsService;
     const socket = yield* sockets.dial(url, { ...credentialHeaders(), [CONNECTOR_INSTANCE_HEADER]: processInstanceId });
+    const current: NonNullable<typeof live> = { close: socket.close, carrier: null, renewal: false };
+    live = current;
     const fatalWatch = fork(Deferred.await(fatalSignal).pipe(Effect.andThen(socket.close)));
     // Packets through Salix ride this connection, once Salix has the station's endpoint id (`relay_register`).
     const relay = station.relay;
@@ -1078,6 +1146,7 @@ export function makeConnector(input: Partial<ConnectorConfig> = {}, services?: L
     relaySocket = relay && socket.sendBinary ? socket : null;
     const outcome = yield* Effect.exit(serve({ send: (f) => socket.send(f), receive: socket.receive, close: socket.close }));
     yield* Fiber.interrupt(fatalWatch);
+    if (live === current) live = null;
     relaySocket = null;
     station.relay?.attach(socket, null);
     station.profiles?.attach(null);
@@ -1107,8 +1176,8 @@ export function makeConnector(input: Partial<ConnectorConfig> = {}, services?: L
         if (remoteReady) backoff = MIN_RECONNECT_BACKOFF_MS;
         remoteReady = false;
         const sleepMs = jitterBackoff(backoff);
-        // A workload whose credential Salix refuses is not current (a newer generation or epoch replaced it): it stops.
-        if (error instanceof AuthError && (workloadCredential || cfg.workloadCredential)) {
+        // A workload whose credential Salix refuses is not current (its Workload's generation advanced): it stops.
+        if (error instanceof AuthError && cfg.workloadCredential) {
           status.writeStatus("auth_required", "", error);
           return yield* Effect.fail(new Error(`workload credential rejected: ${error.message}`));
         }
@@ -1221,7 +1290,6 @@ export function makeConnector(input: Partial<ConnectorConfig> = {}, services?: L
         });
       }),
     connectorFatal: () => fatal,
-    workloadCredentialForTest: () => ({ token: workloadCredential, expiresMs: workloadCredentialExpiresMs }),
     nextFatalError: Deferred.await(fatalSignal),
     reportFatal,
     metadata: metadataMessage,
@@ -1231,6 +1299,7 @@ export function makeConnector(input: Partial<ConnectorConfig> = {}, services?: L
     publishPeriodicSystemInfo: (send: (m: Message) => Effect.Effect<void, unknown>) => send(metadataMessage()),
     systemInfoLoop: (publish: () => Effect.Effect<void, unknown>) => provide(systemInfoLoop(publish)),
     setCurrentScope: (next: string) => provide(setCurrentScope(next)),
+    renewCredential,
     watchScopeControl: (input: AsyncIterable<unknown> | NodeJS.ReadableStream) => provide(watchScopeControl(input)),
     connectUrl,
     writeStatus: status.writeStatus,
@@ -1250,6 +1319,7 @@ export function makeConnector(input: Partial<ConnectorConfig> = {}, services?: L
     meetingLeave: (params: Record<string, unknown>) => provide(meeting.leave(params)),
     meetingSessionStatus: (params: Record<string, unknown>) => provide(meeting.sessionStatus(params)),
     deviceAccess: (params: Record<string, unknown>) => provide(deviceAccess(params)),
+    clientMcp: (params: Record<string, unknown>) => provide(clientMcp(params)),
     computerUse: (params: Record<string, unknown>) => provide(computerUse.call(params)),
     shutdownComputerUseDaemon: provide(computerUse.shutdown),
     computerUseHelperCommand: (token: string) => provide(computerUse.helperCommand(token)),

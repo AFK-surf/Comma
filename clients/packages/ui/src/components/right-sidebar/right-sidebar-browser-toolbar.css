@@ -34,7 +34,8 @@
 }
 
 .comma-right-sidebar-browser-reload-spin {
-  animation: comma-right-sidebar-browser-spin 900ms linear infinite;
+  /* 60 moves a second, as looping animations do (styles.css). */
+  animation: comma-right-sidebar-browser-spin 900ms steps(54) infinite;
 }
 
 .comma-right-sidebar-browser-progress {
@@ -78,7 +79,8 @@
   width: 40%;
   background: var(--color-fg-brand-primary);
   content: "";
-  animation: comma-right-sidebar-browser-progress 1.1s linear infinite;
+  /* 60 moves a second, as looping animations do (styles.css). */
+  animation: comma-right-sidebar-browser-progress 1.1s steps(66) infinite;
 }
 
 @keyframes comma-right-sidebar-browser-spin {

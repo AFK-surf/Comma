@@ -9,6 +9,8 @@ export const dialogLayout = {
   widthWide: 960,
   /** For a dialog that previews a chat: room for a readable transcript column. */
   widthPreview: 560,
+  /** For a compose dialog (Linear's New issue): a message line long enough to read as a sentence. */
+  widthCompose: 600,
   /** cross-small icon frame inset within the close hit target (%) */
   closeIconInset: 32.29,
 } as const;

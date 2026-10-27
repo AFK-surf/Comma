@@ -60,6 +60,8 @@ defmodule SalixIM.Conversations do
              limit + 1,
              kind
            ) do
+      # A Conversation that changed while the page was listed is read at its old entry but belongs at its new one.
+      records = Enum.sort_by(records, &conversation_index_key(group_id, &1))
       {data, rest} = Enum.split(records, limit)
 
       {:ok,
@@ -624,6 +626,7 @@ defmodule SalixIM.Conversations do
     result =
       collect_conversation_records(
         group_id,
+        start_after,
         opts,
         desired_count,
         [],
@@ -646,6 +649,7 @@ defmodule SalixIM.Conversations do
     result =
       collect_filtered_conversation_records(
         group_id,
+        start_after,
         opts,
         kind,
         desired_count,
@@ -660,6 +664,7 @@ defmodule SalixIM.Conversations do
 
   defp collect_filtered_conversation_records(
          group_id,
+         start_after,
          opts,
          kind,
          desired_count,
@@ -670,9 +675,10 @@ defmodule SalixIM.Conversations do
     with {:ok, %{objects: objects, next: next}} <-
            S3.list(Keys.ctl_group_conversation_list_prefix(group_id), opts),
          true <- length(objects) <= objects_remaining,
-         {:ok, hydrated} <- hydrate_conversation_indexes(group_id, objects, length(objects)) do
+         {:ok, hydrated} <-
+           hydrate_conversation_indexes(group_id, start_after, objects, length(objects)) do
       matches = Enum.filter(hydrated, &(&1["kind"] == kind))
-      acc = acc ++ matches
+      acc = acc ++ new_conversations(acc, matches)
       remaining = objects_remaining - length(objects)
       continuation? = is_binary(next) and next != ""
 
@@ -695,6 +701,7 @@ defmodule SalixIM.Conversations do
 
           collect_filtered_conversation_records(
             group_id,
+            start_after,
             next_opts,
             kind,
             desired_count,
@@ -711,6 +718,7 @@ defmodule SalixIM.Conversations do
 
   defp collect_conversation_records(
          group_id,
+         start_after,
          opts,
          desired_count,
          acc,
@@ -721,8 +729,13 @@ defmodule SalixIM.Conversations do
            S3.list(Keys.ctl_group_conversation_list_prefix(group_id), opts),
          true <- length(objects) <= objects_remaining,
          {:ok, hydrated} <-
-           hydrate_conversation_indexes(group_id, objects, desired_count - length(acc)) do
-      acc = acc ++ hydrated
+           hydrate_conversation_indexes(
+             group_id,
+             start_after,
+             objects,
+             desired_count - length(acc)
+           ) do
+      acc = acc ++ new_conversations(acc, hydrated)
       remaining = objects_remaining - length(objects)
       continuation? = is_binary(next) and next != ""
 
@@ -745,6 +758,7 @@ defmodule SalixIM.Conversations do
 
           collect_conversation_records(
             group_id,
+            start_after,
             next_opts,
             desired_count,
             acc,
@@ -758,13 +772,13 @@ defmodule SalixIM.Conversations do
     end
   end
 
-  defp hydrate_conversation_indexes(_group_id, [], _desired_count), do: {:ok, []}
+  defp hydrate_conversation_indexes(_group_id, _start_after, [], _desired_count), do: {:ok, []}
 
-  defp hydrate_conversation_indexes(group_id, objects, desired_count) do
+  defp hydrate_conversation_indexes(group_id, start_after, objects, desired_count) do
     started_at = SystemsClock.monotonic_time()
 
     result =
-      hydrate_conversation_index_batches(group_id, objects, desired_count, [], 0)
+      hydrate_conversation_index_batches(group_id, start_after, objects, desired_count, [], 0)
 
     {records, object_count} =
       case result do
@@ -794,6 +808,7 @@ defmodule SalixIM.Conversations do
 
   defp hydrate_conversation_index_batches(
          _group_id,
+         _start_after,
          _objects,
          desired_count,
          records,
@@ -804,6 +819,7 @@ defmodule SalixIM.Conversations do
 
   defp hydrate_conversation_index_batches(
          _group_id,
+         _start_after,
          [],
          _desired_count,
          records,
@@ -813,6 +829,7 @@ defmodule SalixIM.Conversations do
 
   defp hydrate_conversation_index_batches(
          group_id,
+         start_after,
          objects,
          desired_count,
          records,
@@ -828,13 +845,16 @@ defmodule SalixIM.Conversations do
 
     {batch, rest} = Enum.split(objects, batch_size)
 
-    case hydrate_conversation_index_batch(group_id, batch) do
+    case hydrate_conversation_index_batch(group_id, start_after, batch) do
       {:ok, hydrated} ->
+        added = new_conversations(records, hydrated)
+
         hydrate_conversation_index_batches(
           group_id,
+          start_after,
           rest,
-          desired_count - length(hydrated),
-          records ++ hydrated,
+          desired_count - length(added),
+          records ++ added,
           object_count + length(batch)
         )
 
@@ -843,10 +863,10 @@ defmodule SalixIM.Conversations do
     end
   end
 
-  defp hydrate_conversation_index_batch(group_id, objects) do
+  defp hydrate_conversation_index_batch(group_id, start_after, objects) do
     objects
     |> SystemsClock.async_stream(
-      &conversation_from_list_index(group_id, &1),
+      &conversation_from_list_index(group_id, start_after, &1),
       ordered: true,
       max_concurrency: conversation_list_read_concurrency(),
       timeout: conversation_list_read_timeout(),
@@ -871,12 +891,12 @@ defmodule SalixIM.Conversations do
     end
   end
 
-  defp conversation_from_list_index(group_id, object) do
+  defp conversation_from_list_index(group_id, start_after, object) do
     case read_json(object.key) do
       {:ok, %{"conversation_id" => conversation_id}} ->
         case get_group_conversation_record(group_id, conversation_id) do
           {:ok, conversation} ->
-            if conversation_index_key(group_id, conversation) == object.key,
+            if listed_at?(group_id, start_after, conversation, object.key),
               do: {:ok, conversation},
               else: :stale
 
@@ -934,6 +954,30 @@ defmodule SalixIM.Conversations do
         status: if(match?({:ok, _records}, result), do: :ok, else: :error)
       }
     )
+  end
+
+  # Whether an index entry lists its Conversation in a page that starts after `start_after`. A change writes the
+  # Conversation's newer entry before it commits and deletes the older one after (ConversationStore), so a listing
+  # that ran before the newer entry existed reads the older one and finds the Conversation already moved: its place
+  # is then the newer entry, earlier in this page. An entry whose Conversation is elsewhere otherwise (deleted, at
+  # an entry of a change that did not commit, moved to a page before this one) is stale.
+  defp listed_at?(group_id, start_after, conversation, key) do
+    current = conversation_index_key(group_id, conversation)
+    current == key or (current < key and (is_nil(start_after) or current > start_after))
+  end
+
+  # The hydrated Conversations that `acc` does not hold yet, each once: a Conversation that moved can be read at
+  # both its entries.
+  defp new_conversations(acc, hydrated) do
+    seen = MapSet.new(acc, & &1["conversation_id"])
+
+    {added, _seen} =
+      Enum.flat_map_reduce(hydrated, seen, fn conversation, seen ->
+        id = conversation["conversation_id"]
+        if MapSet.member?(seen, id), do: {[], seen}, else: {[conversation], MapSet.put(seen, id)}
+      end)
+
+    added
   end
 
   defp conversation_index_key(group_id, conversation) do
@@ -1530,8 +1574,8 @@ defmodule SalixIM.Conversations do
       (message_id == "" or trim(record["message_id"]) == message_id)
   end
 
-  # One explicit Participant means at most one Session read. Aggregate reports
-  # do not fan out across Agent runtimes.
+  # One explicit Participant reads one Session and at most two retirement facts.
+  # Aggregate reports do not fan out across Agent runtimes.
   defp participant_source_progress(%{"actor_type" => "agent"} = participant) do
     with {:ok, agent} <- GroupDirectory.get_agent(participant["agent_id"]),
          session when is_binary(session) <-
@@ -1548,6 +1592,7 @@ defmodule SalixIM.Conversations do
       progress ||
         %{"status" => "not_admitted", "start_seq" => participant["source_start_seq"] || 0}
     else
+      {:error, :conversation_source_retired} -> %{"status" => "retired"}
       _ -> %{"status" => "unavailable"}
     end
   end

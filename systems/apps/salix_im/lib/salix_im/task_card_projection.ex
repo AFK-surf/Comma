@@ -331,11 +331,11 @@ defmodule SalixIM.TaskCardProjection do
   Worker participant, or nil when the Session follows its Agent.
   """
   def task_session_model(%{
-         "agent_group_id" => group_id,
-         "conversation_id" => conversation_id,
-         "task_worker_agent_id" => agent_id
-       })
-       when is_binary(agent_id) and agent_id != "" do
+        "agent_group_id" => group_id,
+        "conversation_id" => conversation_id,
+        "task_worker_agent_id" => agent_id
+      })
+      when is_binary(agent_id) and agent_id != "" do
     with {:ok, %{"participant_id" => participant_id}} <-
            ConversationServer.get_group_conversation_agent_participant_identity(
              group_id,

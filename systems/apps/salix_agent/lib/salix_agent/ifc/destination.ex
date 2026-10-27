@@ -171,6 +171,13 @@ defmodule SalixAgent.IFC.Destination do
       else: [{:persist, %{"kind" => "memory"}}]
   end
 
+  def additional_destinations("im_api.internal.update_conversation_titles", args, _ctx) do
+    args
+    |> title_batch_ids()
+    |> Enum.drop(1)
+    |> Enum.map(&{:egress, %{"kind" => "conversation", "conversation_id" => &1}})
+  end
+
   # A new Feishu document is also opened to the chat or person it is shared
   # with at creation.
   def additional_destinations("im_api.feishu.create_doc", args, ctx) do
@@ -302,8 +309,20 @@ defmodule SalixAgent.IFC.Destination do
       api in ["internal.send_message", "internal.update_conversation"] ->
         {:egress, %{"kind" => "conversation", "conversation_id" => arg(args, "conversation_id")}}
 
+      # A batch names each target Conversation; the first is the primary
+      # destination and `additional_destinations/3` adds the rest.
+      api == "internal.update_conversation_titles" ->
+        {:egress,
+         %{"kind" => "conversation", "conversation_id" => title_batch_ids(args) |> List.first("")}}
+
       api in ["internal.task.create"] ->
         {:persist, pending_task(ctx)}
+
+      # An app's name and description become Workspace configuration (the
+      # Apps list, and its private repository), visible to the Group like a
+      # Worker's name and purpose.
+      api == "internal.apps.create" ->
+        {:persist, %{"kind" => "agent_configuration", "group_id" => group_id(ctx)}}
 
       api in ["internal.task.update"] ->
         {:egress, %{"kind" => "conversation", "conversation_id" => arg(args, "conversation_id")}}
@@ -312,6 +331,16 @@ defmodule SalixAgent.IFC.Destination do
         {:egress, %{"kind" => "public"}}
     end
   end
+
+  defp title_batch_ids(args) do
+    args
+    |> arg_list("titles")
+    |> Enum.map(&(is_map(&1) && to_string(&1["conversation_id"] || "")))
+    |> Enum.filter(&(is_binary(&1) and &1 != ""))
+    |> Enum.uniq()
+  end
+
+  defp arg_list(args, key), do: if(is_list(args[key]), do: args[key], else: [])
 
   defp read_operation?(api), do: Enum.any?(@read_prefixes, &String.starts_with?(api, &1))
 
@@ -912,6 +941,10 @@ defmodule SalixAgent.IFC.Destination do
         {:egress, %{"kind" => "public"}}
 
       String.starts_with?(name, "peers.") or String.starts_with?(name, "meeting.") ->
+        {:none, %{}}
+
+      # It writes a time of day; no content leaves.
+      name == "daily_brief.set_time" ->
         {:none, %{}}
 
       String.starts_with?(name, "calendar.") ->

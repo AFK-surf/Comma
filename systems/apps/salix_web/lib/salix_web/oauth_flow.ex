@@ -70,7 +70,8 @@ defmodule SalixWeb.OAuthFlow do
 
     with {:ok, adapter} <- lookup_adapter(provider),
          {:ok, alias_name} <- require_alias(params),
-         {:ok, app} <- require_provider_app(tenant_id, provider) do
+         :ok <- app_source_owner(opts),
+         {:ok, app} <- require_app(tenant_id, provider, Keyword.get(opts, :app_source)) do
       scopes = clean_scopes(params["scopes"])
       state = new_token()
       verifier = new_token()
@@ -101,6 +102,8 @@ defmodule SalixWeb.OAuthFlow do
             "redirect_after" => blank_to_nil(params["redirect_after"]),
             "origin" => "web",
             "comma_member" => Keyword.get(opts, :comma_member),
+            "bft_member" => Keyword.get(opts, :bft_member),
+            "app_source" => Keyword.get(opts, :app_source),
             "comma_operation" => Keyword.get(opts, :comma_operation),
             "mcp_binding_ids" => Keyword.get(opts, :mcp_binding_ids, []),
             "status" => "pending",
@@ -182,7 +185,7 @@ defmodule SalixWeb.OAuthFlow do
   end
 
   defp exchange(auth, provider, adapter, code) do
-    case require_provider_app(auth["tenant"], provider) do
+    case require_app(auth["tenant"], provider, auth["app_source"]) do
       {:error, _} ->
         finish(auth, provider, nil, "provider app not configured")
 
@@ -257,6 +260,29 @@ defmodule SalixWeb.OAuthFlow do
     connection_id = "conn-" <> random_hex()
     record = connection_record(connection_id, auth, provider, tokens, account)
 
+    if is_map(auth["bft_member"]),
+      do: persist_member_connection(connection_id, record, account),
+      else: persist_group_connection(auth, provider, tokens, account, connection_id, record)
+  end
+
+  # A BFT member's personal grant belongs to that member, not to a Group: it
+  # gets no Group binding, so no Agent can resolve it as a credential.
+  defp persist_member_connection(connection_id, record, account) do
+    case Connections.put(connection_id, record) do
+      :ok ->
+        {:ok,
+         %{
+           "binding_id" => nil,
+           "connection_id" => connection_id,
+           "provider_account_name" => account["provider_account_name"]
+         }}
+
+      {:error, reason} ->
+        {:error, "persist connection: " <> format_reason(reason)}
+    end
+  end
+
+  defp persist_group_connection(auth, provider, tokens, account, connection_id, record) do
     case Connections.put(connection_id, record) do
       :ok ->
         case OAuthBindings.put(
@@ -316,6 +342,7 @@ defmodule SalixWeb.OAuthFlow do
       "tenant" => auth["tenant"],
       "provider" => provider,
       "comma_member" => auth["comma_member"],
+      "bft_member" => auth["bft_member"],
       "provider_account_id" => account["provider_account_id"] || "",
       "provider_account_name" => account["provider_account_name"] || "",
       "metadata" => extra_metadata,
@@ -362,6 +389,32 @@ defmodule SalixWeb.OAuthFlow do
             :ok
           end
         end
+    end
+  end
+
+  @doc """
+  Revoke and delete a BFT member's personal connection. The owner must match,
+  so one member's request can never remove another's grant.
+  """
+  @spec delete_member_connection(String.t(), String.t(), map()) :: :ok | {:error, term()}
+  def delete_member_connection(tenant_id, connection_id, bft_member) when is_map(bft_member) do
+    case Connections.get(connection_id) do
+      {:ok, %{"tenant" => ^tenant_id, "bft_member" => owner} = conn} when owner == bft_member ->
+        best_effort_revoke(tenant_id, conn)
+
+        case delete_connection_record(connection_id) do
+          {:error, reason} -> {:error, reason}
+          _deleted -> :ok
+        end
+
+      {:ok, _other} ->
+        {:error, :not_found}
+
+      {:error, :not_found} ->
+        :ok
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -443,6 +496,7 @@ defmodule SalixWeb.OAuthFlow do
         # The verified OAuth state, not a chat button, is the success authority.
         # A native check-result button can retry delivery after an outage.
         SalixIM.TelegramInteractions.oauth_completed(auth["state"])
+        if is_nil(error_message), do: end_capability_requests(auth, completion)
       end
     end
 
@@ -460,6 +514,28 @@ defmodule SalixWeb.OAuthFlow do
         {:page, status, SalixWeb.OAuthCallbackPage.render(provider, error_message)}
     end
   end
+
+  # A Comma conversation's request card for this account ends here, and the
+  # Agent waiting on it goes on (SalixAgent.CapabilityRequests).
+  defp end_capability_requests(%{"group_id" => group, "tenant" => tenant} = auth, completion)
+       when is_binary(group) and is_binary(tenant) do
+    flow = %{
+      "state" => auth["state"],
+      "provider" => auth["provider"],
+      "alias" => auth["alias"],
+      "provider_account_name" => if(is_map(completion), do: completion["provider_account_name"])
+    }
+
+    case SalixAgent.CapabilityRequests.complete_oauth_authorization(group, tenant, flow) do
+      {:ok, _ended} ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning("end oauth capability requests: #{format_reason(reason)}")
+    end
+  end
+
+  defp end_capability_requests(_auth, _completion), do: :ok
 
   defp record_outcome(state, completion, error_message) do
     cond do
@@ -511,6 +587,49 @@ defmodule SalixWeb.OAuthFlow do
     case blank_to_nil(params["alias"]) do
       nil -> {:error, {:bad_request, "alias is required"}}
       alias_name -> {:ok, alias_name}
+    end
+  end
+
+  # A trusted caller may name the Swarm's own Slack bot app instead of the
+  # tenant's provider app. Its credentials are read from the connect at each
+  # leg and never stored in the authorization state.
+  # A bot-app grant is only ever a member's personal grant: it must never
+  # become a Group binding that Agents resolve.
+  defp app_source_owner(opts) do
+    if is_nil(Keyword.get(opts, :app_source)) or is_map(Keyword.get(opts, :bft_member)),
+      do: :ok,
+      else: {:error, {:bad_request, "app source requires a member grant"}}
+  end
+
+  # Checked at both legs: the bot app must still differ from the tenant's
+  # Slack OAuth app, or the grant's scopes would join a Group-bound token.
+  defp require_app(tenant_id, "slack", %{"kind" => "slack_im_connect"} = source) do
+    with {:ok, connect} <-
+           SalixIM.ProviderConnects.get_active_connect_by_id(
+             source["group_id"],
+             source["connect_id"],
+             "slack"
+           ),
+         true <- connect["tenant_id"] == tenant_id,
+         id when is_binary(id) and id != "" <- connect["client_id"],
+         secret when is_binary(secret) and secret != "" <- connect["client_secret"],
+         false <- tenant_app_client_id(tenant_id) == id do
+      {:ok, %{"client_id" => id, "client_secret" => secret, "source" => "slack_im_connect"}}
+    else
+      _unavailable ->
+        {:error, {:precondition_failed, "slack bot app is not usable for a member grant"}}
+    end
+  end
+
+  defp require_app(_tenant_id, _provider, source) when not is_nil(source),
+    do: {:error, {:bad_request, "unsupported app source"}}
+
+  defp require_app(tenant_id, provider, nil), do: require_provider_app(tenant_id, provider)
+
+  defp tenant_app_client_id(tenant_id) do
+    case OAuthApps.get(tenant_id, "slack") do
+      {:ok, %{"client_id" => client_id}} -> client_id
+      _none -> nil
     end
   end
 

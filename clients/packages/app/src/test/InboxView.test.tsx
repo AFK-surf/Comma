@@ -5,16 +5,20 @@ import {
   createRootRoute,
   createRoute,
   createRouter,
+  useParams,
 } from "@tanstack/react-router";
-import type { ComponentProps } from "react";
+import { useState, type ComponentProps, type ReactNode } from "react";
 import { initializeCommaI18n, type CommaLocale } from "@comma/i18n";
 import { CommaI18nProvider } from "@comma/i18n/react";
-import { fireEvent, render, screen, within } from "@comma/test-utils/render";
+import { act, fireEvent, render, screen, within } from "@comma/test-utils/render";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProductInboxItem, ProductInboxListResult } from "@comma/core-client";
 import { Toaster, toast } from "@comma/ui/components/toast";
 import { InboxView } from "../components/inbox/InboxView";
+import { InboxFiltersProvider } from "../components/inbox/filters/InboxFiltersState";
+import { TaskSequenceNavigator } from "../components/tasks/TaskSequenceNavigator";
+import { TaskSequenceSourceProvider } from "../components/tasks/taskSequence";
 import type { MarkKind } from "@comma/core/contract";
 import { flush } from "@comma/test-utils/fake-clock";
 import { createScriptedCore } from "@comma/test-utils/scripted-core";
@@ -120,43 +124,20 @@ describe("InboxView", () => {
     expect(within(rows[1]!).getByText("Ship it")).toBeInTheDocument();
   });
 
-  it("visibly and accessibly qualifies stale and unknown conversation rows", async () => {
-    renderInbox({
-      source: "live-sync",
-      items: [
-        item({ freshness: "stale", id: "w1:stale", title: "Stale task" }),
-        item({ freshness: "unknown", id: "w1:unknown", title: "Unknown task" }),
-      ],
-    });
+  it("names a row by its Task alone, though the device kept it with an old freshness mark", async () => {
+    // Builds before the freshness marks were removed kept them on the device's list.
+    const kept = {
+      ...item({ id: "w1:old", title: "Earlier result" }),
+      freshness: "stale",
+    };
+    renderInbox({ source: "cache", items: [item({ title: "Cached task" }), kept] });
     await flush();
 
-    const staleRow = screen.getByRole("link", { name: /Stale task.*Stale/i });
-    const unknownRow = screen.getByRole("link", {
-      name: /Unknown task.*Status unknown/i,
-    });
-
-    expect(staleRow).toHaveAttribute("data-freshness", "stale");
-    expect(staleRow).toHaveTextContent("Stale");
-    expect(unknownRow).toHaveAttribute("data-freshness", "unknown");
-    expect(unknownRow).toHaveTextContent("Status unknown");
-  });
-
-  it("shows cached rows without a premature stale warning", async () => {
-    renderInbox({
-      source: "cache",
-      items: [
-        item({ freshness: "fresh", title: "Cached task" }),
-        item({ freshness: "stale", id: "w1:old", title: "Earlier result" }),
-      ],
-    });
-    await flush();
-
-    const row = screen.getByRole("link", { name: "Cached task" });
-    expect(row).toHaveAttribute("data-freshness", "fresh");
-    expect(row).not.toHaveTextContent("Stale");
-    expect(
-      screen.getByRole("link", { name: "Earlier result, Stale" })
-    ).toHaveTextContent("Stale");
+    for (const name of ["Cached task", "Earlier result"]) {
+      const row = screen.getByRole("link", { name });
+      expect(row).not.toHaveTextContent("Stale");
+      expect(row).not.toHaveTextContent("Status unknown");
+    }
   });
 
   it("reports sync failure once while keeping cached rows readable", async () => {
@@ -164,7 +145,7 @@ describe("InboxView", () => {
       {
         source: "error",
         errorCode: "network_unavailable",
-        items: [item({ freshness: "fresh", title: "Cached during error" })],
+        items: [item({ title: "Cached during error" })],
       },
       {},
       undefined,
@@ -172,11 +153,9 @@ describe("InboxView", () => {
     );
     await flush();
 
-    const row = screen.getByRole("link", {
-      name: "Cached during error",
-    });
-    expect(row).toHaveAttribute("data-freshness", "fresh");
-    expect(row).not.toHaveTextContent("Stale");
+    expect(
+      screen.getByRole("link", { name: "Cached during error" })
+    ).toBeInTheDocument();
     expect(screen.getByTestId("inbox-banner")).toHaveTextContent("Sync failed");
   });
 
@@ -318,6 +297,97 @@ describe("InboxView", () => {
     expect(screen.getByTestId("inbox-filter-trigger")).toHaveAttribute(
       "data-filtered",
       "false"
+    );
+  });
+
+  it("keeps the filters when the reader leaves the Inbox and comes back", async () => {
+    const { router } = renderInbox({
+      source: "live-sync",
+      items: [
+        item({ kind: "user_chat", title: "Kickoff sync" }),
+        item({
+          id: "w1:c2",
+          conversationId: "c2",
+          kind: "agent_task",
+          status: "completed",
+          title: "Nightly run",
+        }),
+      ],
+    });
+    await flush();
+
+    await click(screen.getByTestId("inbox-filter-trigger"));
+    await click(screen.getByRole("menuitem", { name: /Task status/ }));
+    await click(screen.getByRole("menuitemcheckbox", { name: /Done/ }));
+    await closeInboxFilterMenu();
+    expect(screen.queryByText("Nightly run")).toBeNull();
+
+    // Another page replaces the rail, which unmounts.
+    router.history.push("/inbox/w1/c1");
+    await flush();
+    expect(screen.queryByTestId("inbox-filter-trigger")).toBeNull();
+    router.history.push("/");
+    await flush();
+
+    expect(screen.getAllByTestId("inbox-item")).toHaveLength(1);
+    expect(screen.queryByText("Nightly run")).toBeNull();
+    expect(screen.getByTestId("inbox-filter-trigger")).toHaveAttribute(
+      "data-filtered",
+      "true"
+    );
+    expect(screen.getByTestId("inbox-filter-footer")).toHaveTextContent(
+      "1 notification hidden by filters"
+    );
+  });
+
+  it("keeps the filters while the list reloads", async () => {
+    const loaded: ProductInboxListResult = {
+      source: "live-sync",
+      items: [
+        item({ kind: "user_chat", title: "Kickoff sync" }),
+        item({
+          id: "w1:c2",
+          conversationId: "c2",
+          kind: "agent_task",
+          status: "completed",
+          title: "Nightly run",
+        }),
+      ],
+    };
+    const reload: { set?: (result: ProductInboxListResult | null) => void } = {};
+    // As InboxRoute does: the loading rail sits in its own wrapper, so the
+    // rail remounts when the list arrives.
+    function ReloadingInbox() {
+      const [result, set] = useState<ProductInboxListResult | null>(loaded);
+      reload.set = set;
+      return result ? (
+        <InboxView result={result} />
+      ) : (
+        <div data-testid="inbox-loading">
+          <InboxView result={null} />
+        </div>
+      );
+    }
+    renderInbox(null, {}, undefined, { Inbox: ReloadingInbox });
+    await flush();
+
+    await click(screen.getByTestId("inbox-filter-trigger"));
+    await click(screen.getByRole("menuitem", { name: /Task status/ }));
+    await click(screen.getByRole("menuitemcheckbox", { name: /Done/ }));
+    await closeInboxFilterMenu();
+    expect(screen.queryByText("Nightly run")).toBeNull();
+
+    act(() => reload.set?.(null));
+    await flush();
+    expect(screen.getByTestId("inbox-loading")).toBeInTheDocument();
+    act(() => reload.set?.(loaded));
+    await flush();
+
+    expect(screen.queryByTestId("inbox-loading")).toBeNull();
+    expect(screen.queryByText("Nightly run")).toBeNull();
+    expect(screen.getByTestId("inbox-filter-trigger")).toHaveAttribute(
+      "data-filtered",
+      "true"
     );
   });
 
@@ -836,6 +906,62 @@ describe("InboxView", () => {
       "hidden"
     );
   });
+
+  it("steps an open conversation through the rail's shown order, filters included", async () => {
+    const { router } = renderInboxWithDetail(
+      {
+        source: "live-sync",
+        items: [
+          item({ title: "Kickoff sync", updatedAt: 3_000 }),
+          item({
+            id: "w1:c2",
+            conversationId: "c2",
+            kind: "agent_task",
+            status: "completed",
+            title: "Nightly run",
+            updatedAt: 2_000,
+          }),
+          item({
+            id: "w1:c3",
+            conversationId: "c3",
+            kind: "agent_task",
+            status: "running",
+            title: "Deploy",
+            updatedAt: 1_000,
+          }),
+        ],
+      },
+      "c1"
+    );
+    await flush();
+    expect(position()).toHaveTextContent("1 / 3");
+
+    // A step opens the next row as a click on it would, read mark included.
+    await press("m");
+    expect(router.state.location.pathname).toBe("/inbox/w1/grp_test/c2");
+    expect(position()).toHaveTextContent("2 / 3");
+    expect(core.sentTo("marks.unmark")).toEqual([
+      { kind: "inboxUnread", ids: ["w1:c2"] },
+    ]);
+    await press("k");
+    expect(router.state.location.pathname).toBe("/inbox/w1/grp_test/c1");
+
+    // Hiding Done takes "Nightly run" out of the order the steps follow.
+    await click(screen.getByTestId("inbox-filter-trigger"));
+    await click(screen.getByRole("menuitem", { name: /Task status/ }));
+    await click(screen.getByRole("menuitemcheckbox", { name: /Done/ }));
+    await closeInboxFilterMenu();
+    expect(position()).toHaveTextContent("1 / 2");
+
+    await press("m");
+    expect(router.state.location.pathname).toBe("/inbox/w1/grp_test/c3");
+    expect(position()).toHaveTextContent("2 / 2");
+    expect(core.sentTo("marks.unmark")).toEqual([
+      { kind: "inboxUnread", ids: ["w1:c2"] },
+      { kind: "inboxUnread", ids: ["w1:c1"] },
+      { kind: "inboxUnread", ids: ["w1:c3"] },
+    ]);
+  });
 });
 
 async function openInboxItemMenu(row: HTMLElement) {
@@ -884,7 +1010,7 @@ function renderInbox(
   result: ProductInboxListResult | null,
   props: Partial<ComponentProps<typeof InboxView>> = {},
   locale?: CommaLocale,
-  { toasts = false }: { toasts?: boolean } = {}
+  { toasts = false, Inbox }: { toasts?: boolean; Inbox?: () => ReactNode } = {}
 ) {
   const rootRoute = createRootRoute({
     component: Outlet,
@@ -892,7 +1018,7 @@ function renderInbox(
   const inboxRoute = createRoute({
     getParentRoute: () => rootRoute,
     path: "/",
-    component: () => <InboxView result={result} {...props} />,
+    component: Inbox ?? (() => <InboxView result={result} {...props} />),
   });
   const conversationRoute = createRoute({
     getParentRoute: () => rootRoute,
@@ -904,11 +1030,12 @@ function renderInbox(
     history: createMemoryHistory({ initialEntries: ["/"] }),
   });
 
+  // The session keeps the filters, as the authenticated layout does.
   const content = (
-    <>
+    <InboxFiltersProvider>
       <RouterProvider router={router} />
       {toasts ? <Toaster /> : null}
-    </>
+    </InboxFiltersProvider>
   );
   return {
     ...render(
@@ -918,6 +1045,48 @@ function renderInbox(
         ) : (
           content
         )
+      )
+    ),
+    router,
+  };
+}
+
+const position = () => screen.getByTestId("task-sequence-position");
+
+function Detail() {
+  const params = useParams({ strict: false }) as { conversationId: string };
+  return <TaskSequenceNavigator conversationId={params.conversationId} />;
+}
+
+/** The Inbox shell's rail beside an open conversation's header steps. */
+function renderInboxWithDetail(result: ProductInboxListResult, conversationId: string) {
+  function Shell() {
+    const params = useParams({ strict: false }) as { conversationId?: string };
+    return (
+      <TaskSequenceSourceProvider>
+        <InboxView result={result} selectedConversationId={params.conversationId} />
+        <Outlet />
+      </TaskSequenceSourceProvider>
+    );
+  }
+  const rootRoute = createRootRoute({ component: Shell });
+  const detailRoute = createRoute({
+    getParentRoute: () => rootRoute,
+    path: "/inbox/$workspaceId/$groupId/$conversationId",
+    component: Detail,
+  });
+  const router = createRouter({
+    routeTree: rootRoute.addChildren([detailRoute]),
+    history: createMemoryHistory({
+      initialEntries: [`/inbox/w1/grp_test/${conversationId}`],
+    }),
+  });
+  return {
+    ...render(
+      core.wrap(
+        <InboxFiltersProvider>
+          <RouterProvider router={router} />
+        </InboxFiltersProvider>
       )
     ),
     router,

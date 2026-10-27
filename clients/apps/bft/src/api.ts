@@ -36,6 +36,7 @@ export const orgContextSchema = z.object({
     triage: z.boolean(),
     information_flow: z.boolean(),
     meetings: z.boolean(),
+    daily_brief: z.boolean().catch(false),
     settings: z.boolean(),
   }),
   projects: z.array(z.object({ id: z.string(), name: z.string() })),
@@ -314,6 +315,12 @@ export const runnerOnboardingSchema = z.object({
 });
 
 /** A one-time install command; the server never returns it again. */
+export const computeInstallCommandSchema = z.object({
+  command: z.string(),
+  expires_at: z.string().datetime(),
+});
+export type BftComputeInstallCommand = z.infer<typeof computeInstallCommandSchema>;
+
 export const installCommandSchema = z.object({
   command: z.string(),
   expires_at: z.string(),
@@ -795,6 +802,8 @@ export const agentConfigSchema = z.object({
   agent: z.object({ id: z.string(), name: z.string().nullable(), role: z.string() }),
   model_key: z.string().catch(""),
   system_prompt: z.string().catch(""),
+  // Only an org owner changes the Router's instructions; others see them.
+  prompt_editable: z.boolean().catch(false),
   available: z.boolean().catch(false),
   // The first entry, key "" and choice `null`, follows the default model.
   models: z.array(modelPickerRowSchema).catch([]),
@@ -875,9 +884,8 @@ export const androidSetups = ["connected", "needs_attention", "not_connected"] a
  * projection, Android setup and one Compute page.
  *
  * `cloud_vm.vm` is null until the VM exists; then it says where the VM runs
- * and its status. `runner` is the org Runner the swarm uses, and
- * `next_location` where a new VM would go now. The placement is fixed when
- * the VM is first created.
+ * and its status. `runner` prepares the separate VMM Station.
+ * `next_location` is Cloudflare for a new Cloud VM.
  */
 export const swarmDevicesSchema = z.object({
   project: swarmPageProjectSchema,
@@ -1718,6 +1726,7 @@ export const meetingsOverviewSchema = z.object({
     research_enabled: nullableBoolean,
     calendar_writeback: nullableBoolean,
     personal_preparation: nullableBoolean,
+    channel_notice: nullableBoolean,
     series: z
       .array(z.object({ ...calendarRef, event_id: z.string(), title: nullableText }))
       .catch([]),
@@ -1789,6 +1798,87 @@ export const meetingSeriesSchema = z.object({
 });
 
 export const meetingDetailSchema = z.object({ report: nullableText });
+
+// One unreadable day does not cost the rest of the calendar.
+const calendarSchema = z
+  .array(z.unknown())
+  .catch([])
+  .transform((days) => days.filter((day): day is string => typeof day === "string"));
+
+const dailyBriefSettingsShape = {
+  project_id: z.string(),
+  slack_connect_id: z.string(),
+  enabled: z.boolean().catch(false),
+  retention_days: z.number().catch(90),
+  team_names: z.enum(["hidden", "shown"]).catch("hidden"),
+  off_days: calendarSchema,
+  work_days: calendarSchema,
+  team_channel_id: z.string().nullable().catch(null),
+  team_post_at: z.string().catch("10:20:00"),
+};
+
+/** The organization's daily brief: settings, linked members, today and the latest runs. */
+export const dailyBriefSchema = z.object({
+  settings: z.object(dailyBriefSettingsShape).nullable(),
+  members: z.array(
+    z.object({
+      id: z.string(),
+      email: nullableText,
+      name: nullableText,
+      slack_user_id: nullableText,
+      enabled: z.boolean().catch(true),
+      timezone: nullableText,
+      deliver_at: nullableText,
+      last_brief_at: nullableText,
+      requested_at: nullableText,
+    })
+  ),
+  /** The last team brief, member briefs of the past 24 hours, and the next brief time. */
+  today: z
+    .object({
+      team_pass: z
+        .object({ status: z.string(), at: nullableText, error: nullableText })
+        .nullable()
+        .catch(null),
+      sent: z.number().catch(0),
+      pending: z.number().catch(0),
+      failed: z.number().catch(0),
+      requested: z.number().catch(0),
+      members: z.number().catch(0),
+      next_brief_at: nullableText,
+    })
+    .nullable()
+    .catch(null),
+  runs: z
+    .array(
+      z.object({
+        id: z.string(),
+        kind: z.enum(["team_brief", "personal_brief"]).catch("personal_brief"),
+        status: z.enum(["running", "pending", "completed", "failed"]).catch("failed"),
+        member_id: nullableText,
+        member: nullableText,
+        tokens: z.number().catch(0),
+        error: nullableText,
+        complete: z.boolean().catch(true),
+        retryable: z.boolean().catch(false),
+        at: z.string(),
+      })
+    )
+    .catch([]),
+});
+
+export const dailyBriefRequestSchema = z.object({
+  id: z.string(),
+  requested_at: nullableText,
+});
+
+/** The saved settings. */
+export const dailyBriefSavedSchema = z.object(dailyBriefSettingsShape);
+
+export const dailyBriefSyncSchema = z.object({
+  linked: z.number(),
+  unresolved: z.array(z.string()).catch([]),
+});
 
 const dataPolicyScopeSchema = z.object({
   scope_id: z.string(),
@@ -2321,6 +2411,12 @@ export type BftMeetingHistory = z.infer<typeof meetingHistorySchema>;
 export type BftMeetingRecord = BftMeetingHistory["meetings"][number];
 export type BftMeetingCatalog = z.infer<typeof meetingCatalogSchema>;
 export type BftMeetingSeries = z.infer<typeof meetingSeriesSchema>["meetings"][number];
+export type BftDailyBrief = z.infer<typeof dailyBriefSchema>;
+export type BftDailyBriefSettings = NonNullable<BftDailyBrief["settings"]>;
+export type BftDailyBriefMember = BftDailyBrief["members"][number];
+export type BftDailyBriefSaved = z.infer<typeof dailyBriefSavedSchema>;
+export type BftDailyBriefSync = z.infer<typeof dailyBriefSyncSchema>;
+export type BftDailyBriefRun = BftDailyBrief["runs"][number];
 export type BftDataPolicy = z.infer<typeof dataPolicySchema>;
 export type BftDataPolicyConnect = BftDataPolicy["connects"][number];
 export type BftDataPolicyScope = z.infer<typeof dataPolicyScopeSchema>;
@@ -2360,6 +2456,7 @@ export type BftMeetingSettingsDraft =
       calendar_writeback: boolean;
       autojoin: boolean;
       personal_preparation: boolean;
+      channel_notice: boolean;
       series: BftMeetingSeries[];
     };
 /** One Data policy change; every change answers with the settings read again. */
@@ -2605,6 +2702,11 @@ export interface BftApi {
     project: string,
     deviceId: string
   ): Promise<{ notice: string }>;
+  createComputeInstallCommand(
+    org: string,
+    project: string,
+    requestId: string
+  ): Promise<BftComputeInstallCommand>;
   createShellWorkload(
     org: string,
     project: string,
@@ -2968,6 +3070,20 @@ export interface BftApi {
     project: string,
     draft: BftMeetingSettingsDraft
   ): Promise<unknown>;
+  /** The daily brief's settings, members and last 7 days (owner/admin). */
+  dailyBrief(org: string, signal?: AbortSignal): Promise<BftDailyBrief>;
+  /**
+   * `prepare_slack_app` asks again for the bot App's Slack access while the
+   * brief stays on; turning it on always asks.
+   */
+  saveDailyBrief(
+    org: string,
+    settings: BftDailyBriefSettings
+  ): Promise<BftDailyBriefSaved>;
+  /** Links organization members to their Slack users by email. */
+  syncDailyBriefMembers(org: string): Promise<BftDailyBriefSync>;
+  /** Sends one member's brief on the delivery worker's next minute. */
+  requestDailyBrief(org: string, member: string): Promise<unknown>;
   /** Router Agents and their Slack sources (owner/admin). */
   triage(org: string, signal?: AbortSignal): Promise<BftTriageOverview>;
   /** AI evaluation status; `refresh` drops the cached answer first. */
@@ -3230,6 +3346,7 @@ type WriteMethod = "POST" | "PUT" | "PATCH" | "DELETE";
  */
 interface Write<T> {
   method: WriteMethod;
+  idempotencyKey?: string;
   body?: unknown;
   changes?: boolean | ((data: T) => boolean);
 }
@@ -3260,7 +3377,7 @@ export function createBftApi(options: BftApiOptions = {}): BftApi {
     path: string,
     schema: z.ZodType<T>,
     signal: AbortSignal | undefined,
-    write: { method: WriteMethod; body?: unknown } | undefined
+    write: { method: WriteMethod; body?: unknown; idempotencyKey?: string } | undefined
   ): Promise<T> {
     const init: RequestInit = {
       credentials: "same-origin",
@@ -3268,7 +3385,12 @@ export function createBftApi(options: BftApiOptions = {}): BftApi {
       ...(write
         ? {
             method: write.method,
-            headers: writeHeaders(readCsrfToken(), write.body !== undefined),
+            headers: {
+              ...writeHeaders(readCsrfToken(), write.body !== undefined),
+              ...(write.idempotencyKey
+                ? { "idempotency-key": write.idempotencyKey }
+                : {}),
+            },
             ...(write.body !== undefined ? { body: JSON.stringify(write.body) } : {}),
           }
         : { headers: { accept: "application/json" } }),
@@ -3445,6 +3567,13 @@ export function createBftApi(options: BftApiOptions = {}): BftApi {
         "DELETE",
         swarmPath(org, project, `/devices/${encodeURIComponent(deviceId)}`),
         noticeSchema
+      ),
+    createComputeInstallCommand: (org, project, requestId) =>
+      request(
+        swarmPath(org, project, "/compute-nodes/agent-vmm/install-commands"),
+        computeInstallCommandSchema,
+        undefined,
+        { method: "POST", body: {}, idempotencyKey: requestId }
       ),
     createShellWorkload: (org, project, environmentId) =>
       send(
@@ -3805,6 +3934,23 @@ export function createBftApi(options: BftApiOptions = {}): BftApi {
       ).then((detail) => detail.report),
     saveMeetings: (org, project, draft) =>
       send("PUT", meetingsPath(org, project, "/settings"), z.unknown(), draft),
+    dailyBrief: (org, signal) =>
+      getJson(`${orgPath(org)}/daily-brief`, dailyBriefSchema, signal),
+    saveDailyBrief: (org, settings) =>
+      send(
+        "PUT",
+        `${orgPath(org)}/daily-brief/settings`,
+        dailyBriefSavedSchema,
+        settings
+      ),
+    syncDailyBriefMembers: (org) =>
+      send("POST", `${orgPath(org)}/daily-brief/members/sync`, dailyBriefSyncSchema),
+    requestDailyBrief: (org, member) =>
+      send(
+        "POST",
+        `${orgPath(org)}/daily-brief/members/${encodeURIComponent(member)}/send`,
+        dailyBriefRequestSchema
+      ),
     triage: (org, signal) => getJson(triagePath(org), triageOverviewSchema, signal),
     triageEvaluation: (org, agent, refresh, signal) =>
       getJson(

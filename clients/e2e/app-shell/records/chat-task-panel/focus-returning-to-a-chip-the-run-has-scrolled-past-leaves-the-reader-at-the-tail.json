@@ -1,0 +1,7692 @@
+{
+ "userId": "e2e-user:smoke@comma.local",
+ "seed": 3961206185,
+ "start": {
+  "session": {
+   "email": "smoke@comma.local",
+   "token": "web-app-session"
+  },
+  "stub": {
+   "assistantReply": "我已经创建了任务",
+   "inlineTaskReference": true,
+   "keepThinkingAfterReply": true,
+   "priorAssistantReply": "第 1 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 2 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 3 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 4 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 5 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 6 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 7 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 8 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 9 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 10 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 11 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 12 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 13 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 14 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 15 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 16 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 17 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 18 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 19 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 20 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 21 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 22 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 23 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 24 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 25 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 26 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 27 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 28 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 29 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 30 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 31 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 32 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 33 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 34 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 35 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 36 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 37 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 38 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 39 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 40 段：这是一段较长的回复，用来把历史撑过一个视口。",
+   "priorUserMessage": "先讲讲背景",
+   "taskStatus": "in_progress"
+  }
+ },
+ "entries": [
+  {
+   "at": 0,
+   "dir": "out",
+   "data": {
+    "id": 1,
+    "subscribe": {
+     "topic": "session"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 48,
+   "dir": "rest"
+  },
+  {
+   "at": 48,
+   "dir": "in",
+   "data": {
+    "id": 1,
+    "value": {
+     "phase": "unknown",
+     "lifecycle": {
+      "authority": {
+       "authorityInstanceId": "4218fa63-779b-a8be-5b18-1f3548508414",
+       "kind": "web_cookie"
+      },
+      "cleanup": {
+       "revocation": "idle"
+      },
+      "contractVersion": 1,
+      "generation": 0,
+      "phase": "initializing",
+      "principal": null,
+      "revision": 0,
+      "session": null
+     },
+     "attempt": null,
+     "emailCooldown": null,
+     "guestImports": 0
+    }
+   }
+  },
+  {
+   "at": 48,
+   "dir": "rest"
+  },
+  {
+   "at": 50,
+   "dir": "due"
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 1,
+    "delta": [
+     {
+      "path": [
+       "audience"
+      ],
+      "set": "http://comma-stub.test"
+     },
+     {
+      "path": [
+       "lifecycle",
+       "generation"
+      ],
+      "set": 1
+     },
+     {
+      "path": [
+       "lifecycle",
+       "phase"
+      ],
+      "set": "signed_in"
+     },
+     {
+      "path": [
+       "lifecycle",
+       "principal"
+      ],
+      "set": {
+       "email": "smoke@comma.local",
+       "userId": "e2e-user:smoke@comma.local"
+      }
+     },
+     {
+      "path": [
+       "lifecycle",
+       "revision"
+      ],
+      "set": 1
+     },
+     {
+      "path": [
+       "lifecycle",
+       "session"
+      ],
+      "set": {
+       "audience": "http://comma-stub.test",
+       "expiresAtEpochSeconds": 4102444800,
+       "sessionId": "e2e-session:smoke@comma.local"
+      }
+     },
+     {
+      "path": [
+       "phase"
+      ],
+      "set": "signed_in"
+     },
+     {
+      "path": [
+       "sessionId"
+      ],
+      "set": "e2e-session:smoke@comma.local"
+     },
+     {
+      "path": [
+       "userId"
+      ],
+      "set": "e2e-user:smoke@comma.local"
+     }
+    ]
+   }
+  },
+  {
+   "at": 50,
+   "dir": "out",
+   "data": {
+    "id": 2,
+    "subscribe": {
+     "topic": "pluginNotices"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 50,
+   "dir": "out",
+   "data": {
+    "id": 3,
+    "subscribe": {
+     "topic": "session"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 50,
+   "dir": "out",
+   "data": {
+    "id": 4,
+    "subscribe": {
+     "topic": "workspace"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 50,
+   "dir": "out",
+   "data": {
+    "id": 5,
+    "subscribe": {
+     "topic": "tasks",
+     "workspace": ""
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 50,
+   "dir": "out",
+   "data": {
+    "id": 6,
+    "subscribe": {
+     "topic": "marks",
+     "kind": "inboxDeleted"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 50,
+   "dir": "out",
+   "data": {
+    "id": 7,
+    "subscribe": {
+     "topic": "marks",
+     "kind": "inboxUnread"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 50,
+   "dir": "out",
+   "data": {
+    "id": 8,
+    "subscribe": {
+     "topic": "marks",
+     "kind": "taskReviewSeen"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 50,
+   "dir": "out",
+   "data": {
+    "id": 9,
+    "subscribe": {
+     "topic": "marks",
+     "kind": "chatTaskDismissed"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 50,
+   "dir": "out",
+   "data": {
+    "id": 10,
+    "subscribe": {
+     "topic": "workspaceChat"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 50,
+   "dir": "out",
+   "data": {
+    "id": 11,
+    "subscribe": {
+     "topic": "meetingRecorder"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 50,
+   "dir": "out",
+   "data": {
+    "id": 12,
+    "subscribe": {
+     "topic": "profile"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 50,
+   "dir": "rest"
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 3,
+    "value": {
+     "phase": "signed_in",
+     "userId": "e2e-user:smoke@comma.local",
+     "audience": "http://comma-stub.test",
+     "sessionId": "e2e-session:smoke@comma.local",
+     "lifecycle": {
+      "authority": {
+       "authorityInstanceId": "4218fa63-779b-a8be-5b18-1f3548508414",
+       "kind": "web_cookie"
+      },
+      "cleanup": {
+       "revocation": "idle"
+      },
+      "contractVersion": 1,
+      "generation": 1,
+      "revision": 1,
+      "phase": "signed_in",
+      "principal": {
+       "email": "smoke@comma.local",
+       "userId": "e2e-user:smoke@comma.local"
+      },
+      "session": {
+       "audience": "http://comma-stub.test",
+       "expiresAtEpochSeconds": 4102444800,
+       "sessionId": "e2e-session:smoke@comma.local"
+      }
+     },
+     "attempt": null,
+     "emailCooldown": null,
+     "guestImports": 0
+    }
+   }
+  },
+  {
+   "at": 50,
+   "dir": "rest"
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 2,
+    "value": {
+     "notices": []
+    }
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 4,
+    "value": {
+     "status": "loading",
+     "workspace": null,
+     "selected": false
+    }
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 5,
+    "value": null
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 6,
+    "value": {
+     "marks": {}
+    }
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 7,
+    "value": {
+     "marks": {}
+    }
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 8,
+    "value": {
+     "marks": {}
+    }
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 9,
+    "value": {
+     "marks": {}
+    }
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 10,
+    "value": {
+     "status": "loading",
+     "chat": null,
+     "kept": false
+    }
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 11,
+    "value": {
+     "clientVisible": false,
+     "phase": "idle",
+     "revision": 1,
+     "generation": 0,
+     "meeting": null,
+     "capture": {
+      "available": false,
+      "capped": false,
+      "channels": 0,
+      "durationMs": 0,
+      "level": 0,
+      "microphone": "off",
+      "permission": "unknown",
+      "reason": "Audio capture is unavailable in this runtime.",
+      "revision": 1,
+      "sampleRate": 0,
+      "status": "unavailable"
+     },
+     "saved": null
+    }
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 12,
+    "value": {
+     "status": "loading",
+     "profile": null
+    }
+   }
+  },
+  {
+   "at": 50,
+   "dir": "rest"
+  },
+  {
+   "at": 100,
+   "dir": "due"
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 4,
+    "value": {
+     "status": "ready",
+     "workspace": {
+      "id": "ws-smoke",
+      "groupId": "grp-smoke",
+      "name": "Smoke Workspace"
+     },
+     "selected": false
+    }
+   }
+  },
+  {
+   "at": 100,
+   "dir": "out",
+   "data": {
+    "id": 13,
+    "subscribe": {
+     "topic": "tasks",
+     "workspace": "ws-smoke"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 100,
+   "dir": "out",
+   "data": {
+    "id": 14,
+    "call": "tasks.focus",
+    "params": {
+     "workspace": "ws-smoke"
+    }
+   }
+  },
+  {
+   "at": 100,
+   "dir": "out",
+   "data": {
+    "id": 15,
+    "call": "tasks.focus",
+    "params": {
+     "workspace": "ws-smoke"
+    }
+   }
+  },
+  {
+   "at": 100,
+   "dir": "out",
+   "data": {
+    "id": 16,
+    "subscribe": {
+     "topic": "tasks",
+     "workspace": "ws-smoke",
+     "hosted": "1"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 100,
+   "dir": "out",
+   "data": {
+    "id": 17,
+    "call": "tasks.focus",
+    "params": {
+     "workspace": "ws-smoke"
+    }
+   }
+  },
+  {
+   "at": 100,
+   "dir": "out",
+   "data": {
+    "id": 18,
+    "subscribe": {
+     "topic": "router",
+     "workspace": "ws-smoke",
+     "read": "0"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 5,
+    "value": {
+     "activeWorkspaceId": "ws-smoke",
+     "workspaces": [
+      {
+       "group_id": "grp-smoke",
+       "id": "ws-smoke",
+       "name": "Smoke Workspace"
+      }
+     ],
+     "hasMore": false,
+     "items": [],
+     "lastSyncedAt": 1768478400050,
+     "source": "live-sync"
+    }
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 12,
+    "value": {
+     "status": "ready",
+     "profile": {
+      "avatar_id": null,
+      "email": "smoke@comma.local",
+      "id": "e2e-user:smoke@comma.local",
+      "name": null
+     }
+    }
+   }
+  },
+  {
+   "at": 100,
+   "dir": "out",
+   "data": {
+    "id": 19,
+    "call": "profile.update",
+    "params": {
+     "locale": "en"
+    }
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 10,
+    "value": {
+     "status": "ready",
+     "chat": {
+      "workspaceId": "ws-smoke",
+      "groupId": "grp-smoke",
+      "conversationId": "cnv_public_chat_smoke",
+      "createdAt": 1720000000,
+      "updatedAt": 1720000000
+     },
+     "kept": false
+    }
+   }
+  },
+  {
+   "at": 100,
+   "dir": "out",
+   "data": {
+    "id": 20,
+    "subscribe": {
+     "topic": "recommendations",
+     "workspace": "ws-smoke",
+     "timezone": "UTC",
+     "locale": "en"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 100,
+   "dir": "out",
+   "data": {
+    "id": 21,
+    "subscribe": {
+     "topic": "creditWarning",
+     "workspace": "ws-smoke"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 100,
+   "dir": "out",
+   "data": {
+    "id": 22,
+    "subscribe": {
+     "topic": "mentionTasks",
+     "group": "grp-smoke"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 100,
+   "dir": "out",
+   "data": {
+    "id": 23,
+    "subscribe": {
+     "topic": "recommendations",
+     "workspace": "ws-smoke",
+     "reads": "once"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 100,
+   "dir": "out",
+   "data": {
+    "id": 24,
+    "subscribe": {
+     "topic": "plugins",
+     "workspace": "ws-smoke"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 100,
+   "dir": "out",
+   "data": {
+    "id": 25,
+    "subscribe": {
+     "topic": "taskLabels",
+     "group": "grp-smoke",
+     "key": "",
+     "mode": ""
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 100,
+   "dir": "out",
+   "data": {
+    "id": 26,
+    "subscribe": {
+     "topic": "chatView",
+     "workspace": "ws-smoke",
+     "group": "grp-smoke",
+     "conversation": "cnv_public_chat_smoke",
+     "surface": "web:fdcace21-8a56-426d-8fed-3388eddffbcf"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 100,
+   "dir": "out",
+   "data": {
+    "id": 27,
+    "subscribe": {
+     "topic": "skills",
+     "workspace": "ws-smoke"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 100,
+   "dir": "out",
+   "data": {
+    "id": 28,
+    "call": "workspace.select",
+    "params": {
+     "workspace": "ws-smoke"
+    }
+   }
+  },
+  {
+   "at": 100,
+   "dir": "out",
+   "data": {
+    "id": 29,
+    "call": "chatView.setDraft",
+    "params": {
+     "draft": "请完成冒烟任务",
+     "workspace": "ws-smoke",
+     "group": "grp-smoke",
+     "conversation": "cnv_public_chat_smoke",
+     "surface": "web:fdcace21-8a56-426d-8fed-3388eddffbcf",
+     "session": {
+      "sessionId": "e2e-session:smoke@comma.local",
+      "audience": "http://comma-stub.test"
+     }
+    }
+   }
+  },
+  {
+   "at": 100,
+   "dir": "rest"
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 14,
+    "ok": null
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 15,
+    "ok": null
+   }
+  },
+  {
+   "at": 100,
+   "dir": "rest"
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 17,
+    "ok": null
+   }
+  },
+  {
+   "at": 100,
+   "dir": "rest"
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 28,
+    "ok": null
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 29,
+    "ok": {
+     "revision": 3,
+     "draftEpoch": 1
+    }
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 13,
+    "value": {
+     "activeWorkspaceId": "ws-smoke",
+     "workspaces": [
+      {
+       "group_id": "grp-smoke",
+       "id": "ws-smoke",
+       "name": "Smoke Workspace"
+      }
+     ],
+     "hasMore": false,
+     "items": [],
+     "lastSyncedAt": 1768478400050,
+     "source": "live-sync"
+    }
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 16,
+    "value": {
+     "activeWorkspaceId": "ws-smoke",
+     "workspaces": [
+      {
+       "group_id": "grp-smoke",
+       "id": "ws-smoke",
+       "name": "Smoke Workspace"
+      }
+     ],
+     "hasMore": false,
+     "items": [],
+     "lastSyncedAt": 1768478400050,
+     "source": "live-sync"
+    }
+   }
+  },
+  {
+   "at": 100,
+   "dir": "out",
+   "data": {
+    "id": 30,
+    "subscribe": {
+     "topic": "taskOrder",
+     "group": "grp-smoke"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 18,
+    "value": null
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 12,
+    "delta": [
+     {
+      "path": [
+       "profile",
+       "locale"
+      ],
+      "set": "en"
+     }
+    ]
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 20,
+    "value": {
+     "workspace": "ws-smoke",
+     "envelope": null,
+     "failure": null,
+     "discovering": false,
+     "refreshing": false
+    }
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 21,
+    "value": null
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 22,
+    "value": null
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 23,
+    "value": {
+     "workspace": "ws-smoke",
+     "envelope": null,
+     "failure": null,
+     "discovering": false,
+     "refreshing": false
+    }
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 24,
+    "value": {
+     "status": "loading"
+    }
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 25,
+    "value": {
+     "catalog": null,
+     "error": false,
+     "loading": true
+    }
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "value": {
+     "session": {
+      "sessionId": "e2e-session:smoke@comma.local",
+      "audience": "http://comma-stub.test"
+     },
+     "revision": 3,
+     "draftEpoch": 1,
+     "lease": {
+      "leaseId": "1fde07c4-3bc7-43ea-9b86-8ce90ebc1111",
+      "subscriberId": "web:fdcace21-8a56-426d-8fed-3388eddffbcf:grp-smoke/cnv_public_chat_smoke"
+     },
+     "state": {
+      "awaitingReply": false,
+      "awaitingTimedOut": false,
+      "connection": "connecting",
+      "draft": "请完成冒烟任务",
+      "draftAttachments": [],
+      "lastBackoffMs": 0,
+      "locallyAwaitingReply": false,
+      "messages": [],
+      "pending": [],
+      "reply": {
+       "coming": false,
+       "thinking": false,
+       "streaming": false,
+       "working": false,
+       "failed": false,
+       "timedOut": false
+      },
+      "serverMessages": [],
+      "status": "loading"
+     }
+    }
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "value": {
+     "status": "loading",
+     "skills": []
+    }
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 4,
+    "delta": [
+     {
+      "path": [
+       "selected"
+      ],
+      "set": true
+     }
+    ]
+   }
+  },
+  {
+   "at": 100,
+   "dir": "rest"
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 19,
+    "ok": {
+     "avatar_id": null,
+     "email": "smoke@comma.local",
+     "id": "e2e-user:smoke@comma.local",
+     "name": null,
+     "locale": "en"
+    }
+   }
+  },
+  {
+   "at": 100,
+   "dir": "rest"
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 20,
+    "delta": [
+     {
+      "path": [
+       "envelope"
+      ],
+      "set": {
+       "settings": {
+        "autoEnableNewSources": true,
+        "schedule": {
+         "enabled": true,
+         "hour": 8,
+         "minute": 0,
+         "timezone": "UTC"
+        },
+        "sourcesCheckedAt": "2026-01-01T00:00:00.000Z",
+        "sourceRevision": 1,
+        "sources": []
+       },
+       "snapshot": null,
+       "state": "empty"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 22,
+    "value": []
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 23,
+    "delta": [
+     {
+      "path": [
+       "envelope"
+      ],
+      "set": {
+       "settings": {
+        "autoEnableNewSources": true,
+        "schedule": {
+         "enabled": true,
+         "hour": 8,
+         "minute": 0,
+         "timezone": "UTC"
+        },
+        "sourcesCheckedAt": "2026-01-01T00:00:00.000Z",
+        "sourceRevision": 1,
+        "sources": []
+       },
+       "snapshot": null,
+       "state": "empty"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 4
+     },
+     {
+      "path": [
+       "state",
+       "conversation"
+      ],
+      "set": {
+       "created_at": 1720000000,
+       "group_id": "grp-smoke",
+       "id": "cnv_public_chat_smoke",
+       "kind": "user_chat",
+       "messages": [],
+       "status": "active",
+       "title": "聊天",
+       "updated_at": 1720000000
+      }
+     },
+     {
+      "path": [
+       "state",
+       "status"
+      ],
+      "set": "ready"
+     }
+    ]
+   }
+  },
+  {
+   "at": 100,
+   "dir": "out",
+   "data": {
+    "id": 31,
+    "subscribe": {
+     "topic": "agentRequests",
+     "group": "grp-smoke",
+     "conversation": "cnv_public_chat_smoke"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 30,
+    "value": {
+     "orders": {},
+     "sections": [
+      {
+       "bucket": "in_progress",
+       "ids": []
+      },
+      {
+       "bucket": "needs_review",
+       "ids": []
+      },
+      {
+       "bucket": "done",
+       "ids": []
+      },
+      {
+       "bucket": "cancelled",
+       "ids": []
+      }
+     ]
+    }
+   }
+  },
+  {
+   "at": 100,
+   "dir": "rest"
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 5,
+    "delta": [
+     {
+      "path": [
+       "lastSyncedAt"
+      ],
+      "set": 1768478400100
+     }
+    ]
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 13,
+    "delta": [
+     {
+      "path": [
+       "lastSyncedAt"
+      ],
+      "set": 1768478400100
+     }
+    ]
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 16,
+    "delta": [
+     {
+      "path": [
+       "lastSyncedAt"
+      ],
+      "set": 1768478400100
+     }
+    ]
+   }
+  },
+  {
+   "at": 100,
+   "dir": "rest"
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 24,
+    "delta": [
+     {
+      "path": [
+       "error"
+      ],
+      "set": {
+       "code": "unhandled GET /v1/comma/workspaces/ws-smoke/plugins",
+       "message": "unhandled GET /v1/comma/workspaces/ws-smoke/plugins",
+       "status": 404,
+       "detail": {
+        "error": "unhandled GET /v1/comma/workspaces/ws-smoke/plugins"
+       }
+      }
+     },
+     {
+      "path": [
+       "status"
+      ],
+      "set": "error"
+     },
+     {
+      "path": [
+       "workspace"
+      ],
+      "set": "ws-smoke"
+     }
+    ]
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 25,
+    "value": {
+     "catalog": null,
+     "error": true,
+     "loading": false
+    }
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "value": {
+     "status": "ready",
+     "skills": [
+      {
+       "skill_id": "weekly-summary",
+       "name": "周会总结",
+       "description": "整理会议要点和后续事项",
+       "location": "salix://skills/weekly-summary"
+      },
+      {
+       "skill_id": "code-review",
+       "name": "代码审查",
+       "description": "检查实现风险和测试缺口",
+       "location": "salix://skills/code-review"
+      },
+      {
+       "skill_id": "weekly-reminder",
+       "name": "周会提醒",
+       "description": "提醒周会议程",
+       "location": "salix://skills/weekly-reminder",
+       "activation": "per-message"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 8
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft"
+      ],
+      "set": {
+       "conversationId": "cnv_public_chat_smoke",
+       "draftId": "draft-smoke-thinking",
+       "responseKey": "response-smoke-thinking",
+       "sourceMessageIds": [
+        "msg-user-smoke"
+       ],
+       "status": "streaming",
+       "text": "",
+       "markdown": []
+      }
+     },
+     {
+      "path": [
+       "state",
+       "connection"
+      ],
+      "set": "live"
+     },
+     {
+      "path": [
+       "state",
+       "participantStatus"
+      ],
+      "set": {
+       "conversationId": "cnv_public_chat_smoke",
+       "participantId": "ptp-router-smoke",
+       "state": "active",
+       "status": "is thinking...",
+       "updatedAt": 2
+      }
+     },
+     {
+      "path": [
+       "state",
+       "reply",
+       "coming"
+      ],
+      "set": true
+     },
+     {
+      "path": [
+       "state",
+       "reply",
+       "streaming"
+      ],
+      "set": true
+     },
+     {
+      "path": [
+       "state",
+       "reply",
+       "working"
+      ],
+      "set": true
+     }
+    ]
+   }
+  },
+  {
+   "at": 100,
+   "dir": "out",
+   "data": {
+    "id": 32,
+    "subscribe": {
+     "topic": "sessionBrowser",
+     "workspace": "ws-smoke",
+     "conversation": "cnv_public_chat_smoke",
+     "participant": "ptp-router-smoke"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 31,
+    "value": {
+     "requests": [],
+     "loading": true,
+     "error": false
+    }
+   }
+  },
+  {
+   "at": 100,
+   "dir": "rest"
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 31,
+    "delta": [
+     {
+      "path": [
+       "error"
+      ],
+      "set": true
+     },
+     {
+      "path": [
+       "loading"
+      ],
+      "set": false
+     }
+    ]
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 32,
+    "value": null
+   }
+  },
+  {
+   "at": 100,
+   "dir": "rest"
+  },
+  {
+   "at": 128,
+   "dir": "out",
+   "data": {
+    "id": 33,
+    "call": "chatView.send",
+    "params": {
+     "text": "请完成冒烟任务",
+     "skills": [],
+     "workspace": "ws-smoke",
+     "group": "grp-smoke",
+     "conversation": "cnv_public_chat_smoke",
+     "surface": "web:fdcace21-8a56-426d-8fed-3388eddffbcf",
+     "session": {
+      "sessionId": "e2e-session:smoke@comma.local",
+      "audience": "http://comma-stub.test"
+     }
+    }
+   }
+  },
+  {
+   "at": 128,
+   "dir": "rest"
+  },
+  {
+   "at": 128,
+   "dir": "in",
+   "data": {
+    "id": 33,
+    "value": {
+     "accepted": true
+    }
+   }
+  },
+  {
+   "at": 128,
+   "dir": "rest"
+  },
+  {
+   "at": 128,
+   "dir": "in",
+   "data": {
+    "id": 32,
+    "value": {
+     "browser": null
+    }
+   }
+  },
+  {
+   "at": 128,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "draftEpoch"
+      ],
+      "set": 2
+     },
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 10
+     },
+     {
+      "path": [
+       "state",
+       "awaitingReply"
+      ],
+      "set": true
+     },
+     {
+      "path": [
+       "state",
+       "awaitingSince"
+      ],
+      "set": 1768478400128
+     },
+     {
+      "path": [
+       "state",
+       "awaitingTurnKey"
+      ],
+      "set": "01a671ea-5281-4cf0-ae79-ba50f2cd7841"
+     },
+     {
+      "path": [
+       "state",
+       "draft"
+      ],
+      "set": ""
+     },
+     {
+      "path": [
+       "state",
+       "locallyAwaitingReply"
+      ],
+      "set": true
+     },
+     {
+      "path": [
+       "state",
+       "messages"
+      ],
+      "key": [
+       "messageId"
+      ],
+      "put": {
+       "clientRequestId": "01a671ea-5281-4cf0-ae79-ba50f2cd7841",
+       "attachments": [],
+       "createdAt": 1768478400128,
+       "delivery": "sending",
+       "messageId": "pending:01a671ea-5281-4cf0-ae79-ba50f2cd7841",
+       "display": {
+        "body": "请完成冒烟任务",
+        "quotes": [],
+        "files": []
+       },
+       "parts": [
+        {
+         "kind": "markdown",
+         "text": "请完成冒烟任务"
+        }
+       ],
+       "refs": [],
+       "role": "user",
+       "source": "pending",
+       "status": "sending",
+       "text": "请完成冒烟任务"
+      },
+      "before": null
+     },
+     {
+      "path": [
+       "state",
+       "pending"
+      ],
+      "key": [
+       "clientRequestId"
+      ],
+      "put": {
+       "clientRequestId": "01a671ea-5281-4cf0-ae79-ba50f2cd7841",
+       "createdAt": 1768478400128,
+       "status": "sending",
+       "text": "请完成冒烟任务"
+      },
+      "before": null
+     }
+    ]
+   }
+  },
+  {
+   "at": 128,
+   "dir": "rest"
+  },
+  {
+   "at": 128,
+   "dir": "in",
+   "data": {
+    "id": 33,
+    "ok": {
+     "revision": 11,
+     "draftEpoch": 2
+    }
+   }
+  },
+  {
+   "at": 128,
+   "dir": "rest"
+  },
+  {
+   "at": 128,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 11
+     },
+     {
+      "path": [
+       "state",
+       "awaitingReply"
+      ],
+      "set": false
+     },
+     {
+      "path": [
+       "state",
+       "locallyAwaitingReply"
+      ],
+      "set": false
+     },
+     {
+      "path": [
+       "state",
+       "messages"
+      ],
+      "set": [
+       {
+        "actorType": "user",
+        "attachments": [],
+        "blocksKey": "[{\"type\":\"text\",\"text\":\"先讲讲背景\"}]",
+        "createdAt": 1720000000,
+        "delivery": "sent",
+        "display": {
+         "body": "先讲讲背景",
+         "quotes": [],
+         "files": []
+        },
+        "messageId": "msg-prior-user-smoke",
+        "parts": [
+         {
+          "kind": "markdown",
+          "text": "先讲讲背景"
+         }
+        ],
+        "refs": [],
+        "role": "user",
+        "source": "server",
+        "status": "committed",
+        "text": "先讲讲背景"
+       },
+       {
+        "actorType": "agent",
+        "attachments": [],
+        "blocksKey": "[{\"type\":\"text\",\"text\":\"第 1 段：这是一段较长的回复，用来把历史撑过一个视口。\\n\\n第 2 段：这是一段较长的回复，用来把历史撑过一个视口。\\n\\n第 3 段：这是一段较长的回复，用来把历史撑过一个视口。\\n\\n第 4 段：这是一段较长的回复，用来把历史撑过一个视口。\\n\\n第 5 段：这是一段较长的回复，用来把历史撑过一个视口。\\n\\n第 6 段：这是一段较长的回复，用来把历史撑过一个视口。\\n\\n第 7 段：这是一段较长的回复，用来把历史撑过一个视口。\\n\\n第 8 段：这是一段较长的回复，用来把历史撑过一个视口。\\n\\n第 9 段：这是一段较长的回复，用来把历史撑过一个视口。\\n\\n第 10 段：这是一段较长的回复，用来把历史撑过一个视口。\\n\\n第 11 段：这是一段较长的回复，用来把历史撑过一个视口。\\n\\n第 12 段：这是一段较长的回复，用来把历史撑过一个视口。\\n\\n第 13 段：这是一段较长的回复，用来把历史撑过一个视口。\\n\\n第 14 段：这是一段较长的回复，用来把历史撑过一个视口。\\n\\n第 15 段：这是一段较长的回复，用来把历史撑过一个视口。\\n\\n第 16 段：这是一段较长的回复，用来把历史撑过一个视口。\\n\\n第 17 段：这是一段较长的回复，用来把历史撑过一个视口。\\n\\n第 18 段：这是一段较长的回复，用来把历史撑过一个视口。\\n\\n第 19 段：这是一段较长的回复，用来把历史撑过一个视口。\\n\\n第 20 段：这是一段较长的回复，用来把历史撑过一个视口。\\n\\n第 21 段：这是一段较长的回复，用来把历史撑过一个视口。\\n\\n第 22 段：这是一段较长的回复，用来把历史撑过一个视口。\\n\\n第 23 段：这是一段较长的回复，用来把历史撑过一个视口。\\n\\n第 24 段：这是一段较长的回复，用来把历史撑过一个视口。\\n\\n第 25 段：这是一段较长的回复，用来把历史撑过一个视口。\\n\\n第 26 段：这是一段较长的回复，用来把历史撑过一个视口。\\n\\n第 27 段：这是一段较长的回复，用来把历史撑过一个视口。\\n\\n第 28 段：这是一段较长的回复，用来把历史撑过一个视口。\\n\\n第 29 段：这是一段较长的回复，用来把历史撑过一个视口。\\n\\n第 30 段：这是一段较长的回复，用来把历史撑过一个视口。\\n\\n第 31 段：这是一段较长的回复，用来把历史撑过一个视口。\\n\\n第 32 段：这是一段较长的回复，用来把历史撑过一个视口。\\n\\n第 33 段：这是一段较长的回复，用来把历史撑过一个视口。\\n\\n第 34 段：这是一段较长的回复，用来把历史撑过一个视口。\\n\\n第 35 段：这是一段较长的回复，用来把历史撑过一个视口。\\n\\n第 36 段：这是一段较长的回复，用来把历史撑过一个视口。\\n\\n第 37 段：这是一段较长的回复，用来把历史撑过一个视口。\\n\\n第 38 段：这是一段较长的回复，用来把历史撑过一个视口。\\n\\n第 39 段：这是一段较长的回复，用来把历史撑过一个视口。\\n\\n第 40 段：这是一段较长的回复，用来把历史撑过一个视口。\"}]",
+        "createdAt": 1720000000,
+        "delivery": "sent",
+        "messageId": "msg-prior-assistant-smoke",
+        "notice": {
+         "preview": "第 1 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 2 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 3 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 4 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 5 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 6 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 7 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 8 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 9 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 10 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 11 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 12 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 13 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 14 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 15 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 16 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 17 段：这是一段较长"
+        },
+        "parts": [
+         {
+          "kind": "markdown",
+          "text": "第 1 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 2 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 3 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 4 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 5 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 6 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 7 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 8 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 9 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 10 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 11 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 12 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 13 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 14 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 15 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 16 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 17 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 18 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 19 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 20 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 21 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 22 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 23 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 24 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 25 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 26 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 27 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 28 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 29 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 30 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 31 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 32 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 33 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 34 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 35 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 36 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 37 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 38 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 39 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 40 段：这是一段较长的回复，用来把历史撑过一个视口。"
+         }
+        ],
+        "refs": [],
+        "role": "assistant",
+        "source": "server",
+        "status": "committed",
+        "text": "第 1 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 2 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 3 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 4 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 5 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 6 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 7 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 8 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 9 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 10 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 11 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 12 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 13 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 14 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 15 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 16 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 17 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 18 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 19 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 20 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 21 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 22 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 23 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 24 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 25 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 26 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 27 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 28 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 29 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 30 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 31 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 32 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 33 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 34 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 35 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 36 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 37 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 38 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 39 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 40 段：这是一段较长的回复，用来把历史撑过一个视口。",
+        "markdown": [
+         [
+          "p",
+          [
+           "第 1 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ],
+         [
+          "p",
+          [
+           "第 2 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ],
+         [
+          "p",
+          [
+           "第 3 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ],
+         [
+          "p",
+          [
+           "第 4 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ],
+         [
+          "p",
+          [
+           "第 5 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ],
+         [
+          "p",
+          [
+           "第 6 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ],
+         [
+          "p",
+          [
+           "第 7 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ],
+         [
+          "p",
+          [
+           "第 8 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ],
+         [
+          "p",
+          [
+           "第 9 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ],
+         [
+          "p",
+          [
+           "第 10 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ],
+         [
+          "p",
+          [
+           "第 11 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ],
+         [
+          "p",
+          [
+           "第 12 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ],
+         [
+          "p",
+          [
+           "第 13 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ],
+         [
+          "p",
+          [
+           "第 14 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ],
+         [
+          "p",
+          [
+           "第 15 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ],
+         [
+          "p",
+          [
+           "第 16 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ],
+         [
+          "p",
+          [
+           "第 17 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ],
+         [
+          "p",
+          [
+           "第 18 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ],
+         [
+          "p",
+          [
+           "第 19 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ],
+         [
+          "p",
+          [
+           "第 20 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ],
+         [
+          "p",
+          [
+           "第 21 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ],
+         [
+          "p",
+          [
+           "第 22 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ],
+         [
+          "p",
+          [
+           "第 23 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ],
+         [
+          "p",
+          [
+           "第 24 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ],
+         [
+          "p",
+          [
+           "第 25 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ],
+         [
+          "p",
+          [
+           "第 26 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ],
+         [
+          "p",
+          [
+           "第 27 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ],
+         [
+          "p",
+          [
+           "第 28 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ],
+         [
+          "p",
+          [
+           "第 29 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ],
+         [
+          "p",
+          [
+           "第 30 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ],
+         [
+          "p",
+          [
+           "第 31 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ],
+         [
+          "p",
+          [
+           "第 32 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ],
+         [
+          "p",
+          [
+           "第 33 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ],
+         [
+          "p",
+          [
+           "第 34 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ],
+         [
+          "p",
+          [
+           "第 35 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ],
+         [
+          "p",
+          [
+           "第 36 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ],
+         [
+          "p",
+          [
+           "第 37 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ],
+         [
+          "p",
+          [
+           "第 38 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ],
+         [
+          "p",
+          [
+           "第 39 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ],
+         [
+          "p",
+          [
+           "第 40 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ]
+        ]
+       },
+       {
+        "actorType": "user",
+        "attachments": [],
+        "blocksKey": "[{\"type\":\"text\",\"text\":\"请完成冒烟任务\"}]",
+        "clientRequestId": "01a671ea-5281-4cf0-ae79-ba50f2cd7841",
+        "createdAt": 1720000001,
+        "delivery": "sent",
+        "display": {
+         "body": "请完成冒烟任务",
+         "quotes": [],
+         "files": []
+        },
+        "messageId": "msg-user-smoke",
+        "parts": [
+         {
+          "kind": "markdown",
+          "text": "请完成冒烟任务"
+         }
+        ],
+        "refs": [],
+        "role": "user",
+        "source": "server",
+        "status": "committed",
+        "text": "请完成冒烟任务"
+       },
+       {
+        "actorType": "agent",
+        "attachments": [],
+        "blocksKey": "[{\"type\":\"text\",\"text\":\"我已经创建了任务 \"},{\"type\":\"conversation_ref\",\"presentation\":\"inline\",\"conversation_id\":\"cnv_public_task_smoke\",\"kind\":\"agent_task\",\"title\":\"冒烟任务\",\"status\":\"in_progress\",\"activity_status\":\"idle\",\"freshness\":{\"state\":\"fresh\"},\"updated_at\":1720000003},{\"type\":\"text\",\"text\":\" 已完成。\"}]",
+        "createdAt": 1720000002,
+        "delivery": "sent",
+        "messageId": "msg-assistant-smoke",
+        "notice": {
+         "preview": "我已经创建了任务\n已完成。"
+        },
+        "replyToMessageId": "msg-user-smoke",
+        "threadRootMessageId": "msg-user-smoke",
+        "parts": [
+         {
+          "kind": "markdown",
+          "text": "我已经创建了任务 "
+         },
+         {
+          "kind": "inline-task",
+          "task": {
+           "activityStatus": "idle",
+           "conversationId": "cnv_public_task_smoke",
+           "status": "in_progress",
+           "statusBucket": "in_progress",
+           "title": "冒烟任务",
+           "unavailable": false,
+           "updatedAt": 1720000003
+          }
+         },
+         {
+          "kind": "markdown",
+          "text": " 已完成。"
+         }
+        ],
+        "refs": [],
+        "role": "assistant",
+        "source": "server",
+        "status": "committed",
+        "text": "我已经创建了任务 \n 已完成。",
+        "createdTasks": [
+         {
+          "conversationId": "cnv_public_task_smoke",
+          "title": "冒烟任务",
+          "updatedAt": 1720000003
+         }
+        ],
+        "markdown": [
+         [
+          "p",
+          [
+           "我已经创建了任务 ",
+           [
+            "comma-inline",
+            {
+             "key": "element-1"
+            }
+           ],
+           " 已完成。"
+          ]
+         ]
+        ]
+       }
+      ]
+     },
+     {
+      "path": [
+       "state",
+       "pending"
+      ],
+      "key": [
+       "clientRequestId"
+      ],
+      "drop": "01a671ea-5281-4cf0-ae79-ba50f2cd7841"
+     },
+     {
+      "path": [
+       "state",
+       "serverMessages"
+      ],
+      "set": [
+       {
+        "actorType": "user",
+        "attachments": [],
+        "blocksKey": "[{\"type\":\"text\",\"text\":\"先讲讲背景\"}]",
+        "createdAt": 1720000000,
+        "delivery": "sent",
+        "display": {
+         "body": "先讲讲背景",
+         "quotes": [],
+         "files": []
+        },
+        "messageId": "msg-prior-user-smoke",
+        "parts": [
+         {
+          "kind": "markdown",
+          "text": "先讲讲背景"
+         }
+        ],
+        "refs": [],
+        "role": "user",
+        "source": "server",
+        "status": "committed",
+        "text": "先讲讲背景"
+       },
+       {
+        "actorType": "agent",
+        "attachments": [],
+        "blocksKey": "[{\"type\":\"text\",\"text\":\"第 1 段：这是一段较长的回复，用来把历史撑过一个视口。\\n\\n第 2 段：这是一段较长的回复，用来把历史撑过一个视口。\\n\\n第 3 段：这是一段较长的回复，用来把历史撑过一个视口。\\n\\n第 4 段：这是一段较长的回复，用来把历史撑过一个视口。\\n\\n第 5 段：这是一段较长的回复，用来把历史撑过一个视口。\\n\\n第 6 段：这是一段较长的回复，用来把历史撑过一个视口。\\n\\n第 7 段：这是一段较长的回复，用来把历史撑过一个视口。\\n\\n第 8 段：这是一段较长的回复，用来把历史撑过一个视口。\\n\\n第 9 段：这是一段较长的回复，用来把历史撑过一个视口。\\n\\n第 10 段：这是一段较长的回复，用来把历史撑过一个视口。\\n\\n第 11 段：这是一段较长的回复，用来把历史撑过一个视口。\\n\\n第 12 段：这是一段较长的回复，用来把历史撑过一个视口。\\n\\n第 13 段：这是一段较长的回复，用来把历史撑过一个视口。\\n\\n第 14 段：这是一段较长的回复，用来把历史撑过一个视口。\\n\\n第 15 段：这是一段较长的回复，用来把历史撑过一个视口。\\n\\n第 16 段：这是一段较长的回复，用来把历史撑过一个视口。\\n\\n第 17 段：这是一段较长的回复，用来把历史撑过一个视口。\\n\\n第 18 段：这是一段较长的回复，用来把历史撑过一个视口。\\n\\n第 19 段：这是一段较长的回复，用来把历史撑过一个视口。\\n\\n第 20 段：这是一段较长的回复，用来把历史撑过一个视口。\\n\\n第 21 段：这是一段较长的回复，用来把历史撑过一个视口。\\n\\n第 22 段：这是一段较长的回复，用来把历史撑过一个视口。\\n\\n第 23 段：这是一段较长的回复，用来把历史撑过一个视口。\\n\\n第 24 段：这是一段较长的回复，用来把历史撑过一个视口。\\n\\n第 25 段：这是一段较长的回复，用来把历史撑过一个视口。\\n\\n第 26 段：这是一段较长的回复，用来把历史撑过一个视口。\\n\\n第 27 段：这是一段较长的回复，用来把历史撑过一个视口。\\n\\n第 28 段：这是一段较长的回复，用来把历史撑过一个视口。\\n\\n第 29 段：这是一段较长的回复，用来把历史撑过一个视口。\\n\\n第 30 段：这是一段较长的回复，用来把历史撑过一个视口。\\n\\n第 31 段：这是一段较长的回复，用来把历史撑过一个视口。\\n\\n第 32 段：这是一段较长的回复，用来把历史撑过一个视口。\\n\\n第 33 段：这是一段较长的回复，用来把历史撑过一个视口。\\n\\n第 34 段：这是一段较长的回复，用来把历史撑过一个视口。\\n\\n第 35 段：这是一段较长的回复，用来把历史撑过一个视口。\\n\\n第 36 段：这是一段较长的回复，用来把历史撑过一个视口。\\n\\n第 37 段：这是一段较长的回复，用来把历史撑过一个视口。\\n\\n第 38 段：这是一段较长的回复，用来把历史撑过一个视口。\\n\\n第 39 段：这是一段较长的回复，用来把历史撑过一个视口。\\n\\n第 40 段：这是一段较长的回复，用来把历史撑过一个视口。\"}]",
+        "createdAt": 1720000000,
+        "delivery": "sent",
+        "messageId": "msg-prior-assistant-smoke",
+        "notice": {
+         "preview": "第 1 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 2 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 3 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 4 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 5 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 6 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 7 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 8 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 9 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 10 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 11 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 12 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 13 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 14 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 15 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 16 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 17 段：这是一段较长"
+        },
+        "parts": [
+         {
+          "kind": "markdown",
+          "text": "第 1 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 2 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 3 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 4 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 5 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 6 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 7 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 8 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 9 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 10 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 11 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 12 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 13 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 14 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 15 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 16 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 17 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 18 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 19 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 20 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 21 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 22 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 23 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 24 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 25 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 26 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 27 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 28 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 29 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 30 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 31 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 32 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 33 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 34 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 35 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 36 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 37 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 38 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 39 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 40 段：这是一段较长的回复，用来把历史撑过一个视口。"
+         }
+        ],
+        "refs": [],
+        "role": "assistant",
+        "source": "server",
+        "status": "committed",
+        "text": "第 1 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 2 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 3 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 4 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 5 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 6 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 7 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 8 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 9 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 10 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 11 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 12 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 13 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 14 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 15 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 16 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 17 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 18 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 19 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 20 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 21 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 22 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 23 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 24 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 25 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 26 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 27 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 28 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 29 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 30 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 31 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 32 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 33 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 34 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 35 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 36 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 37 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 38 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 39 段：这是一段较长的回复，用来把历史撑过一个视口。\n\n第 40 段：这是一段较长的回复，用来把历史撑过一个视口。",
+        "markdown": [
+         [
+          "p",
+          [
+           "第 1 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ],
+         [
+          "p",
+          [
+           "第 2 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ],
+         [
+          "p",
+          [
+           "第 3 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ],
+         [
+          "p",
+          [
+           "第 4 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ],
+         [
+          "p",
+          [
+           "第 5 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ],
+         [
+          "p",
+          [
+           "第 6 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ],
+         [
+          "p",
+          [
+           "第 7 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ],
+         [
+          "p",
+          [
+           "第 8 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ],
+         [
+          "p",
+          [
+           "第 9 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ],
+         [
+          "p",
+          [
+           "第 10 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ],
+         [
+          "p",
+          [
+           "第 11 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ],
+         [
+          "p",
+          [
+           "第 12 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ],
+         [
+          "p",
+          [
+           "第 13 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ],
+         [
+          "p",
+          [
+           "第 14 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ],
+         [
+          "p",
+          [
+           "第 15 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ],
+         [
+          "p",
+          [
+           "第 16 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ],
+         [
+          "p",
+          [
+           "第 17 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ],
+         [
+          "p",
+          [
+           "第 18 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ],
+         [
+          "p",
+          [
+           "第 19 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ],
+         [
+          "p",
+          [
+           "第 20 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ],
+         [
+          "p",
+          [
+           "第 21 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ],
+         [
+          "p",
+          [
+           "第 22 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ],
+         [
+          "p",
+          [
+           "第 23 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ],
+         [
+          "p",
+          [
+           "第 24 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ],
+         [
+          "p",
+          [
+           "第 25 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ],
+         [
+          "p",
+          [
+           "第 26 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ],
+         [
+          "p",
+          [
+           "第 27 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ],
+         [
+          "p",
+          [
+           "第 28 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ],
+         [
+          "p",
+          [
+           "第 29 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ],
+         [
+          "p",
+          [
+           "第 30 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ],
+         [
+          "p",
+          [
+           "第 31 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ],
+         [
+          "p",
+          [
+           "第 32 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ],
+         [
+          "p",
+          [
+           "第 33 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ],
+         [
+          "p",
+          [
+           "第 34 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ],
+         [
+          "p",
+          [
+           "第 35 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ],
+         [
+          "p",
+          [
+           "第 36 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ],
+         [
+          "p",
+          [
+           "第 37 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ],
+         [
+          "p",
+          [
+           "第 38 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ],
+         [
+          "p",
+          [
+           "第 39 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ],
+         [
+          "p",
+          [
+           "第 40 段：这是一段较长的回复，用来把历史撑过一个视口。"
+          ]
+         ]
+        ]
+       },
+       {
+        "actorType": "user",
+        "attachments": [],
+        "blocksKey": "[{\"type\":\"text\",\"text\":\"请完成冒烟任务\"}]",
+        "clientRequestId": "01a671ea-5281-4cf0-ae79-ba50f2cd7841",
+        "createdAt": 1720000001,
+        "delivery": "sent",
+        "display": {
+         "body": "请完成冒烟任务",
+         "quotes": [],
+         "files": []
+        },
+        "messageId": "msg-user-smoke",
+        "parts": [
+         {
+          "kind": "markdown",
+          "text": "请完成冒烟任务"
+         }
+        ],
+        "refs": [],
+        "role": "user",
+        "source": "server",
+        "status": "committed",
+        "text": "请完成冒烟任务"
+       },
+       {
+        "actorType": "agent",
+        "attachments": [],
+        "blocksKey": "[{\"type\":\"text\",\"text\":\"我已经创建了任务 \"},{\"type\":\"conversation_ref\",\"presentation\":\"inline\",\"conversation_id\":\"cnv_public_task_smoke\",\"kind\":\"agent_task\",\"title\":\"冒烟任务\",\"status\":\"in_progress\",\"activity_status\":\"idle\",\"freshness\":{\"state\":\"fresh\"},\"updated_at\":1720000003},{\"type\":\"text\",\"text\":\" 已完成。\"}]",
+        "createdAt": 1720000002,
+        "delivery": "sent",
+        "messageId": "msg-assistant-smoke",
+        "notice": {
+         "preview": "我已经创建了任务\n已完成。"
+        },
+        "replyToMessageId": "msg-user-smoke",
+        "threadRootMessageId": "msg-user-smoke",
+        "parts": [
+         {
+          "kind": "markdown",
+          "text": "我已经创建了任务 "
+         },
+         {
+          "kind": "inline-task",
+          "task": {
+           "activityStatus": "idle",
+           "conversationId": "cnv_public_task_smoke",
+           "status": "in_progress",
+           "statusBucket": "in_progress",
+           "title": "冒烟任务",
+           "unavailable": false,
+           "updatedAt": 1720000003
+          }
+         },
+         {
+          "kind": "markdown",
+          "text": " 已完成。"
+         }
+        ],
+        "refs": [],
+        "role": "assistant",
+        "source": "server",
+        "status": "committed",
+        "text": "我已经创建了任务 \n 已完成。",
+        "createdTasks": [
+         {
+          "conversationId": "cnv_public_task_smoke",
+          "title": "冒烟任务",
+          "updatedAt": 1720000003
+         }
+        ],
+        "markdown": [
+         [
+          "p",
+          [
+           "我已经创建了任务 ",
+           [
+            "comma-inline",
+            {
+             "key": "element-1"
+            }
+           ],
+           " 已完成。"
+          ]
+         ]
+        ]
+       }
+      ]
+     },
+     {
+      "path": [
+       "state",
+       "awaitingSince"
+      ],
+      "remove": true
+     },
+     {
+      "path": [
+       "state",
+       "awaitingTurnKey"
+      ],
+      "remove": true
+     }
+    ]
+   }
+  },
+  {
+   "at": 128,
+   "dir": "out",
+   "data": {
+    "id": 34,
+    "call": "taskLabels.refresh",
+    "params": {
+     "group": "grp-smoke"
+    }
+   }
+  },
+  {
+   "at": 128,
+   "dir": "out",
+   "data": {
+    "id": 35,
+    "subscribe": {
+     "topic": "taskSummaries",
+     "group": "grp-smoke",
+     "ids": "cnv_public_task_smoke"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 128,
+   "dir": "out",
+   "data": {
+    "id": 36,
+    "subscribe": {
+     "topic": "taskLabels",
+     "group": "grp-smoke",
+     "key": "",
+     "mode": "known"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 128,
+   "dir": "out",
+   "data": {
+    "id": 37,
+    "subscribe": {
+     "topic": "taskWorkers",
+     "group": "grp-smoke",
+     "ids": "cnv_public_task_smoke"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 128,
+   "dir": "rest"
+  },
+  {
+   "at": 128,
+   "dir": "in",
+   "data": {
+    "id": 25,
+    "delta": [
+     {
+      "path": [
+       "loading"
+      ],
+      "set": true
+     }
+    ]
+   }
+  },
+  {
+   "at": 128,
+   "dir": "in",
+   "data": {
+    "id": 35,
+    "value": {
+     "summaries": []
+    }
+   }
+  },
+  {
+   "at": 128,
+   "dir": "in",
+   "data": {
+    "id": 36,
+    "value": {
+     "catalog": null,
+     "error": true,
+     "loading": true
+    }
+   }
+  },
+  {
+   "at": 128,
+   "dir": "in",
+   "data": {
+    "id": 37,
+    "value": {}
+   }
+  },
+  {
+   "at": 128,
+   "dir": "rest"
+  },
+  {
+   "at": 128,
+   "dir": "in",
+   "data": {
+    "id": 34,
+    "error": {
+     "code": "unhandled GET /v1/comma/groups/grp-smoke/task-labels",
+     "message": "unhandled GET /v1/comma/groups/grp-smoke/task-labels",
+     "status": 404,
+     "detail": {
+      "error": "unhandled GET /v1/comma/groups/grp-smoke/task-labels"
+     }
+    }
+   }
+  },
+  {
+   "at": 128,
+   "dir": "rest"
+  },
+  {
+   "at": 150,
+   "dir": "due"
+  },
+  {
+   "at": 150,
+   "dir": "in",
+   "data": {
+    "id": 5,
+    "delta": [
+     {
+      "path": [
+       "items"
+      ],
+      "key": [
+       "id"
+      ],
+      "put": {
+       "archiveAvailability": {
+        "allowed": false,
+        "reason": null
+       },
+       "archiveVersion": 1720000003,
+       "conversationId": "cnv_public_task_smoke",
+       "groupId": "grp-smoke",
+       "id": "grp-smoke:cnv_public_task_smoke",
+       "kind": "agent_task",
+       "labels": [],
+       "source": "salix.conversation",
+       "status": "in_progress",
+       "title": "冒烟任务",
+       "updatedAt": 1720000003000,
+       "workspaceId": "ws-smoke",
+       "workspaceName": "Smoke Workspace",
+       "statusBucket": "in_progress",
+       "statusFailed": false
+      },
+      "before": null
+     },
+     {
+      "path": [
+       "lastSyncedAt"
+      ],
+      "set": 1768478400128
+     }
+    ]
+   }
+  },
+  {
+   "at": 150,
+   "dir": "in",
+   "data": {
+    "id": 13,
+    "delta": [
+     {
+      "path": [
+       "items"
+      ],
+      "key": [
+       "id"
+      ],
+      "put": {
+       "archiveAvailability": {
+        "allowed": false,
+        "reason": null
+       },
+       "archiveVersion": 1720000003,
+       "conversationId": "cnv_public_task_smoke",
+       "groupId": "grp-smoke",
+       "id": "grp-smoke:cnv_public_task_smoke",
+       "kind": "agent_task",
+       "labels": [],
+       "source": "salix.conversation",
+       "status": "in_progress",
+       "title": "冒烟任务",
+       "updatedAt": 1720000003000,
+       "workspaceId": "ws-smoke",
+       "workspaceName": "Smoke Workspace",
+       "statusBucket": "in_progress",
+       "statusFailed": false
+      },
+      "before": null
+     },
+     {
+      "path": [
+       "lastSyncedAt"
+      ],
+      "set": 1768478400128
+     }
+    ]
+   }
+  },
+  {
+   "at": 150,
+   "dir": "in",
+   "data": {
+    "id": 16,
+    "delta": [
+     {
+      "path": [
+       "items"
+      ],
+      "key": [
+       "id"
+      ],
+      "put": {
+       "archiveAvailability": {
+        "allowed": false,
+        "reason": null
+       },
+       "archiveVersion": 1720000003,
+       "conversationId": "cnv_public_task_smoke",
+       "groupId": "grp-smoke",
+       "id": "grp-smoke:cnv_public_task_smoke",
+       "kind": "agent_task",
+       "labels": [],
+       "source": "salix.conversation",
+       "status": "in_progress",
+       "title": "冒烟任务",
+       "updatedAt": 1720000003000,
+       "workspaceId": "ws-smoke",
+       "workspaceName": "Smoke Workspace",
+       "statusBucket": "in_progress",
+       "statusFailed": false
+      },
+      "before": null
+     },
+     {
+      "path": [
+       "lastSyncedAt"
+      ],
+      "set": 1768478400128
+     }
+    ]
+   }
+  },
+  {
+   "at": 150,
+   "dir": "rest"
+  },
+  {
+   "at": 150,
+   "dir": "in",
+   "data": {
+    "id": 25,
+    "delta": [
+     {
+      "path": [
+       "loading"
+      ],
+      "set": false
+     }
+    ]
+   }
+  },
+  {
+   "at": 150,
+   "dir": "in",
+   "data": {
+    "id": 36,
+    "delta": [
+     {
+      "path": [
+       "loading"
+      ],
+      "set": false
+     }
+    ]
+   }
+  },
+  {
+   "at": 150,
+   "dir": "in",
+   "data": {
+    "id": 37,
+    "value": {
+     "cnv_public_task_smoke": null
+    }
+   }
+  },
+  {
+   "at": 150,
+   "dir": "in",
+   "data": {
+    "id": 35,
+    "delta": [
+     {
+      "path": [
+       "summaries"
+      ],
+      "key": [
+       "id"
+      ],
+      "put": {
+       "id": "cnv_public_task_smoke",
+       "group_id": "grp-smoke",
+       "kind": "agent_task",
+       "status": "in_progress",
+       "title": "冒烟任务",
+       "updated_at": 1720000003,
+       "archive_availability": {
+        "allowed": false,
+        "reason": null
+       },
+       "labels": [],
+       "status_bucket": "in_progress",
+       "status_failed": false
+      },
+      "before": null
+     }
+    ]
+   }
+  },
+  {
+   "at": 150,
+   "dir": "in",
+   "data": {
+    "id": 30,
+    "delta": [
+     {
+      "path": [
+       "sections",
+       0,
+       "ids"
+      ],
+      "append": [
+       "cnv_public_task_smoke"
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "at": 150,
+   "dir": "rest"
+  },
+  {
+   "at": 176,
+   "dir": "out",
+   "data": {
+    "id": 38,
+    "subscribe": {
+     "topic": "taskPreview",
+     "group": "grp-smoke",
+     "conversation": "cnv_public_task_smoke",
+     "read": "1"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 176,
+   "dir": "rest"
+  },
+  {
+   "at": 176,
+   "dir": "in",
+   "data": {
+    "id": 22,
+    "value": [
+     {
+      "id": "cnv_public_task_smoke",
+      "status": "in_progress",
+      "title": "冒烟任务",
+      "updatedAt": 1720000003
+     }
+    ]
+   }
+  },
+  {
+   "at": 176,
+   "dir": "in",
+   "data": {
+    "id": 38,
+    "value": {
+     "status": "loading"
+    }
+   }
+  },
+  {
+   "at": 176,
+   "dir": "rest"
+  },
+  {
+   "at": 178,
+   "dir": "due"
+  },
+  {
+   "at": 178,
+   "dir": "in",
+   "data": {
+    "id": 38,
+    "value": {
+     "status": "ready",
+     "preview": {
+      "activity_status": "idle",
+      "freshness": {
+       "state": "fresh",
+       "refreshed_at": 1720000003
+      },
+      "id": "cnv_public_task_smoke",
+      "group_id": "grp-smoke",
+      "kind": "agent_task",
+      "status": "in_progress",
+      "title": "冒烟任务",
+      "updated_at": 1720000003
+     }
+    }
+   }
+  },
+  {
+   "at": 178,
+   "dir": "rest"
+  },
+  {
+   "at": 200,
+   "dir": "due"
+  },
+  {
+   "at": 208,
+   "dir": "out",
+   "data": {
+    "id": 39,
+    "subscribe": {
+     "topic": "taskSummaries",
+     "group": "grp-smoke",
+     "ids": "cnv_public_task_smoke",
+     "peek": "1"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 208,
+   "dir": "out",
+   "data": {
+    "id": 40,
+    "subscribe": {
+     "topic": "chatView",
+     "workspace": "ws-smoke",
+     "group": "grp-smoke",
+     "conversation": "cnv_public_task_smoke",
+     "surface": "web:fdcace21-8a56-426d-8fed-3388eddffbcf"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 208,
+   "dir": "rest"
+  },
+  {
+   "at": 208,
+   "dir": "in",
+   "data": {
+    "id": 39,
+    "value": {
+     "summaries": [
+      {
+       "id": "cnv_public_task_smoke",
+       "group_id": "grp-smoke",
+       "kind": "agent_task",
+       "status": "in_progress",
+       "title": "冒烟任务",
+       "updated_at": 1720000003,
+       "archive_availability": {
+        "allowed": false,
+        "reason": null
+       },
+       "labels": [],
+       "status_bucket": "in_progress",
+       "status_failed": false
+      }
+     ]
+    }
+   }
+  },
+  {
+   "at": 208,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 13
+     }
+    ]
+   }
+  },
+  {
+   "at": 208,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "value": {
+     "session": {
+      "sessionId": "e2e-session:smoke@comma.local",
+      "audience": "http://comma-stub.test"
+     },
+     "revision": 13,
+     "draftEpoch": 0,
+     "lease": {
+      "leaseId": "11ea4675-fc2e-4dc8-81fb-6fbcfc3038f0",
+      "subscriberId": "web:fdcace21-8a56-426d-8fed-3388eddffbcf:grp-smoke/cnv_public_task_smoke"
+     },
+     "state": {
+      "awaitingReply": false,
+      "awaitingTimedOut": false,
+      "connection": "connecting",
+      "draft": "",
+      "draftAttachments": [],
+      "lastBackoffMs": 0,
+      "locallyAwaitingReply": false,
+      "messages": [],
+      "pending": [],
+      "reply": {
+       "coming": false,
+       "thinking": false,
+       "streaming": false,
+       "working": false,
+       "failed": false,
+       "timedOut": false
+      },
+      "serverMessages": [],
+      "status": "loading"
+     }
+    }
+   }
+  },
+  {
+   "at": 208,
+   "dir": "rest"
+  },
+  {
+   "at": 208,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 14
+     }
+    ]
+   }
+  },
+  {
+   "at": 208,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 14
+     },
+     {
+      "path": [
+       "state",
+       "connection"
+      ],
+      "set": "live"
+     },
+     {
+      "path": [
+       "state",
+       "conversation"
+      ],
+      "set": {
+       "created_at": 1720000002,
+       "group_id": "grp-smoke",
+       "id": "cnv_public_task_smoke",
+       "kind": "agent_task",
+       "messages": [],
+       "status": "in_progress",
+       "title": "冒烟任务",
+       "updated_at": 1720000003
+      }
+     },
+     {
+      "path": [
+       "state",
+       "status"
+      ],
+      "set": "ready"
+     }
+    ]
+   }
+  },
+  {
+   "at": 208,
+   "dir": "out",
+   "data": {
+    "id": 41,
+    "call": "marks.mark",
+    "params": {
+     "kind": "taskReviewSeen",
+     "entries": [
+      [
+       "cnv_public_task_smoke",
+       1720000003000
+      ]
+     ]
+    }
+   }
+  },
+  {
+   "at": 208,
+   "dir": "out",
+   "data": {
+    "id": 42,
+    "subscribe": {
+     "topic": "agentRequests",
+     "group": "grp-smoke",
+     "conversation": "cnv_public_task_smoke"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 208,
+   "dir": "rest"
+  },
+  {
+   "at": 208,
+   "dir": "in",
+   "data": {
+    "id": 41,
+    "ok": null
+   }
+  },
+  {
+   "at": 208,
+   "dir": "rest"
+  },
+  {
+   "at": 208,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 15
+     }
+    ]
+   }
+  },
+  {
+   "at": 208,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 15
+     }
+    ]
+   }
+  },
+  {
+   "at": 208,
+   "dir": "in",
+   "data": {
+    "id": 8,
+    "value": {
+     "marks": {
+      "cnv_public_task_smoke": 1720000003000
+     }
+    }
+   }
+  },
+  {
+   "at": 208,
+   "dir": "in",
+   "data": {
+    "id": 42,
+    "value": {
+     "requests": [],
+     "loading": true,
+     "error": false
+    }
+   }
+  },
+  {
+   "at": 208,
+   "dir": "rest"
+  },
+  {
+   "at": 208,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 16
+     }
+    ]
+   }
+  },
+  {
+   "at": 208,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 16
+     }
+    ]
+   }
+  },
+  {
+   "at": 208,
+   "dir": "in",
+   "data": {
+    "id": 42,
+    "delta": [
+     {
+      "path": [
+       "error"
+      ],
+      "set": true
+     },
+     {
+      "path": [
+       "loading"
+      ],
+      "set": false
+     }
+    ]
+   }
+  },
+  {
+   "at": 208,
+   "dir": "rest"
+  },
+  {
+   "at": 208,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 17
+     }
+    ]
+   }
+  },
+  {
+   "at": 208,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 17
+     },
+     {
+      "path": [
+       "state",
+       "participantStatuses"
+      ],
+      "set": []
+     }
+    ]
+   }
+  },
+  {
+   "at": 208,
+   "dir": "rest"
+  },
+  {
+   "at": 226,
+   "dir": "due"
+  },
+  {
+   "at": 240,
+   "dir": "due"
+  },
+  {
+   "at": 240,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 18
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown"
+      ],
+      "append": [
+       [
+        "p",
+        [
+         "正在整理这一步的结果。"
+        ]
+       ]
+      ]
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "set": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 240,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 18
+     }
+    ]
+   }
+  },
+  {
+   "at": 240,
+   "dir": "rest"
+  },
+  {
+   "at": 258,
+   "dir": "due"
+  },
+  {
+   "at": 380,
+   "dir": "due"
+  },
+  {
+   "at": 380,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 19
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 380,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 19
+     }
+    ]
+   }
+  },
+  {
+   "at": 380,
+   "dir": "rest"
+  },
+  {
+   "at": 520,
+   "dir": "due"
+  },
+  {
+   "at": 520,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 20
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 520,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 20
+     }
+    ]
+   }
+  },
+  {
+   "at": 520,
+   "dir": "rest"
+  },
+  {
+   "at": 660,
+   "dir": "due"
+  },
+  {
+   "at": 660,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 21
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 660,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 21
+     }
+    ]
+   }
+  },
+  {
+   "at": 660,
+   "dir": "rest"
+  },
+  {
+   "at": 800,
+   "dir": "due"
+  },
+  {
+   "at": 800,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 22
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 800,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 22
+     }
+    ]
+   }
+  },
+  {
+   "at": 800,
+   "dir": "rest"
+  },
+  {
+   "at": 940,
+   "dir": "due"
+  },
+  {
+   "at": 940,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 23
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 940,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 23
+     }
+    ]
+   }
+  },
+  {
+   "at": 940,
+   "dir": "rest"
+  },
+  {
+   "at": 1080,
+   "dir": "due"
+  },
+  {
+   "at": 1080,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 24
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 1080,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 24
+     }
+    ]
+   }
+  },
+  {
+   "at": 1080,
+   "dir": "rest"
+  },
+  {
+   "at": 1100,
+   "dir": "due"
+  },
+  {
+   "at": 1150,
+   "dir": "due"
+  },
+  {
+   "at": 1208,
+   "dir": "due"
+  },
+  {
+   "at": 1220,
+   "dir": "due"
+  },
+  {
+   "at": 1220,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 25
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 1220,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 25
+     }
+    ]
+   }
+  },
+  {
+   "at": 1220,
+   "dir": "rest"
+  },
+  {
+   "at": 1258,
+   "dir": "due"
+  },
+  {
+   "at": 1360,
+   "dir": "due"
+  },
+  {
+   "at": 1360,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 26
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 1360,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 26
+     }
+    ]
+   }
+  },
+  {
+   "at": 1360,
+   "dir": "rest"
+  },
+  {
+   "at": 1500,
+   "dir": "due"
+  },
+  {
+   "at": 1500,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 27
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 1500,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 27
+     }
+    ]
+   }
+  },
+  {
+   "at": 1500,
+   "dir": "rest"
+  },
+  {
+   "at": 1640,
+   "dir": "due"
+  },
+  {
+   "at": 1640,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 28
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 1640,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 28
+     }
+    ]
+   }
+  },
+  {
+   "at": 1640,
+   "dir": "rest"
+  },
+  {
+   "at": 1780,
+   "dir": "due"
+  },
+  {
+   "at": 1780,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 29
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 1780,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 29
+     }
+    ]
+   }
+  },
+  {
+   "at": 1780,
+   "dir": "rest"
+  },
+  {
+   "at": 1920,
+   "dir": "due"
+  },
+  {
+   "at": 1920,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 30
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 1920,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 30
+     }
+    ]
+   }
+  },
+  {
+   "at": 1920,
+   "dir": "rest"
+  },
+  {
+   "at": 2060,
+   "dir": "due"
+  },
+  {
+   "at": 2060,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 31
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 2060,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 31
+     }
+    ]
+   }
+  },
+  {
+   "at": 2060,
+   "dir": "rest"
+  },
+  {
+   "at": 2200,
+   "dir": "due"
+  },
+  {
+   "at": 2200,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 32
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 2200,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 32
+     }
+    ]
+   }
+  },
+  {
+   "at": 2200,
+   "dir": "rest"
+  },
+  {
+   "at": 2220,
+   "dir": "due"
+  },
+  {
+   "at": 2340,
+   "dir": "due"
+  },
+  {
+   "at": 2340,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 33
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 2340,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 33
+     }
+    ]
+   }
+  },
+  {
+   "at": 2340,
+   "dir": "rest"
+  },
+  {
+   "at": 2480,
+   "dir": "due"
+  },
+  {
+   "at": 2480,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 34
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 2480,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 34
+     }
+    ]
+   }
+  },
+  {
+   "at": 2480,
+   "dir": "rest"
+  },
+  {
+   "at": 2620,
+   "dir": "due"
+  },
+  {
+   "at": 2620,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 35
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 2620,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 35
+     }
+    ]
+   }
+  },
+  {
+   "at": 2620,
+   "dir": "rest"
+  },
+  {
+   "at": 2760,
+   "dir": "due"
+  },
+  {
+   "at": 2760,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 36
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 2760,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 36
+     }
+    ]
+   }
+  },
+  {
+   "at": 2760,
+   "dir": "rest"
+  },
+  {
+   "at": 2900,
+   "dir": "due"
+  },
+  {
+   "at": 2900,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 37
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 2900,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 37
+     }
+    ]
+   }
+  },
+  {
+   "at": 2900,
+   "dir": "rest"
+  },
+  {
+   "at": 3040,
+   "dir": "due"
+  },
+  {
+   "at": 3040,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 38
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 3040,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 38
+     }
+    ]
+   }
+  },
+  {
+   "at": 3040,
+   "dir": "rest"
+  },
+  {
+   "at": 3100,
+   "dir": "due"
+  },
+  {
+   "at": 3150,
+   "dir": "due"
+  },
+  {
+   "at": 3180,
+   "dir": "due"
+  },
+  {
+   "at": 3180,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 39
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 3180,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 39
+     }
+    ]
+   }
+  },
+  {
+   "at": 3180,
+   "dir": "rest"
+  },
+  {
+   "at": 3320,
+   "dir": "due"
+  },
+  {
+   "at": 3320,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 40
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 3320,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 40
+     }
+    ]
+   }
+  },
+  {
+   "at": 3320,
+   "dir": "rest"
+  },
+  {
+   "at": 3340,
+   "dir": "due"
+  },
+  {
+   "at": 3460,
+   "dir": "due"
+  },
+  {
+   "at": 3460,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 41
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 3460,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 41
+     }
+    ]
+   }
+  },
+  {
+   "at": 3460,
+   "dir": "rest"
+  },
+  {
+   "at": 3600,
+   "dir": "due"
+  },
+  {
+   "at": 3600,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 42
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 3600,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 42
+     }
+    ]
+   }
+  },
+  {
+   "at": 3600,
+   "dir": "rest"
+  },
+  {
+   "at": 3740,
+   "dir": "due"
+  },
+  {
+   "at": 3740,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 43
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 3740,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 43
+     }
+    ]
+   }
+  },
+  {
+   "at": 3740,
+   "dir": "rest"
+  },
+  {
+   "at": 3880,
+   "dir": "due"
+  },
+  {
+   "at": 3880,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 44
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 3880,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 44
+     }
+    ]
+   }
+  },
+  {
+   "at": 3880,
+   "dir": "rest"
+  },
+  {
+   "at": 4020,
+   "dir": "due"
+  },
+  {
+   "at": 4020,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 45
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 4020,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 45
+     }
+    ]
+   }
+  },
+  {
+   "at": 4020,
+   "dir": "rest"
+  },
+  {
+   "at": 4160,
+   "dir": "due"
+  },
+  {
+   "at": 4160,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 46
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 4160,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 46
+     }
+    ]
+   }
+  },
+  {
+   "at": 4160,
+   "dir": "rest"
+  },
+  {
+   "at": 4300,
+   "dir": "due"
+  },
+  {
+   "at": 4300,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 47
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 4300,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 47
+     }
+    ]
+   }
+  },
+  {
+   "at": 4300,
+   "dir": "rest"
+  },
+  {
+   "at": 4440,
+   "dir": "due"
+  },
+  {
+   "at": 4440,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 48
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 4440,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 48
+     }
+    ]
+   }
+  },
+  {
+   "at": 4440,
+   "dir": "rest"
+  },
+  {
+   "at": 4460,
+   "dir": "due"
+  },
+  {
+   "at": 4492,
+   "dir": "step",
+   "data": {
+    "name": "stub.commitThinkingReply",
+    "args": []
+   }
+  },
+  {
+   "at": 4492,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 50
+     }
+    ]
+   }
+  },
+  {
+   "at": 4492,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 50
+     }
+    ]
+   }
+  },
+  {
+   "at": 4492,
+   "dir": "rest"
+  },
+  {
+   "at": 4492,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 53
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown"
+      ],
+      "set": []
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "set": ""
+     },
+     {
+      "path": [
+       "state",
+       "messages"
+      ],
+      "key": [
+       "messageId"
+      ],
+      "put": {
+       "actorType": "agent",
+       "attachments": [],
+       "blocksKey": "[{\"type\":\"text\",\"text\":\"思考完成的第 1 条回复。\"}]",
+       "createdAt": 1720000200,
+       "delivery": "sent",
+       "messageId": "msg-assistant-thinking-1",
+       "notice": {
+        "preview": "思考完成的第 1 条回复。"
+       },
+       "parts": [
+        {
+         "kind": "markdown",
+         "text": "思考完成的第 1 条回复。"
+        }
+       ],
+       "refs": [],
+       "role": "assistant",
+       "source": "server",
+       "status": "committed",
+       "text": "思考完成的第 1 条回复。",
+       "markdown": [
+        [
+         "p",
+         [
+          "思考完成的第 1 条回复。"
+         ]
+        ]
+       ]
+      },
+      "before": null
+     },
+     {
+      "path": [
+       "state",
+       "participantStatus",
+       "updatedAt"
+      ],
+      "set": 3
+     },
+     {
+      "path": [
+       "state",
+       "serverMessages"
+      ],
+      "key": [
+       "messageId"
+      ],
+      "put": {
+       "actorType": "agent",
+       "attachments": [],
+       "blocksKey": "[{\"type\":\"text\",\"text\":\"思考完成的第 1 条回复。\"}]",
+       "createdAt": 1720000200,
+       "delivery": "sent",
+       "messageId": "msg-assistant-thinking-1",
+       "notice": {
+        "preview": "思考完成的第 1 条回复。"
+       },
+       "parts": [
+        {
+         "kind": "markdown",
+         "text": "思考完成的第 1 条回复。"
+        }
+       ],
+       "refs": [],
+       "role": "assistant",
+       "source": "server",
+       "status": "committed",
+       "text": "思考完成的第 1 条回复。",
+       "markdown": [
+        [
+         "p",
+         [
+          "思考完成的第 1 条回复。"
+         ]
+        ]
+       ]
+      },
+      "before": null
+     }
+    ]
+   }
+  },
+  {
+   "at": 4492,
+   "dir": "out",
+   "data": {
+    "id": 43,
+    "call": "taskLabels.refresh",
+    "params": {
+     "group": "grp-smoke"
+    }
+   }
+  },
+  {
+   "at": 4492,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 53
+     }
+    ]
+   }
+  },
+  {
+   "at": 4492,
+   "dir": "rest"
+  },
+  {
+   "at": 4492,
+   "dir": "in",
+   "data": {
+    "id": 43,
+    "error": {
+     "code": "unhandled GET /v1/comma/groups/grp-smoke/task-labels",
+     "message": "unhandled GET /v1/comma/groups/grp-smoke/task-labels",
+     "status": 404,
+     "detail": {
+      "error": "unhandled GET /v1/comma/groups/grp-smoke/task-labels"
+     }
+    }
+   }
+  },
+  {
+   "at": 4492,
+   "dir": "rest"
+  },
+  {
+   "at": 4542,
+   "dir": "due"
+  },
+  {
+   "at": 4632,
+   "dir": "due"
+  },
+  {
+   "at": 4632,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 54
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown"
+      ],
+      "append": [
+       [
+        "p",
+        [
+         "正在整理这一步的结果。"
+        ]
+       ]
+      ]
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "set": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 4632,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 54
+     }
+    ]
+   }
+  },
+  {
+   "at": 4632,
+   "dir": "rest"
+  },
+  {
+   "at": 4772,
+   "dir": "due"
+  },
+  {
+   "at": 4772,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 55
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 4772,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 55
+     }
+    ]
+   }
+  },
+  {
+   "at": 4772,
+   "dir": "rest"
+  },
+  {
+   "at": 4912,
+   "dir": "due"
+  },
+  {
+   "at": 4912,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 56
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 4912,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 56
+     }
+    ]
+   }
+  },
+  {
+   "at": 4912,
+   "dir": "rest"
+  },
+  {
+   "at": 5052,
+   "dir": "due"
+  },
+  {
+   "at": 5052,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 57
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 5052,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 57
+     }
+    ]
+   }
+  },
+  {
+   "at": 5052,
+   "dir": "rest"
+  },
+  {
+   "at": 5192,
+   "dir": "due"
+  },
+  {
+   "at": 5192,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 58
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 5192,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 58
+     }
+    ]
+   }
+  },
+  {
+   "at": 5192,
+   "dir": "rest"
+  },
+  {
+   "at": 5332,
+   "dir": "due"
+  },
+  {
+   "at": 5332,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 59
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 5332,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 59
+     }
+    ]
+   }
+  },
+  {
+   "at": 5332,
+   "dir": "rest"
+  },
+  {
+   "at": 5472,
+   "dir": "due"
+  },
+  {
+   "at": 5472,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 60
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 5472,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 60
+     }
+    ]
+   }
+  },
+  {
+   "at": 5472,
+   "dir": "rest"
+  },
+  {
+   "at": 5492,
+   "dir": "due"
+  },
+  {
+   "at": 5612,
+   "dir": "due"
+  },
+  {
+   "at": 5612,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 61
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 5612,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 61
+     }
+    ]
+   }
+  },
+  {
+   "at": 5612,
+   "dir": "rest"
+  },
+  {
+   "at": 5752,
+   "dir": "due"
+  },
+  {
+   "at": 5752,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 62
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 5752,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 62
+     }
+    ]
+   }
+  },
+  {
+   "at": 5752,
+   "dir": "rest"
+  },
+  {
+   "at": 5892,
+   "dir": "due"
+  },
+  {
+   "at": 5892,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 63
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 5892,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 63
+     }
+    ]
+   }
+  },
+  {
+   "at": 5892,
+   "dir": "rest"
+  },
+  {
+   "at": 6032,
+   "dir": "due"
+  },
+  {
+   "at": 6032,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 64
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 6032,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 64
+     }
+    ]
+   }
+  },
+  {
+   "at": 6032,
+   "dir": "rest"
+  },
+  {
+   "at": 6100,
+   "dir": "due"
+  },
+  {
+   "at": 6150,
+   "dir": "due"
+  },
+  {
+   "at": 6172,
+   "dir": "due"
+  },
+  {
+   "at": 6172,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 65
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 6172,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 65
+     }
+    ]
+   }
+  },
+  {
+   "at": 6172,
+   "dir": "rest"
+  },
+  {
+   "at": 6208,
+   "dir": "due"
+  },
+  {
+   "at": 6258,
+   "dir": "due"
+  },
+  {
+   "at": 6312,
+   "dir": "due"
+  },
+  {
+   "at": 6312,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 66
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 6312,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 66
+     }
+    ]
+   }
+  },
+  {
+   "at": 6312,
+   "dir": "rest"
+  },
+  {
+   "at": 6452,
+   "dir": "due"
+  },
+  {
+   "at": 6452,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 67
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 6452,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 67
+     }
+    ]
+   }
+  },
+  {
+   "at": 6452,
+   "dir": "rest"
+  },
+  {
+   "at": 6592,
+   "dir": "due"
+  },
+  {
+   "at": 6592,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 68
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 6592,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 68
+     }
+    ]
+   }
+  },
+  {
+   "at": 6592,
+   "dir": "rest"
+  },
+  {
+   "at": 6612,
+   "dir": "due"
+  },
+  {
+   "at": 6732,
+   "dir": "due"
+  },
+  {
+   "at": 6732,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 69
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 6732,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 69
+     }
+    ]
+   }
+  },
+  {
+   "at": 6732,
+   "dir": "rest"
+  },
+  {
+   "at": 6872,
+   "dir": "due"
+  },
+  {
+   "at": 6872,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 70
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 6872,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 70
+     }
+    ]
+   }
+  },
+  {
+   "at": 6872,
+   "dir": "rest"
+  },
+  {
+   "at": 7012,
+   "dir": "due"
+  },
+  {
+   "at": 7012,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 71
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 7012,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 71
+     }
+    ]
+   }
+  },
+  {
+   "at": 7012,
+   "dir": "rest"
+  },
+  {
+   "at": 7100,
+   "dir": "due"
+  },
+  {
+   "at": 7150,
+   "dir": "due"
+  },
+  {
+   "at": 7152,
+   "dir": "due"
+  },
+  {
+   "at": 7152,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 72
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 7152,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 72
+     }
+    ]
+   }
+  },
+  {
+   "at": 7152,
+   "dir": "rest"
+  },
+  {
+   "at": 7292,
+   "dir": "due"
+  },
+  {
+   "at": 7292,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 73
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 7292,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 73
+     }
+    ]
+   }
+  },
+  {
+   "at": 7292,
+   "dir": "rest"
+  },
+  {
+   "at": 7432,
+   "dir": "due"
+  },
+  {
+   "at": 7432,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 74
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 7432,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 74
+     }
+    ]
+   }
+  },
+  {
+   "at": 7432,
+   "dir": "rest"
+  },
+  {
+   "at": 7572,
+   "dir": "due"
+  },
+  {
+   "at": 7572,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 75
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 7572,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 75
+     }
+    ]
+   }
+  },
+  {
+   "at": 7572,
+   "dir": "rest"
+  },
+  {
+   "at": 7712,
+   "dir": "due"
+  },
+  {
+   "at": 7712,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 76
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 7712,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 76
+     }
+    ]
+   }
+  },
+  {
+   "at": 7712,
+   "dir": "rest"
+  },
+  {
+   "at": 7732,
+   "dir": "due"
+  },
+  {
+   "at": 7852,
+   "dir": "due"
+  },
+  {
+   "at": 7852,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 77
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 7852,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 77
+     }
+    ]
+   }
+  },
+  {
+   "at": 7852,
+   "dir": "rest"
+  },
+  {
+   "at": 7992,
+   "dir": "due"
+  },
+  {
+   "at": 7992,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 78
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 7992,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 78
+     }
+    ]
+   }
+  },
+  {
+   "at": 7992,
+   "dir": "rest"
+  },
+  {
+   "at": 8132,
+   "dir": "due"
+  },
+  {
+   "at": 8132,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 79
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 8132,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 79
+     }
+    ]
+   }
+  },
+  {
+   "at": 8132,
+   "dir": "rest"
+  },
+  {
+   "at": 8272,
+   "dir": "due"
+  },
+  {
+   "at": 8272,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 80
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 8272,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 80
+     }
+    ]
+   }
+  },
+  {
+   "at": 8272,
+   "dir": "rest"
+  },
+  {
+   "at": 8304,
+   "dir": "out",
+   "data": {
+    "id": 44,
+    "subscribe": {
+     "topic": "taskPreview",
+     "group": "grp-smoke",
+     "conversation": "cnv_public_task_smoke",
+     "read": "2"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 8304,
+   "dir": "rest"
+  },
+  {
+   "at": 8304,
+   "dir": "in",
+   "data": {
+    "id": 44,
+    "value": {
+     "status": "ready",
+     "preview": {
+      "activity_status": "idle",
+      "freshness": {
+       "state": "fresh",
+       "refreshed_at": 1720000003
+      },
+      "id": "cnv_public_task_smoke",
+      "group_id": "grp-smoke",
+      "kind": "agent_task",
+      "status": "in_progress",
+      "title": "冒烟任务",
+      "updated_at": 1720000003
+     }
+    }
+   }
+  },
+  {
+   "at": 8304,
+   "dir": "rest"
+  },
+  {
+   "at": 8320,
+   "dir": "step",
+   "data": {
+    "name": "stub.commitThinkingReply",
+    "args": []
+   }
+  },
+  {
+   "at": 8320,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 82
+     }
+    ]
+   }
+  },
+  {
+   "at": 8320,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 82
+     }
+    ]
+   }
+  },
+  {
+   "at": 8320,
+   "dir": "rest"
+  },
+  {
+   "at": 8320,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 85
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown"
+      ],
+      "set": []
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "set": ""
+     },
+     {
+      "path": [
+       "state",
+       "messages"
+      ],
+      "key": [
+       "messageId"
+      ],
+      "put": {
+       "actorType": "agent",
+       "attachments": [],
+       "blocksKey": "[{\"type\":\"text\",\"text\":\"思考完成的第 2 条回复。\"}]",
+       "createdAt": 1720000201,
+       "delivery": "sent",
+       "messageId": "msg-assistant-thinking-2",
+       "notice": {
+        "preview": "思考完成的第 2 条回复。"
+       },
+       "parts": [
+        {
+         "kind": "markdown",
+         "text": "思考完成的第 2 条回复。"
+        }
+       ],
+       "refs": [],
+       "role": "assistant",
+       "source": "server",
+       "status": "committed",
+       "text": "思考完成的第 2 条回复。",
+       "markdown": [
+        [
+         "p",
+         [
+          "思考完成的第 2 条回复。"
+         ]
+        ]
+       ]
+      },
+      "before": null
+     },
+     {
+      "path": [
+       "state",
+       "participantStatus",
+       "updatedAt"
+      ],
+      "set": 4
+     },
+     {
+      "path": [
+       "state",
+       "serverMessages"
+      ],
+      "key": [
+       "messageId"
+      ],
+      "put": {
+       "actorType": "agent",
+       "attachments": [],
+       "blocksKey": "[{\"type\":\"text\",\"text\":\"思考完成的第 2 条回复。\"}]",
+       "createdAt": 1720000201,
+       "delivery": "sent",
+       "messageId": "msg-assistant-thinking-2",
+       "notice": {
+        "preview": "思考完成的第 2 条回复。"
+       },
+       "parts": [
+        {
+         "kind": "markdown",
+         "text": "思考完成的第 2 条回复。"
+        }
+       ],
+       "refs": [],
+       "role": "assistant",
+       "source": "server",
+       "status": "committed",
+       "text": "思考完成的第 2 条回复。",
+       "markdown": [
+        [
+         "p",
+         [
+          "思考完成的第 2 条回复。"
+         ]
+        ]
+       ]
+      },
+      "before": null
+     }
+    ]
+   }
+  },
+  {
+   "at": 8320,
+   "dir": "out",
+   "data": {
+    "id": 45,
+    "call": "taskLabels.refresh",
+    "params": {
+     "group": "grp-smoke"
+    }
+   }
+  },
+  {
+   "at": 8320,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 85
+     }
+    ]
+   }
+  },
+  {
+   "at": 8320,
+   "dir": "rest"
+  },
+  {
+   "at": 8320,
+   "dir": "in",
+   "data": {
+    "id": 45,
+    "error": {
+     "code": "unhandled GET /v1/comma/groups/grp-smoke/task-labels",
+     "message": "unhandled GET /v1/comma/groups/grp-smoke/task-labels",
+     "status": 404,
+     "detail": {
+      "error": "unhandled GET /v1/comma/groups/grp-smoke/task-labels"
+     }
+    }
+   }
+  },
+  {
+   "at": 8320,
+   "dir": "rest"
+  },
+  {
+   "at": 8370,
+   "dir": "due"
+  },
+  {
+   "at": 8460,
+   "dir": "due"
+  },
+  {
+   "at": 8460,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 86
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown"
+      ],
+      "append": [
+       [
+        "p",
+        [
+         "正在整理这一步的结果。"
+        ]
+       ]
+      ]
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "set": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 8460,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 86
+     }
+    ]
+   }
+  },
+  {
+   "at": 8460,
+   "dir": "rest"
+  },
+  {
+   "at": 8600,
+   "dir": "due"
+  },
+  {
+   "at": 8600,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 87
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 8600,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 87
+     }
+    ]
+   }
+  },
+  {
+   "at": 8600,
+   "dir": "rest"
+  },
+  {
+   "at": 8740,
+   "dir": "due"
+  },
+  {
+   "at": 8740,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 88
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 8740,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 88
+     }
+    ]
+   }
+  },
+  {
+   "at": 8740,
+   "dir": "rest"
+  },
+  {
+   "at": 8852,
+   "dir": "due"
+  },
+  {
+   "at": 8880,
+   "dir": "due"
+  },
+  {
+   "at": 8880,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 89
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 8880,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 89
+     }
+    ]
+   }
+  },
+  {
+   "at": 8880,
+   "dir": "rest"
+  },
+  {
+   "at": 9020,
+   "dir": "due"
+  },
+  {
+   "at": 9020,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 90
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 9020,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 90
+     }
+    ]
+   }
+  },
+  {
+   "at": 9020,
+   "dir": "rest"
+  },
+  {
+   "at": 9160,
+   "dir": "due"
+  },
+  {
+   "at": 9160,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 91
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 9160,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 91
+     }
+    ]
+   }
+  },
+  {
+   "at": 9160,
+   "dir": "rest"
+  },
+  {
+   "at": 9300,
+   "dir": "due"
+  },
+  {
+   "at": 9300,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 92
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 9300,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 92
+     }
+    ]
+   }
+  },
+  {
+   "at": 9300,
+   "dir": "rest"
+  },
+  {
+   "at": 9440,
+   "dir": "due"
+  },
+  {
+   "at": 9440,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 93
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 9440,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 93
+     }
+    ]
+   }
+  },
+  {
+   "at": 9440,
+   "dir": "rest"
+  },
+  {
+   "at": 9580,
+   "dir": "due"
+  },
+  {
+   "at": 9580,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 94
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 9580,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 94
+     }
+    ]
+   }
+  },
+  {
+   "at": 9580,
+   "dir": "rest"
+  },
+  {
+   "at": 9720,
+   "dir": "due"
+  },
+  {
+   "at": 9720,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 95
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 9720,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 95
+     }
+    ]
+   }
+  },
+  {
+   "at": 9720,
+   "dir": "rest"
+  }
+ ]
+}

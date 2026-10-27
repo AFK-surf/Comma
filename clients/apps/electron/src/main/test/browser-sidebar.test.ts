@@ -24,6 +24,7 @@ import {
 } from "@comma/native-bridge";
 import { browserSidebarElementInspectorRectSource } from "../modules/browser-sidebar/element-inspector";
 import { NativeSurfaceService } from "../modules/surfaces";
+import { realMainClock } from "../clock";
 
 // The file's timers run on the test's clock, which moves to the next timer
 // whenever the test waits.
@@ -2407,6 +2408,22 @@ function deferred<T>() {
 }
 
 describe("installBrowserSidebarSecurity window-open policy", () => {
+  it("opens App links in Main from embedded browser navigation and popups", async () => {
+    const { dispatchMiniAppRunLink } = await import("../mini-app-link");
+    const open = vi.fn();
+    const page = createSecurityTarget((url) =>
+      dispatchMiniAppRunLink(url, [], open, () => {})
+    );
+    const url = "https://app.comma.surf/#/apps/other/a1/run";
+    expect(page.requestWindow(url)).toEqual({ action: "deny" });
+    expect(page.navigate("will-navigate", url).preventDefault).toHaveBeenCalledOnce();
+    expect(open).toHaveBeenCalledTimes(2);
+    expect(open).toHaveBeenLastCalledWith("/apps/other/a1/run");
+    expect(
+      page.navigate("will-navigate", "https://example.com/").preventDefault
+    ).not.toHaveBeenCalled();
+  });
+
   it("spends one user gesture per popup and denies unprompted or unsafe windows", () => {
     const page = createSecurityTarget();
 
@@ -2517,7 +2534,7 @@ describe("installBrowserSidebarSecurity window-open policy", () => {
   });
 });
 
-function createSecurityTarget() {
+function createSecurityTarget(handleAppLink?: (url: string) => boolean) {
   let clock = 1_000;
   const listeners = new Map<string, Array<(...args: unknown[]) => void>>();
   const target = {
@@ -2572,7 +2589,7 @@ function createSecurityTarget() {
   };
   installBrowserSidebarSecurity(
     target as unknown as Parameters<typeof installBrowserSidebarSecurity>[0],
-    { now: () => clock }
+    { clock: { ...realMainClock, now: () => clock }, handleAppLink }
   );
   return handle;
 }

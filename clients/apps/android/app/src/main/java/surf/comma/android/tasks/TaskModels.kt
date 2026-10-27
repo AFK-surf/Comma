@@ -25,6 +25,20 @@ data class TaskLabel(
     val color: String,
 )
 
+/**
+ * Where a Task a station hosts runs, as the client core lists it: its station's chat ([station], [thread]) in
+ * [workspace], and what this device knows of the machine.
+ */
+data class TaskHost(
+    val workspace: String,
+    val station: String,
+    val thread: Long,
+    /** The machine's name; null where this device knows none. */
+    val machine: String? = null,
+    /** Whether the machine is online; null where this device knows none. */
+    val online: Boolean? = null,
+)
+
 /** One task as the list surfaces show it, as the client core says it. */
 data class TaskSummary(
     val id: String,
@@ -51,14 +65,16 @@ data class TaskSummary(
     val clientPlatform: String? = null,
     /** The Task runs on a schedule; scheduled Tasks cannot be accepted or ended by hand. */
     val scheduled: Boolean = false,
-    /** The server's freshness: `stale` when the Task has gone quiet. */
-    val freshness: String? = null,
     /** Milliseconds since the epoch while archived; 0 otherwise. */
     val archivedAt: Long = 0L,
     /** The section the Task was archived from. */
     val archivedFrom: TaskStatusBucket? = null,
     /** When the Task last changed, in milliseconds since the epoch; 0 when unknown. */
     val changedAt: Long = 0L,
+    /** Where a Task a station hosts runs. Null for any other. */
+    val host: TaskHost? = null,
+    /** What the core says this Task cannot take (`archive`, `pin`, `share`): not offered. */
+    val unsupported: Set<String> = emptySet(),
 ) {
     val isArchived: Boolean get() = bucket == TaskStatusBucket.ARCHIVED || archivedAt > 0
 
@@ -74,7 +90,6 @@ data class TaskSummary(
         get() = !isArchived && (bucket == TaskStatusBucket.IN_PROGRESS || bucket == TaskStatusBucket.NEEDS_REVIEW) &&
             updatedAt > 0 && !scheduled
 
-    val isStale: Boolean get() = freshness == "stale"
 }
 
 /** Everything the full task list needs from one read. */

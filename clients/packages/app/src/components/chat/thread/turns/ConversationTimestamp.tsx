@@ -2,6 +2,7 @@ import type { CommaLocale } from "@comma/i18n";
 import { useCommaMessages } from "@comma/i18n/react";
 import { useGradientShimmer } from "@comma/ui/components/ai-activity";
 import { memo, useMemo, useRef } from "react";
+import { useStartOfToday } from "../layout/calendarDay";
 import { formatConversationTimestamp } from "../layout/messageTimestamp";
 
 // Memoized (all props are primitives): formatting constructs Intl formatters,
@@ -21,9 +22,12 @@ export const ConversationTimestamp = memo(function ConversationTimestamp({
   messageId: string;
 }) {
   const messagesApi = useCommaMessages();
+  // Read here so a timestamp says "Today" only while it is: the transcript
+  // stays open across midnight.
+  const today = useStartOfToday();
   const timestamp = useMemo(
-    () => formatConversationTimestamp(createdAt, locale),
-    [createdAt, locale]
+    () => formatConversationTimestamp(createdAt, locale, today),
+    [createdAt, locale, today]
   );
   if (!timestamp) {
     return null;

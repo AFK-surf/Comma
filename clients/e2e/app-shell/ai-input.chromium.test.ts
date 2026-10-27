@@ -58,9 +58,9 @@ test("AI Input reveals a quote attachment's full passage on hover", async ({
     .getByTestId("primary-ai-input")
     .locator('[data-slot="quote-attachment"]');
   await expect(chip).toBeVisible();
-  // The chip shows only the glyph; the passage itself lives in the hover card.
-  await expect(chip).toHaveText("");
-  expect(await chip.boundingBox()).toMatchObject({ height: 48, width: 48 });
+  // The chip shows the passage's opening lines; the hover card has all of it.
+  await expect(chip).toContainText("圆橡皮，中间留出金属箍空隙。");
+  expect(await chip.boundingBox()).toMatchObject({ height: 80, width: 160 });
 
   // React Aria opens a hover card only once the global interaction modality is
   // pointer, which a bare synthetic mousemove never establishes.
@@ -212,7 +212,7 @@ test("AI Input insets every attachment's close control inside its tile", async (
   // The file name shares its line with the control and must end before it.
   const fileTile = tiles.and(page.locator('[data-slot="file-attachment"]'));
   const clearance = await fileTile.evaluate((tile) => {
-    const name = tile.querySelector<HTMLElement>(".truncate");
+    const name = tile.querySelector<HTMLElement>('[data-slot="file-name"]');
     const close = tile.querySelector<HTMLElement>(".comma-ai-input-attachment-close");
     if (!name || !close)
       throw new Error("File attachment is missing its name or close.");
@@ -493,6 +493,76 @@ test("AI Input fits inside a 320px container without horizontal overflow", async
 
   expect(dimensions.containerWidth).toBe(320);
   expect(dimensions.inputWidth).toBeLessThanOrEqual(dimensions.containerWidth);
+});
+
+test("AI Input draws its 16px plus at the design's 1.5px stroke", async ({ page }) => {
+  await page.goto(fixtureUrl);
+  await page.waitForFunction(() => Boolean(window.aiInputFixture));
+
+  const glyph = page
+    .getByRole("button", { name: "Add attachment" })
+    .first()
+    .locator("svg[data-comma-icon]");
+  const box = await glyph.boundingBox();
+  if (!box) throw new Error("The plus has no box.");
+  expect(box.width).toBe(16);
+  const color = await glyph.evaluate((element) => getComputedStyle(element).color);
+  const image = await page.screenshot({ clip: box });
+  // Rows between the plus's top end and its crossbar cross the vertical stroke
+  // alone, so each row's summed coverage is that stroke's width on screen.
+  const strokeWidths = await page.evaluate(
+    async ([dataURL, glyphColor, cssWidth]) => {
+      const picture = new Image();
+      picture.src = dataURL;
+      await picture.decode();
+      const canvas = document.createElement("canvas");
+      canvas.width = picture.width;
+      canvas.height = picture.height;
+      const context = canvas.getContext("2d")!;
+      context.fillStyle = glyphColor;
+      context.fillRect(0, 0, 1, 1);
+      const ink = Array.from(context.getImageData(0, 0, 1, 1).data.slice(0, 3));
+      context.clearRect(0, 0, 1, 1);
+      context.drawImage(picture, 0, 0);
+      const { data, width, height } = context.getImageData(
+        0,
+        0,
+        picture.width,
+        picture.height
+      );
+      const background = Array.from(data.slice(0, 3));
+      const channel = [0, 1, 2].reduce((best, c) =>
+        Math.abs(ink[c]! - background[c]!) > Math.abs(ink[best]! - background[best]!)
+          ? c
+          : best
+      );
+      const devicePixels = width / cssWidth;
+      const widths: number[] = [];
+      // The path runs from y 4 to 20 of 24, crossed at 12.
+      for (
+        let y = Math.ceil((height * 6) / 24);
+        y < Math.floor((height * 10) / 24);
+        y++
+      ) {
+        let coverage = 0;
+        for (let x = 0; x < width; x++) {
+          coverage +=
+            (data[(y * width + x) * 4 + channel]! - background[channel]!) /
+            (ink[channel]! - background[channel]!);
+        }
+        widths.push(coverage / devicePixels);
+      }
+      return widths;
+    },
+    [`data:image/png;base64,${image.toString()}`, color, box.width] as const
+  );
+
+  expect(strokeWidths.length).toBeGreaterThan(0);
+  // In viewBox units the stroke thinned with the icon: 1.5 of 24 drew 1px here.
+  for (const strokeWidth of strokeWidths) {
+    expect(strokeWidth).toBeGreaterThan(1.35);
+    expect(strokeWidth).toBeLessThan(1.65);
+  }
 });
 
 test("AI Input clears active rich UI and makes tokens inert when disabled", async ({

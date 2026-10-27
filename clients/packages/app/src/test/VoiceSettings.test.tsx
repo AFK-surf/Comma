@@ -1,9 +1,14 @@
-import type { VoiceIntegration, VoiceKey, VoiceValue } from "@comma/core/contract";
+import type {
+  VoiceIntegration,
+  VoiceKey,
+  VoicePreferences,
+  VoiceValue,
+} from "@comma/core/contract";
 import { installNativeBridgeMock } from "@comma/test-utils/native-bridge";
 import { createScriptedCore } from "@comma/test-utils/scripted-core";
 import { render, screen, waitFor, within } from "@comma/test-utils/render";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, expect, it } from "vitest";
+import { beforeEach, expect, it, vi } from "vitest";
 import { useVoiceSettingsCategory } from "../components/voice/useVoiceSettingsCategory";
 import { SettingsCategory } from "./settingsHarness";
 
@@ -43,8 +48,20 @@ const frontDesk: VoiceKey = {
  * Settings › Voice over a core holding `numbers` and `keys`. Each call is
  * noted; a code other than 246810 is refused as the server refuses it.
  */
-async function openVoice(state: { numbers: CallerNumber[]; keys: VoiceKey[] }) {
-  const calls: [string, Record<string, unknown>][] = [];
+async function openVoice(
+  state: {
+    numbers: CallerNumber[];
+    keys: VoiceKey[];
+    preferences?: VoicePreferences;
+  },
+  calls = false
+) {
+  let preferences: VoicePreferences = state.preferences ?? {
+    voice: null,
+    custom_voice: null,
+    router_calls: false,
+  };
+  const made: [string, Record<string, unknown>][] = [];
   const core = createScriptedCore({
     values: (topic): VoiceValue | undefined =>
       topic.topic === "voice"
@@ -56,6 +73,8 @@ async function openVoice(state: { numbers: CallerNumber[]; keys: VoiceKey[] }) {
               readiness: { ready: true, reason: null },
               sessions_url: sessionsUrl,
               readiness_url: readinessUrl,
+              preferences,
+              voices: ["quartz", "gleam"],
             },
             keys: state.keys,
             integrationError: false,
@@ -64,7 +83,7 @@ async function openVoice(state: { numbers: CallerNumber[]; keys: VoiceKey[] }) {
         : undefined,
     calls: (name, raw) => {
       const params = raw as Record<string, unknown>;
-      calls.push([name, params]);
+      made.push([name, params]);
       const answered = answer(name, params);
       core.changed("voice");
       return answered;
@@ -94,24 +113,39 @@ async function openVoice(state: { numbers: CallerNumber[]; keys: VoiceKey[] }) {
       case "voice.deleteKey":
         state.keys = state.keys.filter((key) => key.key_id !== params.key);
         return null;
+      case "voice.setPreferences":
+        preferences = {
+          ...preferences,
+          ...(params.routerCalls === undefined
+            ? {}
+            : { router_calls: params.routerCalls as boolean }),
+        };
+        return null;
+      case "voice.createCustomVoice":
+        preferences = {
+          ...preferences,
+          voice: { kind: "custom" },
+          custom_voice: { name: "", description: params.description as string },
+        };
+        return null;
       default:
         return null;
     }
   };
   const user = userEvent.setup();
-  render(core.wrap(<VoicePage />));
+  render(core.wrap(<VoicePage calls={calls} />));
   await waitFor(() =>
     expect(setting("voice.readiness.status")).toHaveTextContent("Ready")
   );
   return {
     user,
     /** The params of each call to `name`, in order. */
-    called: (name: string) => calls.filter(([n]) => n === name).map(([, p]) => p),
+    called: (name: string) => made.filter(([n]) => n === name).map(([, p]) => p),
   };
 }
 
-function VoicePage() {
-  return <SettingsCategory category={useVoiceSettingsCategory(true)} />;
+function VoicePage({ calls }: { calls: boolean }) {
+  return <SettingsCategory category={useVoiceSettingsCategory(true, calls)} />;
 }
 
 const setting = (id: string) =>
@@ -210,6 +244,29 @@ it("shows a new voice key's plaintext and a comma-voice command once", async () 
   expect(keyRow()).toHaveTextContent("Active");
 });
 
+it("copies the new key and its command through the desktop app's clipboard", async () => {
+  // Electron denies the renderer's own clipboard; Main writes it.
+  const writeText = vi.fn(async () => ({ ok: true as const }));
+  installNativeBridgeMock({ platform: "electron", clipboard: { writeText } });
+  const t = await openVoice({ numbers: [], keys: [] });
+  await t.user.click(screen.getByRole("button", { name: "New voice key" }));
+  const create = within(await screen.findByRole("dialog", { name: "New voice key" }));
+  await t.user.click(create.getByRole("textbox", { name: "Name" }));
+  await t.user.paste("Front desk");
+  await t.user.click(create.getByRole("button", { name: "Create key" }));
+  const created = within(await screen.findByTestId("voice-key-created"));
+
+  await t.user.click(created.getByRole("button", { name: "Copy" }));
+  expect(writeText).toHaveBeenLastCalledWith({ text: secret });
+  expect(await created.findByRole("button", { name: "Copied" })).toBeInTheDocument();
+
+  await t.user.click(created.getByRole("button", { name: "Copy command" }));
+  expect(writeText).toHaveBeenLastCalledWith({
+    text: screen.getByTestId("voice-key-example").textContent,
+  });
+  expect(writeText).toHaveBeenCalledTimes(2);
+});
+
 it("disables a voice key, then deletes it once confirmed", async () => {
   const t = await openVoice({ numbers: [], keys: [frontDesk] });
   await t.user.click(within(keyRow()).getByRole("button", { name: "Key actions" }));
@@ -228,4 +285,39 @@ it("disables a voice key, then deletes it once confirmed", async () => {
   );
   await waitFor(() => expect(setting("voice.key.gak_voice")).toBeNull());
   expect(t.called("voice.deleteKey")).toEqual([{ workspace, key: "gak_voice" }]);
+});
+
+it("shows no call settings without voice labs", async () => {
+  await openVoice({ numbers: [], keys: [] });
+  expect(setting("voice.calls.router")).toBeNull();
+  expect(setting("voice.calls.voice")).toBeNull();
+});
+
+it("with voice labs, calls the Router and makes a custom voice", async () => {
+  const t = await openVoice({ numbers: [], keys: [] }, true);
+  const router = setting("voice.calls.router")!;
+  expect(router).toHaveTextContent("Call Router");
+  await t.user.click(within(router).getByRole("switch"));
+  await waitFor(() =>
+    expect(t.called("voice.setPreferences")).toEqual([{ workspace, routerCalls: true }])
+  );
+
+  await t.user.click(
+    within(setting("voice.calls.custom")!).getByRole("button", { name: "Create" })
+  );
+  const dialog = within(
+    await screen.findByRole("dialog", { name: "Create a custom voice" })
+  );
+  await t.user.click(dialog.getByRole("textbox", { name: "Description" }));
+  await t.user.paste("A warm voice speaking Mandarin.");
+  await t.user.click(dialog.getByRole("button", { name: "Create" }));
+  await waitFor(() =>
+    expect(screen.queryByRole("dialog", { name: "Create a custom voice" })).toBeNull()
+  );
+  expect(t.called("voice.createCustomVoice")).toEqual([
+    { workspace, description: "A warm voice speaking Mandarin." },
+  ]);
+  expect(setting("voice.calls.custom")).toHaveTextContent(
+    "A warm voice speaking Mandarin."
+  );
 });

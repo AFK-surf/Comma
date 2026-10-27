@@ -16,12 +16,14 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { arch, platform } from "node:process";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { getCommaReleaseConfig } from "../src/release-config";
 import {
   computerUseAppName,
   computerUseDistAppPath,
   computerUseProductName,
+  macAppsBinaryName,
+  macAppsHostDistPath,
   micCaptureBinaryName,
   micCaptureHostDistPath,
   nativeDistRoot,
@@ -34,6 +36,8 @@ import {
   notificationAuthorizationAddonDistPath,
   platformNativeDistDir,
   quickChatBinaryName,
+  windowsQuickChatFontName,
+  windowsQuickChatDistPath,
   quickChatHostDistPath,
   stationDistDir,
   stationLauncherDistPath,
@@ -56,6 +60,12 @@ import {
 import { buildNativeAddon } from "./native-addon-build";
 import { fetchOpenDropKit } from "./opendropkit-release";
 import {
+  cuaCursorTheme,
+  cuaDriverExecutables,
+  cuaDriverVersion,
+  fetchCuaDriver,
+} from "./cua-driver-release";
+import {
   synchControlProtocol,
   synchReleaseArchive,
   synchReleaseBaseUrl,
@@ -71,6 +81,8 @@ const releaseConfig = getCommaReleaseConfig();
 const notchPackageDir = resolve(appDir, "native/macos/NotchHost");
 const micCapturePackageDir = resolve(appDir, "native/macos/MicCaptureHost");
 const quickChatPackageDir = resolve(appDir, "native/macos/QuickChatHost");
+const windowsQuickChatCrateDir = resolve(appDir, "native/windows/QuickChatHost");
+const macAppsPackageDir = resolve(appDir, "native/macos/MacAppsHost");
 const sleepGuardDir = resolve(appDir, "native/macos/SleepGuard");
 const sleepGuardOutput = sleepGuardDistPath(appDir);
 const sleepGuardAddonOutput = sleepGuardAddonDistPath(appDir);
@@ -122,6 +134,7 @@ const notchHostOutput = notchHostDistPath(appDir);
 const micCaptureHostOutput = micCaptureHostDistPath(appDir);
 const quickChatHostOutput = quickChatHostDistPath(appDir);
 const menuBarHostOutput = menuBarHostDistAppPath(appDir);
+const macAppsHostOutput = macAppsHostDistPath(appDir);
 const notificationAuthorizationOutput = notificationAuthorizationAddonDistPath(appDir);
 const menuBarOnly = process.argv.includes("--menu-bar-only");
 /** Fetch only the synchronicity daemon: no Go, Swift or Xcode needed. */
@@ -190,6 +203,44 @@ function buildMicCaptureHost() {
   assertFile(micCaptureHostOutput, "Native MicCaptureHost");
 
   console.log(`Native MicCaptureHost built (${configuration}).`);
+}
+
+/** The MCP server for the Mac apps plugins (Calendar, Reminders, Messages, ...). */
+function buildMacAppsHost() {
+  run("swift", ["build", "-c", configuration], macAppsPackageDir);
+  mkdirSync(outputDir, { recursive: true });
+  copyNativeFile(
+    resolve(macAppsPackageDir, ".build", configuration, macAppsBinaryName),
+    macAppsHostOutput,
+    incremental
+  );
+  assertFile(macAppsHostOutput, "Native MacAppsHost");
+
+  console.log(`Native MacAppsHost built (${configuration}).`);
+}
+
+/** Quick Chat on Windows: a Rust executable (cargo comes with the Windows runners) and the face it sets words in. */
+function buildWindowsQuickChat() {
+  run(
+    "cargo",
+    ["build", "--locked", ...(configuration === "release" ? ["--release"] : [])],
+    windowsQuickChatCrateDir
+  );
+  const output = windowsQuickChatDistPath(appDir, arch);
+  mkdirSync(platformOutputDir, { recursive: true });
+  copyNativeFile(
+    resolve(windowsQuickChatCrateDir, "target", configuration, "quick-chat-host.exe"),
+    output,
+    incremental
+  );
+  copyNativeFile(
+    resolve(appDir, "../../packages/ui/src/fonts", windowsQuickChatFontName),
+    resolve(dirname(output), windowsQuickChatFontName),
+    incremental
+  );
+  assertFile(output, "Native QuickChatHost");
+
+  console.log(`Native QuickChatHost built (${configuration}).`);
 }
 
 /** The privileged lid-sleep daemon and the addon Main talks to it through. */
@@ -603,6 +654,30 @@ async function fetchSynch() {
   console.log(`synch ${synchReleaseTag} ready for ${platform}/${arch}.`);
 }
 
+/** Computer Use on Windows: Cua Driver, beside the native parts the station finds under native/windows. */
+async function fetchWindowsComputerUse() {
+  const driverDir = resolve(platformOutputDir, "native", "windows");
+  // The agent cursor's theme, in the directory the station gives the driver.
+  const themes = join(driverDir, "cursor-themes");
+  mkdirSync(themes, { recursive: true });
+  copyFileSync(
+    resolve(appDir, "native", "windows", "cua-driver", cuaCursorTheme),
+    join(themes, cuaCursorTheme)
+  );
+  const outputs = cuaDriverExecutables.map((name) => join(driverDir, name));
+  const cache = installCache("cua-driver", { version: cuaDriverVersion }, outputs);
+  if (cache.reuse()) return;
+  await fetchCuaDriver({
+    platform,
+    arch,
+    outputDir: driverDir,
+    cacheDir: process.env.COMMA_TOOL_CACHE
+      ? join(process.env.COMMA_TOOL_CACHE, "cua-driver")
+      : resolve(appDir, ".native-cache", "cua-driver"),
+  });
+  cache.save();
+}
+
 function verifyNativeOutputs() {
   if (stationPlatform)
     assertFile(stationLauncher, `station ${platform}/${arch} launcher`);
@@ -614,6 +689,7 @@ function verifyNativeOutputs() {
   assertFile(notchHostOutput, "Native NotchHost");
   assertFile(micCaptureHostOutput, "Native MicCaptureHost");
   assertFile(quickChatHostOutput, "Native QuickChatHost");
+  assertFile(macAppsHostOutput, "Native MacAppsHost");
   assertFile(sleepGuardOutput, "Native CommaSleepGuard");
   assertFile(sleepGuardAddonOutput, "Native sleep guard addon");
   assertFile(
@@ -711,6 +787,20 @@ async function buildNative() {
     return;
   }
 
+  if (process.argv.includes("--device-bluetooth-only")) {
+    if (platform !== "darwin")
+      throw new Error("Device Bluetooth is only available on macOS.");
+    execFileSync(
+      process.execPath,
+      [
+        "--experimental-strip-types",
+        resolve(appDir, "scripts/build-device-bluetooth.ts"),
+      ],
+      { stdio: "inherit" }
+    );
+    return;
+  }
+
   if (cableScannerOnly) {
     if (platform !== "darwin") {
       throw new Error("The caBLE scanner addon can only be built on macOS.");
@@ -742,6 +832,9 @@ async function buildNative() {
   mkdirSync(platformOutputDir, { recursive: true });
   bundleStation();
   await fetchSynch();
+  if (platform === "win32") await fetchWindowsComputerUse();
+
+  if (platform === "win32") buildWindowsQuickChat();
 
   if (platform !== "darwin") {
     console.log("Skipping macOS native build on non-macOS host.");
@@ -751,6 +844,7 @@ async function buildNative() {
   buildNotchHost();
   buildMicCaptureHost();
   buildQuickChatHost();
+  buildMacAppsHost();
   buildSleepGuard();
   await buildAirDrop();
   buildNotificationAuthorizationAddon();
@@ -758,6 +852,14 @@ async function buildNative() {
   buildFontFamiliesAddon();
   buildKeychainPasswordAddon();
   buildCableScannerAddon();
+  execFileSync(
+    process.execPath,
+    [
+      "--experimental-strip-types",
+      resolve(appDir, "scripts/build-device-bluetooth.ts"),
+    ],
+    { stdio: "inherit" }
+  );
   buildMenuBarHost();
   buildComputerUseHelper();
   verifyNativeOutputs();

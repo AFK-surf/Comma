@@ -65,7 +65,7 @@ defmodule SalixStore.RepoTestSetup do
       )
 
       Repo.query!(
-        "TRUNCATE conversation_log_recovery, station_task_sessions, salix_stations, salix_station_task_index, salix_station_signing_keys, salix_station_revocations, salix_station_workspaces, conversation_search_gc_runs, conversation_search_backfill_runs, " <>
+        "TRUNCATE station_device_lookup, conversation_log_recovery, station_task_sessions, salix_stations, salix_station_task_index, salix_station_signing_keys, salix_station_revocations, salix_station_workspaces, conversation_search_gc_runs, conversation_search_backfill_runs, " <>
           "conversation_search_discovery_cursors"
       )
 

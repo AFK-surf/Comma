@@ -736,8 +736,8 @@ function enterFrames(
         for (const frame of added)
           if (
             !loading.has(frame) &&
-            new URL(frame.src || "about:blank", location.href).pathname.startsWith(
-              "/__dynamic-ui/"
+            /^\/(?:__dynamic-ui|__mini-app)\//.test(
+              new URL(frame.src || "about:blank", location.href).pathname
             )
           )
             void runtime.load.work(

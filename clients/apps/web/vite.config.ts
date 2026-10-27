@@ -1,4 +1,6 @@
 import { analyticsBuildDefines } from "../../vite/analytics-build";
+import { execFileSync } from "node:child_process";
+import { cpSync, mkdirSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
 import { defineConfig, type Connect, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
@@ -6,6 +8,11 @@ import tailwindcss from "@tailwindcss/vite";
 import localGroupSelectors from "../../vite/comma-tailwind";
 import { getCommaConfig, parseCommaChannelStrict } from "@comma/config";
 import { commaI18nVitePlugin } from "@comma/i18n/vite";
+import {
+  miniAppRuntimeCsp,
+  miniAppRuntimeDocument,
+  miniAppWebRuntimePath,
+} from "@comma/chat-contract/mini-app-runtime";
 import { commaBrandHtmlPlugin } from "../../vite/comma-brand-html";
 import { layoutInspectorSourcePlugin } from "../../packages/layout-inspector/src/vite";
 
@@ -57,6 +64,89 @@ function publicShareRoute(): Plugin {
       server.middlewares.use(rewritePublicShare);
     },
   };
+}
+
+const miniAppLinkRequest = /^\/a\/[^/?#]+\/?(?:[?#].*)?$/;
+
+const serveMiniAppRoutes: Connect.NextHandleFunction = (req, res, next) => {
+  const path = req.url?.split("?")[0];
+  if (path === miniAppWebRuntimePath) {
+    res.writeHead(200, {
+      "content-type": "text/html; charset=utf-8",
+      "content-security-policy": miniAppRuntimeCsp,
+      "cache-control": "no-store",
+    });
+    res.end(miniAppRuntimeDocument());
+    return;
+  }
+  if (req.url && miniAppLinkRequest.test(req.url)) {
+    res.setHeader("cache-control", "no-store");
+    res.setHeader("referrer-policy", "no-referrer");
+    res.setHeader("x-robots-tag", "noindex");
+    req.url = "/";
+  }
+  next();
+};
+
+/**
+ * Serves the Comma app runtime (`/app-runtime/`) and app links (`/a/<token>`,
+ * the main app) in dev and preview. The deployed Worker does the same.
+ */
+function miniAppRoutes(): Plugin {
+  return {
+    name: "comma-mini-app-routes",
+    configureServer(server) {
+      server.middlewares.use(serveMiniAppRoutes);
+    },
+    configurePreviewServer(server) {
+      server.middlewares.use(serveMiniAppRoutes);
+    },
+  };
+}
+
+/**
+ * `virtual:comma-mesh`, which the core worker loads the first time it reaches a station: iroh's browser build
+ * (clients/packages/mesh/wasm), prebuilt (systems/station/scripts/native.ts, part web-mesh) or, outside CI, built here
+ * when this machine has Rust; copied under node_modules so the build bundles its WebAssembly. Without it the module
+ * fails to load, and the page reaches no station.
+ */
+function commaMeshModule(): Plugin {
+  const id = "virtual:comma-mesh";
+  let code: string | undefined;
+  return {
+    name: "comma-mesh-module",
+    resolveId: (source) => (source === id ? `\0${id}` : null),
+    load: (source) => (source === `\0${id}` ? (code ??= commaMeshCode()) : null),
+  };
+}
+
+/** The module's code: the browser build put under node_modules and loaded, or a stand-in that fails to load. */
+function commaMeshCode(): string {
+  const out = resolve(import.meta.dirname, "node_modules/.comma-mesh");
+  try {
+    const dir = execFileSync(
+      process.execPath,
+      [
+        resolve(import.meta.dirname, "../../../systems/station/scripts/native.ts"),
+        process.env.CI ? "fetch" : "path",
+        "web-mesh",
+        "wasm32",
+      ],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] }
+    ).trim();
+    rmSync(out, { recursive: true, force: true });
+    mkdirSync(out, { recursive: true });
+    cpSync(dir, out, { recursive: true });
+    return [
+      `import init, { bind } from ${JSON.stringify(resolve(out, "comma_mesh_wasm.js"))};`,
+      "export async function load() { await init(); return { bind }; }",
+    ].join("\n");
+  } catch {
+    console.warn(
+      "iroh's browser build (web-mesh) is not prebuilt for this source: this build reaches no station."
+    );
+    return 'export async function load() { throw new Error("This build reaches no station."); }';
+  }
 }
 
 function normalizeCommaBuildFlavorStrict(value: string | undefined) {
@@ -127,6 +217,7 @@ export default defineConfig({
     tailwindcss(),
     localGroupSelectors(),
     publicShareRoute(),
+    miniAppRoutes(),
   ],
   build: {
     rolldownOptions: {
@@ -143,5 +234,5 @@ export default defineConfig({
     exclude: ["@sqlite.org/sqlite-wasm"],
     rolldownOptions: {},
   },
-  worker: { format: "es" },
+  worker: { format: "es", plugins: () => [commaMeshModule()] },
 });

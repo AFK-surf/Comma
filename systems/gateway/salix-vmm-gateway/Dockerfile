@@ -4,7 +4,7 @@ COPY Comma/systems/gateway/salix-vmm-gateway/iroh/Cargo.toml Comma/systems/gatew
 COPY Comma/systems/gateway/salix-vmm-gateway/iroh/src/ ./src/
 RUN cargo build --release --locked
 
-FROM golang:1.26.3-alpine AS build
+FROM golang:1.26.10-alpine AS build
 WORKDIR /src/Comma/systems/gateway/salix-vmm-gateway
 COPY Comma/systems/gateway/salix-vmm-gateway/*.go Comma/systems/gateway/salix-vmm-gateway/go.mod Comma/systems/gateway/salix-vmm-gateway/go.sum ./
 COPY agent-vmm /src/agent-vmm

@@ -12,7 +12,6 @@ function task(
 ): TaskSummaryViewModel {
   return {
     activityStatus: "queued",
-    freshness: "fresh",
     id,
     statusBucket,
     title: `Task ${id}`,

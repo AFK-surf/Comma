@@ -180,6 +180,10 @@ defmodule SalixIM.SlackLatencyReproductionTest do
             Probe.gate(:slack_status)
             %{"ok" => true}
 
+          # Ingress marks every delivered @-mention with :eyes:.
+          "reactions.add" ->
+            %{"ok" => true}
+
           "conversations.info" ->
             %{"ok" => true, "channel" => %{"id" => params["channel"], "name" => "latency"}}
 

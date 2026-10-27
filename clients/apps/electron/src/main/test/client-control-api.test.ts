@@ -136,6 +136,70 @@ describe("Comma Main client-control API", () => {
     }
   });
 
+  it("routes MCP messages to Main's server and answers notifications without a body", async () => {
+    const harness = await createHarness();
+    const handled: unknown[] = [];
+    const server = await ClientControlApiServer.open({
+      registry: createCommaClientControlRegistry(harness),
+      token: "mcp-token",
+      mcpServers: {
+        "mac-apps": async (message) => {
+          handled.push(message);
+          const { id } = message as { id?: number };
+          return id === undefined
+            ? null
+            : { jsonrpc: "2.0", id, result: { tools: [] } };
+        },
+      },
+    });
+    const post = (path: string, body: unknown, token = "mcp-token") =>
+      fetch(`${server.endpoint}${path}`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify(body),
+      });
+    try {
+      const list = await post("/v1/mcp/mac-apps", {
+        jsonrpc: "2.0",
+        id: 4,
+        method: "tools/list",
+      });
+      expect(list.status).toBe(200);
+      expect(await list.json()).toEqual({
+        jsonrpc: "2.0",
+        id: 4,
+        result: { tools: [] },
+      });
+
+      const notified = await post("/v1/mcp/mac-apps", {
+        jsonrpc: "2.0",
+        method: "notifications/initialized",
+      });
+      expect(notified.status).toBe(202);
+      expect(await notified.text()).toBe("");
+
+      expect(
+        (await post("/v1/mcp/shell", { jsonrpc: "2.0", id: 5, method: "tools/list" }))
+          .status
+      ).toBe(404);
+      expect(
+        (
+          await post(
+            "/v1/mcp/mac-apps",
+            { jsonrpc: "2.0", id: 6, method: "tools/list" },
+            "wrong"
+          )
+        ).status
+      ).toBe(401);
+      expect(handled).toHaveLength(2);
+    } finally {
+      await server.close();
+    }
+  });
+
   it("discovers declarations and rejects absent or incorrect bearer credentials", async () => {
     const harness = await createHarness();
     const server = await ClientControlApiServer.open({

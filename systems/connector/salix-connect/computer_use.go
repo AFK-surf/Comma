@@ -39,6 +39,7 @@ type computerUseDaemonResponse struct {
 	Error            string                     `json:"error,omitempty"`
 	Interrupted      bool                       `json:"interrupted,omitempty"`
 	Message          string                     `json:"message,omitempty"`
+	Text             string                     `json:"text,omitempty"`
 	ImageData        []byte                     `json:"imageData,omitempty"`
 	ImageContentType string                     `json:"imageContentType,omitempty"`
 	ImagePath        string                     `json:"imagePath,omitempty"`
@@ -76,7 +77,12 @@ func (c *connector) methodComputerUse(ctx context.Context, params map[string]any
 	}
 	switch normalizedAction {
 	case "mode_help":
-		return map[string]any{"ok": true, "help": computerUseForegroundHelp()}
+		args, _ := params["args"].(map[string]any)
+		mode, err := computerUseMode(args)
+		if err != nil {
+			return computerUseError(err.Error())
+		}
+		return map[string]any{"ok": true, "mode": mode, "help": computerUseHelp(mode)}
 	}
 
 	request, err := buildComputerUseDaemonRequest(normalizedAction, params)
@@ -98,9 +104,14 @@ func (c *connector) methodComputerUse(ctx context.Context, params map[string]any
 		if err != nil {
 			return computerUseError(err.Error())
 		}
+		// Background snapshots carry the window's accessibility tree beside
+		// its screenshot; the agent needs both from the same call.
+		if text := strings.TrimSpace(response.Text); text != "" {
+			result["text"] = text
+		}
 		return result
 	}
-	return computerUseConnectorResponse(normalizedAction, response, raw, notices)
+	return computerUseConnectorResponse(normalizedAction, request, response, raw, notices)
 }
 
 func normalizeComputerUseAction(action string) string {
@@ -340,7 +351,7 @@ func decodeComputerUseResponse(raw []byte) (computerUseDaemonResponse, map[strin
 	return response, rawMap, nil
 }
 
-func computerUseConnectorResponse(action string, response computerUseDaemonResponse, raw map[string]any, notices []string) map[string]any {
+func computerUseConnectorResponse(action string, request computerUseDaemonRequest, response computerUseDaemonResponse, raw map[string]any, notices []string) map[string]any {
 	if !response.OK {
 		message := strings.TrimSpace(firstNonEmptyString(response.Error, response.Message))
 		if message == "" && response.Interrupted {
@@ -359,11 +370,12 @@ func computerUseConnectorResponse(action string, response computerUseDaemonRespo
 	message := computerUseMessage(response, notices)
 
 	if action == "start" {
+		mode, _ := objectValue(request.Action["start"])["mode"].(string)
 		result := map[string]any{
 			"ok":      true,
 			"message": defaultString(message, "session started"),
-			"mode":    "foreground",
-			"help":    computerUseForegroundHelp(),
+			"mode":    mode,
+			"help":    computerUseHelp(mode),
 			"text":    renderComputerUseResponse(response, raw),
 		}
 		if permissions := computerUsePermissionMap(response.Permissions); permissions != nil {
@@ -441,6 +453,9 @@ func renderComputerUseResponse(response computerUseDaemonResponse, raw map[strin
 	if strings.TrimSpace(response.Instructions) != "" {
 		parts = append(parts, "How to fix it\n  "+strings.ReplaceAll(strings.TrimSpace(response.Instructions), "\n", "\n  "))
 	}
+	if strings.TrimSpace(response.Text) != "" {
+		parts = append(parts, strings.TrimSpace(response.Text))
+	}
 	if len(parts) > 0 {
 		return strings.Join(parts, "\n\n")
 	}
@@ -464,6 +479,51 @@ func grantedWord(granted bool) string {
 
 func computerUseError(message string) map[string]any {
 	return map[string]any{"ok": false, "error": message}
+}
+
+func computerUseHelp(mode string) string {
+	if mode == "foreground" {
+		return computerUseForegroundHelp()
+	}
+	return computerUseBackgroundHelp()
+}
+
+func computerUseBackgroundHelp() string {
+	return strings.TrimSpace(`
+ComputerUse background mode
+
+Background mode drives one app window through its accessibility tree. The user keeps their screen, pointer and keyboard; other apps are never touched. Pass action-specific inputs under args, and a short top-level thinking string with each action.
+
+Rules:
+- Work on one app at a time: the app named in get_app_state. Name the app the task is about; never act on whatever window happens to be in front.
+- Launch or activate the app first (env.exec "open -a <App>" on this environment) when list_apps does not show it.
+- Every get_app_state and every action returns the window's new state: its accessibility tree as text and its screenshot. Read that result before the next step; you do not need a separate get_app_state after an action.
+- Check that the state is the target app and window before acting. If it is not, call get_app_state for the target app again instead of acting.
+- Prefer element_index from the latest state over x/y. Use x/y (screenshot pixels of the latest state) only for elements missing from the tree.
+- A snapshot_id is valid until the UI changes. On a stale-state error, call get_app_state and retry with the new snapshot_id.
+- Decide what success looks like before acting, and confirm it from the returned tree (for a switch or checkbox, its value) rather than from the screenshot alone.
+
+Session:
+- start: args.mode? = "background" (default) or "foreground", args.apps? = [app names]
+- status or permissions-status: inspect permissions and session state
+- open-permission-flow: open CommaComputerUse's guided permission flow
+- end or stop: end the session
+
+Inspection:
+- list_apps: running apps with their bundle ids
+- get_app_state: args.app (name or bundle id), args.window_title? -> snapshot_id, accessibility tree, screenshot
+
+Actions (each takes args.snapshot_id from the latest state and returns the settled new state):
+- click: args.element_index, or args.x and args.y
+- type_text: args.text, args.element_index? (defaults to the focused element)
+- set_value: args.element_index, args.value
+- press_key: args.key (e.g. "cmd+a", "return")
+- scroll: args.element_index, args.direction ("up"|"down"|"left"|"right"), args.pages?
+- perform_secondary_action: args.element_index, args.action (an action name listed on that element)
+- drag: args.from_x, args.from_y, args.to_x, args.to_y
+
+Use foreground mode (start with args.mode="foreground") only when the app exposes no usable accessibility tree, or for drag-and-drop across windows.
+`)
 }
 
 func computerUseForegroundHelp() string {

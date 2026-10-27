@@ -12,6 +12,7 @@ defmodule BridgeForTeamsWeb.ServerReleaseDescriptorTest do
     {"salix-connect", "darwin-amd64", "salix-connect"},
     {"salix-connect", "darwin-arm64", "salix-connect"},
     {"agent-vmm-host", "darwin-arm64", "Agent-VMM-Host.zip"},
+    {"agent-vmm-host", "linux-arm64", "Agent-VMM-Host.tar.gz"},
     {"computer-use-helper", "darwin-amd64", "comma-computer-use.tar.gz"},
     {"computer-use-helper", "darwin-arm64", "comma-computer-use.tar.gz"}
   ]
@@ -21,7 +22,9 @@ defmodule BridgeForTeamsWeb.ServerReleaseDescriptorTest do
     {root, descriptor} = fixture!()
     assert {:ok, @build_id} = ServerReleaseDescriptor.server_build_id(root)
     assert {:ok, platforms} = ServerReleaseDescriptor.install_platforms(root)
-    assert platforms["agent-vmm-host"] == ["darwin-arm64"]
+    assert platforms["agent-vmm-host"] == ["darwin-arm64", "linux-arm64"]
+    assert {:ok, linux} = ServerReleaseDescriptor.target("agent-vmm-host", "linux-arm64", root)
+    assert linux.source =~ "/linux-arm64/Agent-VMM-Host.tar.gz"
 
     assert {:ok, target} = ServerReleaseDescriptor.target("runner", "darwin-arm64", root)
     assert target.source =~ "/releases/#{@build_id}/runner/darwin-arm64/mac-mini-provisioner"
@@ -36,6 +39,26 @@ defmodule BridgeForTeamsWeb.ServerReleaseDescriptorTest do
 
     assert helper.source =~
              "/releases/#{@build_id}/computer-use-helper/darwin-arm64/comma-computer-use.tar.gz"
+  end
+
+  test "missing Linux delivery does not disable the existing Mac target" do
+    {root, descriptor} = fixture!()
+
+    artifacts =
+      Enum.reject(
+        descriptor["artifacts"],
+        &(&1["component"] == "agent-vmm-host" and &1["platform"] == "linux-arm64")
+      )
+
+    File.write!(
+      Path.join(root, "release-descriptor.json"),
+      Jason.encode!(%{descriptor | "artifacts" => artifacts})
+    )
+
+    assert {:ok, _} = ServerReleaseDescriptor.target("agent-vmm-host", "darwin-arm64", root)
+
+    assert {:error, {:release_target_unavailable, "agent-vmm-host", "linux-arm64"}} =
+             ServerReleaseDescriptor.target("agent-vmm-host", "linux-arm64", root)
   end
 
   test "a descriptor without the Computer Use helper keeps the other updates" do

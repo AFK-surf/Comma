@@ -14,7 +14,8 @@ defmodule CommaWeb.ProactiveReplay do
   Scenarios vary one case: `inject` adds labeled messages to the collected
   items, so a judgment can be evaluated apart from collection. A case's
   `outlook` messages, as Microsoft Graph lists the inbox, are read through the
-  Outlook member source; a scenario's `only` keeps the labeled ones. A case's
+  Outlook member source, and its `outlook_junk` messages as the junk folder;
+  a scenario's `only` keeps the labeled ones. A case's
   or scenario's `matters` are the owner's earlier Home matters.
   """
 
@@ -147,6 +148,10 @@ defmodule CommaWeb.ProactiveReplay do
           )
 
           {:ok, %{"ok" => true, "messages" => %{"matches" => elem_or(recorded, [])}}}
+
+        # A case records no people: a mention stays an ID.
+        "users.info" ->
+          {:ok, %{"ok" => false, "error" => "user_not_found"}}
       end
     end
 
@@ -219,12 +224,12 @@ defmodule CommaWeb.ProactiveReplay do
 
   defp slack_items(_kase, _scenario, _request, _portrait, _now), do: []
 
-  # A case's `outlook` messages, as Microsoft Graph lists the inbox, read
-  # through the Outlook member source.
-  defp outlook_items(%{"outlook" => messages, "owner" => owner} = kase, scenario, now)
-       when is_list(messages) do
+  # A case's `outlook` and `outlook_junk` messages, as Microsoft Graph lists
+  # the inbox and the junk folder, read through the Outlook member source.
+  defp outlook_items(%{"owner" => owner} = kase, scenario, now)
+       when is_map_key(kase, "outlook") or is_map_key(kase, "outlook_junk") do
     # A scenario's `only` keeps the labeled messages.
-    messages =
+    only = fn messages ->
       case scenario["only"] do
         labels when is_list(labels) ->
           urls = MapSet.new(labels, &kase["labels"][&1])
@@ -233,11 +238,16 @@ defmodule CommaWeb.ProactiveReplay do
         _ ->
           messages
       end
+    end
+
+    inbox = only.(kase["outlook"] || [])
+    junk = only.(kase["outlook_junk"] || [])
 
     request = fn "GET", url, _opts ->
       case URI.parse(url).path do
         "/v1.0/me" -> {:ok, %{"id" => owner["user"], "mail" => owner["mail"]}}
-        "/v1.0/me/mailFolders/inbox/messages" -> {:ok, %{"value" => messages}}
+        "/v1.0/me/mailFolders/inbox/messages" -> {:ok, %{"value" => inbox}}
+        "/v1.0/me/mailFolders/junkemail/messages" -> {:ok, %{"value" => junk}}
         "/v1.0/me/calendarView" -> {:ok, %{"value" => []}}
       end
     end

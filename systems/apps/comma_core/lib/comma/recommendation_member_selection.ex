@@ -190,30 +190,109 @@ defmodule Comma.RecommendationMemberSelection do
 
   defp summary_parts(selected, context, locale) do
     items = Enum.take(selected, 3)
+    {separator, stop} = summary_separators(locale)
 
     items
     |> Enum.with_index()
     |> Enum.flat_map(fn {item, index} ->
-      text = String.replace(item["recommendation"], ~r/[。.!?；;]+$/u, "")
-      # Model recommendations render as plain words, not Markdown instructions.
-      text = Regex.replace(~r/[\\`*_{}\[\]()#+.!|>-]/u, text, fn mark -> "\\" <> mark end)
       app = context.sources[item["source"]]["appName"]
 
       label =
         item["facts"]["identifier"] || app <> if(locale == "zh-CN", do: " 原文", else: " source")
 
-      separator =
-        if index == length(items) - 1,
-          do: if(locale == "zh-CN", do: "。", else: "."),
-          else: if(locale == "zh-CN", do: "；", else: "; ")
-
       [
-        %{"text" => text <> " "},
+        %{"text" => summary_text(item["recommendation"]) <> " "},
         %{"reference" => item["id"], "label" => label},
-        %{"text" => separator}
+        %{"text" => if(index == length(items) - 1, do: stop, else: separator)}
       ]
     end)
   end
+
+  # Model recommendations render as plain words, not Markdown instructions.
+  defp summary_text(recommendation) do
+    text = String.replace(recommendation, ~r/[。.!?；;]+$/u, "")
+    Regex.replace(~r/[\\`*_{}\[\]()#+.!|>-]/u, text, fn mark -> "\\" <> mark end)
+  end
+
+  defp summary_separators("zh-CN"), do: {"；", "。"}
+  defp summary_separators(_locale), do: {"; ", "."}
+
+  @doc """
+  A published member summary without the items whose source link `hidden?`
+  names, as `project/3` writes it for the items left. That summary is the
+  briefing title and a lead-in, then one clause per cited item: its
+  recommendation, its source link and a separator. The summary must be exactly
+  what `project/3` wrote for its cited items, read back from their prompts, or
+  the answer is `:error`: model prose can name an item without its link. A
+  summary with no cited item left is also `:error`.
+  """
+  def without_summary_items(summary, prompts, hidden?)
+      when is_list(summary) and is_map(prompts) and is_function(hidden?, 1) do
+    links = Enum.filter(summary, &match?(%{"kind" => "inline-link"}, &1))
+
+    with [%{"kind" => "markdown", "text" => first} | _] <- summary,
+         [_ | _] <- links,
+         {:ok, texts} <- cited_texts(links, prompts),
+         {:ok, separators} <- published_separators(List.last(summary)),
+         clause = hd(texts) <> " ",
+         true <- String.ends_with?(first, clause),
+         lead = binary_part(first, 0, byte_size(first) - byte_size(clause)),
+         clauses = Enum.zip(links, texts),
+         ^summary <- compose_summary(lead, clauses, separators),
+         [_ | _] = kept <- Enum.reject(clauses, fn {link, _text} -> hidden?.(link["link"]) end) do
+      {:ok, compose_summary(lead, kept, separators)}
+    else
+      _ -> :error
+    end
+  end
+
+  def without_summary_items(_summary, _prompts, _hidden?), do: :error
+
+  defp cited_texts(links, prompts) do
+    Enum.reduce_while(links, {:ok, []}, fn link, {:ok, texts} ->
+      case prompts[link["link"]["promptId"]] do
+        %{"objective" => objective} when is_binary(objective) ->
+          {:cont, {:ok, texts ++ [summary_text(objective)]}}
+
+        _ ->
+          {:halt, :error}
+      end
+    end)
+  end
+
+  defp published_separators(%{"kind" => "markdown", "text" => stop}) do
+    case Enum.find(
+           [summary_separators("en"), summary_separators("zh-CN")],
+           &(elem(&1, 1) == stop)
+         ) do
+      nil -> :error
+      separators -> {:ok, separators}
+    end
+  end
+
+  defp published_separators(_part), do: :error
+
+  defp compose_summary(lead, clauses, {separator, stop}) do
+    last = length(clauses) - 1
+
+    clauses
+    |> Enum.with_index()
+    |> Enum.flat_map(fn {{link, text}, index} ->
+      [markdown(text <> " "), link, markdown(if(index == last, do: stop, else: separator))]
+    end)
+    |> then(&[markdown(lead) | &1])
+    |> Enum.reduce([], fn
+      %{"kind" => "markdown", "text" => text},
+      [%{"kind" => "markdown", "text" => previous} | rest] ->
+        [markdown(previous <> text) | rest]
+
+      part, parts ->
+        [part | parts]
+    end)
+    |> Enum.reverse()
+  end
+
+  defp markdown(text), do: %{"kind" => "markdown", "text" => text}
 
   # These checks constrain output shape, not semantic faithfulness. Source-based
   # paraphrases still need relevance evaluation; a valid ID alone is not proof.

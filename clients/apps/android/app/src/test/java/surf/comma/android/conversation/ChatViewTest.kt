@@ -40,9 +40,28 @@ class ChatViewTest {
         assertEquals(GROUP, state.groupId)
         assertEquals(Connection.LIVE, state.connection)
         assertTrue(view.isCurrent(state))
-        val topic = core.subscribed.single()
+        val topic = core.subscribed.single { it.getString("topic") == "chatView" }
         assertEquals(listOf("chatView", GROUP, CHAT, "android"),
             listOf("topic", "group", "conversation", "surface").map(topic::getString))
+    }
+
+    @Test fun `the Agent's requests in the conversation shown follow the core, and a decline goes to it`() = runBlocking {
+        core.show(messages(1L..2L))
+        shown()
+        val topic = core.subscribed.single { it.getString("topic") == "agentRequests" }
+        assertEquals(listOf(GROUP, CHAT), listOf("group", "conversation").map(topic::getString))
+
+        core.requests.value = JSONObject().put("requests", JSONArray().put(JSONObject().put("id", "cap-1")
+            .put("type", "oauth_authorization").put("status", "pending").put("sourceMessageId", "msg_test_1")
+            .put("oauth", JSONObject().put("provider", "github").put("reason", "An app keeps its code in GitHub."))))
+        val shown = view.requests.first { it.requests.isNotEmpty() }
+        assertEquals(CHAT, shown.conversationId)
+        assertEquals(listOf("cap-1" to "github"), shown.requests.map { it.id to it.provider })
+
+        assertTrue(view.declineRequest("cap-1"))
+        val (name, params) = core.calls.last()
+        assertEquals("agentRequests.decline", name)
+        assertEquals(listOf(GROUP, CHAT, "cap-1"), listOf("group", "conversation", "request").map(params::getString))
     }
 
     @Test fun `a message sent keeps its row when its canonical message replaces it`() = runBlocking {
@@ -156,7 +175,7 @@ class ChatViewTest {
             assertNull(task.state.value.conversationId)
             task.open("cnv_task")
             assertEquals("cnv_task", task.state.first { it.cacheLoaded }.conversationId)
-            assertEquals("cnv_task", core.subscribed.single().getString("conversation"))
+            assertEquals("cnv_task", core.subscribed.single { it.getString("topic") == "chatView" }.getString("conversation"))
             task.open(null)
             assertNull(task.state.first { it.conversationId == null }.groupId)
         } finally {

@@ -22,7 +22,6 @@ extension TaskSummary {
         guard let availability = archiveAvailability, !availability.allowed else { return nil }
         switch availability.reason {
         case "not_finished": return "Finish the task before archiving"
-        case "schedule_bound": return "Remove the recurring schedule before archiving"
         default: return "Task status is unavailable; refresh to try again"
         }
     }

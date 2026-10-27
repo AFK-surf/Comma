@@ -1,12 +1,14 @@
 // What the reader did, per account: the needs-review Tasks they have seen (`taskReviewSeen`), the Inbox notifications
 // they deleted (`inboxDeleted`) and marked unread (`inboxUnread`), and the settled Tasks they acknowledged out of the
-// chat task panel (`chatTaskDismissed`). A mark records the projection revision (`updatedAt`) at which it happened, or
-// for ids marked "now" the core's time; a mark never moves back. The first three stay on this device. An
+// chat task panel (`chatTaskDismissed`), and the coding Tasks whose pull request prompt they closed
+// (`codingPullRequestPromptDismissed`, by Task, or by Task and the merged pull request it follows). A mark records the
+// projection revision (`updatedAt`) at which it happened, or for ids marked "now" the core's time; a mark never moves
+// back. All but the acknowledgements stay on this device. An
 // acknowledgement records the Task run it covers (`run_started_at`; 0 for no known run, as for ids), and the server
 // keeps it for every device (task-panel-dismissals.ts).
 //
-// Bounds: at most 300 seen and acknowledged marks and 500 of each Inbox kind; past that the oldest revisions go first (a lost mark only
-// shows a row or a dot again).
+// Bounds: at most 300 seen, acknowledged and closed-prompt marks and 500 of each Inbox kind; past that the oldest
+// revisions go first (a lost mark only shows a row, a dot or a prompt again).
 import { CoreError, type Topic, type Value } from "@comma/core-kernel";
 import { Effect } from "effect";
 import type { MarkKind, MarksValue } from "./contract.ts";
@@ -18,6 +20,7 @@ const LIMITS: Record<MarkKind, number> = {
   inboxDeleted: 500,
   inboxUnread: 500,
   chatTaskDismissed: 300,
+  codingPullRequestPromptDismissed: 300,
 };
 const metaKey = (kind: MarkKind) =>
   kind === "chatTaskDismissed" ? "marks:chatTaskDismissed:runs" : `marks:${kind}`;

@@ -2,10 +2,9 @@ import { useTaskArchive, archiveDisabledReason } from "./useTaskArchive";
 import { useCommaMessages } from "@comma/i18n/react";
 import { useCommaLocale } from "@comma/i18n/react";
 import {
-  useTopic,
+  type ProductInboxHost,
   type ProductInboxItem,
   type ProductInboxListResult,
-  type StationTask,
   type TaskLoop,
 } from "@comma/core-client";
 import {
@@ -19,7 +18,6 @@ import {
 } from "../../product-inbox";
 import { taskOriginKey, type TaskOriginKey } from "./taskOrigin";
 import { useSelectWorkspace, useWorkspacePreference } from "../activeWorkspace";
-import { effectiveProductFreshness } from "../inbox/freshness";
 
 /** Where a Task a station hosts runs (a station's own chat, listed from the Task index). */
 export interface TaskHost {
@@ -43,9 +41,12 @@ export type TaskViewModel = TaskWorkspaceTask & {
 };
 
 export interface UseWorkspaceTasksOptions {
-  /** Retains the host-owned ProductInbox projection while this surface is active. */
+  /**
+   * Retains the host-owned ProductInbox projection while this surface is
+   * active. A surface that stops (Home behind another page) keeps the Tasks it
+   * showed and stops following them.
+   */
   enabled?: boolean;
-  includeTask?: { groupId: string; conversationId: string } | undefined;
   /** Lists the Tasks the workspace's stations host too (the Tasks page and Home's rail open them). */
   stationTasks?: boolean;
 }
@@ -59,76 +60,67 @@ export interface WorkspaceTasksState {
   result: ProductInboxListResult | null | undefined;
   retryTasks: () => void;
   taskLoadError: string | undefined;
+  /** Why the list on show is the one this device kept: its last read failed. Said once for the list, not per Task. */
+  taskSyncError: string | undefined;
   tasks: TaskViewModel[];
 }
 
 export function useWorkspaceTasks({
   enabled = true,
-  includeTask,
   stationTasks: withStationTasks = false,
 }: UseWorkspaceTasksOptions = {}): WorkspaceTasksState {
   const locale = useCommaLocale();
   const archive = useTaskArchive();
   const messages = useCommaMessages();
-  const preference = useWorkspacePreference(enabled);
+  // While disabled, every source holds the value it had when the surface was
+  // last active, so nothing derived from it changes: a hidden rail does not
+  // drop its cards and rebuild them, and a page switch renders none of them.
+  const preference = useHeldWhileDisabled(enabled, useWorkspacePreference(enabled));
   const activeWorkspaceId = preference || undefined;
   const selectWorkspace = useSelectWorkspace();
   const [loadMoreState, setLoadMoreState] = useState<{
     error?: string;
     pending: boolean;
   }>({ pending: false });
-  const { refresh, result } = useProductInboxProjection({
+  const projection = useProductInboxProjection({
     enabled: enabled && preference !== undefined,
     ...(activeWorkspaceId ? { workspaceId: activeWorkspaceId } : {}),
+    hosted: withStationTasks,
   });
+  const { refresh } = projection;
+  const result = useHeldWhileDisabled(enabled, projection.result);
 
   useEffect(() => {
-    const requestedWorkspace = includeTask
-      ? result?.workspaces?.find(
-          (workspace) => workspace.group_id === includeTask.groupId
-        )?.id
-      : undefined;
-    const next = requestedWorkspace ?? result?.activeWorkspaceId;
+    const next = result?.activeWorkspaceId;
     if (next && next !== activeWorkspaceId) selectWorkspace(next);
-  }, [
-    activeWorkspaceId,
-    includeTask,
-    result?.activeWorkspaceId,
-    result?.workspaces,
-    selectWorkspace,
-  ]);
+  }, [activeWorkspaceId, result?.activeWorkspaceId, selectWorkspace]);
 
-  // The Tasks the workspace's stations host, listed beside those Salix keeps.
-  const listedWorkspaceId = result?.activeWorkspaceId || activeWorkspaceId;
-  const stationTasks = useTopic(
-    enabled && withStationTasks && listedWorkspaceId
-      ? { topic: "stationTasks", workspace: listedWorkspaceId }
-      : null
-  ).value;
   const taskCache = useRef(new Map<string, TaskViewModel>());
-  const salixTasks = useMemo(() => {
+  const tasks = useMemo(() => {
     if (!result) return [];
     const previous = taskCache.current;
     const next = new Map<string, TaskViewModel>();
     const list = result.items
       .filter((item) => item.kind === "agent_task" && item.status !== "archived")
       .map((item) => {
-        const fresh = toTaskViewModel(item, result.source);
+        const fresh = toTaskViewModel(item);
         fresh.archiveVersion = item.archiveVersion;
-        fresh.archiveAction = {
-          disabledReason: item.archiveAvailability?.allowed
-            ? undefined
-            : archiveDisabledReason(item.archiveAvailability?.reason, messages),
-          run: () =>
-            archive(
-              {
-                id: item.conversationId,
-                group_id: item.groupId,
-                updated_at: item.archiveVersion,
-              },
-              "archive"
-            ),
-        };
+        // One the core says cannot be archived from here (a Task a station hosts) offers no archive.
+        if (!item.unsupported?.includes("archive"))
+          fresh.archiveAction = {
+            disabledReason: item.archiveAvailability?.allowed
+              ? undefined
+              : archiveDisabledReason(item.archiveAvailability?.reason, messages),
+            run: () =>
+              archive(
+                {
+                  id: item.conversationId,
+                  group_id: item.groupId,
+                  updated_at: item.archiveVersion,
+                },
+                "archive"
+              ),
+          };
         const cached = previous.get(fresh.id);
         const model =
           cached &&
@@ -148,44 +140,9 @@ export function useWorkspaceTasks({
     () =>
       result?.workspaces?.find((workspace) => workspace.id === selectedWorkspaceId)
         ?.group_id ??
-      salixTasks.find((task) => task.workspaceId === selectedWorkspaceId)?.groupId,
-    [result?.workspaces, selectedWorkspaceId, salixTasks]
+      tasks.find((task) => task.workspaceId === selectedWorkspaceId)?.groupId,
+    [result?.workspaces, selectedWorkspaceId, tasks]
   );
-  const tasks = useMemo(() => {
-    if (!result || !selectedWorkspaceId || !stationTasks) return salixTasks;
-    const hosted = stationTasks.tasks
-      .filter((task) => task.status !== "archived")
-      .map((task) =>
-        toStationTaskViewModel(
-          task,
-          selectedWorkspaceId,
-          activeGroupId ?? "",
-          stationTasks
-        )
-      );
-    return hosted.length === 0 ? salixTasks : [...salixTasks, ...hosted];
-  }, [activeGroupId, result, salixTasks, selectedWorkspaceId, stationTasks]);
-
-  const requestedTask = useRef<string | undefined>(undefined);
-  useEffect(() => {
-    if (!enabled || !includeTask || !result) return;
-    const targetWorkspace = result.workspaces?.find(
-      (workspace) => workspace.group_id === includeTask.groupId
-    );
-    if (!targetWorkspace) return;
-    if (targetWorkspace.id !== selectedWorkspaceId) {
-      selectWorkspace(targetWorkspace.id);
-      return;
-    }
-    const key = `${targetWorkspace.id}:${includeTask.conversationId}`;
-    if (requestedTask.current === key) return;
-    requestedTask.current = key;
-    // One exact owner lookup also finds an older meeting outside the first page.
-    void refresh({
-      workspaceId: targetWorkspace.id,
-      conversationIds: [includeTask.conversationId],
-    }).catch(() => undefined);
-  }, [enabled, includeTask, result, selectedWorkspaceId, refresh, selectWorkspace]);
 
   const loadMore = useCallback(async () => {
     if (loadMoreState.pending || !result?.hasMore || !result.nextCursor) return;
@@ -210,15 +167,14 @@ export function useWorkspaceTasks({
 
   const retryTasks = useCallback(() => {
     setLoadMoreState({ pending: false });
-    void refresh({
-      workspaceId: activeWorkspaceId,
-      ...(includeTask && includeTask.groupId === activeGroupId
-        ? { conversationIds: [includeTask.conversationId] }
-        : {}),
-    }).catch(() => undefined);
-  }, [activeWorkspaceId, activeGroupId, includeTask, refresh]);
+    void refresh({ workspaceId: activeWorkspaceId }).catch(() => undefined);
+  }, [activeWorkspaceId, refresh]);
   const taskLoadError =
     result?.source === "error" || result?.source === "unavailable"
+      ? productInboxErrorMessage(result.errorCode, locale)
+      : undefined;
+  const taskSyncError =
+    result?.source === "cache" && result.errorCode
       ? productInboxErrorMessage(result.errorCode, locale)
       : undefined;
 
@@ -231,21 +187,26 @@ export function useWorkspaceTasks({
     result,
     retryTasks,
     taskLoadError,
+    taskSyncError,
     tasks,
   };
 }
 
-function toTaskViewModel(
-  item: ProductInboxItem,
-  source: ProductInboxListResult["source"]
-): TaskViewModel {
+/** `value` while `enabled`; while not, the value it had when last enabled. */
+function useHeldWhileDisabled<T>(enabled: boolean, value: T): T {
+  const held = useRef(value);
+  if (enabled) held.current = value;
+  return held.current;
+}
+
+function toTaskViewModel(item: ProductInboxItem): TaskViewModel {
+  const host = item.host;
   return {
     activityStatus:
       item.status === "active" && item.meetingPhase
         ? `meeting_${item.meetingPhase}`
         : item.status,
     conversationId: item.conversationId,
-    freshness: effectiveProductFreshness(item.freshness, source),
     groupId: item.groupId,
     id: item.id,
     messages: [],
@@ -257,39 +218,21 @@ function toTaskViewModel(
     title: item.title,
     updatedAt: item.updatedAt,
     workspaceId: item.workspaceId,
+    // A Task a station hosts: where it runs, and what runs it.
+    ...(host ? { host: toTaskHost(host) } : {}),
+    ...(host?.runtime === "codex" || host?.runtime === "claude"
+      ? { worker: host.runtime }
+      : {}),
   };
 }
 
-function toStationTaskViewModel(
-  task: StationTask,
-  workspaceId: string,
-  groupId: string,
-  list: { state: string; failed?: boolean | undefined }
-): TaskViewModel {
+function toTaskHost(host: ProductInboxHost): TaskHost {
   return {
-    activityStatus: task.status,
-    // A station's Task has no Salix conversation: its id stands in, and opening it goes to the station.
-    conversationId: task.id,
-    freshness: list.state === "ready" && !list.failed ? "fresh" : "stale",
-    groupId,
-    host: {
-      station: task.station,
-      thread: task.thread,
-      machine: task.machine?.name ?? null,
-      online: task.machine ? task.machine.online : null,
-      model: task.model,
-    },
-    id: task.id,
-    labels: task.labels,
-    messages: [],
-    origin: undefined,
-    statusBucket: taskStatusBucket(task.status),
-    title: task.title ?? "",
-    updatedAt: task.lastActivityAt ?? task.createdAt ?? 0,
-    workspaceId,
-    ...(task.runtime === "codex" || task.runtime === "claude"
-      ? { worker: task.runtime }
-      : {}),
+    station: host.station,
+    thread: host.thread,
+    machine: host.machine?.name ?? null,
+    online: host.machine ? host.machine.online : null,
+    model: host.model,
   };
 }
 
@@ -297,7 +240,6 @@ function sameTaskViewModel(a: TaskViewModel, b: TaskViewModel): boolean {
   return (
     a.activityStatus === b.activityStatus &&
     a.conversationId === b.conversationId &&
-    a.freshness === b.freshness &&
     a.groupId === b.groupId &&
     a.origin === b.origin &&
     a.clientPlatform === b.clientPlatform &&
@@ -310,7 +252,11 @@ function sameTaskViewModel(a: TaskViewModel, b: TaskViewModel): boolean {
     a.statusBucket === b.statusBucket &&
     a.title === b.title &&
     a.updatedAt === b.updatedAt &&
-    a.workspaceId === b.workspaceId
+    a.workspaceId === b.workspaceId &&
+    a.worker === b.worker &&
+    a.host?.machine === b.host?.machine &&
+    a.host?.online === b.host?.online &&
+    a.host?.model === b.host?.model
   );
 }
 

@@ -179,8 +179,10 @@ async function createSignedDmg() {
       "-srcfolder",
       stagingDir,
       "-ov",
+      // LZMA: a third smaller than UDZO's zlib (245 MB → 166 MB for 1.0.8), and
+      // read by every macOS the app runs on (10.15+).
       "-format",
-      "UDZO",
+      "ULMO",
       tempDmgPath,
     ]);
 

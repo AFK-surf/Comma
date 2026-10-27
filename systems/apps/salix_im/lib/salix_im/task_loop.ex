@@ -374,9 +374,13 @@ defmodule SalixIM.TaskLoop do
 
   # ---- what the Router and the Worker read ----------------------------------
 
-  @doc "The compact `loop` of a Task in the Router's `task.list`, from its Loop's view."
+  @doc """
+  The compact `loop` of a Task in the Router's `task.list`, from its Loop's
+  view. `status` is the Loop's: `pending` until the Worker creates its
+  program, and only an `active` Loop runs.
+  """
   def summary(%{"trigger" => %{} = cadence} = view) do
-    %{"cadence" => cadence, "runs" => view["run_count"] || 0}
+    %{"cadence" => cadence, "status" => view["status"], "runs" => view["run_count"] || 0}
     |> put_present("max_runs", view["max_runs"])
     |> put_present("ends_at", iso(view["ends_at"]))
     |> put_present("until", view["stop_condition"])
@@ -386,9 +390,12 @@ defmodule SalixIM.TaskLoop do
 
   def summary(_view), do: nil
 
-  @doc "The compact `loop` that `task.create` and a restart answer for a validated request."
+  @doc """
+  The compact `loop` that `task.create` and a restart answer for a validated
+  request: the Loop they wrote, `pending` until the Worker creates its program.
+  """
   def request_summary(%{"cadence" => cadence} = request) do
-    %{"cadence" => cadence, "runs" => 0}
+    %{"cadence" => cadence, "status" => "pending", "runs" => 0}
     |> put_present("max_runs", request["max_runs"])
     |> put_present("ends_at", iso(request["ends_at"]))
     |> put_present("until", request["until"])

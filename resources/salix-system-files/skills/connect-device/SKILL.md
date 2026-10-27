@@ -15,6 +15,7 @@ Keep commands, device IDs, paths, and verification text unchanged.
 3. Give `command` unchanged in one shell code block.
 4. Ask the user to run it on the target computer and type `yes` at its local consent prompt.
 5. Explain that access starts read-only and runs in the background until reboot, without a startup service.
+   The computer belongs to the user who asked: they allow operations (Full access) in Comma Settings > Devices, from any of their clients.
 
 The target needs curl, nohup, and a POSIX shell. The installer selects macOS/Linux arm64 or x86_64.
 Installation does not require Drive, SSH, or `env.remote_shell`.

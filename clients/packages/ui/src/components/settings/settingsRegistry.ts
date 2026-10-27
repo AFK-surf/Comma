@@ -4,6 +4,7 @@ import type { SettingsPanelItem, SettingsPanelSection } from "../settings-panel"
 export type SettingsCategoryIcon =
   | "archived-tasks"
   | "shared-tasks"
+  | "apps"
   | "labels"
   | "general"
   | "notifications"

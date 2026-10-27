@@ -33,6 +33,11 @@ Spent amounts stay recorded. Refunds preserve issued Cycles. Cancellation preser
 Open disputes suspend rights. Wins restore valid remaining rights without undoing refunds.
 Recharge expires at the end of Stripe's confirmed payment month in UTC.
 
+Redeem codes bind an immutable Package Version. Their expiry limits when a code can be redeemed, not the redeemed entitlement's duration.
+Internal subscription redemption starts in the current UTC calendar month. Monthly packages create one monthly Cycle. Annual packages create twelve consecutive monthly Cycles.
+Each Cycle issues the package's monthly credits through the existing scheduler. Credits expire at that Cycle's end. The subscription does not renew beyond the redeemed term.
+Existing redemptions keep their recorded Cycles. Repair missing annual Cycles through the subscription command with the original redemption identity and month, after checking existing Cycles.
+
 ## Comma BYOK
 
 Dispatch and metering carry validated `credential_scope`.

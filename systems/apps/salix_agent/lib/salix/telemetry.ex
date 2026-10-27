@@ -11,7 +11,7 @@ defmodule Salix.Telemetry do
   # SalixIM.StationTaskWatch: why a station Task's delegation waits (phase),
   # what kind of station runs it (kind), and whether the Task is the Cloud VM
   # canary (canary, "true" or "false").
-  @station_task_phases ~w(vm_not_ready station_offline not_given given_no_reply idle_no_reply cannot_start other)
+  @station_task_phases ~w(vm_not_ready station_offline not_given given_no_reply idle_no_reply cannot_start station_left other)
   @station_task_kinds ~w(cloud_vm device other)
   @voice_transports ~w(twilio websocket other)
   @voice_call_reasons ~w(completed caller_hangup agent_hangup busy timeout model_error carrier_error revoked draining other)
@@ -48,8 +48,10 @@ defmodule Salix.Telemetry do
     "salix_env" =>
       ~w(connector_metadata connector_heartbeat runtime_auth_read runtime_auth_status runtime_auth_verify runtime_auth_login_start runtime_auth_login_cancel runtime_auth_input_begin runtime_auth_input_submit runtime_auth_input_cancel other),
     "salix_calendar" => ~w(source_sync source_transition watch other),
+    # dictation_first_result: how long after a live dictation segment's speech
+    # begins do its first words come back?
     "salix_meet" =>
-      ~w(calendar_enrollment calendar_enrollment_group calendar_scan calendar_scan_group calendar_join calendar_join_group calendar_join_dispatch calendar_join_dispatch_skip meeting_artifact meeting_asr dictation_asr meeting_delivery meeting_delivery_claim meeting_runtime_late_event meeting_watchdog meeting_stuck_nonterminal other),
+      ~w(calendar_enrollment calendar_enrollment_group calendar_scan calendar_scan_group calendar_join calendar_join_group calendar_join_dispatch calendar_join_dispatch_skip meeting_artifact meeting_asr dictation_asr dictation_stream dictation_first_result meeting_delivery meeting_delivery_claim meeting_runtime_late_event meeting_watchdog meeting_stuck_nonterminal other),
     "salix_mcp" => ~w(tool mcp other),
     # conversation_log_recovery: are indexed candidates completing, retained, or failing?
     # conversation_log_recovery_claim: can each Pod discover due work within its poll budget?
@@ -84,12 +86,58 @@ defmodule Salix.Telemetry do
     "other" => ["other"]
   }
   @vm_operations ~w(provision wake archive provider_request connector recovery other)
-  @vm_providers ~w(sprites cloudflare other)
-  @vm_states ~w(pending claiming running ready waking archiving archived failed stuck other)
+  @vm_providers ~w(sprites cloudflare agent_vmm other)
+  @vm_states ~w(pending creating claiming running ready waking archiving archived failed billing_suspended eligible_for_resume stuck other)
+  # Cloud VM lifecycle (SalixWeb.ComputeProviders.Cloudflare and
+  # SalixWeb.ComputeProviders.AgentVMMCloudVM). Every event is emitted at the
+  # record write that ends the measured span; nothing scans records for them.
+  # salix.vm.wake.duration.seconds: from the wake's `last_wake_at` to the
+  #   record write that makes it `ready` (ok), or to a wake attempt that
+  #   failed: the Container never attached (timeout), stopped before its
+  #   station connected (container_stopped), exited because the archive did
+  #   not restore (restore_failed), started without restoring it, an image
+  #   older than Salix (not_restored), or was marked failed (failed).
+  # salix.vm.restore.duration.seconds: each phase of the Container's restore
+  #   of the archive from R2, as the station's receipt times it (ms from the
+  #   restore's start): manifest read, first chunk byte, all chunks
+  #   downloaded, written to disk, synced, and total. Emitted once, with the
+  #   write that makes the restored VM ready; a receipt without timings (an
+  #   older station) emits nothing.
+  # salix.vm.archive.bytes: the size of the archive that restore read.
+  # salix.vm.archive.duration.seconds: from `archive_started_at` to the write
+  #   that ends the archive: archived, or (a recovery) its target recorded
+  #   for the rebuild (ok); rolled back to ready after a failure (error),
+  #   cancelled once begun (cancelled), or refused by the station before
+  #   anything began because it was busy or away (refused). The reason is why
+  #   it started: idle, or a recovery after an interrupted wake.
+  # salix.vm.records: how many Group Cloud VM records stand in each state;
+  #   salix.vm.transitional.oldest_age.seconds: how long the oldest record in a
+  #   state that should pass (creating, waking, archiving, failed) has stood
+  #   there, 0 with none. SalixWeb.CloudVM.FleetMetrics publishes both once a
+  #   minute per node from one aggregate query, every provider and state
+  #   (0 when empty, so a series falls back); take the max across pods.
+  # salix.vm.ready.seconds.total: ready time, counted as the interval meter
+  #   checkpoints it (only Cloudflare VMs are metered).
+  # salix.vm.container_loss.total: a Container stopped by itself and its disk
+  #   is gone, counted at the write that records the loss (the record archived
+  #   from its last archive, an archive kept from its stopped source, or a
+  #   never-archived VM marked to start empty). The reason is why it stopped,
+  #   as the Gateway kept it: the Cloudflare runtime rolled a new version
+  #   (rollout), the Container exited with a code (exit_code), or the Gateway
+  #   kept no stop (unknown). Never the provider's message.
+  @vm_lifecycle [1, 2.5, 5, 10, 20, 30, 60, 120, 300, 600, 1200, 1800]
+  @vm_archive_bytes [65_536, 1_048_576, 16_777_216, 134_217_728, 1_073_741_824, 8_589_934_592]
+  @vm_profiles ~w(cf-standard-1 cf-standard-2 vmm-station-1 unknown)
+  @vm_wake_outcomes ~w(ok timeout container_stopped restore_failed not_restored failed other)
+  @vm_restore_phases ~w(manifest first_byte downloaded written synced total other)
+  @vm_archive_reasons ~w(idle recovery other)
+  @vm_archive_outcomes ~w(ok error cancelled refused other)
+  @vm_transitional_states ~w(creating waking archiving failed)
   @vm_record_cache_outcomes ~w(hit miss error other)
   @router_inbox_outcomes ~w(queued unauthorized invalid not_found router_not_configured rate_limited unavailable other)
   @vm_record_batch_outcomes ~w(ok error other)
   @vm_record_persist_outcomes ~w(ok conflict ambiguous_settled indeterminate error other)
+  @vm_container_loss_reasons ~w(rollout exit_code unknown)
   # Implementation names are registered here as their PRs land (the finite
   # label contract); unregistered names normalize to "other".
   @convergence_names ~w(other)
@@ -269,6 +317,66 @@ defmodule Salix.Telemetry do
         tags: [:profile],
         tag_values: &vm_profile_tags/1,
         reporter_options: [buckets: [1, 5, 15, 30, 60, 120, 300, 600]]
+      ),
+      distribution(
+        "salix.vm.wake.duration.seconds",
+        event_name: [:salix, :vm, :wake, :stop],
+        measurement: :duration_seconds,
+        tags: [:provider, :profile, :outcome],
+        tag_values: &vm_wake_tags/1,
+        reporter_options: [buckets: @vm_lifecycle]
+      ),
+      distribution(
+        "salix.vm.restore.duration.seconds",
+        event_name: [:salix, :vm, :restore, :phase],
+        measurement: :duration_seconds,
+        tags: [:provider, :profile, :phase],
+        tag_values: &vm_restore_tags/1,
+        reporter_options: [buckets: @vm_lifecycle]
+      ),
+      distribution(
+        "salix.vm.archive.bytes",
+        event_name: [:salix, :vm, :restore, :bytes],
+        measurement: :bytes,
+        tags: [:provider, :profile],
+        tag_values: &vm_provider_profile_tags/1,
+        reporter_options: [buckets: @vm_archive_bytes]
+      ),
+      distribution(
+        "salix.vm.archive.duration.seconds",
+        event_name: [:salix, :vm, :archive, :stop],
+        measurement: :duration_seconds,
+        tags: [:provider, :profile, :reason, :outcome],
+        tag_values: &vm_archive_tags/1,
+        reporter_options: [buckets: @vm_lifecycle]
+      ),
+      last_value(
+        "salix.vm.records",
+        event_name: [:salix, :vm, :fleet, :records],
+        measurement: :count,
+        tags: [:provider, :state],
+        tag_values: &vm_fleet_tags/1
+      ),
+      last_value(
+        "salix.vm.transitional.oldest_age.seconds",
+        event_name: [:salix, :vm, :fleet, :oldest_age],
+        measurement: :age_seconds,
+        tags: [:provider, :state],
+        tag_values: &vm_fleet_tags/1
+      ),
+      sum(
+        "salix.vm.ready.seconds.total",
+        event_name: [:salix, :vm, :ready_interval],
+        measurement: :duration_seconds,
+        tags: [:provider, :profile],
+        tag_values: &vm_provider_profile_tags/1,
+        reporter_options: [prometheus_type: :counter]
+      ),
+      counter(
+        "salix.vm.container_loss.total",
+        event_name: [:salix, :vm, :container_loss],
+        tags: [:provider, :profile, :reason],
+        tag_values: &vm_container_loss_tags/1
       ),
       counter(
         "salix.llm.requests.total",
@@ -800,6 +908,103 @@ defmodule Salix.Telemetry do
     )
   end
 
+  @doc "A wake ended: `outcome` ok when the VM is ready, else why the attempt failed."
+  def emit_vm_wake(metadata, duration_ms) when is_integer(duration_ms) do
+    SystemsRuntime.Telemetry.execute(
+      [:salix, :vm, :wake, :stop],
+      %{duration_seconds: max(duration_ms, 0) / 1_000},
+      metadata
+    )
+  end
+
+  @doc """
+  A restored VM is ready: one phase sample per timing the station's receipt
+  carries, and the restored archive's size. A receipt without timings emits
+  no phase.
+  """
+  def emit_vm_restore(metadata, receipt, archive_bytes) do
+    timings = (is_map(receipt) && receipt["timings"]) || %{}
+
+    Enum.each(@vm_restore_phases -- ["other"], fn phase ->
+      case timings[phase <> "_ms"] do
+        ms when is_number(ms) ->
+          SystemsRuntime.Telemetry.execute(
+            [:salix, :vm, :restore, :phase],
+            %{duration_seconds: max(ms, 0) / 1_000},
+            Map.put(metadata, :phase, phase)
+          )
+
+        _ ->
+          :ok
+      end
+    end)
+
+    if is_integer(archive_bytes) and archive_bytes > 0 do
+      SystemsRuntime.Telemetry.execute(
+        [:salix, :vm, :restore, :bytes],
+        %{bytes: archive_bytes},
+        metadata
+      )
+    end
+
+    :ok
+  end
+
+  @doc "An archive ended: archived (ok), or back to ready (error, cancelled, or refused by its station before it began)."
+  def emit_vm_archive(metadata, duration_ms) when is_integer(duration_ms) do
+    SystemsRuntime.Telemetry.execute(
+      [:salix, :vm, :archive, :stop],
+      %{duration_seconds: max(duration_ms, 0) / 1_000},
+      metadata
+    )
+  end
+
+  @doc "A metered ready interval of a VM, in whole seconds."
+  def emit_vm_ready_interval(metadata, duration_seconds)
+      when is_integer(duration_seconds) and duration_seconds > 0 do
+    SystemsRuntime.Telemetry.execute(
+      [:salix, :vm, :ready_interval],
+      %{duration_seconds: duration_seconds},
+      metadata
+    )
+  end
+
+  def emit_vm_ready_interval(_metadata, _duration_seconds), do: :ok
+
+  @doc "A Container stopped by itself and its disk is gone; `reason` is why it stopped."
+  def emit_vm_container_loss(metadata) do
+    SystemsRuntime.Telemetry.execute([:salix, :vm, :container_loss], %{}, metadata)
+  end
+
+  @doc """
+  The `reason` label of a Container's uncommanded stop, from the stop as the
+  Cloudflare Gateway kept it (`error`, `exit_code`, `recorded`). The provider's
+  message never becomes a label: only whether it names a runtime rollout.
+  """
+  def vm_container_loss_reason(stop) when is_map(stop) do
+    cond do
+      is_binary(stop["error"]) and String.contains?(String.downcase(stop["error"]), "rollout") ->
+        "rollout"
+
+      is_integer(stop["exit_code"]) ->
+        "exit_code"
+
+      true ->
+        "unknown"
+    end
+  end
+
+  def vm_container_loss_reason(_stop), do: "unknown"
+
+  @doc "The states whose oldest record age salix.vm.transitional.oldest_age.seconds reports."
+  def vm_transitional_states, do: @vm_transitional_states
+
+  @doc "Every `state` label a VM record status normalizes to (`vm_state_tag/1`)."
+  def vm_states, do: @vm_states
+
+  @doc "The `state` label of a VM record status, as the vm metrics report it."
+  def vm_state_tag(status), do: normalize_vm_state(status)
+
   def emit_dependency_job(kind, outcome) do
     SystemsRuntime.Telemetry.execute(
       [:salix, :dependency_job, :stop],
@@ -907,7 +1112,48 @@ defmodule Salix.Telemetry do
   end
 
   defp vm_profile_tags(metadata) do
-    %{profile: finite(metadata[:profile], ~w(cf-standard-1 cf-standard-2 unknown))}
+    %{profile: finite(metadata[:profile], @vm_profiles)}
+  end
+
+  defp vm_provider_profile_tags(metadata) do
+    %{
+      provider: normalize_vm_provider(metadata[:provider]),
+      profile: finite(metadata[:profile], @vm_profiles)
+    }
+  end
+
+  defp vm_wake_tags(metadata) do
+    metadata
+    |> vm_provider_profile_tags()
+    |> Map.put(:outcome, finite(metadata[:outcome], @vm_wake_outcomes))
+  end
+
+  defp vm_restore_tags(metadata) do
+    metadata
+    |> vm_provider_profile_tags()
+    |> Map.put(:phase, finite(metadata[:phase], @vm_restore_phases))
+  end
+
+  defp vm_archive_tags(metadata) do
+    metadata
+    |> vm_provider_profile_tags()
+    |> Map.merge(%{
+      reason: finite(metadata[:reason], @vm_archive_reasons),
+      outcome: finite(metadata[:outcome], @vm_archive_outcomes)
+    })
+  end
+
+  defp vm_container_loss_tags(metadata) do
+    metadata
+    |> vm_provider_profile_tags()
+    |> Map.put(:reason, finite(metadata[:reason], @vm_container_loss_reasons))
+  end
+
+  defp vm_fleet_tags(metadata) do
+    %{
+      provider: normalize_vm_provider(metadata[:provider]),
+      state: normalize_vm_state(metadata[:state])
+    }
   end
 
   defp llm_tags(metadata) do
@@ -1059,8 +1305,7 @@ defmodule Salix.Telemetry do
 
   defp normalize_vm_provider(value), do: finite(value, @vm_providers)
 
-  defp normalize_vm_state(value) when value in [:creating, "creating", :pending, "pending"],
-    do: "pending"
+  defp normalize_vm_state(value) when value in [:pending, "pending"], do: "pending"
 
   defp normalize_vm_state(value) when value in [:claimed, "claimed", :claiming, "claiming"],
     do: "claiming"

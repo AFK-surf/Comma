@@ -29,9 +29,11 @@ const iconInsetClasses = {
 
 // The design draws the tick 8px wide with a 1.67px stroke inside the 12px
 // frame (a 12-unit asset at stroke 1.6666). The library's full-size checkmark
-// spans 14 of its 24 units, so it lands at 7px here; its 2-unit stroke would
-// paint 1px, so the glyph asks the global stroke hook for 3.33 units instead.
-const iconClasses = "size-full [--comma-icon-stroke-width:3.33] [&_svg]:size-full";
+// spans 14 of its 24 units, so it lands at 7px here. The global stroke token
+// is a width on screen (styles.css draws icon strokes with
+// `vector-effect: non-scaling-stroke`), so the glyph asks it for the design's
+// 1.67px; the 1.5px every other icon draws reads too light in the filled box.
+const iconClasses = "size-full [--comma-icon-stroke-width:1.67] [&_svg]:size-full";
 
 export const CheckboxBase = ({
   className,

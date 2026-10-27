@@ -71,21 +71,14 @@ defmodule CommaWeb.TaskShareEndpoints do
 
   def attachment(conn, token, seq, index) do
     with_rate_limit(conn, token, fn conn ->
-      case Comma.TaskShares.public_attachment(token, seq, index) do
-        {:ok, content_type, file_name, body} ->
-          conn
-          |> put_public_headers()
-          |> put_resp_header("content-type", content_type)
-          |> put_resp_header("x-content-type-options", "nosniff")
-          |> put_resp_header("content-security-policy", "sandbox")
-          |> put_resp_header(
-            "content-disposition",
-            "attachment; filename*=UTF-8''" <> URI.encode(file_name, &URI.char_unreserved?/1)
-          )
-          |> send_resp(200, body)
-
-        {:error, reason} ->
-          public_error(conn, reason)
+      with {:ok, attachment} <- Comma.TaskShares.public_attachment(token, seq, index),
+           {:ok, conn} <-
+             conn
+             |> put_public_headers()
+             |> CommaWeb.AttachmentDownload.send(attachment) do
+        conn
+      else
+        {:error, reason} -> public_error(conn, reason)
       end
     end)
   end

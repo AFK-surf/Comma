@@ -148,6 +148,78 @@ export function fundingStopActions(
     : [models];
 }
 
+/** A stop's notice: what stopped, what to do, and the ways out. */
+export type StopNotice = {
+  title: string;
+  detail: string;
+  actions: FundingStopAction[];
+};
+
+/**
+ * The notice for a participant that stopped on something the member fixes:
+ * a funding stop, or a model nothing can serve now. The chat shows it in the
+ * status line's card; a funding stop also raises it as a toast.
+ */
+export function stopNotice(
+  status: ChatParticipantStatus,
+  locale: CommaLocale
+): StopNotice | undefined {
+  if (status.state !== "error") return undefined;
+  const detail = status.issueDetail;
+  if (status.issue === "model_unavailable") {
+    return {
+      title: messages.chat_model_unavailable_title(undefined, { locale }),
+      detail: messages.chat_model_unavailable_detail(undefined, { locale }),
+      actions: [
+        {
+          label: messages.settings_models_title(undefined, { locale }),
+          run: () => openFundingSettings("models", detail?.profileId),
+        },
+      ],
+    };
+  }
+  const kind = fundingStopKind(status.issue, detail);
+  if (kind === undefined) return undefined;
+  const actions = fundingStopActions(kind, detail, locale);
+  if (kind === "credits") {
+    return {
+      title: messages.billing_out_of_credits_title(undefined, { locale }),
+      detail: messages.billing_out_of_credits_detail(undefined, { locale }),
+      actions,
+    };
+  }
+  const provider = fundingSourceName(detail?.source);
+  if (kind === "provider") {
+    return {
+      title: provider
+        ? messages.billing_provider_quota_title_source({ provider }, { locale })
+        : messages.billing_provider_quota_title(undefined, { locale }),
+      detail:
+        provider && detail?.profileName
+          ? messages.billing_provider_quota_detail_named(
+              { profile: detail.profileName, provider },
+              { locale }
+            )
+          : provider
+            ? messages.billing_provider_quota_detail_source({ provider }, { locale })
+            : messages.billing_provider_quota_detail(undefined, { locale }),
+      actions,
+    };
+  }
+  return {
+    title: provider
+      ? messages.billing_subscription_limit_title_source({ provider }, { locale })
+      : messages.billing_subscription_limit_title(undefined, { locale }),
+    detail: detail?.resetAt
+      ? messages.billing_subscription_limit_detail_reset(
+          { time: formatFundingReset(detail.resetAt, locale) },
+          { locale }
+        )
+      : messages.billing_subscription_limit_detail(undefined, { locale }),
+    actions,
+  };
+}
+
 /** The toast for a participant that stopped for lack of funds. */
 export function showFundingStopToast(
   status: ChatParticipantStatus,
@@ -159,54 +231,22 @@ export function showFundingStopToast(
     showOutOfCreditsToast(locale);
     return;
   }
-  const detail = status.issueDetail;
-  const provider = fundingSourceName(detail?.source);
-  const actions = fundingStopActions(kind, detail, locale).map((action, index) => ({
-    label: action.label,
-    ...(index > 0 ? { hierarchy: "tertiary-gray" as const } : {}),
-    onPress: () => {
-      toast.dismiss(FUNDING_STOP_TOAST_ID);
-      action.run();
-    },
-  }));
-  if (kind === "provider") {
-    toast.error(
-      provider
-        ? messages.billing_provider_quota_title_source({ provider }, { locale })
-        : messages.billing_provider_quota_title(undefined, { locale }),
-      {
-        actions,
-        description:
-          provider && detail?.profileName
-            ? messages.billing_provider_quota_detail_named(
-                { profile: detail.profileName, provider },
-                { locale }
-              )
-            : provider
-              ? messages.billing_provider_quota_detail_source({ provider }, { locale })
-              : messages.billing_provider_quota_detail(undefined, { locale }),
-        icon: "gauge",
-        id: FUNDING_STOP_TOAST_ID,
-        testId: FUNDING_STOP_TOAST_ID,
-      }
-    );
-    return;
-  }
-  toast.warning(
-    provider
-      ? messages.billing_subscription_limit_title_source({ provider }, { locale })
-      : messages.billing_subscription_limit_title(undefined, { locale }),
-    {
-      actions,
-      description: detail?.resetAt
-        ? messages.billing_subscription_limit_detail_reset(
-            { time: formatFundingReset(detail.resetAt, locale) },
-            { locale }
-          )
-        : messages.billing_subscription_limit_detail(undefined, { locale }),
-      icon: "gauge",
-      id: FUNDING_STOP_TOAST_ID,
-      testId: FUNDING_STOP_TOAST_ID,
-    }
-  );
+  const notice = stopNotice(status, locale);
+  if (!notice) return;
+  const options = {
+    actions: notice.actions.map((action, index) => ({
+      label: action.label,
+      ...(index > 0 ? { hierarchy: "tertiary-gray" as const } : {}),
+      onPress: () => {
+        toast.dismiss(FUNDING_STOP_TOAST_ID);
+        action.run();
+      },
+    })),
+    description: notice.detail,
+    icon: "gauge" as const,
+    id: FUNDING_STOP_TOAST_ID,
+    testId: FUNDING_STOP_TOAST_ID,
+  };
+  if (kind === "provider") toast.error(notice.title, options);
+  else toast.warning(notice.title, options);
 }

@@ -8,6 +8,8 @@ defmodule CommaWeb.TestRepoSandbox do
     Comma.Data.SessionBudgetConsumption,
     Comma.Data.Session,
     Comma.Data.WorkspaceMembership,
+    # Mini Apps restrict their Workspace's deletion.
+    Comma.MiniApps.App,
     Comma.Data.Workspace,
     Comma.Data.User
   ]

@@ -62,13 +62,14 @@ export const filledMediaIconVariant: CentralIconVariant = {
 };
 
 /**
- * Central ships a handful of glyphs as a pre-outlined fill rather than a stroke.
- * A fill has no stroke for `--comma-icon-stroke-width` to thin, so taking them
- * from the stroke-2 package would leave them a third heavier than every icon
- * beside them. The stroke-1.5 package bakes the same glyph at the weight this
- * app renders at, so those glyphs come from there and need no thinning.
+ * A few glyphs that the stroke-2 package ships as a pre-outlined fill, or draws
+ * at an odd width (2.05556, 1.995), are a real 1.5 stroke in the stroke-1.5
+ * package. Taken from there, the shared stroke rule (styles.css) draws them at
+ * `--comma-icon-stroke-width` like every other icon. Glyphs that both packages
+ * ship as a fill come from the stroke-2 package: a fill scales with the icon,
+ * and its stroke-2 weight is the nearer one to the token at 16-20px.
  */
-export const preThinnedAppIconVariant: CentralIconVariant = {
+export const realStrokeAppIconVariant: CentralIconVariant = {
   filled: false,
   stroke: 1.5,
   radius: 2,
@@ -84,7 +85,7 @@ export const filledAppIconVariant: CentralIconVariant = {
 };
 
 export const OUTLINED_APP_ICON_PACKAGE = centralIconPackage(outlinedAppIconVariant);
-export const PRE_THINNED_APP_ICON_PACKAGE = centralIconPackage(
-  preThinnedAppIconVariant
+export const REAL_STROKE_APP_ICON_PACKAGE = centralIconPackage(
+  realStrokeAppIconVariant
 );
 export const FILLED_APP_ICON_PACKAGE = centralIconPackage(filledAppIconVariant);

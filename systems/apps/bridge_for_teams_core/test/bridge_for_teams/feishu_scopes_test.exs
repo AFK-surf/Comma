@@ -51,6 +51,17 @@ defmodule BridgeForTeams.FeishuScopesTest do
 
     assert user == Enum.uniq(user)
 
+    # Cloud space and wiki access is granted to both identities.
+    drive_and_wiki = ~w(
+      drive:drive drive:drive:readonly drive:drive:version drive:drive:version:readonly
+      drive:drive.metadata:readonly drive:drive.search:readonly
+      wiki:wiki wiki:wiki:readonly wiki:node:read wiki:node:retrieve
+      wiki:space:read wiki:space:retrieve search:docs:read space:document:retrieve
+    )
+
+    assert drive_and_wiki -- tenant == []
+    assert drive_and_wiki -- user == []
+
     # Routers and Workers read and edit documents and read Minutes as the bot.
     for scope <- ~w(
       docx:document docx:document:readonly docx:document:create docx:document:write_only

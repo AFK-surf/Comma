@@ -7,6 +7,7 @@ import { existsSync, mkdirSync, openSync, closeSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
+import { realMainClock, type MainClock } from "./clock";
 import type { ConnectorStation } from "./connector";
 import type { StationHost } from "./modules/connector-runtime";
 
@@ -22,20 +23,23 @@ export interface LocalStationOptions {
   /** Its data directory: the app's own, `<userData>/station`. */
   data: string;
   log?: { warn(message: string): void };
+  clock?: MainClock;
 }
 
 export class LocalStation implements StationHost, ConnectorStation {
   readonly #bin: string;
   readonly #options: LocalStationOptions;
+  readonly #clock: MainClock;
   #child: ChildProcess | null = null;
   #stopping = false;
   #backoff = 1_000;
-  #retry: NodeJS.Timeout | undefined;
+  #cancelRetry: (() => void) | undefined;
   /** Another process (launchd's station) runs this data directory: not started again until resumed. */
   held = false;
 
   constructor(options: LocalStationOptions) {
     this.#options = options;
+    this.#clock = options.clock ?? realMainClock;
     this.#bin = join(
       options.dir,
       "mesh",
@@ -87,7 +91,7 @@ export class LocalStation implements StationHost, ConnectorStation {
     const data = this.#options.data;
     mkdirSync(this.instancesDir, { recursive: true, mode: 0o700 });
     const log = openSync(join(data, "station.log"), "a", 0o600);
-    const started = Date.now();
+    const started = this.#clock.now();
     let child: ChildProcess;
     try {
       child = spawn(
@@ -117,11 +121,11 @@ export class LocalStation implements StationHost, ConnectorStation {
       }
       if (this.#stopping) return;
       // One that ran a while starts again at once; one that keeps failing backs off.
-      if (Date.now() - started > 60_000) this.#backoff = 1_000;
+      if (this.#clock.now() - started > 60_000) this.#backoff = 1_000;
       this.#options.log?.warn(
         `the station ended (code ${code}); starting it again in ${this.#backoff} ms`
       );
-      this.#retry = setTimeout(() => this.start(), this.#backoff);
+      this.#cancelRetry = this.#clock.setTimer(this.#backoff, () => this.start());
       this.#backoff = Math.min(this.#backoff * 2, 30_000);
     };
     child.on("exit", (code) => end(code));
@@ -161,14 +165,17 @@ export class LocalStation implements StationHost, ConnectorStation {
   }
 
   async #end(): Promise<void> {
-    clearTimeout(this.#retry);
+    this.#cancelRetry?.();
     const child = this.#child;
     if (!child) return;
     const ended = new Promise<void>((resolve) => child.once("exit", () => resolve()));
     child.kill("SIGTERM");
-    const late = setTimeout(() => child.kill("SIGKILL"), STOP_GRACE_MS);
+    // A station that ignores SIGTERM must still die while a test clock stands still.
+    const cancelLate = realMainClock.setTimer(STOP_GRACE_MS, () =>
+      child.kill("SIGKILL")
+    );
     await ended;
-    clearTimeout(late);
+    cancelLate();
   }
 }
 

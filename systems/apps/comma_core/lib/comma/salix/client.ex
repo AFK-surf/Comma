@@ -7,6 +7,8 @@ defmodule Comma.Salix.Client do
   Conversation Participant; runtime Session identities remain private.
   """
 
+  require Logger
+
   @callback provision_workspace_scope(workspace :: map()) :: :ok | {:error, term()}
   @callback verify_workspace_scope(workspace :: map()) :: :ok | {:error, term()}
   @callback resolve_workspace_scope(workspace :: map()) :: {:ok, map()} | {:error, term()}
@@ -98,6 +100,21 @@ defmodule Comma.Salix.Client do
   @callback list_station_tasks(workspace :: map()) :: {:ok, [map()]} | {:error, term()}
   @callback subscribe_station_tasks(workspace :: map(), subscriber :: pid()) ::
               :ok | {:error, term()}
+
+  @doc """
+  The Messages of a Task a station of the Group hosts (`station:<station_id>:<thread>`) after `after` (a seq of its
+  station's), at most `limit`, read from its station over its Connector, as the Router reads one:
+  `{:ok, %{"title", "messages", "through"}}`; `{:error, :not_found}` when the Group's Task index has no such Task,
+  `{:error, :device_offline}` while its station is not connected.
+  """
+  @callback read_station_task(
+              workspace :: map(),
+              station_id :: String.t(),
+              thread :: String.t(),
+              opts :: map()
+            ) :: {:ok, map()} | {:error, term()}
+
+  @optional_callbacks read_station_task: 4
   @callback subscribe_group_conversation_participant(
               workspace :: map(),
               conversation_id :: String.t(),
@@ -125,6 +142,13 @@ defmodule Comma.Salix.Client do
             ) :: {:ok, map()} | {:error, term()}
   @callback get_group_conversation_messages(workspace :: map(), conversation_id :: String.t()) ::
               {:ok, [map()]} | {:error, term()}
+  @doc "One message of a Group Conversation, by its id, at any depth of the history."
+  @callback get_group_conversation_message(
+              workspace :: map(),
+              conversation_id :: String.t(),
+              message_id :: String.t()
+            ) :: {:ok, map()} | {:error, term()}
+  @optional_callbacks get_group_conversation_message: 3
   @callback append_group_conversation_message(
               workspace :: map(),
               conversation_id :: String.t(),
@@ -140,6 +164,19 @@ defmodule Comma.Salix.Client do
               expected_updated_at :: pos_integer(),
               user_id :: String.t()
             ) :: {:ok, map()} | {:error, term()}
+
+  @doc """
+  Runs a Task that exists elsewhere, on another model (`SalixIM.TaskRun`):
+  `run` carries `runs_on` and `model`. `{:task_run_refused, reason, message}`
+  when the place or model is not usable, or its station did not take it.
+  """
+  @callback switch_task_run(
+              workspace :: map(),
+              conversation_id :: String.t(),
+              run :: map(),
+              user_id :: String.t()
+            ) :: {:ok, map()} | {:error, term()}
+  @optional_callbacks switch_task_run: 4
 
   @callback accept_task_review(
               workspace :: map(),
@@ -172,6 +209,15 @@ defmodule Comma.Salix.Client do
               {:ok, %{String.t() => map()}} | {:error, term()}
   @optional_callbacks task_loops: 2
 
+  @doc """
+  The pull requests of at most 50 coding Tasks, as the Tasks last read them from
+  GitHub, in one read: `%{conversation_id => %{"number", "state", "url"}}`. A
+  Task without a pull request, or with none known yet, is absent.
+  """
+  @callback task_pull_requests(workspace :: map(), conversation_ids :: [String.t()]) ::
+              {:ok, %{String.t() => map()}} | {:error, term()}
+  @optional_callbacks task_pull_requests: 2
+
   @callback conversation_activity_context(workspace :: map(), conversation_id :: String.t()) ::
               {:ok, map()} | {:error, term()}
   @callback list_agent_skills(workspace :: map()) :: {:ok, map()} | {:error, term()}
@@ -198,6 +244,33 @@ defmodule Comma.Salix.Client do
               max_bytes :: pos_integer()
             ) ::
               {:ok, binary()} | {:error, term()}
+  @doc """
+  An Agent's immutable blob as it is read, in bounded chunks, under the same
+  Group + Agent authorization as `read_agent_blob/4`: all of it (`nil`), or
+  `length` bytes from `offset`. The size returned is the whole blob's.
+  """
+  @callback stream_agent_blob(
+              workspace :: map(),
+              agent_id :: String.t(),
+              ref :: map(),
+              range :: {non_neg_integer(), non_neg_integer()} | nil
+            ) ::
+              {:ok, Enumerable.t(), non_neg_integer()} | {:error, term()}
+  @optional_callbacks stream_agent_blob: 4
+
+  @doc """
+  A URL anyone holding it reads an Agent's immutable blob from, straight from
+  the blob store and in any byte ranges, until it expires: authorized as
+  `stream_agent_blob/4` when it is signed, and by nothing after. `opts` are
+  `SalixStore.S3.presign_opt()`. `{:error, :unsupported}` from a store that
+  cannot sign one.
+  """
+  @callback presign_agent_blob(
+              workspace :: map(),
+              agent_id :: String.t(),
+              ref :: map(),
+              opts :: keyword()
+            ) :: {:ok, String.t()} | {:error, term()}
 
   @doc """
   One page of the Router VFS files under `dir` (a `/`-terminated prefix), in
@@ -246,11 +319,45 @@ defmodule Comma.Salix.Client do
   @callback get_router_instructions(workspace :: map()) ::
               {:ok, String.t()} | {:error, term()}
 
+  @doc """
+  Replaces the Router's own instructions (`router_system_prompt`) with
+  `content`. With `opts[:expected_hash]`, the effective instructions must still
+  hash to it, otherwise `{:conflict, _}`. Clearing them while the shared
+  `system_prompt` would take over is refused with `{:bad_request, _}`.
+  """
+  @callback set_router_instructions(workspace :: map(), content :: String.t(), opts :: keyword()) ::
+              {:ok, String.t()} | {:error, term()}
+
+  @doc """
+  Writes one Router VFS file from `stream`, a sequence of binary chunks read
+  as they are stored, so the body is never held whole.
+  """
+  @callback write_agent_file_stream(
+              workspace :: map(),
+              path :: String.t(),
+              stream :: Enumerable.t()
+            ) :: {:ok, map()} | {:error, term()}
+
+  @doc """
+  Maps Router VFS `path` to an Agent's immutable blob `ref`, under the same
+  Group + Agent authorization as `stream_agent_blob/4`, without copying it.
+  """
+  @callback link_agent_blob(
+              workspace :: map(),
+              agent_id :: String.t(),
+              ref :: map(),
+              path :: String.t()
+            ) :: {:ok, map()} | {:error, term()}
+
   @optional_callbacks list_agent_files: 3,
                       read_agent_file_as: 4,
                       write_agent_file_as: 4,
+                      write_agent_file_stream: 3,
+                      link_agent_blob: 4,
+                      presign_agent_blob: 4,
                       delete_agent_file: 3,
-                      get_router_instructions: 1
+                      get_router_instructions: 1,
+                      set_router_instructions: 3
 
   @callback get_group_condensed_workspace(workspace :: map()) :: {:ok, map()} | {:error, term()}
   @callback set_group_condensed_workspace_enabled(workspace :: map(), enabled :: boolean()) ::
@@ -356,7 +463,23 @@ defmodule Comma.Salix.Client do
     end
   end
 
+  # A pull request only decorates a Task's card: a client that cannot read them, or a read that fails or raises,
+  # leaves the cards without and never fails the list.
+  def task_pull_requests(workspace, conversation_ids) do
+    case call_optional(:task_pull_requests, [workspace, conversation_ids]) do
+      {:ok, %{} = pull_requests} -> {:ok, pull_requests}
+      _unavailable -> {:ok, %{}}
+    end
+  rescue
+    error ->
+      Logger.warning("task pull requests not read: #{Exception.message(error)}")
+      {:ok, %{}}
+  end
+
   def drive_binding(workspace), do: call_optional(:drive_binding, [workspace])
+
+  def read_station_task(workspace, station_id, thread, opts),
+    do: call_optional(:read_station_task, [workspace, station_id, thread, opts])
 
   def put_drive_binding(workspace, attrs),
     do: call_optional(:put_drive_binding, [workspace, attrs])
@@ -378,11 +501,26 @@ defmodule Comma.Salix.Client do
   def write_agent_file_as(workspace, path, body, opts),
     do: call_optional(:write_agent_file_as, [workspace, path, body, opts])
 
+  def write_agent_file_stream(workspace, path, stream),
+    do: call_optional(:write_agent_file_stream, [workspace, path, stream])
+
+  def get_group_conversation_message(workspace, conversation_id, message_id),
+    do: call_optional(:get_group_conversation_message, [workspace, conversation_id, message_id])
+
+  def presign_agent_blob(workspace, agent_id, ref, opts),
+    do: call_optional(:presign_agent_blob, [workspace, agent_id, ref, opts])
+
+  def link_agent_blob(workspace, agent_id, ref, path),
+    do: call_optional(:link_agent_blob, [workspace, agent_id, ref, path])
+
   def delete_agent_file(workspace, path, opts),
     do: call_optional(:delete_agent_file, [workspace, path, opts])
 
   def get_router_instructions(workspace),
     do: call_optional(:get_router_instructions, [workspace])
+
+  def set_router_instructions(workspace, content, opts),
+    do: call_optional(:set_router_instructions, [workspace, content, opts])
 
   def get_group_condensed_workspace(workspace),
     do: call_optional(:get_group_condensed_workspace, [workspace])

@@ -17,6 +17,10 @@ defmodule SalixMCP.Builtins do
   @slack_mcp_id "mcp1_0000000000000000008"
   @x_mcp_id "mcp1_0000000000000000009"
   @lark_mcp_id "mcp1_0000000000000000010"
+  @mac_apps_mcp_id "mcp1_0000000000000000011"
+
+  @doc "The Mac apps MCP served by the Comma desktop app (see SalixMCP.Connection client_mcp)."
+  def mac_apps_mcp_id, do: @mac_apps_mcp_id
 
   def child_spec(opts) do
     %{
@@ -68,6 +72,35 @@ defmodule SalixMCP.Builtins do
 
   defp builtin_definitions do
     [
+      %{
+        "mcp_id" => @mac_apps_mcp_id,
+        "tenant_id" => "",
+        "name" => "Mac apps",
+        "description" =>
+          "Calendar, Reminders, Contacts, Messages, Mail, Notes, Music, Maps, system controls and on-device image recognition on the user's own Mac, served by the Comma desktop app.",
+        "server_metadata" => %{
+          "name" => "Mac apps",
+          "description" =>
+            "The Comma desktop app's MCP server for the Mac's own apps. Each app is on only when the user turns it on in Comma on that Mac.",
+          "remotes" => [
+            %{
+              # Not an HTTP endpoint: the device's Connector forwards each message
+              # to the desktop app with `client_mcp` (SalixMCP.Connection).
+              "target_ref" => "client:mac-apps",
+              "transport" => "comma-client",
+              "url" => "comma-client://mac-apps",
+              "headers_schema" => %{}
+            }
+          ]
+        },
+        "supports_server" => false,
+        "recommended_placement" => "device",
+        "supported_placements" => ["device"],
+        "declared_capabilities" => %{"tools" => true},
+        "environment_requirements" => %{"device" => ["comma_desktop_macos"]},
+        "trust" => %{"source" => "system_builtin"},
+        "created_by" => "system"
+      },
       %{
         "mcp_id" => @x_mcp_id,
         "name" => "X",

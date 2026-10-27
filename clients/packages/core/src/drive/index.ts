@@ -7,7 +7,9 @@
 //
 // While `drive` is shown one worker keeps it current: the node's state every 1.5 s while it starts; once it is ready
 // its listing every 20 s, 150 ms after its files last changed, and on `drive.refresh` (a window came back to the
-// front). A fresh node is enrolled in the Workspace's network once (drive.ts). Every change waits for the load before
+// front). A node that could not start is restarted when Drive is shown or a window comes back to the front, and again
+// after 5, 10, 20 and 40 s while it still cannot: five times at most each time. A fresh node is enrolled in the
+// Workspace's network once (drive.ts). Every change waits for the load before
 // it and reads Drive again after it, one at a time.
 //
 // Bounds: one load or change at a time per device; a load lists each space in pages of 500 entries and at most 50,000
@@ -60,6 +62,10 @@ import {
 export const DRIVE_POLL_MS = 1_500;
 export const DRIVE_REFRESH_MS = 20_000;
 export const DRIVE_SETTLE_MS = 150;
+/** Restarts of a node that could not start, each time Drive is shown or comes back to the front. */
+export const DRIVE_NODE_RESTARTS = 5;
+/** The wait before the first restart again; it doubles for each one after. */
+export const DRIVE_NODE_RESTART_BACKOFF_MS = 5_000;
 /** The space Comma binds as the Workspace's Drive, as the web reads it. */
 export const HOSTED_SPACE = "comma-drive";
 const PAGE = 500;
@@ -137,6 +143,10 @@ export class DriveFiles {
   #history: DriveSyncHistoryEntry[] = [];
   #historySeq = 0;
   #enrolled = false;
+  /** Restarts of a node that could not start since Drive was shown or came back to the front. */
+  #restarts = 0;
+  /** A node that could not start is restarted at the next read. */
+  #restartDue = false;
   #accountKey: string | null = null;
   #worker: { scope: Scoped; wakes: Queue.Queue<Wake> } | null = null;
   readonly #transfers: DriveTransfers;
@@ -195,6 +205,7 @@ export class DriveFiles {
       "drive.refresh": {
         run: () =>
           Effect.sync(() => {
+            this.#restartAgain();
             this.#wake("refresh");
             return null;
           }),
@@ -547,10 +558,19 @@ export class DriveFiles {
     const scope = runner.child();
     const wakes = Effect.runSync(Queue.unbounded<Wake>());
     this.#worker = { scope, wakes };
+    this.#restartAgain();
     runner.fork(this.#keep(wakes), scope);
   }
 
-  /** Loads, then waits: 1.5 s while the node starts, the 20 s refresh while it is ready, else a wake. */
+  #restartAgain(): void {
+    this.#restarts = 0;
+    this.#restartDue = true;
+  }
+
+  /**
+   * Loads, then waits: 1.5 s while the node starts, the 20 s refresh while it is ready, the backoff before restarting
+   * a node that could not start, else a wake.
+   */
   #keep(wakes: Queue.Queue<Wake>): Effect.Effect<void> {
     const wake = Queue.take(wakes).pipe(
       Effect.flatMap((first) =>
@@ -570,6 +590,17 @@ export class DriveFiles {
         else if (this.#node && this.#status.status === "ready")
           yield* Effect.raceFirst(
             Effect.sleep(Duration.millis(DRIVE_REFRESH_MS)),
+            wake
+          );
+        else if (
+          this.#node &&
+          this.#state?.status === "error" &&
+          this.#restarts < DRIVE_NODE_RESTARTS
+        )
+          yield* Effect.raceFirst(
+            Effect.sleep(
+              Duration.millis(DRIVE_NODE_RESTART_BACKOFF_MS * 2 ** (this.#restarts - 1))
+            ).pipe(Effect.andThen(Effect.sync(() => (this.#restartDue = true)))),
             wake
           );
         else yield* wake;
@@ -612,6 +643,18 @@ export class DriveFiles {
       }
       let state = read.success;
       this.#state = state;
+      if (
+        state.status === "error" &&
+        this.#restartDue &&
+        this.#restarts < DRIVE_NODE_RESTARTS
+      ) {
+        // A node that could not start is restarted, and read again while it starts.
+        this.#restartDue = false;
+        this.#restarts += 1;
+        this.#setStatus({ status: "starting" });
+        yield* this.#run(node, "restart", {}).pipe(Effect.ignore);
+        return;
+      }
       if (state.status !== "ready") {
         this.#setStatus(
           state.status === "starting"
@@ -1070,8 +1113,9 @@ export class DriveFiles {
       const account = yield* this.#ctx.session.account();
       if (file.system) {
         const read = yield* readSystemFile(this.#ctx, account, file);
-        // A memory file read with a newer hash than the listing's takes it, so an edit starts from the text shown.
-        if (read.hash && file.system.kind === "vfs" && read.hash !== file.system.hash)
+        // A memory file or the instructions read with a newer hash than the listing's take it, so an edit starts
+        // from the text shown.
+        if (read.hash && file.system.kind !== "skill" && read.hash !== file.system.hash)
           this.#putSystem({
             ...file,
             contentsHash: read.hash,
@@ -1198,7 +1242,7 @@ export class DriveFiles {
                   )?.system;
                   return Effect.fail(
                     new CoreError("changed", error.message, error.status, {
-                      hash: latest?.kind === "vfs" ? latest.hash : undefined,
+                      hash: latest && latest.kind !== "skill" ? latest.hash : undefined,
                     })
                   );
                 })
@@ -1211,7 +1255,7 @@ export class DriveFiles {
           contentsHash: written.hash ?? `saved:${this.#ctx.now()}`,
           modifiedAt: this.#ctx.now(),
           sizeBytes: written.size,
-          ...(file.system?.kind === "vfs"
+          ...(file.system && file.system.kind !== "skill"
             ? { system: { ...file.system, hash: written.hash ?? undefined } }
             : {}),
         });

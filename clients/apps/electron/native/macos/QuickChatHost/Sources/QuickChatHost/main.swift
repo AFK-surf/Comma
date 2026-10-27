@@ -1,7 +1,7 @@
 // QuickChatHost: Comma's Quick Chat on macOS.
 //
-// A double tap of ⌘ anywhere, or clicking the menu-bar item, shows NameDrop's
-// connection hint above the Dock and transcribes the microphone on the device; the words can be edited, and
+// A double tap of ⌘ anywhere, or the menu-bar menu's Quick Chat row, shows NameDrop's
+// connection hint above the Dock and sends the microphone to the server's live dictation; the words can be edited, and
 // a tap of ⌘ then listens again. Return or the send button sends the words
 // away and Main creates a Task for the Worker from them.
 //
@@ -9,10 +9,12 @@
 //   stdin  ← {"type":"configure","strings":{…}}           interface text, Comma's language
 //            {"type":"result","requestId","ok","message"?} the Task for a submit
 //            {"type":"transcript","clipId","text"?}       the server's words for a transcribe
-//            {"type":"listen"}                            the menu-bar item was clicked: as a double tap of ⌘
+//            {"type":"dictationTicket","requestId","url"?,"ticket"?}  live dictation's socket, if any
+//            {"type":"listen"}                            the menu-bar Quick Chat row: as a double tap of ⌘
 //   stdout → {"type":"ready"}
 //            {"type":"submit","requestId","text","draft","audio"?}
-//            {"type":"transcribe","clipId","audio"}       audio between two pauses
+//            {"type":"transcribe","clipId","audio"}       audio between two pauses, without live dictation
+//            {"type":"dictationTicket","requestId"}       asks for live dictation's socket
 // stdin EOF quits.
 //
 // `--preview [text]` plays one Quick Chat with `text` typed in place of speech,
@@ -36,9 +38,12 @@ let previewText: String? = arguments.firstIndex(of: "--preview").map { index in
 NSApplication.shared.setActivationPolicy(.accessory)
 
 let transcripts = ServerTranscripts(emit: write)
-let controller = QuickChatController(takesKeyboard: previewText == nil, emit: write, transcripts: transcripts) { draft in
+let tickets = DictationTickets(emit: write)
+let controller = QuickChatController(
+    takesKeyboard: previewText == nil, emit: write, transcripts: transcripts, tickets: tickets
+) { draft in
     if let previewText { return PreviewTranscript(text: previewText) }
-    return SpeechSession(draft: draft, transcribe: transcripts.transcribe)
+    return LiveDictation(draft: draft, ticket: tickets.ticket, transcribe: transcripts.transcribe)
 }
 let monitor = CommandKeyMonitor()
 monitor.onTap = { controller.resume() }
@@ -77,7 +82,6 @@ NSApplication.shared.run()
 final class PreviewTranscript: TranscriptSource {
     var onText: ((String) -> Void)?
     var onLevel: ((CGFloat) -> Void)?
-    var onPreparing: ((Bool) -> Void)?
     var onFailure: ((SpeechFailure) -> Void)?
     private(set) var text = ""
     let draft = ""

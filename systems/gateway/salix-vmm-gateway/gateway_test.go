@@ -241,6 +241,39 @@ func TestConnectRecordsAuthenticationFailureWithoutCredential(t *testing.T) {
 	}
 }
 
+type refusingObserveControl struct {
+	fakeControl
+	err error
+}
+
+func (control refusingObserveControl) Observe(context.Context, string, *remotev1.HostHello) error {
+	return control.err
+}
+
+func TestConnectNamesRefusedRegistrationAndKeepsOtherObservationFailuresRetryable(t *testing.T) {
+	for _, test := range []struct {
+		err     error
+		code    codes.Code
+		message string
+	}{
+		{&controlStatusError{status: http.StatusForbidden, reason: "authorization_expired"}, codes.PermissionDenied, "authorization_expired"},
+		{&controlStatusError{status: http.StatusForbidden, reason: "registration_inactive"}, codes.PermissionDenied, "registration_inactive"},
+		{&controlStatusError{status: http.StatusUnprocessableEntity, reason: "invalid_observation"}, codes.Unavailable, "connection observation failed"},
+		{errors.New("dial control: connection refused"), codes.Unavailable, "connection observation failed"},
+	} {
+		gateway := newGateway("gateway", refusingObserveControl{err: test.err}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		stream := &scriptedConnectStream{
+			ctx:      gatewayControlContext(context.Background()),
+			received: []*remotev1.HostControlMessage{{Payload: &remotev1.HostControlMessage_Hello{Hello: gatewayHostHello()}}},
+			sentCh:   make(chan struct{}, 1),
+		}
+		err := gateway.Connect(stream)
+		if status.Code(err) != test.code || status.Convert(err).Message() != test.message {
+			t.Fatalf("Connect(%v) = %v, want %s %q", test.err, err, test.code, test.message)
+		}
+	}
+}
+
 func TestConnectKeepsTransientAuthenticationControlFailureRetryable(t *testing.T) {
 	gateway := newGateway("gateway", unavailableAuthControl{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	stream := &scriptedConnectStream{ctx: gatewayControlContext(context.Background())}
@@ -337,55 +370,62 @@ func TestConnectInventoryChangingEnsureOutcomesForceFreshHandshake(t *testing.T)
 	}
 }
 
-func TestConnectCapacityRejectedEnsureContinuesOnSameConnection(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		ensure := &remotev1.ControllerCommand{
-			CommandId: "ensure-1", Sequence: 1, ConnectionEpoch: 19,
-			DeadlineUnixMillis: time.Now().Add(time.Second).UnixMilli(),
-			Command:            &remotev1.ControllerCommand_EnsureAllocation{EnsureAllocation: &remotev1.EnsureAllocation{AllocationId: "allocation-1"}},
-		}
-		next := &remotev1.ControllerCommand{
-			CommandId: "open-2", Sequence: 2, ConnectionEpoch: 19, TargetRevision: 1,
-			DeadlineUnixMillis: time.Now().Add(time.Second).UnixMilli(),
-			Command:            &remotev1.ControllerCommand_OpenSession{OpenSession: &remotev1.OpenSession{AllocationId: "allocation-2", AllocationGeneration: 1, ExecutionOwnerId: "runtime:2"}},
-		}
-		control := &scriptedGatewayControl{commands: []*remotev1.ControllerCommand{ensure, next}}
-		ctx, cancel := context.WithCancel(context.Background())
-		stream := &scriptedConnectStream{ctx: gatewayControlContext(ctx), received: []*remotev1.HostControlMessage{
-			{Payload: &remotev1.HostControlMessage_Hello{Hello: gatewayHostHello()}},
-			{Payload: &remotev1.HostControlMessage_Ack{Ack: &remotev1.CommandAck{CommandId: "ensure-1", Sequence: 1, ConnectionEpoch: 19, Disposition: remotev1.CommandAckDisposition_COMMAND_ACK_DISPOSITION_ADMITTED}}},
-			{Payload: &remotev1.HostControlMessage_Result{Result: &remotev1.CommandResult{CommandId: "ensure-1", Sequence: 1, ConnectionEpoch: 19, Outcome: remotev1.CommandOutcome_COMMAND_OUTCOME_REJECTED, Reason: remotev1.ErrorReason_ERROR_REASON_CAPACITY_EXHAUSTED, InventoryWatermark: 7}}},
-			{Payload: &remotev1.HostControlMessage_Ack{Ack: &remotev1.CommandAck{CommandId: "open-2", Sequence: 2, ConnectionEpoch: 19, Disposition: remotev1.CommandAckDisposition_COMMAND_ACK_DISPOSITION_ADMITTED}}},
-			{Payload: &remotev1.HostControlMessage_Result{Result: &remotev1.CommandResult{CommandId: "open-2", Sequence: 2, ConnectionEpoch: 19, Outcome: remotev1.CommandOutcome_COMMAND_OUTCOME_SUCCEEDED, InventoryWatermark: 7}}},
-		}}
-		gateway := newGateway("gateway", control, slog.New(slog.NewTextHandler(io.Discard, nil)))
-		done := make(chan error, 1)
-		go func() { done <- gateway.Connect(stream) }()
+func TestConnectPreMutationRejectedEnsureContinuesOnSameConnection(t *testing.T) {
+	for _, reason := range []remotev1.ErrorReason{
+		remotev1.ErrorReason_ERROR_REASON_CAPACITY_EXHAUSTED,
+		remotev1.ErrorReason_ERROR_REASON_ADMISSION_PAUSED,
+	} {
+		t.Run(reason.String(), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				ensure := &remotev1.ControllerCommand{
+					CommandId: "ensure-1", Sequence: 1, ConnectionEpoch: 19,
+					DeadlineUnixMillis: time.Now().Add(time.Second).UnixMilli(),
+					Command:            &remotev1.ControllerCommand_EnsureAllocation{EnsureAllocation: &remotev1.EnsureAllocation{AllocationId: "allocation-1"}},
+				}
+				next := &remotev1.ControllerCommand{
+					CommandId: "open-2", Sequence: 2, ConnectionEpoch: 19, TargetRevision: 1,
+					DeadlineUnixMillis: time.Now().Add(time.Second).UnixMilli(),
+					Command:            &remotev1.ControllerCommand_OpenSession{OpenSession: &remotev1.OpenSession{AllocationId: "allocation-2", AllocationGeneration: 1, ExecutionOwnerId: "runtime:2"}},
+				}
+				control := &scriptedGatewayControl{commands: []*remotev1.ControllerCommand{ensure, next}}
+				ctx, cancel := context.WithCancel(context.Background())
+				stream := &scriptedConnectStream{ctx: gatewayControlContext(ctx), received: []*remotev1.HostControlMessage{
+					{Payload: &remotev1.HostControlMessage_Hello{Hello: gatewayHostHello()}},
+					{Payload: &remotev1.HostControlMessage_Ack{Ack: &remotev1.CommandAck{CommandId: "ensure-1", Sequence: 1, ConnectionEpoch: 19, Disposition: remotev1.CommandAckDisposition_COMMAND_ACK_DISPOSITION_ADMITTED}}},
+					{Payload: &remotev1.HostControlMessage_Result{Result: &remotev1.CommandResult{CommandId: "ensure-1", Sequence: 1, ConnectionEpoch: 19, Outcome: remotev1.CommandOutcome_COMMAND_OUTCOME_REJECTED, Reason: reason, InventoryWatermark: 7}}},
+					{Payload: &remotev1.HostControlMessage_Ack{Ack: &remotev1.CommandAck{CommandId: "open-2", Sequence: 2, ConnectionEpoch: 19, Disposition: remotev1.CommandAckDisposition_COMMAND_ACK_DISPOSITION_ADMITTED}}},
+					{Payload: &remotev1.HostControlMessage_Result{Result: &remotev1.CommandResult{CommandId: "open-2", Sequence: 2, ConnectionEpoch: 19, Outcome: remotev1.CommandOutcome_COMMAND_OUTCOME_SUCCEEDED, InventoryWatermark: 7}}},
+				}}
+				gateway := newGateway("gateway", control, slog.New(slog.NewTextHandler(io.Discard, nil)))
+				done := make(chan error, 1)
+				go func() { done <- gateway.Connect(stream) }()
 
-		for deadline := time.Now().Add(time.Second); time.Now().Before(deadline); {
-			control.mu.Lock()
-			committed := len(control.committed)
-			control.mu.Unlock()
-			if committed == 2 {
-				break
-			}
-			time.Sleep(time.Millisecond)
-		}
-		control.mu.Lock()
-		if len(control.committed) != 2 || control.committed[0].Result.GetReason() != remotev1.ErrorReason_ERROR_REASON_CAPACITY_EXHAUSTED || control.committed[1].Result.GetOutcome() != remotev1.CommandOutcome_COMMAND_OUTCOME_SUCCEEDED {
-			committed := append([]controllerremote.CommandTranscript(nil), control.committed...)
-			control.mu.Unlock()
-			cancel()
-			t.Fatalf("committed transcripts = %+v", committed)
-		}
-		control.mu.Unlock()
-		cancel()
-		select {
-		case <-done:
-		case <-time.After(time.Second):
-			t.Fatal("Connect did not stop after cancellation")
-		}
-	})
+				for deadline := time.Now().Add(time.Second); time.Now().Before(deadline); {
+					control.mu.Lock()
+					committed := len(control.committed)
+					control.mu.Unlock()
+					if committed == 2 {
+						break
+					}
+					time.Sleep(time.Millisecond)
+				}
+				control.mu.Lock()
+				if len(control.committed) != 2 || control.committed[0].Result.GetReason() != reason || control.committed[1].Result.GetOutcome() != remotev1.CommandOutcome_COMMAND_OUTCOME_SUCCEEDED {
+					committed := append([]controllerremote.CommandTranscript(nil), control.committed...)
+					control.mu.Unlock()
+					cancel()
+					t.Fatalf("committed transcripts = %+v", committed)
+				}
+				control.mu.Unlock()
+				cancel()
+				select {
+				case <-done:
+				case <-time.After(time.Second):
+					t.Fatal("Connect did not stop after cancellation")
+				}
+			})
+		})
+	}
 }
 
 func TestConnectStaleAllocationRevisionRequiresFreshHandshake(t *testing.T) {
@@ -565,7 +605,7 @@ func TestHTTPControlSettlesTypedRemoteObservationOnDedicatedEndpoint(t *testing.
 			RegistrationID    string `json:"registration_id"`
 			Renewal           string `json:"renewal_b64"`
 		}
-		server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		server := newInMemoryHTTPServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 			if request.URL.Path != "/v1/compute/connections/observation" {
 				t.Fatalf("path = %q", request.URL.Path)
 			}
@@ -890,6 +930,34 @@ func (listener *singleConnListener) Addr() net.Addr { return listener.connection
 
 func (connection *testSessionConn) Done() <-chan struct{} { return connection.done }
 
+// inMemoryHTTPServer serves a handler like httptest.Server, over bufconn
+// connections instead of a TCP socket. Inside a synctest bubble a goroutine
+// waiting on a real socket is not durably blocked, so with httptest.Server
+// (its Accept loop and connection reads) the bubble's clock never advances
+// and a time.Sleep in the test never returns. bufconn blocks durably.
+type inMemoryHTTPServer struct {
+	URL    string
+	server *http.Server
+	client *http.Client
+}
+
+func newInMemoryHTTPServer(handler http.Handler) *inMemoryHTTPServer {
+	listener := bufconn.Listen(1 << 20)
+	server := &http.Server{Handler: handler}
+	go func() { _ = server.Serve(listener) }()
+	transport := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		return listener.DialContext(ctx)
+	}}
+	return &inMemoryHTTPServer{URL: "http://in-memory", server: server, client: &http.Client{Transport: transport}}
+}
+
+func (server *inMemoryHTTPServer) Client() *http.Client { return server.client }
+
+func (server *inMemoryHTTPServer) Close() {
+	_ = server.server.Close()
+	server.client.CloseIdleConnections()
+}
+
 func testRuntimeSession(t *testing.T, transport *testSessionConn) *runtimeSession {
 	t.Helper()
 	session, err := newRuntimeSession(transport)
@@ -987,6 +1055,34 @@ func TestHostOperationUsesGeneratedClientAndRetainsExactSession(t *testing.T) {
 	if replayResponse.StatusCode != http.StatusOK {
 		t.Fatalf("replay status=%d", replayResponse.StatusCode)
 	}
+}
+
+func TestHostSessionSurvivesGRPCIdlePeriod(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		clientSide, hostSide := net.Pipe()
+		server := grpc.NewServer()
+		hostv1.RegisterAgentRuntimeServiceServer(server, fakeAgentRuntime{})
+		go func() { _ = server.Serve(&singleConnListener{connection: hostSide, closed: make(chan struct{})}) }()
+		defer server.Stop()
+		connection, err := grpcClientForSession(clientSide)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer connection.Close()
+		client := hostv1.NewAgentRuntimeServiceClient(connection)
+		stat := func() {
+			t.Helper()
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			entry, err := client.StatWorkspace(ctx, &hostv1.WorkspacePathRequest{Path: "src/main.go"})
+			if err != nil || entry.GetSize() != 12 {
+				t.Fatalf("stat after idle: entry=%v err=%v", entry, err)
+			}
+		}
+		stat()
+		time.Sleep(31 * time.Minute)
+		stat()
+	})
 }
 
 func TestWorkspaceWriteSendsExplicitFinishFrame(t *testing.T) {
@@ -1312,7 +1408,7 @@ func TestTypedRuntimeComputeExecPreservesCommandAndEnvironment(t *testing.T) {
 		go func() { _ = grpcServer.Serve(&singleConnListener{connection: hostSide, closed: make(chan struct{})}) }()
 		defer grpcServer.Stop()
 		gateway.sessions[key] = testRuntimeSession(t, &testSessionConn{Conn: clientSide, done: make(chan struct{})})
-		server := httptest.NewServer(gateway.proxyHandler())
+		server := newInMemoryHTTPServer(gateway.proxyHandler())
 		defer server.Close()
 
 		body := typedRuntimeRequest(t, server, "compute.exec", `{"request_id":"exec-1","command":["sh","-lc","printf ok"],"env":["GH_TOKEN=ephemeral-test"]}`)
@@ -1376,7 +1472,7 @@ func TestTypedRuntimeProcessUsesOneCurrentContainerAndRetainsBoundedOutput(t *te
 		go func() { _ = grpcServer.Serve(&singleConnListener{connection: hostSide, closed: make(chan struct{})}) }()
 		defer grpcServer.Stop()
 		gateway.sessions[key] = testRuntimeSession(t, &testSessionConn{Conn: clientSide, done: make(chan struct{})})
-		server := httptest.NewServer(gateway.proxyHandler())
+		server := newInMemoryHTTPServer(gateway.proxyHandler())
 		defer server.Close()
 
 		start := typedRuntimeRequest(t, server, "process.start", `{"request_id":"start-request-1","command":["sh"],"env":["GH_TOKEN=ephemeral-process-test"]}`)
@@ -1441,7 +1537,7 @@ func TestTypedRuntimeProcessUsesOneCurrentContainerAndRetainsBoundedOutput(t *te
 		if err != nil {
 			t.Fatal(err)
 		}
-		response, err := http.DefaultClient.Do(staleRequest)
+		response, err := server.Client().Do(staleRequest)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1659,7 +1755,7 @@ func TestExecutionListIsReachableThroughTypedRuntimeRoute(t *testing.T) {
 	go func() { _ = grpcServer.Serve(&singleConnListener{connection: hostSide, closed: make(chan struct{})}) }()
 	defer grpcServer.Stop()
 	gateway.sessions[key] = testRuntimeSession(t, &testSessionConn{Conn: clientSide, done: make(chan struct{})})
-	server := httptest.NewServer(gateway.proxyHandler())
+	server := newInMemoryHTTPServer(gateway.proxyHandler())
 	defer server.Close()
 
 	body := typedRuntimeRequest(t, server, "compute.execution.list", `{"container_id":"main","expected_instance_id":"instance-a"}`)
@@ -1812,13 +1908,13 @@ func TestRuntimeSessionCloseDoesNotCancelPublishedNativeProcess(t *testing.T) {
 	}
 }
 
-func typedRuntimeRequest(t *testing.T, server *httptest.Server, operation, body string) []byte {
+func typedRuntimeRequest(t *testing.T, server *inMemoryHTTPServer, operation, body string) []byte {
 	t.Helper()
 	request, err := http.NewRequest(http.MethodPost, server.URL+"/v1/sessions/registration/allocation/7/0/"+operation, strings.NewReader(body))
 	if err != nil {
 		t.Fatal(err)
 	}
-	response, err := http.DefaultClient.Do(request)
+	response, err := server.Client().Do(request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1928,7 +2024,7 @@ func TestControlClaimUsesTypedAgentVMMCommandAndNoWorkSignal(t *testing.T) {
 		raw, _ := protojson.Marshal(command)
 		epoch := uint64(1) << 63
 		noWork := false
-		server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		server := newInMemoryHTTPServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 			if request.Header.Get("Authorization") != "control-secret" {
 				http.Error(response, "forbidden", http.StatusForbidden)
 				return
@@ -1997,7 +2093,7 @@ func TestAgentVMMAllocationRevisionContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	if decodedAllocation.GetRevision() != 7 || decodedAllocation.GetGeneration() != 3 {
-		t.Fatalf("allocation identity=%+v", decodedAllocation)
+		t.Fatalf("allocation identity=%+v", &decodedAllocation)
 	}
 
 	commandJSON, err := protojson.Marshal(command)

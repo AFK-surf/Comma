@@ -14,6 +14,7 @@ import type {
   AudioCaptureRecording,
   AudioCaptureSelectMicrophoneInput,
 } from "@comma/native-bridge";
+import { realMainClock, type MainClock } from "../../clock";
 import { getCurrentNativeSessionAdmission } from "../session/native-session-admission";
 import {
   loadNativeAudioCapture,
@@ -109,7 +110,7 @@ type ActiveCapture = {
 export class AudioCaptureService implements AudioCaptureProvider {
   readonly #loadNative: () => Promise<NativeAudioCapture | undefined>;
   readonly #microphone: MicrophoneCapture | undefined;
-  readonly #now: () => number;
+  readonly #clock: MainClock;
   readonly #onStateChanged: (state: AudioCaptureState) => void;
   readonly #openExternalUrl: (url: string) => Promise<void>;
   readonly #recordingsDir: string;
@@ -136,9 +137,9 @@ export class AudioCaptureService implements AudioCaptureProvider {
   #status: AudioCaptureState["status"] = "idle";
 
   constructor({
+    clock = realMainClock,
     loadNative = loadNativeAudioCapture,
     microphone,
-    now = () => Date.now(),
     onStateChanged,
     openExternalUrl = async () => {
       throw new Error("Opening system settings is unavailable in this runtime.");
@@ -149,10 +150,11 @@ export class AudioCaptureService implements AudioCaptureProvider {
     encoder,
     onSaved,
   }: {
+    /** Main's clock: when a recording starts, pauses and stops, and the level meter's pace. */
+    clock?: MainClock;
     loadNative?: () => Promise<NativeAudioCapture | undefined>;
     /** Microphone intake; absent means system audio only. */
     microphone?: MicrophoneCapture | undefined;
-    now?: () => number;
     onStateChanged: (state: AudioCaptureState) => void;
     openExternalUrl?: (url: string) => Promise<void>;
     recordingsDir: string;
@@ -171,7 +173,7 @@ export class AudioCaptureService implements AudioCaptureProvider {
   }) {
     this.#loadNative = loadNative;
     this.#microphone = microphone;
-    this.#now = now;
+    this.#clock = clock;
     this.#onStateChanged = onStateChanged;
     this.#openExternalUrl = openExternalUrl;
     this.#recordingsDir = recordingsDir;
@@ -255,7 +257,7 @@ export class AudioCaptureService implements AudioCaptureProvider {
     // Fix this recording's owner and logical target at the start.
     const driveTarget = await this.#drive.target();
     if (this.#startCancelled) return this.#snapshot();
-    const startedAtMs = this.#now();
+    const startedAtMs = this.#clock.now();
     const path = join(this.#recordingsDir, recordingFileName(startedAtMs));
     let capture: ActiveCapture | undefined;
 
@@ -372,7 +374,7 @@ export class AudioCaptureService implements AudioCaptureProvider {
 
     // Claiming the stop admits exactly one finalizer.
     this.#publish({ status: "finalizing" });
-    const endedAtMs = this.#now();
+    const endedAtMs = this.#clock.now();
     this.#stopTap(capture);
     this.#active = undefined;
     const micSummary = await this.#finishMicrophone(capture);
@@ -503,7 +505,7 @@ export class AudioCaptureService implements AudioCaptureProvider {
     const capture = this.#active;
     if (!capture || this.#status !== "recording") return this.#snapshot();
     capture.paused = true;
-    capture.pausedAtMs = this.#now();
+    capture.pausedAtMs = this.#clock.now();
     capture.micLevel = 0;
     this.#level = 0;
     return this.#publish({ status: "paused" });
@@ -512,7 +514,7 @@ export class AudioCaptureService implements AudioCaptureProvider {
   async resume(): Promise<AudioCaptureState> {
     const capture = this.#active;
     if (!capture || this.#status !== "paused") return this.#snapshot();
-    capture.pausedTotalMs += Math.max(0, this.#now() - capture.pausedAtMs);
+    capture.pausedTotalMs += Math.max(0, this.#clock.now() - capture.pausedAtMs);
     this.#alignTracks(capture);
     capture.paused = false;
     return this.#publish({ status: "recording" });
@@ -696,7 +698,7 @@ export class AudioCaptureService implements AudioCaptureProvider {
     const level = frameLevel(frames);
     this.#level = Math.max(level, this.#level * LEVEL_RELEASE);
 
-    const elapsedMs = this.#now() - capture.startedAtMs - capture.pausedTotalMs;
+    const elapsedMs = this.#clock.now() - capture.startedAtMs - capture.pausedTotalMs;
     if (level > 0 && !capture.sawSignal) {
       capture.sawSignal = true;
       if (this.#permission !== "granted") {
@@ -719,7 +721,7 @@ export class AudioCaptureService implements AudioCaptureProvider {
       return;
     }
 
-    const nowMs = this.#now();
+    const nowMs = this.#clock.now();
     if (nowMs - this.#levelPublishedAtMs < LEVEL_PUBLISH_INTERVAL_MS) return;
     this.#levelPublishedAtMs = nowMs;
     this.#publish({});

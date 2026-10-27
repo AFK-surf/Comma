@@ -23,6 +23,7 @@ import surf.comma.android.conversation.scope
 import surf.comma.android.core.CoreApi
 import surf.comma.android.core.CoreError
 import surf.comma.android.core.TopicValue
+import surf.comma.android.tasks.TaskHost
 import surf.comma.android.tasks.TaskLabel
 import surf.comma.android.tasks.TaskSection
 import surf.comma.android.tasks.TaskStatusBucket
@@ -112,6 +113,25 @@ class ServerTaskRepositoryTest {
         assertEquals(Connection.LIVE, state.connection)
         assertEquals(1, state.listReads)
         assertEquals(GROUP, state.groupId)
+    }
+
+    @Test fun `the list has the Tasks the workspace's stations host, each with its station's chat`() = runBlocking {
+        val hosted = JSONObject().put("id", "station:st_a:7").put("source", "station.chat").put("groupId", GROUP)
+            .put("workspaceId", "wsp_test_1").put("conversationId", "station:st_a:7").put("kind", "agent_task").put("title", "Fix CI")
+            .put("status", "active").put("statusBucket", "in_progress").put("labels", JSONArray()).put("updatedAt", 2)
+            .put("unsupported", JSONArray(listOf("archive", "pin", "share")))
+            .put("host", JSONObject().put("station", "st_a").put("thread", "7").put("model", JSONObject.NULL).put("runtime", "claude")
+                .put("machine", JSONObject().put("name", "Studio").put("online", false)))
+        core.topics.getValue("tasks").value = list(hosted, item("task-a"))
+        start()
+        val state = await { it.listLoaded }
+        assertEquals("1", core.subscribed.first { it.getString("topic") == "tasks" }.getString("hosted"))
+        assertEquals(listOf("station:st_a:7", "task-a"), state.snapshot.tasks.map { it.id })
+        assertEquals(TaskHost("wsp_test_1", "st_a", 7, machine = "Studio", online = false), state.snapshot.tasks[0].host)
+        // What the core says it cannot take is not offered.
+        assertEquals(setOf("archive", "pin", "share"), state.snapshot.tasks[0].unsupported)
+        assertEquals(null, state.snapshot.tasks[1].host)
+        assertEquals(emptySet<String>(), state.snapshot.tasks[1].unsupported)
     }
 
     @Test fun `a list the core could only show from the device says why and can be read again`() = runBlocking {

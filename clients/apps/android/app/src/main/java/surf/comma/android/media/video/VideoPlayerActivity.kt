@@ -28,6 +28,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import surf.comma.android.R
 import surf.comma.android.media.MediaGraph
+import surf.comma.android.media.file.MediaFileProvider
 import surf.comma.android.ui.theme.DesignFonts
 import surf.comma.android.ui.theme.DesignTypography
 import java.io.File
@@ -52,9 +53,9 @@ class VideoPlayerActivity : ComponentActivity() {
         enableEdgeToEdge(SystemBarStyle.dark(android.graphics.Color.TRANSPARENT), SystemBarStyle.dark(android.graphics.Color.TRANSPARENT))
         super.onCreate(savedInstanceState)
         val path = intent.getStringExtra(EXTRA_PATH)
-        // Only files this app downloaded or wrote itself.
+        // Only files this app downloaded: the ones it hands out as media.
         val candidate = path?.let(::File)?.canonicalFile
-        if (candidate == null || !candidate.isFile || !candidate.path.startsWith(cacheDir.canonicalPath + File.separator)) return finish()
+        if (candidate == null || !candidate.isFile || !MediaFileProvider.serves(this, candidate)) return finish()
         file = candidate
         position = savedInstanceState?.getLong(STATE_POSITION) ?: 0L
         playing = savedInstanceState?.getBoolean(STATE_PLAYING) ?: true

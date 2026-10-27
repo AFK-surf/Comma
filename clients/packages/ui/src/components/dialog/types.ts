@@ -42,7 +42,13 @@ export interface DialogPanelProps {
   description?: ReactNode;
   /** Show the top-right close button. Defaults to false. */
   showCloseButton?: boolean;
-  variant?: "default" | "input";
+  /**
+   * `compose` makes something new, as Linear's New issue: a breadcrumb title row
+   * (`titleLeading` › title) over a body that brings its own fields and footer.
+   */
+  variant?: "default" | "input" | "compose";
+  /** compose: where the new item goes (a chip), before the title. */
+  titleLeading?: ReactNode;
   input?: DialogInputProps;
   onClose?: () => void;
   actions?: DialogAction[];

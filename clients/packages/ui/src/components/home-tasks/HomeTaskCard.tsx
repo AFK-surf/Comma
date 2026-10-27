@@ -5,7 +5,6 @@ import { memo, type ReactNode } from "react";
 import { Badge } from "../Badge";
 import {
   TaskSummaryCard,
-  taskAriaLabel,
   type TaskSummaryViewModel,
 } from "../task-workspace/TaskSummaryCard";
 import { homeTaskCardButton } from "./styles";
@@ -42,7 +41,7 @@ function HomeTaskCardImpl<T extends TaskSummaryViewModel>({
   return (
     <TaskArchiveMenu action={task.archiveAction} overlay="task-card">
       <button
-        aria-label={taskAriaLabel(task, locale)}
+        aria-label={task.title}
         className={homeTaskCardButton}
         data-testid="home-task-card"
         onClick={() => onOpen(task)}

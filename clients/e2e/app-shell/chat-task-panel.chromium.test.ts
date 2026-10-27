@@ -64,6 +64,12 @@ const quickChatRouterReply = {
   message_id: "msg-quick-chat-router",
 } as const;
 
+// A reply long enough that the transcript scrolls whatever the run adds.
+const longPriorReply = Array.from(
+  { length: 40 },
+  (_, index) => `第 ${index + 1} 段：这是一段较长的回复，用来把历史撑过一个视口。`
+).join("\n\n");
+
 const stubs: Record<string, WebAppStubOptions["stub"]> = {
   "Quick Chat shows the person's words before a Router reply creates a Task card": {
     taskStatus: "in_progress",
@@ -105,6 +111,14 @@ const stubs: Record<string, WebAppStubOptions["stub"]> = {
     inlineTaskReference: true,
     keepThinkingAfterReply: true,
     laterChatTurns: 60,
+    taskStatus: "in_progress",
+  },
+  "focus returning to a chip the run has scrolled past leaves the reader at the tail": {
+    assistantReply: "我已经创建了任务",
+    inlineTaskReference: true,
+    keepThinkingAfterReply: true,
+    priorAssistantReply: longPriorReply,
+    priorUserMessage: "先讲讲背景",
     taskStatus: "in_progress",
   },
   "Home task row stays mounted and does not reveal again across Inbox refresh: settled":
@@ -451,10 +465,6 @@ test("Quick Chat shows the person's words before a Router reply creates a Task c
   await expect(spoken.locator(".comma-chat-user-bubble")).toHaveText(quickChatWords);
   await expect(content.getByTestId("chat-task-card-" + smokeTaskId)).toHaveCount(0);
   await expect(content.getByTestId("chat-task-panel")).toHaveCount(0);
-  await expect(spoken.locator('[data-source="quick-chat"]')).toHaveAttribute(
-    "title",
-    "Sent with Quick Chat"
-  );
 
   await app.stub().call("publishWorkspaceChatMessage", quickChatRouterReply);
   const reply = content.locator('[data-message-id="msg-quick-chat-router"]');
@@ -901,6 +911,115 @@ test("a revealed turn holds while the run keeps working", async ({ page }) => {
     (value) => expect(value).toBeLessThanOrEqual(1)
   );
   await expect(pill).toHaveCount(0);
+});
+
+test("focus returning to a chip the run has scrolled past leaves the reader at the tail", async ({
+  page,
+}) => {
+  // Focus comes back to a transcript element without the reader moving it:
+  // the app window regains focus and Chromium fires focusin on the active
+  // element again, an overlay or a media preview returns focus to its
+  // trigger. The run has long scrolled that element away. That is not the
+  // reader going back to it: the thread stays at the tail, and the next
+  // message lands in view instead of in the unseen pill. Focus the reader
+  // moved by keyboard still takes the thread with it.
+  await app.open(page);
+
+  const content = page.getByRole("region", { name: "Content" });
+  // The pressed chip opens the Task beside the chat, with a composer of its own.
+  const composer = content.locator(".comma-home-chat .comma-chat-composer");
+  const prompt = composer.getByRole("textbox", { name: "AI prompt" });
+  await prompt.fill("请完成冒烟任务");
+  await composer.getByRole("button", { name: "Send" }).click();
+  await expect(content.getByTestId(`chat-task-item-${smokeTaskId}`)).toContainText(
+    "In progress"
+  );
+
+  const viewport = content.locator(
+    '.comma-home-chat [data-slot="scroll-area-viewport"]'
+  );
+  const chip = content
+    .locator('[data-message-id="msg-assistant-smoke"]')
+    .getByTestId(`chat-inline-task-${smokeTaskId}`);
+  const pill = content.locator(".comma-chat-new-pill");
+  const distanceFromBottom = () =>
+    viewport.evaluate(
+      (element) => element.scrollHeight - element.clientHeight - element.scrollTop
+    );
+  const chipIsActive = () =>
+    chip.evaluate((element) => element === element.ownerDocument.activeElement);
+  const chipAboveViewport = async () => {
+    const [box, view] = await Promise.all([chip.boundingBox(), viewport.boundingBox()]);
+    return box !== null && view !== null && box.y + box.height < view.y;
+  };
+
+  // The reader pressed the chip: it opens the Task beside the chat and keeps
+  // the focus. The thread holds the turn's top while the run's thinking
+  // grows under it; once more than a viewport of it lies below the chip,
+  // the reader reads on to the tail with the wheel, and the thread follows
+  // the tail from there, with the chip scrolled away above.
+  await chip.click();
+  await testClock().advance(100);
+  expect(await chipIsActive(), "the pressed chip keeps the focus").toBe(true);
+  const chipBottom = async () => {
+    const [box, view] = await Promise.all([chip.boundingBox(), viewport.boundingBox()]);
+    return box!.y + box!.height - view!.y;
+  };
+  await eventually(
+    async () => (await distanceFromBottom()) - (await chipBottom()),
+    (value) => expect(value).toBeGreaterThan(0)
+  );
+  const view = (await viewport.boundingBox())!;
+  await page.mouse.move(view.x + view.width / 2, view.y + view.height / 2);
+  await page.mouse.wheel(0, 10_000);
+  await eventually(distanceFromBottom, (value) => expect(value).toBeLessThanOrEqual(1));
+  expect(await chipAboveViewport(), "the run scrolled the chip away").toBe(true);
+  expect(
+    await chipIsActive(),
+    "the chip keeps the focus while the run scrolls on"
+  ).toBe(true);
+
+  // The window regains focus: Chromium fires focus on the active element again.
+  await chip.evaluate((element) => {
+    element.blur();
+    element.focus({ preventScroll: true });
+  });
+  await testClock().advance(300);
+  const returned = {
+    chipAbove: await chipAboveViewport(),
+    distanceFromBottom: await distanceFromBottom(),
+  };
+  expect(returned.chipAbove, `after focus returned: ${JSON.stringify(returned)}`).toBe(
+    true
+  );
+  expect(returned.distanceFromBottom).toBeLessThanOrEqual(1);
+
+  await app.stub().call("commitThinkingReply");
+  await expect(
+    content.locator('[data-message-id="msg-assistant-thinking-1"]')
+  ).toHaveCount(1);
+  await testClock().advance(1_400);
+  await expect(pill).toHaveCount(0);
+  expect(await distanceFromBottom()).toBeLessThanOrEqual(1);
+
+  // The run's next thinking grows past the chip again. Shift+Tab from the
+  // composer walks back into the transcript and lands on the chip: the reader
+  // moved there, so the thread shows it and parks, and the next message is
+  // announced in the pill.
+  await eventually(chipAboveViewport, (value) => expect(value).toBe(true));
+  await prompt.click();
+  for (let presses = 0; presses < 24 && !(await chipIsActive()); presses += 1) {
+    await page.keyboard.press("Shift+Tab");
+  }
+  expect(await chipIsActive(), "Shift+Tab reached the chip").toBe(true);
+  await expect(chip).toBeInViewport();
+  await app.stub().call("commitThinkingReply");
+  await expect(
+    content.locator('[data-message-id="msg-assistant-thinking-2"]')
+  ).toHaveCount(1);
+  await testClock().advance(1_400);
+  await expect(chip).toBeInViewport();
+  await expect(pill).toBeVisible();
 });
 
 const readIconHoverSurface = (control: Locator) =>

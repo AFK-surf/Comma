@@ -6,6 +6,8 @@ export type { AiInputMenuPanelProps } from "./menu/AiInputMenuPanel";
 export {
   AI_INPUT_SMALL_TEXTAREA_MIN_HEIGHT_PX,
   aiInputQuoteAttachment,
+  aiInputMessageQuote,
+  aiInputQuoteExcerpt,
   aiInputQuoteHoverCard,
   aiInputQuotePreview,
   aiInputQuotePreviewText,

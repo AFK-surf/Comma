@@ -6,9 +6,13 @@ defmodule SalixVoice.CallActor do
 
   The actor runs on the node that holds the call's media and owns:
 
-    * the caller profile (`SalixVoice.Profile`), decided before the model
-      starts and waited for at most `profile_ms`; without it the model starts
-      with the base instructions;
+    * the Group's call preferences (`SalixIM.VoiceConnects`): the voice, and
+      whether the call speaks as the Router (never for a Signal group call);
+    * the caller profile (`SalixVoice.Profile`), or for a Router call the
+      Router's identity (`SalixVoice.RouterPersona`); preferences and either
+      are decided before the model starts and waited for at most
+      `profile_ms`; without them the model starts with the platform voice and
+      the base instructions;
     * the model session (`SalixVoice.Model`), started at admission; caller
       audio that arrives before the model reports `:started` is buffered, up
       to the newest 2 s;
@@ -70,9 +74,10 @@ defmodule SalixVoice.CallActor do
   @thinking_progress "The assistant is still working on it."
   @apology "Sorry, this is taking longer than expected. The assistant is still working on it."
 
-  @instructions """
-  You are the voice of the Comma assistant on a live call. Keep every reply short and \
-  natural for speech. You cannot look things up or act on your own: for any request that \
+  # Delegation rules, shared by calls that speak as the Router.
+  @rules """
+  Keep every reply short and natural for speech. You cannot look things up or act on your \
+  own: for any request that \
   needs knowledge, tools, accounts or actions, delegate it, tell the caller briefly that \
   you are checking, and wait. Never say you do not know about something before delegating \
   the request and waiting for the result. Your own lack of knowledge is a reason to delegate, \
@@ -80,6 +85,10 @@ defmodule SalixVoice.CallActor do
   confirms it. When commentary arrives for a delegation, say it in your own \
   words without adding facts. Never invent results.\
   """
+
+  @instructions "You are the voice of the Comma assistant on a live call. " <> @rules
+  # The newest part of a Router call's transcript the call-end input carries.
+  @max_transcript_bytes 12_000
 
   def start_link(args), do: SystemsRuntime.Server.start_link(__MODULE__, args)
 
@@ -127,6 +136,9 @@ defmodule SalixVoice.CallActor do
       greeted: false,
       instructions: @instructions,
       greeting: greeting(nil),
+      voice: nil,
+      input: [],
+      router_call?: false,
       profile_task: nil,
       call_started_task: nil,
       model_closed?: false,
@@ -175,14 +187,29 @@ defmodule SalixVoice.CallActor do
 
   @impl GenServer
   def handle_continue(:start_profile, state) do
+    preferences =
+      SystemsRuntime.get_env(:salix_voice, :preferences_mod, SalixIM.VoiceConnects)
+
+    persona = SystemsRuntime.get_env(:salix_voice, :persona_mod, SalixVoice.RouterPersona)
     profile = SystemsRuntime.get_env(:salix_voice, :profile_mod, Profile)
+    actor = SystemsRuntime.Proc.self()
     group_id = state.group_id
+    connect_id = state.connect_id
+    audience = persona_audience(state)
     deadline_ms = SystemsClock.monotonic_time(:millisecond) + state.timers.profile_ms
 
-    task =
-      SystemsRuntime.TaskSupervisor.async_nolink(SalixVoice.TaskSupervisor, fn ->
-        profile.resolve(group_id, deadline_ms)
-      end)
+    # The preferences are read within the profile deadline too. They reach
+    # the actor before the task's result, so the voice is set by then.
+    resolve = fn ->
+      prefs = preferences.voice_preferences(group_id, connect_id)
+      SystemsRuntime.Proc.send(actor, {:call_preferences, prefs})
+
+      if prefs["router_calls"] == true and audience != nil,
+        do: {:persona, persona.resolve(group_id, audience)},
+        else: profile.resolve(group_id, deadline_ms)
+    end
+
+    task = SystemsRuntime.TaskSupervisor.async_nolink(SalixVoice.TaskSupervisor, resolve)
 
     state
     |> Map.put(:profile_task, {task, now()})
@@ -201,7 +228,9 @@ defmodule SalixVoice.CallActor do
       ref: state.model_ref,
       audio_format: state.audio_format,
       instructions: state.instructions,
-      settings: state.model_settings
+      settings: state.model_settings,
+      voice: state.voice,
+      input: state.input
     }
 
     state = %{state | model_settings: nil}
@@ -245,8 +274,47 @@ defmodule SalixVoice.CallActor do
     end
   end
 
+  defp apply_profile(state, {:persona, {:ok, persona}}) do
+    {"persona",
+     %{
+       state
+       | instructions: SalixVoice.RouterPersona.instructions(persona, @rules),
+         greeting: SalixVoice.RouterPersona.greeting(persona),
+         input: persona.input,
+         router_call?: true
+     }}
+  end
+
+  defp apply_profile(state, {:persona, {:error, code}}), do: {code, state}
   defp apply_profile(state, {:error, code}), do: {code, state}
   defp apply_profile(state, _result), do: {"error", state}
+
+  # Who hears a call that speaks as the Router: its caller alone, recorded
+  # the way voice ingress records it (`call_metadata/1`). A Signal group call
+  # mixes every member of the group into one stream, so it has no such
+  # audience and never speaks as the Router.
+  defp persona_audience(%{caller: %{"kind" => "signal_group"}}), do: nil
+
+  defp persona_audience(state) do
+    metadata = call_metadata(state)
+
+    %{
+      tenant_id: state.tenant_id,
+      connect_id: state.connect_id,
+      user_id: metadata["from_user_id"],
+      requester: state.principal || caller_principal(state)
+    }
+  end
+
+  defp caller_principal(%{connect_id: connect_id, caller: %{"value" => value}})
+       when is_binary(connect_id) and is_binary(value) do
+    case SalixIFC.Codec.encode_principal({:provider_user, connect_id, value}) do
+      {:ok, encoded} -> encoded
+      :error -> nil
+    end
+  end
+
+  defp caller_principal(_state), do: nil
 
   defp stop_profile(%{profile_task: {task, _started}} = state) do
     SystemsRuntime.Task.shutdown(task, :brutal_kill)
@@ -532,6 +600,13 @@ defmodule SalixVoice.CallActor do
     state = %{state | timer_refs: Map.delete(state.timer_refs, name)}
     state |> timer(event) |> noreply()
   end
+
+  # The Group's call preferences, read by the profile task. After the profile
+  # deadline the model has started with the platform voice already.
+  def handle_info({:call_preferences, prefs}, %{profile_task: {_task, _started}} = state),
+    do: noreply(%{state | voice: SalixVoice.Voices.session_voice(prefs)})
+
+  def handle_info({:call_preferences, _prefs}, state), do: noreply(state)
 
   def handle_info({ref, result}, %{profile_task: {%Task{ref: ref}, _started}} = state) do
     SystemsRuntime.Proc.demonitor(ref, [:flush])
@@ -952,6 +1027,7 @@ defmodule SalixVoice.CallActor do
           "(reason #{state.end_reason})."
       ] ++
         pending_line ++
+        transcript_lines(state) ++
         [
           "The caller can no longer hear you. Do not use im_api.voice operations for this call. " <>
             "If something from the call still needs action or an answer, continue it in the " <>
@@ -960,6 +1036,27 @@ defmodule SalixVoice.CallActor do
       "\n"
     )
   end
+
+  # A Router call is the Router's own conversation with the caller, so the
+  # Router gets what was said, as it remembers a chat.
+  defp transcript_lines(%{router_call?: true, ledger: ledger}) do
+    case Transcript.turns(ledger, @max_transcript_bytes) do
+      [] ->
+        []
+
+      turns ->
+        [
+          "You spoke as yourself on this call. What was said (newest part), for your " <>
+            "memory like any conversation with the caller:"
+          | Enum.map(turns, fn
+              {:caller, text} -> "Caller: " <> text
+              {:agent, text} -> "You: " <> text
+            end)
+        ]
+    end
+  end
+
+  defp transcript_lines(_state), do: []
 
   defp end_reason_label(:caller_hangup), do: "the caller hung up"
   defp end_reason_label(:agent_hangup), do: "you ended the call"

@@ -4,7 +4,10 @@ export const chatProtocolVersion = 3 as const;
 export const chatSurfaceProjectionLimit = 8 as const;
 export const chatAttachmentUploadLimit = 8 as const;
 export const chatAttachmentUploadMaxBytes = 10_000_000 as const;
-/** Public Conversation attachment download bounds, shared with native saves. */
+/**
+ * The most a client reads of a file whole into memory (`files.read`) or hands to a native save as bytes. An attachment
+ * may be larger: it downloads in ranges (`fileStream`) instead.
+ */
 export const chatAttachmentDownloadMaxBytes = chatAttachmentUploadMaxBytes;
 export const chatAttachmentDownloadMaxFileNameBytes = 1_024 as const;
 /**
@@ -49,6 +52,7 @@ export const chatActivitySchema = z.object({
   streamIncarnation: z.number().int().positive(),
   summary: z.string().optional(),
   summaryClass: z.enum(["none", "generic", "public"]),
+  target: z.string().optional(),
   toolName: z.string().optional(),
   updatedAt: z.number().optional(),
 });
@@ -71,6 +75,51 @@ export const chatBoundWorkerSchema = z.object({
   name: z.string(),
 });
 
+/**
+ * What a coding Task's sandbox and GitHub answered last, as the server keeps it from the end of the Worker's last turn
+ * or a surface's last read: the Task's panel shows it until its own reads answer. A part is there once it was read.
+ */
+export const chatCodingFactsSchema = z.object({
+  /** The tokens the Session's model calls used (input includes the cached part); null when it made none. */
+  usage: z
+    .object({
+      modelCalls: z.number(),
+      inputTokens: z.number(),
+      cachedTokens: z.number(),
+      outputTokens: z.number(),
+      model: z.string().nullable(),
+    })
+    .nullable()
+    .optional(),
+  /** What the whole branch changes against its base: how many files, and the lines they add and remove. */
+  changes: z
+    .object({ files: z.number(), additions: z.number(), deletions: z.number() })
+    .optional(),
+  /** The branch's pull request as GitHub had it, without its description; null when it had none. */
+  pullRequest: z
+    .object({
+      url: z.string(),
+      number: z.number().nullable(),
+      title: z.string().nullable(),
+      body: z.null(),
+      headSha: z.string().nullable(),
+      state: z.enum(["open", "draft", "merged", "closed"]),
+      mergeable: z.enum(["mergeable", "conflicting", "unknown"]),
+      checks: z
+        .object({
+          passed: z.number(),
+          failed: z.number(),
+          skipped: z.number(),
+          total: z.number(),
+        })
+        .nullable(),
+      newCommits: z.boolean(),
+    })
+    .nullable()
+    .optional(),
+});
+export type ChatCodingFacts = z.infer<typeof chatCodingFactsSchema>;
+
 /** Where a Task runs and the model it runs: what its panels show instead of its Agent. */
 export const chatTaskRunSchema = z.object({
   place: z.discriminatedUnion("kind", [
@@ -80,6 +129,18 @@ export const chatTaskRunSchema = z.object({
       kind: z.literal("station"),
       deviceId: z.string().min(1),
       name: z.string().optional(),
+    }),
+    /** A coding Task's own cloud sandbox: its repository and session branch, and where the sandbox stands. */
+    z.object({
+      kind: z.literal("sandbox"),
+      repo: z.object({
+        owner: z.string(),
+        name: z.string(),
+        baseRef: z.string().optional(),
+        branch: z.string().optional(),
+      }),
+      state: z.string(),
+      reason: z.string().optional(),
     }),
   ]),
   model: z
@@ -98,14 +159,62 @@ export const chatTaskRunSchema = z.object({
    * the Task's Worker. Absent when the server has not said.
    */
   vendor: z.string().optional(),
+  /** A coding Task's (`place` `sandbox`): what its sandbox and GitHub answered last. */
+  facts: chatCodingFactsSchema.optional(),
 });
 export type ChatTaskRun = z.infer<typeof chatTaskRunSchema>;
+
+/**
+ * What a person does to a Task from its list or its page, beyond its conversation: archive it, pin it, share a link to
+ * it, or switch where it runs and its model (`run`), its place among them (`move`: one that cannot is switched only to
+ * another runtime or model where it runs), inside Comma among those places (`comma`: with Comma's own model or on the
+ * Cloud VM; one that cannot runs on computers alone).
+ */
+export const chatTaskActionSchema = z.enum([
+  "archive",
+  "pin",
+  "share",
+  "run",
+  "move",
+  "comma",
+]);
+export type ChatTaskAction = z.infer<typeof chatTaskActionSchema>;
+
+/**
+ * Where a Task is to run from now on and its model (`chatView.setTaskRun`): inside Comma with a catalog model, or the
+ * workspace's default Task model (`model` null); on the Cloud VM or a computer with a model of its runtime, or the
+ * runtime's default (no `model`), or the place's default (`model` null).
+ */
+export const chatTaskRunChoiceSchema = z.object({
+  runsOn: z.discriminatedUnion("kind", [
+    z.object({ kind: z.literal("salix") }),
+    z.object({ kind: z.literal("cloud_vm") }),
+    z.object({ kind: z.literal("station"), deviceId: z.string().min(1) }),
+  ]),
+  model: z
+    .discriminatedUnion("kind", [
+      z.object({
+        kind: z.literal("catalog"),
+        model: z.string().min(1),
+        reasoningEffort: z.string().min(1).optional(),
+      }),
+      z.object({
+        kind: z.literal("runtime"),
+        provider: z.enum(["codex", "claude"]),
+        model: z.string().min(1).optional(),
+      }),
+    ])
+    .nullable(),
+});
+export type ChatTaskRunChoice = z.infer<typeof chatTaskRunChoiceSchema>;
 
 export const chatParticipantStatusSchema = z.object({
   workingProvider: z.enum(["wechat", "telegram", "signal"]).optional(),
   loopWake: z.boolean().optional(),
   workingConversationIds: z.array(z.string().min(1)).optional(),
   waiting: z.boolean().optional(),
+  waitTool: z.string().optional(),
+  waitStartedAt: z.number().optional(),
   actorId: z.string().optional(),
   actorRole: z.enum(["router", "worker"]).optional(),
   conversationId: z.string().min(1),
@@ -200,7 +309,6 @@ const chatAgentImageBlobRefSchema = chatAgentBlobRefSchema.extend({
 export const chatInlineTaskSchema = z.object({
   activityStatus: z.string().optional(),
   conversationId: z.string().optional(),
-  freshness: z.enum(["fresh", "stale", "unknown"]).optional(),
   status: z.string().optional(),
   /** The section `status` folds into on every client (`taskStatusBucket` in `@comma/i18n`). */
   statusBucket: z
@@ -243,7 +351,36 @@ export const chatQuestionStateSchema = z.object({
   error: z.string().optional(),
 });
 
+/** One item an Agent made or found in an app on the user's Mac, drawn as that app draws it. */
+export const chatMacAppItemSchema = z.object({
+  app: z.enum(["calendar", "reminders", "notes", "contacts", "maps"]),
+  itemId: z.string().optional(),
+  title: z.string(),
+  start: z.string().optional(),
+  end: z.string().optional(),
+  allDay: z.boolean().optional(),
+  calendar: z.string().optional(),
+  color: z.string().optional(),
+  location: z.string().optional(),
+  due: z.string().optional(),
+  completed: z.boolean().optional(),
+  list: z.string().optional(),
+  folder: z.string().optional(),
+  detail: z.string().optional(),
+  address: z.string().optional(),
+  latitude: z.number().optional(),
+  longitude: z.number().optional(),
+  category: z.string().optional(),
+});
+export type ChatMacAppItem = z.infer<typeof chatMacAppItemSchema>;
+
 export const chatMessagePartSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("mac-app-item"),
+    item: chatMacAppItemSchema,
+    task: z.never().optional(),
+    text: z.never().optional(),
+  }),
   z.object({
     kind: z.literal("dynamic-ui"),
     uiRef: z.string().min(1).max(100),
@@ -254,6 +391,17 @@ export const chatMessagePartSchema = z.discriminatedUnion("kind", [
     conversationId: z.string(),
     messageId: z.string(),
     attachmentIndex: z.number().int().nonnegative(),
+  }),
+  z.object({
+    kind: z.literal("mini-app"),
+    /** The Mini App and the Version the Task's agent deployed (a preview until it is published). */
+    appId: z.string().min(1).max(256),
+    appVersion: z.number().int().positive(),
+    name: z.string().max(200),
+    /** Equals the message's text; Task Share shows only this. */
+    summary: z.string().max(4000),
+    conversationId: z.string(),
+    messageId: z.string(),
   }),
   z.object({
     kind: z.literal("markdown"),
@@ -369,6 +517,10 @@ export const chatMessageSchema = z
      */
     brief: z.boolean().optional(),
     clientRequestId: z.string().optional(),
+    // The Comma app a user sent this message from, for display only.
+    clientSource: z
+      .enum(["iphone", "watch", "android", "mac", "windows", "linux", "web"])
+      .optional(),
     createdAt: z.number().optional(),
     createdBy: z.string().optional(),
     /**
@@ -396,6 +548,8 @@ export const chatMessageSchema = z
      * a person's words said to Quick Chat.
      */
     messageType: z.string().optional(),
+    /** A `task_run_blocked` message: why the Task's model could not start, as its station said. */
+    runBlockedError: z.string().optional(),
     /**
      * An agent's message as the core parsed it (`@comma/core/markdown`'s tree): text as itself, any other node
      * `[kind, attributes, children?]`, a Task chip or card `["comma-inline", { key }]` naming its part. Every client
@@ -454,6 +608,8 @@ export const chatPendingSendSchema = z.object({
 });
 
 export const chatDraftAttachmentSchema = z.object({
+  /** A message's attachment the server stores by reference: no bytes are held, so it has a thumbnail once stored. */
+  byReference: z.literal(true).optional(),
   error: z.string().optional(),
   id: z.string(),
   isImage: z.boolean(),
@@ -546,6 +702,15 @@ export const conversationProjectionSchema = z.object({
   participantStatuses: z.array(chatParticipantStatusSchema).max(2).optional(),
   boundWorker: chatBoundWorkerSchema.optional(),
   taskRun: chatTaskRunSchema.optional(),
+  /** What this Task cannot take from here (a station-hosted one: archiving, pinning, a share link, another run). */
+  unsupported: z.array(chatTaskActionSchema).optional(),
+  /**
+   * A Task whose model cannot start: the Worker's last word is its station saying so (a `task_run_blocked` message,
+   * `error` why), and the Task has not been switched to another model since. Clients offer to switch it.
+   */
+  taskRunBlocked: z
+    .object({ messageId: z.string().min(1), error: z.string().optional() })
+    .optional(),
   reply: chatReplyStateSchema.optional(),
   serverMessages: z.array(chatMessageSchema),
   status: z.enum(["idle", "loading", "ready", "error"]),
@@ -635,6 +800,10 @@ export const chatLeasedSetTaskStatusInputSchema = chatLeasedTargetSchema.extend(
   status: manualTaskStatusSchema,
 });
 
+export const chatLeasedSetTaskRunInputSchema = chatLeasedTargetSchema.extend({
+  run: chatTaskRunChoiceSchema,
+});
+
 export const chatReleaseInputSchema = chatRetainInputSchema;
 
 export const chatSetDraftInputSchema = chatTargetSchema.extend({
@@ -717,6 +886,27 @@ export const chatAttachLocalFilesInputSchema = chatTargetSchema.extend({
   files: z.array(chatLocalFileSchema).min(1).max(50),
   surfaceId: z.string().min(1),
 });
+
+/**
+ * An attachment of a message in the Group, by its position there: the draft names it, and the server stores the same
+ * blob as a composer file, so no bytes pass through the client and it has no size bound.
+ */
+export const chatConversationFileSchema = z
+  .object({
+    conversationId: z.string().min(1),
+    messageId: z.string().min(1),
+    index: z.number().int().nonnegative(),
+    name: z.string().trim().min(1).max(1024),
+    size: z.number().int().nonnegative(),
+  })
+  .strict();
+
+const chatLeasedAttachConversationFilesInputSchema = chatTargetSchema
+  .extend({
+    files: z.array(chatConversationFileSchema).min(1),
+    surfaceId: z.string().min(1),
+  })
+  .extend(chatLeaseSchema.shape);
 
 export const chatAttachmentSourceSchema = z.discriminatedUnion("kind", [
   z
@@ -868,10 +1058,26 @@ export const chatReadDraftUploadImageInputSchema = z
   })
   .strict();
 
+/**
+ * An image a message carries by its place in it (`ChatAttachment.attachmentIndex`), with no other source to preview it
+ * from: read where its conversation keeps it (Comma's server, or the station of a Task one hosts).
+ */
+export const chatReadMessageImageInputSchema = z
+  .object({
+    conversationId: z.string().min(1).max(160),
+    fileName: z.string().trim().min(1).max(255),
+    groupId: z.string().min(1).max(160),
+    index: z.number().int().nonnegative(),
+    messageId: z.string().min(1).max(160),
+    source: z.literal("attachment"),
+  })
+  .strict();
+
 export const chatReadGroupImageInputSchema = z.discriminatedUnion("source", [
   chatReadUploadedGroupImageInputSchema,
   chatReadAgentBlobImageInputSchema,
   chatReadDraftUploadImageInputSchema,
+  chatReadMessageImageInputSchema,
 ]);
 
 export const chatGroupImagePreviewSchema = z.custom<Uint8Array>(
@@ -928,9 +1134,6 @@ const statusMenuEnvelopeShape = {
 
 const statusMenuControlVariants = [
   z.object({
-    // When set, a left click on the item reports this id with status-menu.select
-    // instead of opening the menu, which opens on a right click or Control-click.
-    clickId: z.string().min(1).max(256).optional(),
     // When set, the helper reports this id with status-menu.select each time the
     // menu closes, after the id of the row chosen from it.
     closeId: z.string().min(1).max(256).optional(),
@@ -1019,6 +1222,7 @@ export type ManualTaskStatus = z.infer<typeof manualTaskStatusSchema>;
 export type ChatLeasedSetTaskStatusInput = z.infer<
   typeof chatLeasedSetTaskStatusInputSchema
 >;
+export type ChatLeasedSetTaskRunInput = z.infer<typeof chatLeasedSetTaskRunInputSchema>;
 export type ChatRetainInput = z.infer<typeof chatRetainInputSchema>;
 export type ChatReleaseInput = z.infer<typeof chatReleaseInputSchema>;
 export type ChatSetDraftInput = z.infer<typeof chatSetDraftInputSchema>;
@@ -1042,6 +1246,10 @@ export type ChatLeasedClientRequestInput = z.infer<
 export type ChatLeasedAttachInput = z.infer<typeof chatLeasedAttachInputSchema>;
 export type ChatLeasedAttachLocalFilesInput = z.infer<
   typeof chatLeasedAttachLocalFilesInputSchema
+>;
+export type ChatConversationFile = z.infer<typeof chatConversationFileSchema>;
+export type ChatLeasedAttachConversationFilesInput = z.infer<
+  typeof chatLeasedAttachConversationFilesInputSchema
 >;
 export type ChatLeasedPickAttachmentsInput = z.infer<
   typeof chatLeasedPickAttachmentsInputSchema

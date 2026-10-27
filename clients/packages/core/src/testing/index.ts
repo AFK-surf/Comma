@@ -31,6 +31,7 @@ import {
   type DesktopPorts,
   type DownloadPorts,
   type HintChannel,
+  type ClientIdentity,
   type Host,
   type LocalDriveListInput,
   type LocalDriveListResult,
@@ -41,6 +42,7 @@ import {
   type LocalDriveState,
   type LocalDriveVersion,
   type MeetingPorts,
+  type VoiceCallPorts,
   type ResetPorts,
   type Pull,
   type SessionLease,
@@ -64,6 +66,8 @@ export type SeenRequest = {
   path: string;
   /** A JSON body as its value; any other body as its bytes. */
   body: unknown;
+  /** The file the host was to send as the body (`ApiRequest.localFileRef`). */
+  localFileRef?: string;
   headers?: [string, string][];
   /** The session the request was made for; an auth request has none (`NO_LEASE`), and says `expected` instead. */
   lease: SessionLease;
@@ -263,6 +267,9 @@ export class FakeCommaApi {
             ? JSON.parse(text)
             : undefined
           : (request.body ?? undefined),
+        ...(request.localFileRef !== undefined
+          ? { localFileRef: request.localFileRef }
+          : {}),
         headers: request.headers,
         lease: request.lease,
         ...(expected !== undefined ? { expected } : {}),
@@ -458,6 +465,8 @@ export class FakeHints {
  */
 export class FakeDownloads implements DownloadPorts {
   readonly files = new Map<string, Uint8Array>();
+  /** Each download's request, in order. */
+  readonly requests: ApiRequest[] = [];
   readonly #api: FakeCommaApi;
   readonly #open = new Map<number, { path: string; body: Uint8Array; told: boolean }>();
   #next = 1;
@@ -467,6 +476,7 @@ export class FakeDownloads implements DownloadPorts {
   }
 
   open(request: ApiRequest, path: string) {
+    this.requests.push(request);
     return Effect.map(this.#api.answer(request), (response) => {
       if (response.status !== 200)
         return { id: 0, status: response.status, total: null };
@@ -495,7 +505,51 @@ export class FakeDownloads implements DownloadPorts {
   }
 
   close(id: number) {
-    return Effect.sync(() => void this.#open.delete(id));
+    return Effect.sync(() => {
+      this.#open.delete(id);
+      this.#written.delete(id);
+    });
+  }
+
+  /** Files the core writes itself, by id: their path and the parts written so far. */
+  readonly #written = new Map<number, { path: string; parts: Uint8Array[] }>();
+
+  create(path: string) {
+    return Effect.sync(() => {
+      const id = this.#next++;
+      this.#written.set(id, { path, parts: [] });
+      return { id };
+    });
+  }
+
+  append(id: number, bytes: Uint8Array) {
+    return Effect.sync(() => {
+      const file = this.#written.get(id);
+      if (!file) throw new HostError("no such file");
+      file.parts.push(bytes.slice());
+      return { received: file.parts.reduce((sum, part) => sum + part.length, 0) };
+    });
+  }
+
+  finish(id: number) {
+    return Effect.sync(() => {
+      const file = this.#written.get(id);
+      if (!file) throw new HostError("no such file");
+      this.#written.delete(id);
+      const bytes = new Uint8Array(
+        file.parts.reduce((sum, part) => sum + part.length, 0)
+      );
+      let at = 0;
+      for (const part of file.parts) {
+        bytes.set(part, at);
+        at += part.length;
+      }
+      this.files.set(file.path, bytes);
+      return {
+        size: bytes.length,
+        sha256: createHash("sha256").update(bytes).digest("hex"),
+      };
+    });
   }
 
   remove(path: string): Effect.Effect<void, HostError> {
@@ -514,6 +568,8 @@ export class FakeDownloads implements DownloadPorts {
 }
 
 export class FakeHost implements Host {
+  /** The app the core's requests report, when a test gives one before the core starts. */
+  client?: ClientIdentity;
   /** This installation's Drive node, when a test gives one (`FakeLocalDrive`). */
   localDrive?: LocalDrivePorts;
   /** Direct connections to stations, when a test gives them (`FakeStations`). */
@@ -534,6 +590,20 @@ export class FakeHost implements Host {
   desktop?: DesktopPorts;
   /** Downloads to the device's storage: a test gives them (`FakeDownloads`). */
   downloads?: DownloadPorts;
+  /** Sends a request's `localFileRef` as its body, when a test says so before the core starts. */
+  uploadsLocalFiles = false;
+  /** Files a pick left with the app, by ref: read a part at a time (`readLocalFile`). */
+  readonly localFiles = new Map<string, Uint8Array>();
+  readLocalFile(
+    ref: string,
+    offset: number,
+    length: number
+  ): Effect.Effect<Uint8Array, HostError> {
+    const file = this.localFiles.get(ref);
+    return file
+      ? Effect.succeed(file.slice(offset, offset + length))
+      : Effect.fail(new HostError(`no file ${ref}`));
+  }
   /** The accounts' databases, in memory, by name: a core started again on this host opens the same. */
   readonly dbs = new Map<string, NodeSql>();
   readonly deleted: string[] = [];
@@ -547,6 +617,8 @@ export class FakeHost implements Host {
   legacyTasks?: NonNullable<Host["legacyTasks"]>;
   /** Main's meeting recorder parts: a fake host has none unless a test gives them (`FakeMeetingMain`). */
   meeting?: MeetingPorts;
+  /** Main's voice call socket: a fake host has none unless a test gives it. */
+  voiceCall?: VoiceCallPorts;
   /** How many times the app's reset asked this host for a new core (`ResetPorts.restart`). */
   restarts = 0;
   /**

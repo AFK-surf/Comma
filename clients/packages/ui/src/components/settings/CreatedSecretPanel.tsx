@@ -20,6 +20,11 @@ export interface CreatedSecretPanelProps {
   /** Shows a button that copies `example`. */
   copyExampleLabel?: string | undefined;
   doneLabel: string;
+  /**
+   * Puts text on the clipboard. The client owns it: Electron's renderer may
+   * not write the clipboard itself.
+   */
+  onCopy: (text: string) => Promise<void>;
   onDismiss: () => void;
   testIds?: { root?: string; secret?: string; example?: string } | undefined;
 }
@@ -40,13 +45,13 @@ export function CreatedSecretPanel({
   copiedLabel,
   copyExampleLabel,
   doneLabel,
+  onCopy,
   onDismiss,
   testIds,
 }: CreatedSecretPanelProps) {
   const [copied, setCopied] = useState<"secret" | "example">();
   const copy = (value: string, what: "secret" | "example") => {
-    if (typeof navigator === "undefined" || !navigator.clipboard?.writeText) return;
-    void navigator.clipboard.writeText(value).then(() => setCopied(what));
+    void onCopy(value).then(() => setCopied(what));
   };
 
   return (

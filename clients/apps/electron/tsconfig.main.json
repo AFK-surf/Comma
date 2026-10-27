@@ -30,6 +30,7 @@
     "src/main.ts",
     "src/main/**/*.ts",
     "src/main/**/*.tsx",
+    "src/quick-chat-host/*.ts",
     "src/app-version.ts",
     "src/release-config.ts",
     "native/macos/NotificationAuthorization/index.ts",
@@ -63,6 +64,9 @@
     },
     {
       "path": "../../packages/i18n"
+    },
+    {
+      "path": "../../packages/miniapp-sdk"
     },
     {
       "path": "../../packages/native-bridge"

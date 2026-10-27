@@ -30,7 +30,8 @@
   width: 100%;
   max-width: 640px;
   margin: 0 auto;
-  padding: var(--spacing-3xl) var(--spacing-xl);
+  /* Match the other settings pages' gutter so the title’s inset lines up. */
+  padding: var(--spacing-3xl) var(--spacing-4xl);
 }
 .comma-devices__header {
   display: grid;
@@ -137,9 +138,6 @@
   font-size: var(--text-xs);
   line-height: var(--text-xs--line-height);
 }
-.comma-device__identity .comma-device__tasks[data-ready="true"] {
-  color: var(--device-green);
-}
 .comma-device__local {
   padding-inline: var(--spacing-sm);
   border-radius: var(--radius-xs);
@@ -199,30 +197,80 @@
     margin-top: calc(-1 * var(--spacing-xs));
   }
 }
-.comma-device[data-connected="false"] .comma-device__icon,
-.comma-device[data-connected="false"] .comma-device__connection,
-.comma-device[data-connected="false"] .comma-device__name {
+.comma-device__connection[data-tone="warning"] {
+  color: var(--color-text-warning-primary);
+}
+.comma-device__connection[data-tone="neutral"] {
   color: var(--device-muted);
 }
-.comma-device__facts {
-  list-style: none;
-  margin: 0 0 var(--spacing-3xl);
-  padding: 0;
-  color: var(--color-text-secondary);
-  font-size: var(--text-sm);
-  line-height: var(--text-sm--line-height);
-}
-/* In the access dialog, outside the page: theme tokens, not the page's. */
-.comma-device__access-title {
-  margin: 0 0 var(--spacing-md);
+/* The details dialog: groups of label | value rows, each group one panel. */
+.comma-device-details {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-2xl);
   color: var(--color-text-primary);
   font-size: var(--text-sm);
-  font-weight: var(--font-weight-semibold);
   line-height: var(--text-sm--line-height);
 }
-.comma-device__facts li {
+.comma-device-details h3 {
+  margin: 0 0 var(--spacing-md);
+  color: var(--color-text-tertiary);
+  font-size: var(--text-xs);
+  line-height: var(--text-xs--line-height);
+  font-weight: 500;
+}
+.comma-device-details__group:not(:first-of-type) {
+  margin-top: var(--spacing-md);
+}
+.comma-device-details__group {
+  border: var(--border-width-0-5) solid var(--color-border-primary);
+  border-radius: var(--radius-xl);
+  padding-inline: var(--spacing-lg);
+}
+.comma-device-details__head {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--spacing-xl);
   padding-block: var(--spacing-md);
-  border-bottom: var(--device-hairline);
+  font-weight: 500;
+}
+.comma-device-details__status {
+  color: var(--color-text-tertiary);
+  font-weight: 400;
+}
+.comma-device-details__note {
+  margin: 0 0 var(--spacing-md);
+  color: var(--color-text-tertiary);
+  font-size: var(--text-xs);
+  line-height: var(--text-xs--line-height);
+}
+.comma-device-details__list {
+  margin: 0;
+}
+.comma-device-details__facts {
+  border: var(--border-width-0-5) solid var(--color-border-primary);
+  border-radius: var(--radius-xl);
+  padding-inline: var(--spacing-lg);
+}
+.comma-device-details__row {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--spacing-xl);
+  padding-block: var(--spacing-md);
+}
+/* Rows part with a hairline; selectors keep a class subject (no sibling combinator over plain elements). */
+.comma-device-details__row:not(:first-child),
+.comma-device-details__group .comma-device-details__list {
+  border-top: var(--border-width-0-5) solid var(--color-border-primary);
+}
+.comma-device-details__row dt {
+  flex-shrink: 0;
+  color: var(--color-text-tertiary);
+}
+.comma-device-details__row dd {
+  min-width: 0;
+  margin: 0;
+  text-align: right;
   overflow-wrap: anywhere;
 }
 
@@ -254,9 +302,6 @@
   gap: var(--spacing-lg);
 }
 /* A button overhangs the heading's line, so the heading keeps one height. */
-.comma-device__section-meta > button {
-  margin-block: calc(-1 * var(--spacing-xs));
-}
 .comma-device__note {
   margin: 0;
   padding-top: var(--spacing-xs);
@@ -268,46 +313,20 @@
 .comma-device__note:last-child {
   padding-bottom: var(--spacing-lg);
 }
+.comma-device__note[data-attention="true"] {
+  color: var(--color-text-warning-primary);
+}
 .comma-device__note[role="alert"] {
   color: var(--color-text-error-primary);
 }
 
-.comma-device__agent-group + .comma-device__agent-group {
-  border-top: var(--device-hairline);
-}
-.comma-device__agent-group summary,
 .comma-device__agent {
   display: flex;
   align-items: center;
   gap: var(--spacing-lg);
   padding-block: var(--spacing-lg);
 }
-.comma-device__agent-group summary {
-  cursor: var(--cursor-interaction, default);
-  list-style: none;
-}
-.comma-device__agent-group summary::-webkit-details-marker {
-  display: none;
-}
-.comma-device__agent-group summary:focus-visible {
-  outline: 2px solid var(--color-border-primary);
-  outline-offset: 2px;
-  border-radius: var(--radius-xs);
-}
-.comma-device__agent-group[open] .comma-device__expand {
-  transform: rotate(90deg);
-}
-.comma-device__expand {
-  flex-shrink: 0;
-  color: var(--device-muted);
-}
-/* One provider's runtimes, indented under its row. */
-.comma-device__agent-group > .comma-device__agent {
-  padding-top: 0;
-  padding-left: var(--spacing-xl);
-}
-.comma-device__agent-group > .comma-device__agent + .comma-device__agent {
-  padding-top: var(--spacing-lg);
+.comma-device__agent + .comma-device__agent {
   border-top: var(--device-hairline);
 }
 .comma-device__agent-mark {
@@ -321,28 +340,38 @@
   background: var(--device-wash);
   color: var(--color-text-secondary);
 }
-.comma-device__agent-info {
+.comma-device__agent-identity {
   display: flex;
   flex: 1;
   flex-direction: column;
   gap: var(--spacing-xxs);
   min-width: 0;
 }
-.comma-device__agent-group summary .comma-device__agent-name {
+.comma-device__agent-identity .comma-device__agent-status {
+  max-width: none;
+  text-align: left;
+}
+.comma-device__agent-name {
   flex: 1;
   min-width: 0;
 }
+.comma-device__agent-identity {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--spacing-xxs);
+  min-width: 0;
+}
+.comma-device__agent-identity .comma-device__agent-status {
+  max-width: none;
+  text-align: left;
+}
 .comma-device__agent-name {
+  flex: 1;
+  min-width: 0;
   font-size: var(--text-sm);
   line-height: var(--text-sm--line-height);
   font-weight: 500;
-  overflow-wrap: anywhere;
-}
-.comma-device__agent-info p {
-  margin: 0;
-  color: var(--device-muted);
-  font-size: var(--text-xs);
-  line-height: var(--text-xs--line-height);
   overflow-wrap: anywhere;
 }
 .comma-device__agent-status {
@@ -360,17 +389,38 @@
   color: var(--color-text-warning-primary);
 }
 
-.comma-device__footer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--spacing-lg);
-  padding: var(--spacing-lg) var(--spacing-xl);
+/* Access: a row like an agent's under the agents, its choice at the trailing edge. */
+.comma-device__access {
+  margin-inline: var(--spacing-xl);
   border-top: var(--device-hairline);
-  background: var(--device-wash);
+}
+/*
+ * The sandbox belongs to the VMM, not the station: a divider across the whole
+ * card parts it from the agents and access above, in place of its own inset
+ * hairline.
+ */
+.comma-device__sandbox {
+  border-top: var(--device-hairline);
+}
+.comma-device__sandbox > .compute-node-summary {
+  border-top: 0;
+}
+/* Offline computers: one panel, one line each. */
+.comma-devices__offline {
+  border: var(--device-hairline);
+  border-radius: var(--radius-2xl);
+  background: var(--color-main-panel-item-bg);
+  overflow: hidden;
+}
+.comma-device__row + .comma-device__row {
+  border-top: var(--device-hairline);
+}
+.comma-device__row .comma-device__header {
+  padding-block: var(--spacing-lg);
+}
+.comma-device__row .comma-device__icon,
+.comma-device__row .comma-device__name {
   color: var(--device-muted);
-  font-size: var(--text-xs);
-  line-height: var(--text-xs--line-height);
 }
 h2.comma-devices__summary {
   font-weight: 500;

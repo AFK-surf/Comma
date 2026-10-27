@@ -11,7 +11,7 @@ struct SettingsView: View {
     @State private var path: [Route] = []
     @State private var confirmingSignOut = false
 
-    private enum Route: Hashable { case profile, workspace, notifications, labels, devices }
+    private enum Route: Hashable { case profile, workspace, notifications, labels, devices, myDevices }
     private static let top = "settings-top"
 
     var body: some View {
@@ -95,6 +95,9 @@ struct SettingsView: View {
 
     private var devices: some View {
         SettingsSection(Text("Devices"), footer: Text("Open Comma on your Apple Watch and it connects to this iPhone by itself. After connecting, the watch can load tasks and send messages directly.")) {
+            link(.myDevices, id: "openMyDevices") {
+                SettingsRow(Text("My devices"), icon: "central-circle-dashed") { SettingsChevron() }
+            }
             link(.devices, id: "openSignedInDevices") {
                 SettingsRow(Text("Signed-in devices"), icon: "icon-devices") { SettingsChevron() }
             }
@@ -149,6 +152,7 @@ struct SettingsView: View {
         case .notifications: NotificationSettingsView(store: store)
         case .labels: TaskLabelsView(store: store)
         case .devices: SessionsView(store: store)
+        case .myDevices: CommaDevicesView(store: store)
         }
     }
 

@@ -252,6 +252,7 @@ test("a member does not see admin-only destinations", async ({ page }) => {
         triage: false,
         information_flow: false,
         meetings: false,
+        daily_brief: false,
         settings: false,
       },
     }),

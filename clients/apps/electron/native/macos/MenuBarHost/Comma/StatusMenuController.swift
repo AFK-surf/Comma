@@ -10,9 +10,8 @@ import CoreText
 /// No row has a key equivalent, so AppKit reserves no key-equivalent column: a
 /// shortcut is secondary text at a right-aligned tab stop, and a Task title can
 /// use the whole width. The helper runs no row itself; it reports the chosen
-/// row's id to Electron Main. With a click id, a left click on the item reports
-/// that id instead of opening the menu, which then opens on a right click or a
-/// Control-click. With an open id, it reports that id as the menu opens, and
+/// row's id to Electron Main. Any click on the item opens the menu. With an
+/// open id, it reports that id as the menu opens, and
 /// rows that Main sends back then update the open menu in place where they
 /// can; with a close id, it reports that id once the menu has closed.
 ///
@@ -24,7 +23,6 @@ final class StatusMenuController: NSObject, NSMenuDelegate {
     private let onSelect: (String) -> Void
     private var item: NSStatusItem?
     private var iconPath: String?
-    private var clickId: String?
     private var openId: String?
     private var closeId: String?
     private var menuOpen = false
@@ -48,23 +46,16 @@ final class StatusMenuController: NSObject, NSMenuDelegate {
         toolTip: String,
         rows: [CommaStatusMenuShowRow],
         width: Double,
-        clickId: String?,
         openId: String?,
         closeId: String?
     ) {
         if item == nil {
             let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-            item.button?.target = self
-            item.button?.action = #selector(clicked(_:))
-            // The menu opens as the right button goes down, as a menu-bar menu
-            // does; a left click acts once the button comes up.
-            item.button?.sendAction(on: [.leftMouseUp, .rightMouseDown])
+            item.menu = menu
             self.item = item
         }
-        self.clickId = clickId
         self.openId = openId
         self.closeId = closeId
-        applyClickMode()
         if iconPath != self.iconPath {
             self.iconPath = iconPath
             item?.button?.image = Self.templateImage(at: iconPath)
@@ -79,7 +70,6 @@ final class StatusMenuController: NSObject, NSMenuDelegate {
         if let item { NSStatusBar.system.removeStatusItem(item) }
         item = nil
         iconPath = nil
-        clickId = nil
         openId = nil
         closeId = nil
         pendingRows = nil
@@ -94,7 +84,6 @@ final class StatusMenuController: NSObject, NSMenuDelegate {
 
     func menuDidClose(_ menu: NSMenu) {
         menuOpen = false
-        applyClickMode()
         // AppKit sends the chosen row's action after this; rows that waited
         // are applied, and the close reported, once it has.
         Task { @MainActor [weak self] in
@@ -102,36 +91,6 @@ final class StatusMenuController: NSObject, NSMenuDelegate {
             applyPendingRows()
             if let closeId { onSelect(closeId) }
         }
-    }
-
-    @objc private func clicked(_ sender: NSStatusBarButton) {
-        guard let item, let clickId else { return }
-        if Self.isLeftClick(NSApp.currentEvent, on: sender) {
-            onSelect(clickId)
-            return
-        }
-        // A right click or Control-click, and VoiceOver or the keyboard, which
-        // press the item without a mouse event: the menu, as before. AppKit
-        // opens an item's own menu at the item, highlighted; the menu leaves
-        // the item again once it closes (`applyClickMode`).
-        item.menu = menu
-        sender.performClick(nil)
-    }
-
-    /// The left button coming up on the item now, without Control. An action
-    /// without a mouse event leaves `currentEvent` at whatever came before.
-    private static func isLeftClick(_ event: NSEvent?, on button: NSStatusBarButton) -> Bool {
-        guard let event, event.type == .leftMouseUp, event.window === button.window,
-              !event.modifierFlags.contains(.control)
-        else { return false }
-        return ProcessInfo.processInfo.systemUptime - event.timestamp < 1
-    }
-
-    /// Without a click id the item opens its menu itself, on any click; with
-    /// one, clicks come to `clicked`. An open menu stays until it closes.
-    private func applyClickMode() {
-        guard !menuOpen else { return }
-        item?.menu = clickId == nil ? menu : nil
     }
 
     @objc private func select(_ sender: NSMenuItem) {

@@ -59,7 +59,7 @@ final class RouterLayerController: UIViewController {
     var hold: RouterHold?
 
     init(content: HostedContent<RouterLayerContent>) {
-        hosting = UIHostingController(rootView: content)
+        hosting = RouterContentHostingController(rootView: content)
         // The chat page inside the navigation stack avoids the keyboard itself.
         hosting.safeAreaRegions = .container
         super.init(nibName: nil, bundle: nil)
@@ -95,17 +95,17 @@ final class RouterLayerController: UIViewController {
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         guard view.bounds.width > 0, stage.frame != view.bounds else { return }
-        // A new layer size lands the zoom where it was going.
+        // A new layer size lands the zoom where it was going, before the new frames: UIKit works out the chat's safe
+        // area through the lens when they change, and a lens still scaled toward the button (to nothing while the
+        // chat rests closed) left the chat no top inset, so its navigation bar sat under the status bar.
         stopZoom()
         hold = nil
+        land()
         stage.frame = view.bounds
         face.frame = view.bounds
         shade.frame = view.bounds
-        // Bounds and centre, as the lens may still carry the stopped zoom's transform until `land`.
-        lens.bounds = stage.bounds
-        lens.center = CGPoint(x: stage.bounds.midX, y: stage.bounds.midY)
+        lens.frame = stage.bounds
         hosting.view.frame = lens.bounds
-        land()
         guard !laidOut else { return }
         laidOut = true
         if wantsOpen { appear() }
@@ -258,5 +258,30 @@ final class RouterLayerController: UIViewController {
     private func fade(to opacity: Float, velocity: CGFloat) {
         let span: (CGFloat, CGFloat) = opacity > stage.layer.opacity ? (0, 1 / 3) : (0.7, 0.9)
         RouterSpring.fade(stage.layer, to: opacity, over: span, velocity: velocity, reduceMotion: reduceMotion)
+    }
+}
+
+/// The chat stays at its container's full size while its rendered layers zoom. UIKit can retain a zero top inset
+/// on the hosting view after a reply/keyboard transition, although every ancestor still has the screen's inset.
+/// Keep that container-owned space on this host; the navigation stack adds its own bar below it.
+private final class RouterContentHostingController: UIHostingController<HostedContent<RouterLayerContent>> {
+    override func viewSafeAreaInsetsDidChange() {
+        super.viewSafeAreaInsetsDidChange()
+        reconcileContainerTopInset()
+    }
+
+    override func viewWillLayoutSubviews() {
+        super.viewWillLayoutSubviews()
+        reconcileContainerTopInset()
+    }
+
+    private func reconcileContainerTopInset() {
+        guard let container = parent?.viewIfLoaded, let hosted = viewIfLoaded else { return }
+        var additional = additionalSafeAreaInsets
+        let inherited = hosted.safeAreaInsets.top - additional.top
+        let missing = max(0, container.safeAreaInsets.top - inherited)
+        guard additional.top != missing else { return }
+        additional.top = missing
+        additionalSafeAreaInsets = additional
     }
 }

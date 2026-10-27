@@ -1,21 +1,24 @@
 defmodule SalixMeet.MeetingRuntimePolicy do
   @moduledoc """
-  Explicit, single-source runtime policy for one Meeting attempt.
+  Runtime placement policy for one Meeting attempt.
 
-  The policy is durable input to dispatch. It never selects whichever runtime
-  happens to report ready first and it rejects a request that names both
-  Connected and Compute targets.
+  Automatic placement prefers Group VMM, then a connected runtime, then native.
+  The Meeting records the selected target before dispatch.
   """
 
-  @sources ~w(connected_runtime compute_workload native_runtime)
+  @sources ~w(automatic connected_runtime compute_workload native_runtime)
 
   def sources, do: @sources
 
   @doc "Runtime source recorded on new provider-triggered Meetings."
   def default_source do
-    case SystemsRuntime.get_env(:salix_meet, :default_runtime_source) do
-      source when source in @sources -> source
-      _ -> "connected_runtime"
+    if SystemsRuntime.get_env(:salix_meet, :runtime_driver) == SalixMeet.RuntimeDriver.HTTP do
+      case SystemsRuntime.get_env(:salix_meet, :http_runtime_source) do
+        source when source in ~w(connected_runtime compute_workload native_runtime) -> source
+        _ -> "connected_runtime"
+      end
+    else
+      "automatic"
     end
   end
 

@@ -102,7 +102,7 @@ defmodule CommaWeb.RecommendationMemberSourceTest do
             "messages" => %{
               "matches" => [
                 %{
-                  "text" => "<@UMEMBER> please review",
+                  "text" => "<@UMEMBER> please review with <@UGONE>",
                   "user" => "UOTHER",
                   "ts" => "1.000001",
                   "permalink" => "https://workspace.slack.com/archives/C1/p1000001"
@@ -110,6 +110,18 @@ defmodule CommaWeb.RecommendationMemberSourceTest do
               ]
             }
           })
+
+        "/api/users.info" ->
+          case conn.query_params["user"] do
+            "UMEMBER" ->
+              Req.Test.json(conn, %{
+                "ok" => true,
+                "user" => %{"name" => "member", "profile" => %{"display_name" => "Zanwei"}}
+              })
+
+            "UGONE" ->
+              Req.Test.json(conn, %{"ok" => false, "error" => "user_not_found"})
+          end
       end
     end)
 
@@ -117,6 +129,8 @@ defmodule CommaWeb.RecommendationMemberSourceTest do
              RecommendationOAuthSource.read_member(ctx.workspace, "user", source)
 
     assert item["memberRelation"] == "mentioned_you"
+    # The quote names a mentioned person; one Slack cannot name stays an ID.
+    assert item["quote"]["lines"] == ["<@UMEMBER|Zanwei> please review with <@UGONE>"]
     assert identity["provider_workspace_id"] == "TWORKSPACE"
 
     Req.Test.stub(__MODULE__, fn conn ->

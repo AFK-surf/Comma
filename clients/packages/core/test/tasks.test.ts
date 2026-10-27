@@ -126,6 +126,39 @@ describe("a workspace's task list", () => {
     expect(JSON.stringify(cached())).not.toContain("secret_internal_field");
   });
 
+  it("carries a coding task's pull request, and drops one it cannot read instead of failing the list", async () => {
+    const t = setup();
+    const url = "https://github.com/acme/api/pull/12";
+    t.api.on("GET", listA, {
+      data: [
+        conversation("c1", {
+          pull_request: { number: 12, state: "merged", url, extra: "dropped" },
+        }),
+        conversation("c2", { pull_request: { number: 12, state: "unknown", url } }),
+        conversation("c3"),
+        conversation("c4", {
+          pull_request: { number: 12, state: "open", url: "not a url" },
+        }),
+        // It opens outside the app: a page of the web only.
+        conversation("c5", {
+          pull_request: { number: 12, state: "open", url: "file:///etc/passwd" },
+        }),
+      ],
+    });
+    t.core.observeSession(signedIn());
+    const shown = t.watch({ topic: "tasks", workspace: "wsp_a" });
+    await t.time.pass(100);
+    const byId = new Map(shown().items.map((item) => [item.id, item]));
+    expect(byId.get("grp_a:c1")?.pullRequest).toEqual({
+      number: 12,
+      state: "merged",
+      url,
+    });
+    for (const id of ["c2", "c3", "c4", "c5"])
+      expect(byId.get(`grp_a:${id}`)).not.toHaveProperty("pullRequest");
+    expect(byId.size).toBe(5);
+  });
+
   it("says which tasks are Loops, and that only a Loop not ended is scheduled", async () => {
     const t = setup();
     t.api.on("GET", listA, {
@@ -355,7 +388,7 @@ describe("a workspace's task list", () => {
     expect(shown()).toMatchObject({ source: "live-sync", items: [{ id: "grp_a:c1" }] });
   });
 
-  it("loads the next page after what is shown, keeps the tail stale and its cursor when the first page is read again", async () => {
+  it("loads the next page after what is shown, keeps the tail as read and its cursor when the first page is read again", async () => {
     const t = setup();
     let reads = 0;
     t.api.on("GET", listA, (request) => {
@@ -384,10 +417,7 @@ describe("a workspace's task list", () => {
     expect(shown()).toMatchObject({ hasMore: true, nextCursor: "page-3" });
     await t.client.call("tasks.refresh", { workspace: "wsp_a" });
     await t.time.pass(100);
-    expect(shown().items).toMatchObject([
-      { id: "grp_a:c1" },
-      { id: "grp_a:c2", freshness: "stale" },
-    ]);
+    expect(shown().items.map((item) => item.id)).toEqual(["grp_a:c1", "grp_a:c2"]);
     expect(shown()).toMatchObject({ hasMore: true, nextCursor: "page-3" });
     await t.client.call("tasks.more", { workspace: "wsp_a" });
     await t.time.pass(100);

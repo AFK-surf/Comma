@@ -3,6 +3,7 @@ import { useCommaLocale, useCommaMessages } from "@comma/i18n/react";
 import {
   CommandPalette,
   CommandPaletteHighlight,
+  CommandPaletteKeycaps,
   type CommandPaletteActiveChangeSource,
   type CommandPaletteGroup,
   type CommandPaletteItem,
@@ -12,7 +13,13 @@ import { taskStatusIcon } from "@comma/ui/components/task-workspace";
 import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useCall, type TaskSearchResult } from "@comma/core-client";
-import { useOptionalAppShortcutBinding } from "../shortcuts/commaAppShortcuts";
+import { AppIcon, type AppIconName } from "../icons";
+import { useAppShortcutCopy } from "../shortcuts/appShortcutCopy";
+import type { AppShortcutId } from "../shortcuts/appShortcutRegistry";
+import {
+  useOptionalAppShortcutBinding,
+  useOptionalAppShortcutBindings,
+} from "../shortcuts/commaAppShortcuts";
 import { useWorkspaceTasks, type TaskViewModel } from "../tasks/useWorkspaceTasks";
 import { normalizeUnixTimestampMs } from "./normalizeUnixTimestampMs";
 import { TaskConversationPreview } from "./TaskConversationPreview";
@@ -27,6 +34,36 @@ const taskHistoryLimit = 20;
 // preserves useful searches such as "AI" and common two-character CJK terms.
 const taskSearchMinQueryCodepoints = 2;
 const taskSearchMaxQueryCodepoints = 128;
+
+// The app commands the palette offers beside Tasks, in the order it lists them.
+// Search is the palette itself; history steps are left to the window bar.
+const paletteActions = [
+  { icon: "home", id: "go-comma-assistant" },
+  { icon: "inbox", id: "go-inbox" },
+  { icon: "tasks", id: "go-tasks" },
+  { icon: "drive", id: "go-drive" },
+  { icon: "plugins", id: "go-plugins" },
+  { icon: "settings", id: "go-settings" },
+  { icon: "layout-left", id: "toggle-left-sidebar" },
+  { icon: "layout-right", id: "toggle-right-sidebar" },
+] as const satisfies readonly { icon: AppIconName; id: AppShortcutId }[];
+
+const actionValuePrefix = "action:";
+const taskValuePrefix = "task:";
+
+function isTaskValue(value: string) {
+  return value.startsWith(taskValuePrefix);
+}
+
+function actionMatches(title: string, query: string) {
+  const haystack = title.normalize("NFKC").toLocaleLowerCase();
+  return query
+    .normalize("NFKC")
+    .toLocaleLowerCase()
+    .split(/\s+/u)
+    .filter(Boolean)
+    .every((token) => haystack.includes(token));
+}
 
 type SearchScope = {
   groupId: string;
@@ -165,16 +202,21 @@ export function AppCommandPalette({
   onActionClose,
   onOpenChange,
   open,
+  runShortcut,
 }: {
   onActionClose: () => void;
   onOpenChange: (open: boolean) => void;
   open: boolean;
+  /** Runs an app command; without it the palette offers only Tasks. */
+  runShortcut?: (id: AppShortcutId) => void;
 }) {
   const locale = useCommaLocale();
   const m = useCommaMessages();
   const navigate = useNavigate();
   const searchShortcut = useOptionalAppShortcutBinding("go-search");
   const searchShortcutKeycaps = appKeybindingKeycaps(searchShortcut);
+  const shortcutBindings = useOptionalAppShortcutBindings();
+  const shortcutCopy = useAppShortcutCopy();
   const [query, setQuery] = useState("");
   const [activeValue, setActiveValue] = useState<string>();
   const [previewValue, setPreviewValue] = useState<string>();
@@ -226,8 +268,31 @@ export function AppCommandPalette({
   );
   const taskTargets = new Map<string, PaletteTask>();
 
+  const actionItems: CommandPaletteItem<string>[] = runShortcut
+    ? paletteActions.flatMap(({ icon, id }) => {
+        const title = shortcutCopy[id].title;
+        if (normalizedQuery && !actionMatches(title, normalizedQuery)) return [];
+        const keycaps = appKeybindingKeycaps(shortcutBindings?.[id] ?? null);
+        return [
+          {
+            icon: <AppIcon name={icon} />,
+            ...(keycaps.length > 0
+              ? { meta: <CommandPaletteKeycaps keys={keycaps} /> }
+              : {}),
+            title: highlightedText(title, findTextHighlights(title, normalizedQuery)),
+            value: `${actionValuePrefix}${id}`,
+          },
+        ];
+      })
+    : [];
+  const actionGroup: CommandPaletteGroup<string> = {
+    heading: m.search_palette_actions(),
+    id: "actions",
+    items: actionItems,
+  };
+
   const historyItems = recentTasks.map<CommandPaletteItem<string>>((task) => {
-    const value = `task:${task.groupId}:${task.conversationId}`;
+    const value = `${taskValuePrefix}${task.groupId}:${task.conversationId}`;
     taskTargets.set(value, taskTarget(task));
     return {
       icon: taskStatusIcon(task.statusBucket),
@@ -238,7 +303,7 @@ export function AppCommandPalette({
   });
 
   const searchItems = taskSearch.results.map<CommandPaletteItem<string>>((result) => {
-    const value = `task:${taskSearch.scope?.groupId ?? "unknown"}:${result.conversation_id}`;
+    const value = `${taskValuePrefix}${taskSearch.scope?.groupId ?? "unknown"}:${result.conversation_id}`;
     const knownTask = tasksByConversation.get(result.conversation_id);
     const scope = taskSearch.scope;
     const updatedAt = result.updated_at ?? knownTask?.updatedAt;
@@ -275,21 +340,27 @@ export function AppCommandPalette({
     };
   });
 
-  const groups: CommandPaletteGroup<string>[] = normalizedQuery
-    ? [
-        {
-          heading: m.search_palette_tasks(),
-          id: "tasks",
-          items: searchItems,
-        },
-      ]
-    : [
-        {
-          heading: m.search_palette_tasks(),
-          id: "tasks",
-          items: historyItems,
-        },
-      ];
+  // An empty query keeps the newest Task first; a typed one that names an
+  // action is most likely after it, so matching actions lead.
+  const groups: CommandPaletteGroup<string>[] = (
+    normalizedQuery
+      ? [
+          actionGroup,
+          {
+            heading: m.search_palette_tasks(),
+            id: "tasks",
+            items: searchItems,
+          },
+        ]
+      : [
+          {
+            heading: m.search_palette_tasks(),
+            id: "tasks",
+            items: historyItems,
+          },
+          actionGroup,
+        ]
+  ).filter((group) => group.items.length > 0);
   const selectableValuesKey = groups
     .flatMap((group) =>
       group.items.filter((item) => item.disabled !== true).map((item) => item.value)
@@ -301,15 +372,20 @@ export function AppCommandPalette({
     const selectableValues = selectableValuesKey
       ? selectableValuesKey.split("\u0000")
       : [];
+    // Only a Task has a preview: while an action is selected the pane keeps
+    // the Task it showed, so the layout does not jump between rows.
+    const taskValues = selectableValues.filter(isTaskValue);
     const validActiveValue =
       activeValue && selectableValues.includes(activeValue) ? activeValue : undefined;
     const validPreviewValue =
-      previewValue && selectableValues.includes(previewValue)
-        ? previewValue
-        : undefined;
+      previewValue && taskValues.includes(previewValue) ? previewValue : undefined;
     const nextPreviewValue =
-      validPreviewValue ?? validActiveValue ?? selectableValues[0];
-    const nextActiveValue = validActiveValue ?? nextPreviewValue;
+      validPreviewValue ??
+      (validActiveValue && isTaskValue(validActiveValue)
+        ? validActiveValue
+        : undefined) ??
+      taskValues[0];
+    const nextActiveValue = validActiveValue ?? selectableValues[0];
     if (nextActiveValue !== activeValue) setActiveValue(nextActiveValue);
     if (nextPreviewValue !== previewValue) {
       setPreviewValue(nextPreviewValue);
@@ -338,11 +414,11 @@ export function AppCommandPalette({
     source: CommandPaletteActiveChangeSource
   ) => {
     setActiveValue(nextValue);
-    if (source !== "pointer") setPreviewValue(nextValue);
+    if (source !== "pointer" && isTaskValue(nextValue)) setPreviewValue(nextValue);
   };
 
   const handlePointerIntent = (nextValue: string) => {
-    setPreviewValue(nextValue);
+    if (isTaskValue(nextValue)) setPreviewValue(nextValue);
   };
 
   const handlePointerIntentCancel = (cancelledValue: string) => {
@@ -363,9 +439,24 @@ export function AppCommandPalette({
     });
   };
 
-  const loading = normalizedQuery
-    ? taskSearch.loading
-    : workspaceTasks.loading && historyItems.length === 0;
+  const runAction = (id: AppShortcutId) => {
+    // A sidebar toggle leaves the user where they were, so focus goes back
+    // there; the other actions move them elsewhere.
+    if (id === "toggle-left-sidebar" || id === "toggle-right-sidebar") {
+      setQuery("");
+      onOpenChange(false);
+    } else {
+      closeAfterAction();
+    }
+    runShortcut?.(id);
+  };
+
+  // Actions show at once; only a list with nothing else waits for Tasks.
+  const loading =
+    actionItems.length === 0 &&
+    (normalizedQuery
+      ? taskSearch.loading
+      : workspaceTasks.loading && historyItems.length === 0);
   const unavailable = normalizedQuery
     ? taskSearch.error
     : Boolean(workspaceTasks.taskLoadError);
@@ -414,6 +505,10 @@ export function AppCommandPalette({
       onPointerIntent={handlePointerIntent}
       onPointerIntentCancel={handlePointerIntentCancel}
       onSelect={(item) => {
+        if (item.value.startsWith(actionValuePrefix)) {
+          runAction(item.value.slice(actionValuePrefix.length) as AppShortcutId);
+          return;
+        }
         const task = taskTargets.get(item.value);
         if (task) openTask(task);
       }}

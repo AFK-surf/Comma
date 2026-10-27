@@ -72,6 +72,88 @@ afterEach(() => {
 });
 
 describe("ChatPanel generated media", () => {
+  it.each(["audio", "video"] as const)(
+    "waits for %s metadata before showing a duration or enabling seeking",
+    async (kind) => {
+      const play = vi
+        .spyOn(HTMLMediaElement.prototype, "play")
+        .mockResolvedValue(undefined);
+      vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => undefined);
+      const media = (src: string) =>
+        kind === "audio" ? (
+          <ChatPanelAudio defaultCurrentTime={4} src={src} />
+        ) : (
+          <ChatPanelVideo
+            alt="Generated clip"
+            defaultCurrentTime={4}
+            poster={imageSource}
+            src={src}
+          />
+        );
+      const { container, rerender } = render(media(`${kind}-a`));
+      const element = container.querySelector(kind)!;
+      const progress = screen.getByRole("slider", { name: /playback position/ });
+
+      expect(screen.getByText("--:--")).toBeInTheDocument();
+      expect(progress).toBeDisabled();
+      expect(element.currentTime).toBe(4);
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: `Play ${kind}` }));
+      });
+      expect(play).toHaveBeenCalledTimes(1);
+      expect(element.currentTime).toBe(4);
+
+      stubProperty(element, "duration", { value: 6.741333 });
+      fireEvent.loadedMetadata(element);
+      expect(screen.getByText("00:06")).toBeInTheDocument();
+      expect(progress).toBeEnabled();
+      expect(progress).toHaveAttribute("max", "6.741333");
+      fireEvent.change(progress, { target: { value: "6.5" } });
+      expect(element.currentTime).toBe(6.5);
+
+      rerender(media(`${kind}-b`));
+      expect(screen.getByText("--:--")).toBeInTheDocument();
+      expect(progress).toBeDisabled();
+      expect(element.currentTime).toBe(0);
+    }
+  );
+
+  it.each(["audio", "video"] as const)(
+    "uses the supplied %s duration until media reports its own duration",
+    (kind) => {
+      const { container } = render(
+        kind === "audio" ? (
+          <ChatPanelAudio duration={42} src={audioSource} />
+        ) : (
+          <ChatPanelVideo
+            alt="Generated clip"
+            duration={42}
+            poster={imageSource}
+            src={videoSource}
+          />
+        )
+      );
+      const element = container.querySelector(kind)!;
+      const progress = screen.getByRole("slider", { name: /playback position/ });
+      expect(screen.getByText("00:42")).toBeInTheDocument();
+      expect(progress).toBeEnabled();
+      fireEvent.change(progress, { target: { value: "8" } });
+      expect(element.currentTime).toBe(8);
+
+      stubProperty(element, "duration", { value: 6.741333 });
+      fireEvent.loadedMetadata(element);
+      expect(progress).toHaveAttribute("aria-valuetext", "00:06 of 00:06");
+      expect(element.currentTime).toBe(6.741333);
+
+      stubProperty(element, "duration", { value: 12.5 });
+      fireEvent.durationChange(element);
+      expect(screen.getByText("00:12")).toBeInTheDocument();
+      fireEvent.keyDown(progress, { key: "ArrowRight" });
+      fireEvent.keyDown(progress, { key: "ArrowRight" });
+      expect(element.currentTime).toBe(12.5);
+    }
+  );
+
   it("does not start paused audio when its progress control is dragged", () => {
     const play = vi
       .spyOn(HTMLMediaElement.prototype, "play")
@@ -79,7 +161,7 @@ describe("ChatPanel generated media", () => {
     const pause = vi
       .spyOn(HTMLMediaElement.prototype, "pause")
       .mockImplementation(() => undefined);
-    render(<ChatPanelAudio src={audioSource} />);
+    render(<ChatPanelAudio duration={19} src={audioSource} />);
 
     const progress = screen.getByRole("slider", { name: "Audio playback position" });
     fireEvent.pointerDown(progress, { button: 0, isPrimary: true, pointerId: 1 });
@@ -123,7 +205,7 @@ describe("ChatPanel generated media", () => {
   it("shares interactive playback controls with animated state feedback", async () => {
     const user = userEvent.setup();
     vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
-    render(<ChatPanelAudio src={audioSource} />);
+    render(<ChatPanelAudio duration={19} src={audioSource} />);
 
     const playButton = screen.getByRole("button", { name: "Play audio" });
     expect(playButton.querySelector(".t-icon-swap")).toHaveAttribute("data-state", "a");
@@ -617,6 +699,24 @@ describe("ChatPanel generated media", () => {
     ).toBeEnabled();
   });
 
+  it("reports a browser handoff as started and lets the reader download again", async () => {
+    const user = userEvent.setup();
+    const execute = vi.fn(async () => ({ status: "started" as const }));
+    render(
+      <ChatPanelAudio
+        download={createDownloadAction("clip.mp3", execute)}
+        src={audioSource}
+      />
+    );
+    await user.click(screen.getByRole("button", { name: "Download audio" }));
+    expect(
+      screen.getByText("Download started. Check your browser for progress.")
+    ).toBeVisible();
+    expect(screen.queryByText("Audio downloaded.")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Download started" }));
+    expect(execute).toHaveBeenCalledTimes(2);
+  });
+
   it("keeps download feedback when an inline capability object is recreated", async () => {
     const user = userEvent.setup();
     const execute = vi.fn().mockResolvedValue({
@@ -828,6 +928,8 @@ describe("ChatPanel generated media", () => {
     );
     const audio = container.querySelector("audio");
     expect(audio).not.toBeNull();
+    stubProperty(audio!, "duration", { value: 19 });
+    fireEvent.loadedMetadata(audio!);
 
     await user.click(screen.getByRole("button", { name: "Play audio" }));
     await user.click(screen.getByRole("button", { name: "Playback speed 1x" }));
@@ -835,6 +937,7 @@ describe("ChatPanel generated media", () => {
     fireEvent.change(screen.getByRole("slider", { name: "Audio playback position" }), {
       target: { value: "7" },
     });
+    expect(audio!.currentTime).toBe(7);
 
     expect(screen.getByRole("button", { name: "Pause audio" })).toBeInTheDocument();
     expect(
@@ -864,6 +967,36 @@ describe("ChatPanel generated media", () => {
     expect(
       screen.getByRole("button", { name: "Playback speed 1x" })
     ).toBeInTheDocument();
+  });
+
+  it("keeps the position and play state when the same source plays from a renewed URL", async () => {
+    const user = userEvent.setup();
+    const play = vi
+      .spyOn(HTMLMediaElement.prototype, "play")
+      .mockResolvedValue(undefined);
+    vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => undefined);
+    const { container, rerender } = render(
+      <ChatPanelAudio sourceKey="clip" src="comma-file://stream/1" />
+    );
+    const audio = container.querySelector("audio")!;
+    stubProperty(audio, "duration", { value: 19 });
+    fireEvent.loadedMetadata(audio);
+    await user.click(screen.getByRole("button", { name: "Play audio" }));
+    audio.currentTime = 7;
+    fireEvent.timeUpdate(audio);
+    play.mockClear();
+
+    rerender(<ChatPanelAudio sourceKey="clip" src="comma-file://stream/2" />);
+    // The element reloads: it empties and reports its start before the new URL's metadata.
+    fireEvent.emptied(audio);
+    audio.currentTime = 0;
+    fireEvent.timeUpdate(audio);
+    fireEvent.loadedMetadata(audio);
+
+    expect(container.querySelector("audio")).toBe(audio);
+    expect(audio.currentTime).toBe(7);
+    expect(play).toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Pause audio" })).toBeInTheDocument();
   });
 
   it("keeps a successful preview handoff playing when the stale play rejects", async () => {
@@ -1016,7 +1149,7 @@ describe("ChatPanel generated media", () => {
   it("plays from Space on the progress slider without opening a tooltip", async () => {
     const user = userEvent.setup();
     vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
-    render(<ChatPanelAudio src={audioSource} />);
+    render(<ChatPanelAudio duration={19} src={audioSource} />);
 
     screen.getByRole("slider", { name: "Audio playback position" }).focus();
     await user.keyboard(" ");

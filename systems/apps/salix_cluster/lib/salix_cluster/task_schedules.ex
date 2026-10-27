@@ -6,6 +6,21 @@ defmodule SalixCluster.TaskSchedules do
   Task stores the returned Schedule id and its command together under the
   Task's `schedule` property. When a Schedule fires, this receiver forwards
   the Task identity to its conversation owner.
+
+  The owner answers with the Task's standing for that window. `fired` appended
+  the command. `paused` means the Task is not `active` but has not ended
+  (`escalated`, `failed`, `ready_for_review`): the window is skipped, the
+  anchor advances, and the next window asks again, so a Task that returns to
+  `active` fires on its next occurrence. `settled` (the Schedule is bound to
+  another Task), `inactive` (the Task ended or unbound the Schedule) and a
+  missing Task end the definition: `receive/3` deletes it and logs
+  `task_schedule_deleted` with the reason. A Task that ended while still bound
+  to the Schedule is unbound through `update_task_schedule/3` in the same
+  step, so its record never points at a deleted definition.
+
+  A binding whose definition is gone (`Schedules.get/1` answers `:not_found`)
+  is rebuilt by `update_task_schedule/3` with the recurrence: the Task keeps
+  its `schedule_id` and the definition is created under it again.
   """
 
   require Logger
@@ -28,8 +43,8 @@ defmodule SalixCluster.TaskSchedules do
     attrs = stringify(attrs)
 
     with {:ok, command} <- command(attrs["content"]),
-         {:ok, conversation_id} <-
-           ConversationServer.reserve_task_conversation_id(
+         {:ok, conversation_id, attrs} <-
+           ConversationServer.reserve_task_conversation(
              group_id,
              delegator_agent_id,
              target_agent_id,
@@ -368,16 +383,30 @@ defmodule SalixCluster.TaskSchedules do
       {:ok, %{"task_schedule_status" => "fired"}} ->
         {:ok, :fired}
 
+      {:ok, %{"task_schedule_status" => "paused"} = reply} ->
+        Logger.info(
+          "Task Schedule window skipped: Task is #{reply["task_status"]}, not active group=#{group_id} conversation=#{conversation_id} schedule=#{schedule_id}",
+          event: "task_schedule_paused",
+          component: "salix_cluster",
+          group_id: group_id,
+          conversation_id: conversation_id,
+          schedule_id: schedule_id,
+          task_status: reply["task_status"],
+          scheduled_for: scheduled_for_ms
+        )
+
+        {:ok, :paused}
+
       {:ok, %{"task_schedule_status" => "settled"}} ->
-        _ = delete(group_id, conversation_id, schedule_id)
+        delete_ended(group_id, conversation_id, schedule_id, "settled")
         {:ok, :settled}
 
       {:ok, %{"task_schedule_status" => "inactive"}} ->
-        _ = delete(group_id, conversation_id, schedule_id)
+        unbind_ended(group_id, conversation_id, schedule_id)
         {:ok, :inactive}
 
       {:error, :not_found} ->
-        _ = delete(group_id, conversation_id, schedule_id)
+        delete_ended(group_id, conversation_id, schedule_id, "not_found")
         {:ok, :inactive}
 
       {:error, _reason} = error ->
@@ -389,6 +418,61 @@ defmodule SalixCluster.TaskSchedules do
   end
 
   def receive(_payload, {:error, reason}, _opts), do: {:error, reason}
+
+  # The Task ended (completed, cancelled, archived) or unbound this Schedule.
+  # A Task still bound to it is unbound through the ordinary path, which
+  # replaces the binding under the owner's compare-and-swap and then deletes
+  # the definition, so the record never keeps a `schedule_id` without a
+  # definition. A Task bound to another Schedule keeps that binding.
+  defp unbind_ended(group_id, conversation_id, schedule_id) do
+    case Conversations.get_group_conversation(group_id, conversation_id) do
+      {:ok, %{"schedule" => %{"schedule_id" => ^schedule_id}}} ->
+        case update_task_schedule(group_id, conversation_id, nil) do
+          {:ok, _updated} ->
+            log_deleted(group_id, conversation_id, schedule_id, "inactive", :ok, true)
+
+          {:error, _reason} = error ->
+            # The binding moved under us: delete only the definition.
+            result = delete(group_id, conversation_id, schedule_id)
+
+            log_deleted(
+              group_id,
+              conversation_id,
+              schedule_id,
+              "inactive",
+              {error, result},
+              false
+            )
+        end
+
+      _not_bound_here ->
+        delete_ended(group_id, conversation_id, schedule_id, "inactive")
+    end
+  end
+
+  # The Schedule is bound to another Task, or its Task is gone: the definition
+  # has no Task to fire for.
+  defp delete_ended(group_id, conversation_id, schedule_id, reason) do
+    result = delete(group_id, conversation_id, schedule_id)
+    log_deleted(group_id, conversation_id, schedule_id, reason, result, false)
+  end
+
+  # Log each deletion so a Schedule that stopped firing can be explained later.
+  defp log_deleted(group_id, conversation_id, schedule_id, reason, result, unbound) do
+    Logger.info(
+      "Task Schedule deleted: #{reason} group=#{group_id} conversation=#{conversation_id} schedule=#{schedule_id} unbound=#{unbound} result=#{inspect(result)}",
+      event: "task_schedule_deleted",
+      component: "salix_cluster",
+      group_id: group_id,
+      conversation_id: conversation_id,
+      schedule_id: schedule_id,
+      reason: reason,
+      unbound: unbound,
+      delete_result: inspect(result)
+    )
+
+    result
+  end
 
   defp schedule_for_task_create(group_id, conversation_id, raw_schedule, command) do
     case Conversations.get_group_conversation(group_id, conversation_id) do

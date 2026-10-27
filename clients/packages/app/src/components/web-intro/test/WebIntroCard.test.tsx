@@ -38,9 +38,13 @@ describe("WebIntroCard", () => {
     vi.restoreAllMocks();
   });
 
-  it("walks through its tips, opens Plugins and the Mac download, and records that it was seen", async () => {
+  it("walks through its tips, opens Plugins and the desktop download, and records that it was seen", async () => {
     const user = userEvent.setup();
     const open = vi.spyOn(window, "open").mockReturnValue(null);
+    // A Windows reader: the download page picks the app for their system.
+    vi.spyOn(Object.getPrototypeOf(navigator), "userAgent", "get").mockReturnValue(
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+    );
     const router = renderCard(["usr_earlier"]);
 
     const card = await screen.findByRole("complementary", { name: "Comma on the web" });
@@ -58,11 +62,17 @@ describe("WebIntroCard", () => {
       within(card).getByRole("button", { name: "Just ask your Router" })
     );
     expect(within(card).getByRole("heading")).toHaveTextContent("Just ask your Router");
-    await user.click(within(card).getByRole("button", { name: "More in the Mac app" }));
-    expect(within(card).getByRole("heading")).toHaveTextContent("More in the Mac app");
-    await user.click(within(card).getByRole("button", { name: "Download for Mac" }));
+    await user.click(
+      within(card).getByRole("button", { name: "More in the desktop app" })
+    );
+    expect(within(card).getByRole("heading")).toHaveTextContent(
+      "More in the desktop app"
+    );
+    await user.click(
+      within(card).getByRole("button", { name: "Download the desktop app" })
+    );
     expect(open).toHaveBeenCalledWith(
-      "https://comma.surf/download?start=mac",
+      "https://comma.surf/download",
       "_blank",
       "noopener,noreferrer"
     );

@@ -156,7 +156,11 @@ export type NativeBridgeError =
         | "COMPUTE_SETUP_UNKNOWN"
         | "COMPUTE_CLOUD_UNAVAILABLE"
         | "COMPUTE_CONNECTION_FAILED"
-        | "COMPUTE_RECOVERY_UNVERIFIED";
+        | "COMPUTE_RECOVERY_UNVERIFIED"
+        /** This Mac's station did not answer in time (or at all): read again. */
+        | "LOCAL_STATION_UNAVAILABLE"
+        /** The station refused the change for its current state (409): read again. */
+        | "LOCAL_STATION_CONFLICT";
       message: string;
     }
   | {
@@ -767,6 +771,11 @@ export interface SurfaceList {
 
 export interface WindowCreateInput {
   route: string;
+  /**
+   * Where the window opens, in screen DIP: the place of what it takes over (a Mini App's right panel), so the content
+   * stays where the viewer saw it. The window's default size and place otherwise.
+   */
+  bounds?: { x: number; y: number; width: number; height: number } | undefined;
 }
 
 export interface WindowTargetInput {
@@ -1200,6 +1209,8 @@ export const commaClientSettingsSchema = z
     computerUseScreenEnabled: z.boolean().default(false),
     // Debug: shows the Condensed Workspace settings category.
     condensedWorkspaceSettingsVisible: z.boolean().default(false),
+    // Debug: shows Settings › Voice › Calls (call voice, custom voice, Router calls).
+    voiceLabsEnabled: z.boolean().default(false),
     meetingStartRecording: z.enum(["reminder", "auto"]).default("reminder"),
     meetingHideRecorder: z.boolean().default(false),
     meetingSmartSummary: z.boolean().default(true),
@@ -1212,6 +1223,9 @@ export const commaClientSettingsSchema = z
     // this device. Per device like every client setting, so each account sees
     // the introduction once per installation.
     onboardingCompletedUserIds: z.array(z.string()).default([]),
+    // The reader continued past the warning that the Router may use a profile
+    // they turn on; later profiles turn on without it.
+    routerProfileNoticeSeen: z.boolean().default(false),
   })
   .strict();
 export const commaClientSettingsPatchSchema = z
@@ -1228,12 +1242,14 @@ export const commaClientSettingsPatchSchema = z
     sessionHistoryEnabled: z.boolean().optional(),
     computerUseScreenEnabled: z.boolean().optional(),
     condensedWorkspaceSettingsVisible: z.boolean().optional(),
+    voiceLabsEnabled: z.boolean().optional(),
     meetingStartRecording: z.enum(["reminder", "auto"]).optional(),
     meetingHideRecorder: z.boolean().optional(),
     meetingSmartSummary: z.boolean().optional(),
     openCommaShortcut: globalShortcutBindingSchema.optional(),
     sidebarNavOrder: z.array(z.string()).optional(),
     onboardingCompletedUserIds: z.array(z.string()).optional(),
+    routerProfileNoticeSeen: z.boolean().optional(),
   })
   .strict()
   .refine((patch) => Object.keys(patch).length > 0, {
@@ -1618,6 +1634,14 @@ export const surfaceListSchema = z.object({
 
 export const windowCreateInputSchema = z.object({
   route: z.string().min(1),
+  bounds: z
+    .object({
+      x: z.number().int().min(-32_768).max(32_768),
+      y: z.number().int().min(-32_768).max(32_768),
+      width: z.number().int().min(1).max(16_384),
+      height: z.number().int().min(1).max(16_384),
+    })
+    .optional(),
 }) satisfies z.ZodType<WindowCreateInput>;
 
 export const windowTargetInputSchema = z.object({
@@ -1984,6 +2008,299 @@ export const connectorRuntimeScopeCapability = defineNativeCapability({
   webFallback: unavailableConnectorScope,
 });
 
+/** The Mac apps plugins (MacAppsHost); a tool's name starts with its app's id. */
+export const macAppIds = [
+  "calendar",
+  "reminders",
+  "contacts",
+  "messages",
+  "mail",
+  "notes",
+  "music",
+  "maps",
+  "system",
+  "vision",
+] as const;
+export const macAppIdSchema = z.enum(macAppIds);
+export type MacAppId = z.output<typeof macAppIdSchema>;
+
+export const macAppPermissionStateSchema = z.enum([
+  "granted",
+  "not_determined",
+  "denied",
+  "restricted",
+  "not_granted",
+  "unknown",
+  "unavailable",
+]);
+export type MacAppPermissionState = z.output<typeof macAppPermissionStateSchema>;
+
+export const macAppStateSchema = z
+  .object({
+    id: macAppIdSchema,
+    /** The user's switch on this Mac. */
+    enabled: z.boolean(),
+    tools: z.array(
+      z
+        .object({
+          name: z.string().min(1).max(128),
+          title: z.string().max(256),
+          readOnly: z.boolean(),
+          destructive: z.boolean(),
+        })
+        .strict()
+    ),
+    requirements: z.array(
+      z
+        .object({
+          /** "calendars", "contacts", "automation:<bundle id>", "screen_recording", ... */
+          requirement: z.string().min(1).max(256),
+          state: macAppPermissionStateSchema,
+          /** Asked for when the app is turned on; the others only macOS settings grant. */
+          onEnable: z.boolean(),
+          /** The tools that need it; empty when every tool does. */
+          tools: z.array(z.string().min(1).max(128)),
+        })
+        .strict()
+    ),
+  })
+  .strict();
+export type MacAppState = z.output<typeof macAppStateSchema>;
+
+export const macAppActivitySchema = z
+  .object({
+    at: z.string(),
+    app: macAppIdSchema,
+    tool: z.string().min(1).max(128),
+    /** "ok", or the tool's error code. */
+    outcome: z.string().min(1).max(128),
+  })
+  .strict();
+export type MacAppActivity = z.output<typeof macAppActivitySchema>;
+
+export const macAppsSnapshotSchema = z
+  .object({
+    revision: z.number().int().nonnegative(),
+    /** unavailable: not macOS, or no MacAppsHost in this build. */
+    status: z.enum(["unavailable", "error", "ready"]),
+    message: z.string().optional(),
+    apps: z.array(macAppStateSchema),
+    /** This Mac's recent tool calls, newest first; kept in memory only. */
+    activity: z.array(macAppActivitySchema),
+  })
+  .strict();
+export type MacAppsSnapshot = z.output<typeof macAppsSnapshotSchema>;
+
+const unavailableMacApps = macAppsSnapshotSchema.parse({
+  revision: 0,
+  status: "unavailable",
+  apps: [],
+  activity: [],
+});
+
+export const macAppsStateCapability = defineNativeCapability({
+  bridge: { method: "state", namespace: "macApps" },
+  channel: "comma:mac-apps:state",
+  handler: {
+    exportName: "MacAppsProvider",
+    member: "state",
+    module: "../../../apps/electron/src/main/modules/mac-apps/index",
+    provider: "macApps",
+  },
+  id: "macApps.state",
+  input: z.void(),
+  mock: unavailableMacApps,
+  output: macAppsSnapshotSchema,
+  permission: "mac-apps.read",
+  sessionAdmission: "local_only",
+  sessionAdmissionRationale:
+    "Reads this Mac's app switches and macOS permission states without credentials or authenticated transport.",
+  webFallback: unavailableMacApps,
+});
+
+export const macAppsStateChangedEvent = defineNativeEvent({
+  channel: "comma:mac-apps:state-changed",
+  id: "macApps.state.changed",
+  mock: unavailableMacApps,
+  payload: macAppsSnapshotSchema,
+  permission: macAppsStateCapability.permission,
+  target: { type: "all" },
+});
+
+export const macAppsStateLeaf = defineNativeState({
+  bridge: { method: "state", namespace: "macApps" },
+  get: macAppsStateCapability,
+  id: "macApps.state",
+  subscribe: macAppsStateChangedEvent,
+});
+
+export const macAppsSetEnabledInputSchema = z
+  .object({ app: macAppIdSchema, enabled: z.boolean() })
+  .strict();
+export const macAppsSetEnabledResultSchema = z
+  .object({ enabled: z.boolean(), snapshot: macAppsSnapshotSchema })
+  .strict();
+
+export const macAppsSetEnabledCapability = defineNativeCapability({
+  bridge: { method: "setEnabled", namespace: "macApps" },
+  channel: "comma:mac-apps:set-enabled",
+  handler: {
+    exportName: "MacAppsProvider",
+    member: "setEnabled",
+    module: "../../../apps/electron/src/main/modules/mac-apps/index",
+    provider: "macApps",
+  },
+  id: "macApps.setEnabled",
+  input: macAppsSetEnabledInputSchema,
+  mock: { enabled: false, snapshot: unavailableMacApps },
+  output: macAppsSetEnabledResultSchema,
+  permission: "mac-apps.write",
+  sessionAdmission: "local_only",
+  sessionAdmissionRationale:
+    "Turns one Mac app on or off on this Mac; turning it on is when macOS asks for its permission.",
+  webFallback: { enabled: false, snapshot: unavailableMacApps },
+});
+
+export const macAppsOpenPrivacySettingsCapability = defineNativeCapability({
+  bridge: { method: "openPrivacySettings", namespace: "macApps" },
+  channel: "comma:mac-apps:open-privacy-settings",
+  handler: {
+    exportName: "MacAppsProvider",
+    member: "openPrivacySettings",
+    module: "../../../apps/electron/src/main/modules/mac-apps/index",
+    provider: "macApps",
+  },
+  id: "macApps.openPrivacySettings",
+  input: z.object({ requirement: z.string().min(1).max(256) }).strict(),
+  mock: { opened: false },
+  output: z.object({ opened: z.boolean() }).strict(),
+  permission: "mac-apps.settings.open",
+  sessionAdmission: "local_only",
+  sessionAdmissionRationale:
+    "Opens the System Settings privacy pane for one permission; macOS remains the permission authority.",
+  webFallback: { opened: false },
+});
+
+/** A chat card's item to open in its Mac app (`mac_app_item` block). */
+export const macAppItemTargetSchema = z
+  .object({
+    app: z.enum(["calendar", "reminders", "notes", "contacts", "maps"]),
+    itemId: z.string().min(1).max(512).optional(),
+    title: z.string().max(500).optional(),
+    latitude: z.number().min(-90).max(90).optional(),
+    longitude: z.number().min(-180).max(180).optional(),
+  })
+  .strict();
+export type MacAppItemTarget = z.output<typeof macAppItemTargetSchema>;
+
+export const macAppsOpenItemCapability = defineNativeCapability({
+  bridge: { method: "openItem", namespace: "macApps" },
+  channel: "comma:mac-apps:open-item",
+  handler: {
+    exportName: "MacAppsProvider",
+    member: "openItem",
+    module: "../../../apps/electron/src/main/modules/mac-apps/index",
+    provider: "macApps",
+  },
+  id: "macApps.openItem",
+  input: macAppItemTargetSchema,
+  mock: { opened: false },
+  output: z.object({ opened: z.boolean() }).strict(),
+  permission: "mac-apps.item.open",
+  sessionAdmission: "local_only",
+  sessionAdmissionRationale:
+    "Opens one item of a chat card in its Mac app on this Mac, by a fixed link per app; reads and sends nothing.",
+  webFallback: { opened: false },
+});
+
+export const macAppsCalendarEventsInputSchema = z
+  .object({
+    /** ISO 8601 start and end of the range, at most 366 days apart. */
+    from: z.string().min(1).max(64),
+    to: z.string().min(1).max(64),
+  })
+  .strict();
+export type MacAppsCalendarEventsInput = z.output<
+  typeof macAppsCalendarEventsInputSchema
+>;
+
+export const macAppsCalendarEventSchema = z
+  .object({
+    title: z.string().max(1_000),
+    start: z.string().max(64),
+    end: z.string().max(64),
+    allDay: z.boolean(),
+    location: z.string().max(1_000).optional(),
+  })
+  .strict();
+export type MacAppsCalendarEvent = z.output<typeof macAppsCalendarEventSchema>;
+
+/**
+ * This Mac's calendar events in a range, for a Mini App the viewer granted `calendar.read`: `off` while Calendar is
+ * off in Comma > Plugins > Mac apps, `denied` without macOS calendar permission, `unavailable` where there is no
+ * Mac apps host (the web too).
+ */
+export const macAppsCalendarEventsResultSchema = z.discriminatedUnion("status", [
+  z
+    .object({
+      status: z.literal("ok"),
+      events: z.array(macAppsCalendarEventSchema).max(500),
+    })
+    .strict(),
+  z.object({ status: z.enum(["off", "denied", "unavailable"]) }).strict(),
+]);
+export type MacAppsCalendarEventsResult = z.output<
+  typeof macAppsCalendarEventsResultSchema
+>;
+
+export const macAppsCalendarEventsCapability = defineNativeCapability({
+  bridge: { method: "calendarEvents", namespace: "macApps" },
+  channel: "comma:mac-apps:calendar-events",
+  handler: {
+    exportName: "MacAppsProvider",
+    member: "calendarEvents",
+    module: "../../../apps/electron/src/main/modules/mac-apps/index",
+    provider: "macApps",
+  },
+  id: "macApps.calendarEvents",
+  input: macAppsCalendarEventsInputSchema,
+  mock: { status: "unavailable" },
+  output: macAppsCalendarEventsResultSchema,
+  permission: "mac-apps.calendar.read",
+  sessionAdmission: "local_only",
+  sessionAdmissionRationale:
+    "Reads this Mac's calendar through the local Mac apps host, only while Calendar is on in Comma and macOS allows it; no credentials or authenticated transport.",
+  webFallback: { status: "unavailable" },
+});
+
+/** The apps' macOS icons as PNG data URLs by app id; `mac` is the plugin's own. */
+export const macAppIconsSchema = z.record(
+  z.string().min(1).max(64),
+  z.string().startsWith("data:image/png;base64,").max(120_000)
+);
+export type MacAppIcons = z.output<typeof macAppIconsSchema>;
+
+export const macAppsIconsCapability = defineNativeCapability({
+  bridge: { method: "icons", namespace: "macApps" },
+  channel: "comma:mac-apps:icons",
+  handler: {
+    exportName: "MacAppsProvider",
+    member: "icons",
+    module: "../../../apps/electron/src/main/modules/mac-apps/index",
+    provider: "macApps",
+  },
+  id: "macApps.icons",
+  input: z.void(),
+  mock: {},
+  output: macAppIconsSchema,
+  payloadClass: "binary",
+  permission: "mac-apps.read",
+  sessionAdmission: "local_only",
+  sessionAdmissionRationale:
+    "Reads the public macOS icons of the Mac apps; no Session data or credentials.",
+  webFallback: {},
+});
+
 export const connectorRuntimeSetScopeCapability = defineNativeCapability({
   bridge: { method: "setScope", namespace: "connectorRuntime" },
   channel: "comma:connector-runtime:set-scope",
@@ -2022,6 +2339,188 @@ export const connectorRuntimeCopyConnectCommandCapability = defineNativeCapabili
   sessionAdmissionRationale:
     "Main acquires the current signed-in credential, authorizes a new device in the named workspace and copies its command without exposing credentials to the renderer.",
   webFallback: { copied: false },
+});
+
+// -- localStation -----------------------------------------------------------
+// This Mac's own station, read and changed through its local admin interface
+// (a Unix socket in the station's data directory, RFC43 §3.3). Main holds the
+// interface's token; the renderer sees only the view below. Remote devices'
+// accounts are not here: they stay on the mesh.
+
+export const localStationRuntimeSchema = z.enum(["codex", "claude"]);
+export const localStationAccountSourceSchema = z.enum([
+  "none",
+  "local",
+  "endpoint",
+  "workspace",
+]);
+const localStationText = z.string().max(1_024);
+export const localStationSignInSchema = z.object({
+  state: z.enum(["running", "done", "failed"]),
+  url: z.string().max(4_096).nullable(),
+  error: localStationText.nullable(),
+});
+/** This Mac's own login of one agent: only while its source is `local`. */
+export const localStationLocalLoginSchema = z.object({
+  installed: z.boolean(),
+  loggedIn: z.boolean(),
+  email: z.string().max(320).nullable(),
+  usable: z.boolean(),
+  signIn: localStationSignInSchema.nullable(),
+});
+/**
+ * The model server this Mac runs one agent on under `endpoint` (Ollama, LM Studio): its address, how the station's
+ * last check of it went, and the models it serves. Kept on the station only: the workspace never has the address.
+ */
+export const localStationEndpointSchema = z.object({
+  address: z.string().max(2_048),
+  /** It has a key (a proxy that asks for one); the key itself stays on the station. */
+  keyed: z.boolean().optional().default(false),
+  state: z.string().max(32),
+  detail: localStationText,
+  models: z.array(z.string().max(256)).max(200),
+});
+export const localStationRuntimeAccountsSchema = z.object({
+  source: localStationAccountSourceSchema,
+  /**
+   * A person chose the source (an explicit `none` too). False: never chosen, and `none` is only the default. A
+   * station from before sends none of it: never chosen.
+   */
+  chosen: z.boolean().optional().default(false),
+  workspaceAvailable: z.boolean(),
+  workspaceAccounts: z.array(z.object({ name: localStationText })).max(200),
+  local: localStationLocalLoginSchema.nullable(),
+  /** None until an address is given; a station from before sends none of it. */
+  endpoint: localStationEndpointSchema.nullable().optional().default(null),
+});
+export const localStationAccountsSchema = z.object({
+  workspaces: z
+    .array(
+      z.object({
+        workspaceId: z.string().min(1).max(256),
+        name: localStationText,
+        runtimes: z.object({
+          codex: localStationRuntimeAccountsSchema,
+          claude: localStationRuntimeAccountsSchema,
+        }),
+      })
+    )
+    .max(64),
+});
+export const localStationAccountTargetSchema = z
+  .object({
+    workspaceId: z.string().trim().min(1).max(256),
+    runtime: localStationRuntimeSchema,
+  })
+  .strict();
+/**
+ * `endpoint` with the model server's address and, for one that asks for it, its key; without an address, the one the
+ * station has is kept.
+ */
+export const localStationSetAccountSourceInputSchema = localStationAccountTargetSchema
+  .extend({
+    source: localStationAccountSourceSchema,
+    endpoint: z.string().trim().min(1).max(2_048).optional(),
+    key: z.string().trim().min(1).max(16_384).optional(),
+  })
+  .strict();
+export type LocalStationRuntime = z.output<typeof localStationRuntimeSchema>;
+export type LocalStationAccountSource = z.output<
+  typeof localStationAccountSourceSchema
+>;
+export type LocalStationEndpoint = z.output<typeof localStationEndpointSchema>;
+export type LocalStationRuntimeAccounts = z.output<
+  typeof localStationRuntimeAccountsSchema
+>;
+export type LocalStationAccounts = z.output<typeof localStationAccountsSchema>;
+export type LocalStationAccountTarget = z.output<
+  typeof localStationAccountTargetSchema
+>;
+export type LocalStationSetAccountSourceInput = z.output<
+  typeof localStationSetAccountSourceInputSchema
+>;
+
+/** No local station: the web has none, and a mock lists no workspace. */
+const noLocalStationAccounts: LocalStationAccounts = { workspaces: [] };
+
+export const localStationAccountsCapability = defineNativeCapability({
+  bridge: { method: "accounts", namespace: "localStation" },
+  channel: "comma:local-station:accounts",
+  handler: {
+    exportName: "LocalStationProvider",
+    member: "accounts",
+    module: "../../../apps/electron/src/main/modules/local-station/index",
+    provider: "localStation",
+  },
+  id: "localStation.accounts",
+  input: z.void(),
+  mock: noLocalStationAccounts,
+  output: localStationAccountsSchema,
+  permission: "local-station.accounts.read",
+  sessionAdmission: "local_only",
+  sessionAdmissionRationale:
+    "Reads each workspace's agent account source from this Mac's station over its local admin socket; Main keeps the socket token.",
+  webFallback: noLocalStationAccounts,
+});
+
+export const localStationSetAccountSourceCapability = defineNativeCapability({
+  bridge: { method: "setAccountSource", namespace: "localStation" },
+  channel: "comma:local-station:set-account-source",
+  handler: {
+    exportName: "LocalStationProvider",
+    member: "setAccountSource",
+    module: "../../../apps/electron/src/main/modules/local-station/index",
+    provider: "localStation",
+  },
+  id: "localStation.setAccountSource",
+  input: localStationSetAccountSourceInputSchema,
+  mock: noLocalStationAccounts,
+  output: localStationAccountsSchema,
+  permission: "local-station.accounts.write",
+  sessionAdmission: "local_only",
+  sessionAdmissionRationale:
+    "Sets the account source the person chose for one agent in one workspace on this Mac's station.",
+  webFallback: noLocalStationAccounts,
+});
+
+export const localStationSignInCapability = defineNativeCapability({
+  bridge: { method: "signIn", namespace: "localStation" },
+  channel: "comma:local-station:sign-in",
+  handler: {
+    exportName: "LocalStationProvider",
+    member: "signIn",
+    module: "../../../apps/electron/src/main/modules/local-station/index",
+    provider: "localStation",
+  },
+  id: "localStation.signIn",
+  input: localStationAccountTargetSchema,
+  mock: noLocalStationAccounts,
+  output: localStationAccountsSchema,
+  permission: "local-station.accounts.write",
+  sessionAdmission: "local_only",
+  sessionAdmissionRationale:
+    "Starts the agent CLI's own login on this Mac's station; the CLI opens its page in the browser.",
+  webFallback: noLocalStationAccounts,
+});
+
+export const localStationStopSignInCapability = defineNativeCapability({
+  bridge: { method: "stopSignIn", namespace: "localStation" },
+  channel: "comma:local-station:stop-sign-in",
+  handler: {
+    exportName: "LocalStationProvider",
+    member: "stopSignIn",
+    module: "../../../apps/electron/src/main/modules/local-station/index",
+    provider: "localStation",
+  },
+  id: "localStation.stopSignIn",
+  input: localStationAccountTargetSchema,
+  mock: noLocalStationAccounts,
+  output: localStationAccountsSchema,
+  permission: "local-station.accounts.write",
+  sessionAdmission: "local_only",
+  sessionAdmissionRationale:
+    "Stops a login that this Mac's station started for one agent.",
+  webFallback: noLocalStationAccounts,
 });
 
 export const appearanceSetResolvedThemeCapability = defineNativeCapability({
@@ -4311,6 +4810,24 @@ export const computeNodeProblemSchema = z.enum([
   "intent_unreadable",
   "operation_unknown",
   "operation_failed",
+  /** Automatic continuation used its attempt budget or overall deadline. Retry continues the same request. */
+  "automatic_retry_exhausted",
+  /** A workspace manager revoked this registration. Main does not reinstall it automatically. */
+  "registration_revoked",
+  /** The server revoked this registration without a known reason. Enable again retires it and installs a new one. */
+  "registration_invalid",
+  /** The Host rejected the server's trust material because this Mac's clock differs from the server. */
+  "clock_skew",
+  /** The Host rejected the server's trust material because its identity did not match. */
+  "identity_mismatch",
+  /** The Host preflight found too little free disk space. See `diskRequirement`. */
+  "insufficient_disk",
+  /** The Host must update first, and the update would interrupt running work. */
+  "host_update_interrupts_work",
+  /** The Host must update first, and the selected version cannot open this Mac's local data. */
+  "target_older_than_data",
+  /** The Host cannot start because its local data needs a migration that it cannot make. */
+  "local_data_migration",
 ]);
 
 export type ComputeNodeProblem = z.infer<typeof computeNodeProblemSchema>;
@@ -4371,12 +4888,38 @@ export const computeNodeStateSchema = z.strictObject({
       "shell_initialization_pending",
       "authorization_unavailable",
       "capability_missing",
+      "revoked",
+      "insufficient_disk",
+      "host_update_required",
+      "local_data_migration",
+      "local_record_unreadable",
+      "retry_budget_exhausted",
     ])
     .optional(),
+  /**
+   * The actions for `issue`. `reset_local_record` calls `resetLocalRecord`. `update_host` calls `maintainHost`
+   * with update/preserve. `reinstall_reset` calls `maintainHost` with reinstall/reset (Main confirms it natively).
+   */
   recoveryActions: z
     .array(
-      z.enum(["continue_enable", "check_status", "finish_remove", "continue_shell"])
+      z.enum([
+        "continue_enable",
+        "check_status",
+        "finish_remove",
+        "reset_local_record",
+        "update_host",
+        "reinstall_reset",
+      ])
     )
+    .optional(),
+  /** When automatic continuation of the current operation gives up (ISO time), while `status` is processing. */
+  deadlineAt: z.string().max(64).optional(),
+  /** The free disk space the Host preflight requires, with `problem: "insufficient_disk"`. */
+  diskRequirement: z
+    .strictObject({
+      requiredBytes: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+      availableBytes: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    })
     .optional(),
   desiredEnabled: z.boolean(),
   eligibility: z.strictObject({
@@ -4472,9 +5015,29 @@ export const hostMaintenanceStateSchema = z.strictObject({
         "failed",
       ]),
       outcome: z.enum(["pending", "failed", "succeeded"]),
+      /** The step at which a failed request stopped. The renderer shows it and its localized reason. */
+      failedPhase: z
+        .enum(["preparing", "stopping", "installing", "removing", "checking"])
+        .optional(),
       problem: z.string().max(2000).optional(),
+      /**
+       * `host_start_failed`: the Host cannot start after this request, and Main's automatic recovery has no step
+       * left. The action is a confirmed reinstall/reset.
+       */
+      failureCode: z.enum(["host_start_failed"]).optional(),
     })
     .optional(),
+  /**
+   * Main erased this Mac's local compute data and reinstalled the Host to recover stuck maintenance. The renderer
+   * shows it as one information line.
+   */
+  automaticReset: z.literal(true).optional(),
+  /** The installed Host cannot start on this Mac's local data. The action is a confirmed reinstall/reset. */
+  hostStartFailure: z
+    .enum(["data_newer_than_host", "data_requires_conversion"])
+    .optional(),
+  /** Main's local maintenance receipt is unreadable. The action is `resetLocalRecord`. */
+  recordUnreadable: z.boolean().optional(),
 });
 export type HostMaintenanceState = z.infer<typeof hostMaintenanceStateSchema>;
 const hostMaintenanceFallback: HostMaintenanceState = {
@@ -4708,7 +5271,27 @@ export const computeRecoverCapability = defineNativeCapability({
 
 export const localComputeWorkloadsSchema = z.strictObject({
   workloads: z
-    .array(z.strictObject({ label: z.string().max(300), state: z.string().max(80) }))
+    .array(
+      z.strictObject({
+        label: z.string().max(300),
+        state: z.string().max(80),
+        /** The Comma Device that runs it. */
+        deviceId: z.string().max(200).optional(),
+        /** Why its current generation is not ready yet; `retryable: false` needs an action. */
+        problem: z
+          .strictObject({
+            code: z.enum([
+              "capacity_unavailable",
+              "image_unavailable",
+              "runtime_instance_changed",
+              "host_unreachable",
+              "other",
+            ]),
+            retryable: z.boolean(),
+          })
+          .optional(),
+      })
+    )
     .max(32),
   nextCursor: z.string().max(200).optional(),
 });
@@ -4915,6 +5498,26 @@ export const computeNodeAbandonCapability = defineNativeCapability({
   sessionAdmission: "local_only",
   sessionAdmissionRationale:
     "Main rechecks the current account and cloud owner before closing an unexchanged request.",
+  webFallback: unavailableComputeNodeState,
+});
+
+export const computeNodeResetLocalRecordCapability = defineNativeCapability({
+  bridge: { method: "resetLocalRecord", namespace: "computeNode" },
+  channel: "comma:compute-node:reset-local-record",
+  handler: {
+    exportName: "ComputeNodeProvider",
+    member: "resetLocalRecord",
+    module: "../../../apps/electron/src/main/modules/native/index",
+    provider: "computeNode",
+  },
+  id: "computeNode.resetLocalRecord",
+  input: z.void(),
+  mock: unavailableComputeNodeState,
+  output: computeNodeStateSchema,
+  permission: "compute-node.write",
+  sessionAdmission: "local_only",
+  sessionAdmissionRationale:
+    "Archives only Main's own unreadable local compute records and starts them clean. It changes no Host or cloud state.",
   webFallback: unavailableComputeNodeState,
 });
 
@@ -6767,6 +7370,78 @@ export const applicationMenuCommandEvent = defineNativeEvent({
   target: { role: "main-window", type: "role" },
 });
 
+// The desktop's voice call audio (the core's voice-call.ts runs the call). Main's `comma.voice.v1` socket hands the
+// main window what the Router says, in the order it came: the call's start, 24 kHz PCM16 frames, the marks Salix asks
+// to hear back once played, a clear when the caller interrupts, and the end. The window answers each mark when its
+// audio has played and hands Main its microphone, in frames of the same format. No key or transcript crosses.
+const voiceCallPcmSchema = z.custom<Uint8Array>(
+  (value) =>
+    value instanceof Uint8Array &&
+    value.byteLength <= 16 * 1024 &&
+    value.byteLength % 2 === 0,
+  "PCM16 frame of at most 16 KiB"
+);
+
+export const voiceCallAudioSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("start") }).strict(),
+  z.object({ kind: z.literal("audio"), pcm: voiceCallPcmSchema }).strict(),
+  z.object({ kind: z.literal("mark"), name: z.string().min(1).max(256) }).strict(),
+  z.object({ kind: z.literal("clear") }).strict(),
+  z.object({ kind: z.literal("stop") }).strict(),
+]);
+
+export type VoiceCallAudio = z.infer<typeof voiceCallAudioSchema>;
+
+export const voiceCallMicrophoneCapability = defineNativeCapability({
+  bridge: { method: "microphone", namespace: "voiceCall" },
+  channel: "comma:voice-call:microphone",
+  handler: {
+    exportName: "VoiceCallProvider",
+    member: "microphone",
+    module: "../../../apps/electron/src/main/modules/native/index",
+    provider: "voiceCall",
+  },
+  id: "voiceCall.microphone",
+  input: voiceCallPcmSchema,
+  mock: undefined,
+  output: z.void(),
+  permission: "voice-call.audio",
+  sessionAdmission: "local_only",
+  sessionAdmissionRationale:
+    "Hands Main's open voice call socket one microphone frame; Main holds the call's key.",
+  webFallback: undefined,
+});
+
+export const voiceCallPlayedCapability = defineNativeCapability({
+  bridge: { method: "played", namespace: "voiceCall" },
+  channel: "comma:voice-call:played",
+  handler: {
+    exportName: "VoiceCallProvider",
+    member: "played",
+    module: "../../../apps/electron/src/main/modules/native/index",
+    provider: "voiceCall",
+  },
+  id: "voiceCall.played",
+  input: z.object({ name: z.string().min(1).max(256) }).strict(),
+  mock: undefined,
+  output: z.void(),
+  permission: "voice-call.audio",
+  sessionAdmission: "local_only",
+  sessionAdmissionRationale:
+    "Tells Main's open voice call socket that the audio before a mark has played.",
+  webFallback: undefined,
+});
+
+export const voiceCallAudioEvent = defineNativeEvent({
+  bridge: { method: "onAudio", namespace: "voiceCall" },
+  channel: "comma:voice-call:audio",
+  id: "voiceCall.audio",
+  mock: { kind: "stop" },
+  payload: voiceCallAudioSchema,
+  permission: "voice-call.audio",
+  target: { role: "main-window", type: "role" },
+});
+
 export const nativeCapabilityRegistry = [
   computerUsePermissionsCapability,
   computerUsePermissionFlowCapability,
@@ -6782,6 +7457,16 @@ export const nativeCapabilityRegistry = [
   connectorRuntimeScopeCapability,
   connectorRuntimeSetScopeCapability,
   connectorRuntimeCopyConnectCommandCapability,
+  localStationAccountsCapability,
+  localStationSetAccountSourceCapability,
+  localStationSignInCapability,
+  localStationStopSignInCapability,
+  macAppsStateCapability,
+  macAppsSetEnabledCapability,
+  macAppsOpenPrivacySettingsCapability,
+  macAppsOpenItemCapability,
+  macAppsIconsCapability,
+  macAppsCalendarEventsCapability,
   appearanceSetResolvedThemeCapability,
   appearanceFontFamiliesCapability,
   notchStatusCapability,
@@ -6851,8 +7536,11 @@ export const nativeCapabilityRegistry = [
   computeNodeDrainCapability,
   computeNodeRemoveCapability,
   computeNodeAbandonCapability,
+  computeNodeResetLocalRecordCapability,
   chatPickAttachmentsCapability,
   audioCaptureStateCapability,
+  voiceCallMicrophoneCapability,
+  voiceCallPlayedCapability,
   audioCaptureSourcesCapability,
   audioCaptureMicrophonesCapability,
   audioCaptureSelectMicrophoneCapability,
@@ -6900,6 +7588,7 @@ export const nativeEventRegistry = [
   sitePermissionMenuChangedEvent,
   appPreferencesChangedEvent,
   connectorRuntimeStateChangedEvent,
+  macAppsStateChangedEvent,
   browserSidebarChangedEvent,
   browserSidebarOpenTabRequestedEvent,
   surfacesChangedEvent,
@@ -6912,6 +7601,7 @@ export const nativeEventRegistry = [
   messageNotificationsEvent,
   computeNodeStateChangedEvent,
   audioCaptureStateChangedEvent,
+  voiceCallAudioEvent,
   meetingPresenceStateChangedEvent,
   surfacesWindowResizeSettledEvent,
   airDropStateChangedEvent,
@@ -6921,6 +7611,7 @@ export const nativeStateRegistry = [
   sitePermissionMenuStateLeaf,
   appPreferencesStateLeaf,
   connectorRuntimeStateLeaf,
+  macAppsStateLeaf,
   surfacesStateLeaf,
   surfacesWindowFullScreenStateLeaf,
   surfacesWindowMaximizedStateLeaf,

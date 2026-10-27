@@ -35,7 +35,7 @@ object MediaRouting {
 internal val MediaSource.declaredSize: Long?
     get() = when (this) {
         is MediaSource.AgentResource -> ref.size
-        is MediaSource.MessageAttachment -> ref.size
+        is MediaSource.MessageAttachment -> ref?.size
         is MediaSource.UploadedFile -> null
     }
 

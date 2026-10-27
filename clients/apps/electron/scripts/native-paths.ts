@@ -5,6 +5,10 @@ import { getCommaReleaseConfig } from "../src/release-config";
 export const notchBinaryName = "NotchHost";
 export const micCaptureBinaryName = "MicCaptureHost";
 export const quickChatBinaryName = "QuickChatHost";
+/** Quick Chat on Windows (native/windows/QuickChatHost), with the face it sets words in beside it. */
+export const windowsQuickChatBinaryName = "QuickChatHost.exe";
+export const windowsQuickChatFontName = "InterVariable.woff2";
+export const macAppsBinaryName = "MacAppsHost";
 export const sleepGuardBinaryName = "CommaSleepGuard";
 export const sleepGuardAddonName = "comma-sleep-guard.node";
 export const menuBarAppName = "CommaMenuBarHost";
@@ -173,6 +177,18 @@ export function micCaptureHostDistPath(appDir: string) {
   return resolve(sharedMacOSNativeDistDir(appDir), micCaptureBinaryName);
 }
 
+export function windowsQuickChatDistPath(appDir: string, arch: string = currentArch) {
+  return resolve(
+    platformNativeDistDir(appDir, "win32", arch),
+    windowsQuickChatBinaryName
+  );
+}
+
 export function quickChatHostDistPath(appDir: string) {
   return resolve(sharedMacOSNativeDistDir(appDir), quickChatBinaryName);
+}
+
+/** The Mac apps MCP server (native/macos/MacAppsHost). */
+export function macAppsHostDistPath(appDir: string) {
+  return resolve(sharedMacOSNativeDistDir(appDir), macAppsBinaryName);
 }

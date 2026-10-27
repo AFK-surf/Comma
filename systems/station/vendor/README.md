@@ -23,6 +23,10 @@ change is marked `ember:` in the source. Drop a crate here once upstream has the
   is selected are kept, and sent at once to addresses that Address Lookup finds afterwards. Without it a station
   found by mDNS a moment after the dial (the relay down or unreachable) was only tried at QUIC's next Initial
   retransmit, 1 s or 3 s after the first: LAN connections took 1–6 s.
+- **noq-udp 1.3.0** (src/linux.rs): no UDP segmentation offload (GSO) on Android, each datagram sent on its own. An
+  Android emulator's network accepts a segmented burst and drops all of it; QUIC on a direct path then got nothing
+  through once it sent more than a packet or two at once, until iroh dropped the path 15 s later. The phones' iroh
+  (clients/packages/mesh/native) uses this crate too.
 - **noq-udp 1.3.0** (src/unix.rs): on Apple platforms a datagram's source address is set with `IP_PKTINFO`. It was
   set with `IP_RECVDSTADDR`, which macOS ignores on send, so a reply left from the address the routing table picked.
   On a machine with two addresses on one network (studio: 192.168.20.10 on the wired VLAN, 192.168.20.107 on Wi-Fi) a

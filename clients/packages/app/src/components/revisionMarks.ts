@@ -1,6 +1,6 @@
-import { useCall, useTopic } from "@comma/core-client";
+import { useCall, useTopic, useTopicSelect } from "@comma/core-client";
 import type { MarkKind } from "@comma/core/contract";
-import { useCallback, useEffect, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 
 /**
  * The reader's marks on this device, as the core keeps them for the account: id → the projection revision
@@ -55,6 +55,39 @@ export function useRevisionMarks(kind: MarkKind, legacyKey: string): RevisionMar
   const { value } = useTopic({ topic: "marks", kind });
   const marks = value?.marks;
   return useMemo(() => (marks ? new Map(Object.entries(marks)) : EMPTY), [marks]);
+}
+
+/**
+ * One kind of marks, of `ids` alone: a component that shows a few rows renders again only when one of their marks
+ * moves, not for the account's other marks. The map stays the same object while theirs hold.
+ */
+export function useRevisionMarksOf(
+  kind: MarkKind,
+  legacyKey: string,
+  ids: readonly string[]
+): RevisionMarks {
+  useLegacyMarks(kind, legacyKey);
+  return useMarksOf(kind, ids);
+}
+
+/** The marks of `ids` alone (`useRevisionMarksOf`), for a kind whose earlier marks its own hook hands over. */
+export function useMarksOf(kind: MarkKind, ids: readonly string[]): RevisionMarks {
+  const last = useRef(EMPTY);
+  return useTopicSelect({ topic: "marks", kind }, (value) => {
+    const marks = value?.marks;
+    const previous = last.current;
+    const next = new Map<string, number>();
+    let same = true;
+    for (const id of ids) {
+      const at = marks && Object.hasOwn(marks, id) ? marks[id] : undefined;
+      if (at === undefined) continue;
+      next.set(id, at);
+      if (previous.get(id) !== at) same = false;
+    }
+    if (same && next.size === previous.size) return previous;
+    last.current = next.size === 0 ? EMPTY : next;
+    return last.current;
+  });
 }
 
 /** Records marks (a mark never moves backwards) and drops them. */

@@ -1,0 +1,33 @@
+id: electron-main-direct-clock
+language: typescript
+severity: error
+message: "Main reads the machine clock directly, which tests cannot move. Use MainClock."
+note: |
+  Electron Main's modules take a `clock?: MainClock` (clients/apps/electron/src/main/clock.ts),
+  default `realMainClock`, so a test gives its own clock.
+  Date.now()                    -> clock.now()
+  new Date()                    -> new Date(clock.now())
+  setTimeout(run, ms)           -> clock.setTimer(ms, run), which returns its cancel function
+  await sleep(ms)               -> await clockSleep(clock, ms)
+  setInterval(run, ms)          -> clockInterval(clock, ms, run)
+  AbortSignal.timeout(ms)       -> clockTimeoutSignal(clock, ms)
+rule:
+  any:
+    - pattern: Date.now()
+    - pattern: new Date()
+    - pattern: setTimeout($$$)
+    - pattern: setInterval($$$)
+    - pattern: $G.setTimeout($$$)
+    - pattern: $G.setInterval($$$)
+    - pattern: AbortSignal.timeout($$$)
+files:
+  - clients/apps/electron/src/main/**/*.ts
+ignores:
+  - "**/test/**"
+  - "**/*.test.ts"
+  # The clock itself.
+  - clients/apps/electron/src/main/clock.ts
+  # Code that runs in a web page, and the e2e hooks.
+  - clients/apps/electron/src/main/authorization-return.ts
+  - clients/apps/electron/src/main/modules/browser-sidebar/element-inspector.ts
+  - clients/apps/electron/src/main/e2e-hooks.ts

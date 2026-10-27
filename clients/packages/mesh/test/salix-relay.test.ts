@@ -1,17 +1,20 @@
-import { createPrivateKey, createPublicKey, verify } from "node:crypto";
+import { createPrivateKey, createPublicKey, sign, verify } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { SalixRelay, type OpenRelaySocket } from "../src/salix-relay.ts";
-import type { NativeEndpoint } from "../src/station-native.ts";
+import {
+  SalixRelay,
+  type OpenRelaySocket,
+  type RelayEndpoint,
+} from "../src/salix-relay.ts";
 
 const SEED = Buffer.alloc(32, 7);
 const PKCS8_ED25519 = Buffer.from("302e020100300506032b657004220420", "hex");
-const PUBLIC = createPublicKey(
-  createPrivateKey({
-    key: Buffer.concat([PKCS8_ED25519, SEED]),
-    format: "der",
-    type: "pkcs8",
-  })
-);
+const PRIVATE = createPrivateKey({
+  key: Buffer.concat([PKCS8_ED25519, SEED]),
+  format: "der",
+  type: "pkcs8",
+});
+const PUBLIC = createPublicKey(PRIVATE);
+const SIGN = (message: Uint8Array) => new Uint8Array(sign(null, message, PRIVATE));
 const ID = Buffer.from(PUBLIC.export({ format: "jwk" }).x!, "base64url").toString(
   "hex"
 );
@@ -25,13 +28,13 @@ function endpoint() {
   const incoming: [string, string][] = [];
   const native = {
     id: () => ID,
-    relayIncoming: (from: string, data: Buffer) =>
-      void incoming.push([from, data.toString()]),
+    relayIncoming: (from: string, data: Uint8Array) =>
+      void incoming.push([from, Buffer.from(data).toString()]),
     relayOutgoing: async () => {
       while (queue.length === 0) await new Promise<void>((done) => (wake = done));
       return queue.shift()!;
     },
-  } as unknown as NativeEndpoint;
+  } as RelayEndpoint;
   const push = (packets: { to: string; data: Buffer }[]) => {
     queue.push(packets);
     wake?.();
@@ -117,7 +120,7 @@ describe("SalixRelay", () => {
   it("proves the endpoint on each socket, and sends a peer's packets on the socket it was last heard on", async () => {
     const mesh = endpoint();
     const { opened, open } = sockets();
-    const relay = new SalixRelay(mesh.native, SEED, open);
+    const relay = new SalixRelay(mesh.native, SIGN, open);
 
     const first = relay.carry(URL, "t1.secret");
     expect(opened[0]!.url).toBe(`${URL}?ticket=t1.secret`);
@@ -167,7 +170,7 @@ describe("SalixRelay", () => {
   it("fails a socket that closes before it registered, and one given up or not registered in 30 s", async () => {
     const mesh = endpoint();
     const { opened, open } = sockets();
-    const relay = new SalixRelay(mesh.native, SEED, open);
+    const relay = new SalixRelay(mesh.native, SIGN, open);
 
     const refused = relay.carry(URL, "t1.secret");
     opened[0]!.on.message(JSON.stringify({ type: "challenge", challenge: "c1" }));

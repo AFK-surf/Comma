@@ -35,6 +35,9 @@ export default defineConfig({
       "@comma/chat-contract/dynamic-ui-cards": resolve(
         "../../packages/chat-contract/src/dynamic-ui/cardsEntry.ts"
       ),
+      "@comma/chat-contract/mini-app-runtime": resolve(
+        "../../packages/chat-contract/src/mini-app/runtime.ts"
+      ),
       "@comma/chat-contract": resolve("../../packages/chat-contract/src/index.ts"),
       "@comma/config": resolve("../../packages/config/src/index.ts"),
       "@comma/core/contract": resolve("../../packages/core/src/contract.ts"),

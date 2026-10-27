@@ -7,9 +7,9 @@ defmodule CommaWeb.SalixClient do
 
   alias SalixAgent.{AgentModel, ModelChoice, TaskModel, TaskPlace}
 
+  # Whole reads held in memory: workspace files and Agent resources. A message
+  # attachment is streamed instead (`stream_agent_blob/4`) and has no such bound.
   @max_workspace_file_read_bytes 10_000_001
-  # Attachment downloads are saved to disk rather than rendered inline, so they
-  # carry the client's own download bound rather than the inline-image one.
 
   @impl true
   def provision_workspace_scope(workspace) when is_map(workspace) do
@@ -558,8 +558,10 @@ defmodule CommaWeb.SalixClient do
     )
   end
 
-  defp valid_public_model?(%{"name" => name, "model" => model, "provider" => provider}),
-    do: Enum.all?([name, model, provider], &(is_binary(&1) and &1 != ""))
+  # A Custom endpoint's model id may name no known provider (a relay's
+  # `relay-ai/model`): its provider is then empty, and the model still shows.
+  defp valid_public_model?(%{"name" => name, "model" => model}),
+    do: Enum.all?([name, model], &(is_binary(&1) and &1 != ""))
 
   defp valid_public_model?(_model), do: false
 
@@ -707,6 +709,21 @@ defmodule CommaWeb.SalixClient do
     observe_salix(:salix_boundary, fn ->
       with {:ok, workspace} <- resolve_workspace_scope(workspace) do
         {:ok, SalixWeb.StationTaskIndex.list(workspace["default_group_id"])}
+      end
+    end)
+  end
+
+  @impl true
+  def read_station_task(workspace, station_id, thread, opts)
+      when is_map(workspace) and is_binary(station_id) and is_binary(thread) and is_map(opts) do
+    observe_salix(:salix_boundary, fn ->
+      with {:ok, workspace} <- resolve_workspace_scope(workspace) do
+        SalixIM.Ports.StationHostedTasks.read(
+          %{tenant_id: workspace["salix_tenant_id"], group_id: workspace["default_group_id"]},
+          station_id,
+          thread,
+          opts
+        )
       end
     end)
   end
@@ -1115,6 +1132,18 @@ defmodule CommaWeb.SalixClient do
   end
 
   @impl true
+  def get_group_conversation_message(workspace, conversation_id, message_id)
+      when is_map(workspace) do
+    observe_salix(:salix_boundary, fn ->
+      SalixIM.Conversations.get_group_conversation_message(
+        workspace["default_group_id"],
+        conversation_id,
+        message_id
+      )
+    end)
+  end
+
+  @impl true
   def append_group_conversation_message(workspace, conversation_id, attrs)
       when is_map(workspace) and is_map(attrs) do
     observe_salix(:deliver, fn ->
@@ -1150,6 +1179,52 @@ defmodule CommaWeb.SalixClient do
       )
     end)
   end
+
+  @impl true
+  def switch_task_run(workspace, conversation_id, run, user_id) do
+    observe_salix(:salix_boundary, fn ->
+      case SalixIM.TaskRun.switch(workspace["default_group_id"], conversation_id, run, user_id) do
+        {:ok, record} ->
+          {:ok, record}
+
+        {:error, {:placement, refusal}} ->
+          refused(refusal, SalixIM.TaskPlacement.message(refusal))
+
+        {:error, {:station, reason}} ->
+          refused(reason, station_refusal(reason))
+
+        {:error, {:bad_request, message}} ->
+          refused(:invalid, message)
+
+        {:error, _reason} = error ->
+          error
+      end
+    end)
+  end
+
+  # Why a Task did not move, with a reason clients word in their language
+  # when they know it, and the text they show when they do not.
+  defp refused(reason, message),
+    do: {:error, {:task_run_refused, refusal_reason(reason), message}}
+
+  defp refusal_reason({:runs_on, {reason, _info}, _source}) when is_atom(reason), do: reason
+  defp refusal_reason({:runs_on, reason, _source}) when is_atom(reason), do: reason
+  defp refusal_reason({:model, {reason, _models}}) when is_atom(reason), do: reason
+  defp refusal_reason({:model, reason}) when is_atom(reason), do: reason
+  defp refusal_reason({:station_refused, _why}), do: :station_refused
+  defp refusal_reason(reason) when is_atom(reason), do: reason
+  defp refusal_reason(_reason), do: :refused
+
+  defp station_refusal(:station_outdated),
+    do: SalixStore.StationReadiness.instructions(:station_outdated)
+
+  defp station_refusal(:device_offline), do: "that station is not connected now"
+
+  defp station_refusal(:task_running),
+    do: "the Task's model is in the middle of a turn; switch once it ends"
+
+  defp station_refusal({:station_refused, why}) when is_binary(why), do: why
+  defp station_refusal(reason), do: "the station did not take the Task: #{inspect(reason)}"
 
   @impl true
   def accept_task_review(workspace, conversation_id, review_version)
@@ -1221,6 +1296,28 @@ defmodule CommaWeb.SalixClient do
     end)
   end
 
+  # A coding Task keeps its branch's pull request on its Workload each time a turn ended or its panel read it
+  # (`SalixWeb.CodingSandboxes.remember/4`): the card shows what GitHub said then, in one indexed read for the Tasks.
+  @impl true
+  def task_pull_requests(workspace, conversation_ids)
+      when is_map(workspace) and is_list(conversation_ids) do
+    observe_salix(:salix_boundary, fn ->
+      found =
+        for {id, workload} <-
+              SalixStore.CodingSandboxes.get_by_conversations(
+                workspace["salix_tenant_id"],
+                conversation_ids
+              ),
+            %{"number" => number, "state" => state, "url" => url} <-
+              [get_in(workload.spec, ["facts", "pull_request", "value"])],
+            is_integer(number) and is_binary(state) and is_binary(url),
+            into: %{},
+            do: {id, %{"number" => number, "state" => state, "url" => url}}
+
+      {:ok, found}
+    end)
+  end
+
   @impl true
   def task_activity_participants(workspace, conversation_id) do
     observe_salix(:salix_boundary, fn ->
@@ -1269,6 +1366,12 @@ defmodule CommaWeb.SalixClient do
   (`name` nil when the station runs its runtime's default), or nil when it is
   not known. `vendor` is the model's maker (`anthropic`, `openai`, …), whose
   mark clients show for the Task's Worker; nil when it is not known.
+
+  A coding Task's run has `place` `{kind: sandbox, repo, state, reason?}`
+  and `facts`: what its sandbox and GitHub answered last
+  (`SalixWeb.CodingSandboxes.remember/4`), each part only once read:
+  `usage` (the token use, nil when none), `changes` (`{files, additions,
+  deletions}`) and `pull_request` (the branch's, nil when it has none).
   """
   @impl true
   def task_run(workspace, conversation_id) do
@@ -1278,12 +1381,15 @@ defmodule CommaWeb.SalixClient do
       with {:ok, %{"kind" => "agent_task"} = conversation} <-
              SalixIM.Conversations.get_group_conversation(group_id, conversation_id),
            {:ok, stations} <- SalixStore.StationTaskSessions.of_task(group_id, conversation_id) do
-        case stations do
-          [] ->
+        case {conversation, stations} do
+          {%{"runs_on" => %{"kind" => "sandbox"}}, _stations} ->
+            {:ok, coding_task_run(workspace, conversation)}
+
+          {_conversation, []} ->
             {:ok,
              %{"place" => TaskPlace.salix(), "model" => salix_task_model(workspace, conversation)}}
 
-          [station | _] ->
+          {_conversation, [station | _]} ->
             {:ok, station_task_run(workspace, station)}
         end
       else
@@ -1328,14 +1434,22 @@ defmodule CommaWeb.SalixClient do
 
   defp public_task_model(_choice, _tenant_id), do: nil
 
-  # A station's Session runs what it was invited with (`start`). The Cloud VM
-  # runs the platform model with Codex when the Task names no model
-  # (`SalixWeb.StationTasks`); another station runs its runtime's default.
+  # A station's Session runs what it was invited with (`start`). Group-owned
+  # Stations run the platform model with Codex when the Task names no model
+  # (`SalixWeb.StationTasks`); other Stations use their runtime's default.
   defp station_task_run(workspace, %{device_id: device_id} = station) do
     group_id = workspace["default_group_id"]
     tenant_id = workspace["salix_tenant_id"]
     start = if is_map(station.start), do: station.start, else: %{}
     cloud_vm? = device_id == SalixStore.RuntimeIds.cloud_vm_device_id(group_id)
+
+    group_station? =
+      case SalixStore.ComputeStation.device_owner(tenant_id, group_id, device_id) do
+        {_kind, %{"owner" => owner}} when owner in ["group_default", "group_station"] -> true
+        :unmanaged -> cloud_vm?
+        _ -> false
+      end
+
     runtime = start["runtime"]
 
     place =
@@ -1355,7 +1469,7 @@ defmodule CommaWeb.SalixClient do
             tenant_id
           )
 
-        cloud_vm? and runtime in [nil, "", "codex"] ->
+        group_station? and runtime in [nil, "", "codex"] ->
           %{"kind" => "platform"}
 
         is_binary(runtime) and runtime != "" ->
@@ -1372,6 +1486,65 @@ defmodule CommaWeb.SalixClient do
 
     %{"place" => place, "model" => model}
   end
+
+  # A coding Task runs on its own sandbox (`SalixStore.CodingSandboxes`): the
+  # place carries its repository, session branch and the sandbox's state.
+  defp coding_task_run(workspace, conversation) do
+    tenant_id = workspace["salix_tenant_id"]
+
+    sandbox =
+      case SalixStore.CodingSandboxes.get_by_conversation(
+             tenant_id,
+             conversation["conversation_id"]
+           ) do
+        {:ok, workload} -> workload.spec
+        {:error, _} -> %{}
+      end
+
+    start = if is_map(sandbox["start"]), do: sandbox["start"], else: %{}
+    repo = conversation["repo"] || sandbox["repo"] || %{}
+
+    model =
+      cond do
+        is_binary(start["model"]) and start["model"] != "" ->
+          public_task_model(
+            %{"kind" => "runtime", "provider" => start["runtime"], "model" => start["model"]},
+            tenant_id
+          )
+
+        start["runtime"] == "claude" ->
+          %{"kind" => "runtime", "provider" => "claude", "name" => nil, "vendor" => "anthropic"}
+
+        true ->
+          %{"kind" => "runtime", "provider" => "codex", "name" => nil, "vendor" => "openai"}
+      end
+
+    %{
+      "place" =>
+        %{
+          "kind" => "sandbox",
+          "repo" => Map.take(repo, ~w(owner name base_ref branch)),
+          "state" => sandbox["state"] || "starting"
+        }
+        |> then(fn place ->
+          if is_binary(sandbox["reason"]),
+            do: Map.put(place, "reason", sandbox["reason"]),
+            else: place
+        end),
+      "model" => model,
+      "facts" => coding_facts(sandbox["facts"])
+    }
+  end
+
+  # What a coding Task's sandbox and GitHub answered last: each part's value, once read.
+  defp coding_facts(%{} = facts) do
+    for {part, %{"value" => value}} <- facts,
+        part in ~w(usage changes pull_request),
+        into: %{},
+        do: {part, value}
+  end
+
+  defp coding_facts(_facts), do: %{}
 
   # The maker of the models a runtime runs by default.
   defp runtime_vendor("claude"), do: "anthropic"
@@ -1442,6 +1615,14 @@ defmodule CommaWeb.SalixClient do
   end
 
   @impl true
+  def write_agent_file_stream(workspace, path, stream)
+      when is_map(workspace) and is_binary(path) do
+    with {:ok, workspace} <- resolve_workspace_scope(workspace) do
+      SalixAgent.Workspace.write_stream(workspace["router_agent_id"], path, stream)
+    end
+  end
+
+  @impl true
   def read_agent_file(workspace, path, max_bytes)
       when is_map(workspace) and is_binary(path) and is_integer(max_bytes) and max_bytes > 0 do
     max_bytes = min(max_bytes, @max_workspace_file_read_bytes)
@@ -1502,16 +1683,56 @@ defmodule CommaWeb.SalixClient do
   end
 
   @impl true
+  def set_router_instructions(workspace, content, opts)
+      when is_map(workspace) and is_binary(content) and is_list(opts) do
+    expected = Keyword.get(opts, :expected_hash)
+
+    # Checked on the record each write attempt replaces, so a change saved
+    # meanwhile (Drive, Settings, the Router's own import) is never overwritten.
+    precondition = fn router ->
+      with :ok <- instructions_unchanged(router, expected),
+           do: instructions_clearable(content, router)
+    end
+
+    with {:ok, scope} <- resolve_workspace_scope(workspace),
+         {:ok, router} <- workspace_agent(scope, "router"),
+         {:ok, updated} <-
+           SalixAgent.Control.configure_if(
+             router["agent_id"],
+             %{"router_system_prompt" => content},
+             scope["salix_tenant_id"],
+             precondition
+           ) do
+      {:ok, SalixAgent.ToolPolicy.system_prompt("router", updated) || ""}
+    end
+  end
+
+  defp instructions_unchanged(_router, nil), do: :ok
+
+  defp instructions_unchanged(router, expected) do
+    current = SalixAgent.ToolPolicy.system_prompt("router", router) || ""
+
+    if SalixStore.Crypto.hex(current) == expected,
+      do: :ok,
+      else: {:error, {:conflict, "the instructions changed"}}
+  end
+
+  # Without its own instructions the Router runs with the shared
+  # `system_prompt`, which this does not change: clearing would only bring that
+  # one back.
+  defp instructions_clearable(content, router) do
+    if String.trim(content) == "" and router["system_prompt"] not in [nil, ""],
+      do: {:error, {:bad_request, "the instructions cannot be cleared"}},
+      else: :ok
+  end
+
+  @impl true
   def read_agent_blob(workspace, agent_id, ref, max_bytes)
       when is_map(workspace) and is_binary(agent_id) and is_map(ref) and
              is_integer(max_bytes) and max_bytes > 0 do
     max_bytes = min(max_bytes, @max_workspace_file_read_bytes)
 
-    with {:ok, workspace} <- resolve_workspace_scope(workspace),
-         group_id = workspace["default_group_id"],
-         true <- SalixStore.Ids.valid_agent_id_for_group?(agent_id, group_id),
-         {:ok, agent} <- SalixAgent.Control.get(agent_id, workspace["salix_tenant_id"]),
-         true <- agent["group_id"] == group_id,
+    with :ok <- authorize_agent_blob(workspace, agent_id),
          {:ok, stream, size, _filename} <-
            SalixIM.Ports.AgentWorkspace.read_ref_stream(agent_id, ref, "resource"),
          true <- is_integer(size) and size >= 0 and size <= max_bytes do
@@ -1524,6 +1745,65 @@ defmodule CommaWeb.SalixClient do
   end
 
   def read_agent_blob(_workspace, _agent_id, _blob_ref, _max_bytes), do: {:error, :not_found}
+
+  @impl true
+  def stream_agent_blob(workspace, agent_id, ref, range)
+      when is_map(workspace) and is_binary(agent_id) and is_map(ref) do
+    with :ok <- authorize_agent_blob(workspace, agent_id),
+         {:ok, stream, size, _filename} <- read_ref_stream(agent_id, ref, range),
+         true <- is_integer(size) and size >= 0 do
+      {:ok, stream, size}
+    else
+      false -> {:error, :not_found}
+      {:error, _reason} = error -> error
+      _invalid -> {:error, :workspace_file_unavailable}
+    end
+  end
+
+  def stream_agent_blob(_workspace, _agent_id, _blob_ref, _range), do: {:error, :not_found}
+
+  @impl true
+  def presign_agent_blob(workspace, agent_id, ref, opts)
+      when is_map(workspace) and is_binary(agent_id) and is_map(ref) and is_list(opts) do
+    with :ok <- authorize_agent_blob(workspace, agent_id) do
+      SalixStore.Blob.presign(agent_id, ref, opts)
+    end
+  end
+
+  def presign_agent_blob(_workspace, _agent_id, _blob_ref, _opts), do: {:error, :not_found}
+
+  @impl true
+  def link_agent_blob(workspace, agent_id, ref, path)
+      when is_map(workspace) and is_binary(agent_id) and is_map(ref) and is_binary(path) do
+    with :ok <- authorize_agent_blob(workspace, agent_id),
+         {:ok, workspace} <- resolve_workspace_scope(workspace) do
+      SalixAgent.Workspace.put_ref(workspace["router_agent_id"], path, ref)
+    end
+  end
+
+  def link_agent_blob(_workspace, _agent_id, _ref, _path), do: {:error, :not_found}
+
+  defp read_ref_stream(agent_id, ref, nil),
+    do: SalixIM.Ports.AgentWorkspace.read_ref_stream(agent_id, ref, "resource")
+
+  defp read_ref_stream(agent_id, ref, range),
+    do: SalixIM.Ports.AgentWorkspace.read_ref_stream(agent_id, ref, "resource", range)
+
+  # Blob storage uses global UUID keys: the sender Agent must belong to the
+  # caller's Group for its blob to be read.
+  defp authorize_agent_blob(workspace, agent_id) do
+    with {:ok, workspace} <- resolve_workspace_scope(workspace),
+         group_id = workspace["default_group_id"],
+         true <- SalixStore.Ids.valid_agent_id_for_group?(agent_id, group_id),
+         {:ok, agent} <- SalixAgent.Control.get(agent_id, workspace["salix_tenant_id"]),
+         true <- agent["group_id"] == group_id do
+      :ok
+    else
+      false -> {:error, :not_found}
+      {:error, _reason} = error -> error
+      _invalid -> {:error, :workspace_file_unavailable}
+    end
+  end
 
   defp read_bounded_stream(stream, max_bytes) do
     result =

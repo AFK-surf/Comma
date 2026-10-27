@@ -1,4 +1,4 @@
-import type { Key, RefObject } from "react";
+import { memo, type Key, type RefObject } from "react";
 import { definedProps } from "../utils";
 import { Menu, MenuItem, MenuPopover, MenuSeparator } from "./Menu";
 import type { MenuPointerOffsets } from "./pointerPosition";
@@ -38,7 +38,7 @@ export interface LinkContextMenuProps {
 }
 
 /* oxlint-disable jsx-a11y/no-autofocus -- A newly opened context menu must receive keyboard focus. */
-export const LinkContextMenu = ({
+export const LinkContextMenu = memo(function LinkContextMenu({
   triggerRef,
   isOpen,
   onOpenChange,
@@ -46,7 +46,7 @@ export const LinkContextMenu = ({
   labels,
   disabledActions,
   onAction,
-}: LinkContextMenuProps) => {
+}: LinkContextMenuProps) {
   const handleAction = (key: Key) => {
     onAction(String(key) as LinkContextMenuAction);
   };
@@ -89,5 +89,5 @@ export const LinkContextMenu = ({
       </Menu>
     </MenuPopover>
   );
-};
+});
 /* oxlint-enable jsx-a11y/no-autofocus */

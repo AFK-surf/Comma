@@ -108,10 +108,9 @@ defmodule SalixAgent.BrowserLiveTest do
              )
 
     assert {:ok, form} = Browser.execute(owner, "snapshot", %{"tab_id" => tab})
-    input = Enum.find(form["elements"], &(&1["name"] == "Name"))["ref"]
-    button = Enum.find(form["elements"], &(&1["name"] == "Save"))["ref"]
-
-    count = Enum.find(form["elements"], &(&1["name"] == "Count"))["ref"]
+    input = ref_of(form["snapshot"], ~r/textbox "Name" \[(e\d+)\]/)
+    button = ref_of(form["snapshot"], ~r/button "Save" \[(e\d+)\]/)
+    count = ref_of(form["snapshot"], ~r/spinbutton "Count" \[(e\d+)\]/)
 
     assert {:ok, _} =
              Browser.execute(owner, "fill", %{"tab_id" => tab, "ref" => count, "text" => ""})
@@ -178,7 +177,7 @@ defmodule SalixAgent.BrowserLiveTest do
     assert {:ok, _} = Browser.execute(owner, "press", %{"tab_id" => tab, "key" => "Enter"})
     assert {:ok, _} = Browser.execute(owner, "wait", %{"tab_id" => tab, "text" => "中文"})
     assert {:ok, observed} = Browser.execute(owner, "snapshot", %{"tab_id" => tab})
-    old_ref = Enum.find(observed["elements"], &(&1["name"] == "Save"))["ref"]
+    old_ref = ref_of(observed["snapshot"], ~r/button "Save" \[(e\d+)\]/)
     :ok = SalixAgent.Browser.Driver.stop(row)
     assert {:ok, _} = Browser.execute(owner, "tabs", %{})
     assert {:ok, _} = Browser.execute(owner, "snapshot", %{"tab_id" => tab})
@@ -365,5 +364,10 @@ defmodule SalixAgent.BrowserLiveTest do
   defp live_commands(owner) do
     {:ok, pid} = SalixAgent.Browser.Driver.ensure(BrowserBindings.get(owner))
     :sys.get_state(pid, :infinity).commands
+  end
+
+  defp ref_of(text, regex) do
+    assert [_, ref] = Regex.run(regex, text), "no match for #{inspect(regex)} in:\n#{text}"
+    ref
   end
 end

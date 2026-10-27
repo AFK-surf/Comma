@@ -92,6 +92,24 @@ defmodule SalixAgent.ToolPolicyTest do
     refute session_prompt("router", %{"reply_style" => "default"}) =~ "## Reply style: concise"
     assert session_prompt("router", concise) =~ "## Reply style: concise"
     refute session_prompt("worker", concise) =~ "## Reply style: concise"
+
+    # The owner's own instructions follow the preset, so theirs decide.
+    prompt =
+      session_prompt("router", Map.put(concise, "router_system_prompt", "Answer in detail."))
+
+    {style_at, _} = :binary.match(prompt, "## Reply style: concise")
+    {own_at, _} = :binary.match(prompt, "Answer in detail.")
+    assert style_at < own_at
+  end
+
+  # Text the Router reads calls the person it serves "the user": "the owner"
+  # came out as 主人 in Chinese replies.
+  test "the Router prompt and proactive tools call the person the user, not the owner" do
+    prompt = session_prompt("router", %{"reply_style" => "concise"})
+    descriptions = Enum.map_join(SalixAgent.Tools.Proactive.defs(), "\n", &inspect/1)
+
+    refute prompt =~ ~r/\bthe owner\b/i
+    refute descriptions =~ ~r/\bthe owner\b/i
   end
 
   defp callable_names(role) do

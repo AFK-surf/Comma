@@ -1039,6 +1039,22 @@ defmodule SalixIM.Provider.Lark do
     end
   end
 
+  defp outbound_content(%{"question" => question} = params) when not is_nil(question) do
+    with {:ok, question} <- SalixIM.QuestionCard.normalize(question),
+         {:ok, mentioned} <-
+           MessageRenderer.mention_ids(params["mentions"], params["mention_all"]),
+         {:ok, card} <-
+           SalixIM.QuestionCard.feishu_card(
+             SalixIM.QuestionCard.with_mentions(str(params["text"]), mentioned),
+             question,
+             %{
+               "chat_type" => if(str(params["user_id"]) != "", do: "p2p", else: "")
+             }
+           ) do
+      {:ok, %{"msg_type" => "interactive", "content" => Jason.encode!(card)}}
+    end
+  end
+
   defp outbound_content(params) do
     SalixIM.MessageRenderer.render(MessageRenderer, %Input{markdown: params["text"]},
       format: params["format"],

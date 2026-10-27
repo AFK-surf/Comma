@@ -19,6 +19,13 @@ pub(super) mod gso {
     pub(crate) fn max_gso_segments(socket: &impl AsRawFd) -> usize {
         const GSO_SIZE: libc::c_int = 1500;
 
+        // ember: no segmentation offload on Android: a datagram a sendmsg. An Android emulator's network takes a
+        // segmented burst without an error and drops all of it, so a QUIC path that carries more than a packet or
+        // two at once (a picture pasted on a screen) went dark until iroh let it go 15 s later, and only then went
+        // through a relay (seen 2026-10-18).
+        if cfg!(target_os = "android") {
+            return 1;
+        }
         if !SUPPORTED_BY_CURRENT_KERNEL.get_or_init(supported_by_current_kernel) {
             return 1;
         }

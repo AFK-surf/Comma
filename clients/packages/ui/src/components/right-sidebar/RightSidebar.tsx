@@ -102,10 +102,11 @@ const parseCssTimeMs = (value: string) => {
   return value.trim().endsWith("ms") ? parsed : parsed * 1000;
 };
 
-const getExitFallbackMs = (element: HTMLElement | null) => {
-  if (!element) return defaultExitFallbackMs;
+/** How long the surface's slide out takes, for when its `transitionend` never comes. */
+const getExitFallbackMs = (surface: HTMLElement | null) => {
+  if (!surface) return defaultExitFallbackMs;
 
-  const styles = window.getComputedStyle(element);
+  const styles = window.getComputedStyle(surface);
   const properties = styles.transitionProperty.split(",").map((value) => value.trim());
   const durations = styles.transitionDuration
     .split(",")
@@ -117,15 +118,13 @@ const getExitFallbackMs = (element: HTMLElement | null) => {
     return defaultExitFallbackMs;
   }
 
-  const widthTransitionMs = properties.reduce((longest, property, index) => {
-    if (property !== "all" && property !== "width") return longest;
+  const slideMs = properties.reduce((longest, property, index) => {
+    if (property !== "all" && property !== "transform") return longest;
     const duration = durations[index % durations.length] ?? 0;
     const delay = delays[index % delays.length] ?? 0;
     return Math.max(longest, duration + delay);
   }, 0);
-  return widthTransitionMs > 0
-    ? Math.ceil(widthTransitionMs + exitFallbackBufferMs)
-    : 0;
+  return slideMs > 0 ? Math.ceil(slideMs + exitFallbackBufferMs) : 0;
 };
 
 export const RightSidebarToolbarButton = ({
@@ -185,6 +184,7 @@ export const RightSidebar = <TabId extends string = string>({
   const onExitCompleteRef = useRef(onExitComplete);
   const previousOpenRef = useRef(open);
   const sidebarRef = useRef<HTMLElement | null>(null);
+  const surfaceRef = useRef<HTMLDivElement | null>(null);
   const asideRef = useMemo(
     () => (ref ? mergeRefs(sidebarRef, ref) : sidebarRef),
     [ref]
@@ -240,9 +240,9 @@ export const RightSidebar = <TabId extends string = string>({
   // Whatever shares the window's bottom-right corner (the toast stack, Drive's
   // transfer panel) belongs to the content column, not to this panel: it
   // steps left by however much of the right edge the sidebar covers. The
-  // aside's own width is what transitions, so observing it republishes on
-  // every frame of the open and close; at 0 the claim is released. A native
-  // browser view inside adds its own claim for the frames it composites.
+  // aside takes its width in one step, so this publishes once per open and
+  // close and once per resize; at 0 the claim is released. A native browser
+  // view inside adds its own claim for the frames it composites.
   useEffect(() => {
     const sidebar = sidebarRef.current;
     if (!open || !sidebar || typeof ResizeObserver === "undefined") {
@@ -284,7 +284,7 @@ export const RightSidebar = <TabId extends string = string>({
     const reduceMotion = window.matchMedia?.(
       "(prefers-reduced-motion: reduce)"
     ).matches;
-    const exitFallbackMs = reduceMotion ? 0 : getExitFallbackMs(sidebarRef.current);
+    const exitFallbackMs = reduceMotion ? 0 : getExitFallbackMs(surfaceRef.current);
     const timeout = uiClock.after(exitFallbackMs, () => {
       if (exitCompletedRef.current) return;
       exitCompletedRef.current = true;
@@ -378,6 +378,9 @@ export const RightSidebar = <TabId extends string = string>({
       drawnWidth > 0 ? Math.min(constrainedWidth, drawnWidth) : constrainedWidth;
     let pendingWidth: number | null = null;
     let previewedWidth = anchorWidth;
+    // A press without a move keeps the stored width, which a host that clamps
+    // the rendered width may hold above the drawn anchor.
+    let moved = false;
     let commitFrame: CancelUiTimer | null = null;
     event.preventDefault();
     try {
@@ -408,7 +411,10 @@ export const RightSidebar = <TabId extends string = string>({
     };
     // Centered hosts move their siblings with the width. Commit that geometry
     // together; an imperative width-only write would put the edge ahead of chat.
-    // Other hosts retain their immediate local width update.
+    // A host whose layout follows the sidebar's own box takes the width in CSS
+    // alone while the pointer is down and commits it once on release: a
+    // commit per frame re-rendered the whole sidebar (tabs, panels) on every
+    // frame of the drag, on top of the reflow the new width already costs.
     const applyWidth = (next: number) => {
       if (onWidthPreview) {
         pendingWidth = next;
@@ -417,11 +423,15 @@ export const RightSidebar = <TabId extends string = string>({
       }
 
       if (resizeWidthMultiplier === 1) {
+        previewedWidth = next;
+        moved = true;
         sidebar?.style.setProperty("--comma-chat-sidebar-width", `${next}px`);
         sidebar?.style.setProperty(
           "--comma-right-sidebar-rendered-width",
           renderedWidthExpression(next)
         );
+        resizeHandle.setAttribute("aria-valuenow", String(next));
+        return;
       }
       if (commitFrame === null) {
         resizeBoundsRef.current.onWidthChange(next);
@@ -466,7 +476,8 @@ export const RightSidebar = <TabId extends string = string>({
         commitFrame();
         commitPendingWidth();
       }
-      if (onWidthPreview) resizeBoundsRef.current.onWidthChange(previewedWidth);
+      if (onWidthPreview || moved)
+        resizeBoundsRef.current.onWidthChange(previewedWidth);
       releaseTracking();
       setResizing(false);
       stopResizeRef.current = undefined;
@@ -543,13 +554,19 @@ export const RightSidebar = <TabId extends string = string>({
     "--comma-right-sidebar-rendered-width": renderedWidthExpression(renderedWidth),
   } as CSSProperties;
 
+  // The aside takes its width in one step, so the content beside it lays out
+  // once per open and close. The surface slides over that edge by transform,
+  // which the compositor runs (right-sidebar-tabs.css): it is pinned to the
+  // aside's right edge, so while closing it slides out over content that has
+  // already widened. A width transition laid the whole window out again at
+  // every frame of the motion.
   return (
     <aside
       {...asideProps}
       aria-hidden={!open}
       aria-label={open ? ariaLabel : undefined}
       className={cx(
-        "comma-chat-sidebar group/right-sidebar relative z-[7] flex max-w-full min-w-0 flex-[0_0_auto] overflow-hidden transition-[width] duration-150 ease-[cubic-bezier(0.23,1,0.32,1)] [width:var(--comma-right-sidebar-rendered-width)] [-webkit-app-region:no-drag] motion-reduce:transition-none data-[open=false]:pointer-events-none data-[open=false]:w-0 data-[open=true]:overflow-visible data-[resizing=true]:transition-none",
+        "comma-chat-sidebar group/right-sidebar relative z-[7] flex max-w-full min-w-0 flex-[0_0_auto] overflow-visible [width:var(--comma-right-sidebar-rendered-width)] [-webkit-app-region:no-drag] data-[open=false]:pointer-events-none data-[open=false]:w-0",
         className
       )}
       data-active-tab={resolvedActiveTab}
@@ -562,8 +579,8 @@ export const RightSidebar = <TabId extends string = string>({
         if (
           !open &&
           !exitCompletedRef.current &&
-          event.currentTarget === event.target &&
-          event.propertyName === "width"
+          event.target === surfaceRef.current &&
+          event.propertyName === "transform"
         ) {
           exitCompletedRef.current = true;
           onExitCompleteRef.current?.();
@@ -572,7 +589,10 @@ export const RightSidebar = <TabId extends string = string>({
       ref={asideRef}
       style={sidebarStyle}
     >
-      <div className="comma-chat-sidebar-surface relative flex h-full flex-col border-l-[0.5px] border-primary bg-main-panel-bg [width:var(--comma-right-sidebar-rendered-width)] [min-width:var(--comma-right-sidebar-rendered-width)]">
+      <div
+        className="comma-chat-sidebar-surface absolute inset-y-0 right-0 flex flex-col border-l-[0.5px] border-primary bg-main-panel-bg [--comma-right-sidebar-rendered-width:inherit] [width:var(--comma-right-sidebar-rendered-width)] [min-width:var(--comma-right-sidebar-rendered-width)]"
+        ref={surfaceRef}
+      >
         <RightSidebarResizeHandle
           ariaLabel={ariaLabel}
           constrainedWidth={constrainedWidth}

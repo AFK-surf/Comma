@@ -35,4 +35,13 @@ defmodule Salix.Bindings.MeetingConnectDispatchTest do
                "text" => "hello"
              })
   end
+
+  test "chat before automatic placement returns a bounded error" do
+    assert {:error, :meeting_runtime_not_selected} =
+             MeetingConnectDispatch.send_chat(%{
+               "meeting_id" => "meeting-awaiting-placement",
+               "runtime_source" => "automatic",
+               "text" => "hello"
+             })
+  end
 end

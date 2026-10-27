@@ -652,7 +652,6 @@ public enum CommaNotchScenePayloadTaskStatus: String, Codable, Equatable, Sendab
 public enum CommaStatusMenuHostFrame: Codable, Equatable, Sendable {
     case show(
         requestId: String,
-        clickId: String?,
         closeId: String?,
         iconPath: String,
         openId: String?,
@@ -680,7 +679,6 @@ public enum CommaStatusMenuHostFrame: Codable, Equatable, Sendable {
             }
             self = .show(
                 requestId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .requestId, minimumLength: 1, maximumLength: nil),
-                clickId: try CommaNativeContractValidation.decodeOptionalString(String.self, from: container, forKey: .clickId, minimumLength: 1, maximumLength: 256),
                 closeId: try CommaNativeContractValidation.decodeOptionalString(String.self, from: container, forKey: .closeId, minimumLength: 1, maximumLength: 256),
                 iconPath: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .iconPath, minimumLength: 1, maximumLength: 4096),
                 openId: try CommaNativeContractValidation.decodeOptionalString(String.self, from: container, forKey: .openId, minimumLength: 1, maximumLength: 256),
@@ -714,7 +712,6 @@ public enum CommaStatusMenuHostFrame: Codable, Equatable, Sendable {
         switch self {
         case let .show(
             requestId,
-            clickId,
             closeId,
             iconPath,
             openId,
@@ -726,10 +723,6 @@ public enum CommaStatusMenuHostFrame: Codable, Equatable, Sendable {
             try container.encode("status-menu.show", forKey: .kind)
             try CommaNativeContractValidation.validateStringForEncoding(requestId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.requestId])
             try container.encode(requestId, forKey: .requestId)
-            if let value = clickId {
-                try CommaNativeContractValidation.validateStringForEncoding(value, minimumLength: 1, maximumLength: 256, codingPath: container.codingPath + [CodingKeys.clickId])
-            }
-            try container.encodeIfPresent(clickId, forKey: .clickId)
             if let value = closeId {
                 try CommaNativeContractValidation.validateStringForEncoding(value, minimumLength: 1, maximumLength: 256, codingPath: container.codingPath + [CodingKeys.closeId])
             }
@@ -759,7 +752,6 @@ public enum CommaStatusMenuHostFrame: Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case kind = "kind"
         case protocolVersion = "protocolVersion"
-        case clickId = "clickId"
         case closeId = "closeId"
         case iconPath = "iconPath"
         case openId = "openId"

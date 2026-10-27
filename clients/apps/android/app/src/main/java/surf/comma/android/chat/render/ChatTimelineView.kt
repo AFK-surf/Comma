@@ -229,6 +229,13 @@ class ChatTimelineView @JvmOverloads constructor(
             timelineAdapter.questionHost = value
         }
 
+    /** What an Agent's request cards do on this page: authorize, decline. Unset, an open card has no actions. */
+    internal var requestHost: surf.comma.android.chat.live.AgentRequestCardHost?
+        get() = timelineAdapter.requestHost
+        set(value) {
+            timelineAdapter.requestHost = value
+        }
+
     /** A task brief row was tapped open or closed. */
     var onToggleBrief: ((Long) -> Unit)?
         get() = timelineAdapter.onToggleBrief

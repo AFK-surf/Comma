@@ -9,6 +9,7 @@ import {
   type AppPreferences,
 } from "@comma/native-bridge";
 import { z } from "zod";
+import { realMainClock } from "../../clock";
 import type { AirDropService } from "../airdrop";
 import { airDropSendInputSchema, type AirDropSendInput } from "../airdrop/sender";
 
@@ -495,6 +496,14 @@ async function airDropResult(operation: () => unknown) {
   }
 }
 
+/**
+ * An MCP server Main serves on this endpoint: one JSON-RPC message in, its reply
+ * out, or null for a notification. The station forwards Salix's `client_mcp` here.
+ */
+export type ClientControlMcpServer = (
+  message: unknown
+) => Promise<Record<string, unknown> | null>;
+
 export class ClientControlApiServer {
   readonly endpoint: string;
   readonly #server: ReturnType<typeof createServer>;
@@ -508,13 +517,15 @@ export class ClientControlApiServer {
   static async open({
     registry,
     token,
+    mcpServers = {},
   }: {
     registry: CommaClientControlRegistry;
     token: string;
+    mcpServers?: Record<string, ClientControlMcpServer>;
   }) {
     if (!token) throw new Error("Client-control bearer is required.");
     const server = createServer((request, response) => {
-      void handleRequest(request, response, registry, token);
+      void handleRequest(request, response, registry, token, mcpServers);
     });
     server.headersTimeout = 5_000;
     server.keepAliveTimeout = 1_000;
@@ -540,13 +551,17 @@ export class ClientControlApiServer {
       const finish = () => {
         if (settled) return;
         settled = true;
-        clearTimeout(forceClose);
+        cancelForceClose();
         resolve();
       };
-      const forceClose = setTimeout(() => {
-        this.#server.closeAllConnections();
-        finish();
-      }, CLIENT_CONTROL_CLOSE_TIMEOUT_MS);
+      // A client that keeps its connection open must not hold Main's close while a test clock stands still.
+      const cancelForceClose = realMainClock.setTimer(
+        CLIENT_CONTROL_CLOSE_TIMEOUT_MS,
+        () => {
+          this.#server.closeAllConnections();
+          finish();
+        }
+      );
       this.#server.close(() => finish());
       this.#server.closeIdleConnections();
     });
@@ -558,7 +573,8 @@ async function handleRequest(
   request: IncomingMessage,
   response: ServerResponse,
   registry: CommaClientControlRegistry,
-  token: string
+  token: string,
+  mcpServers: Record<string, ClientControlMcpServer>
 ) {
   try {
     if (request.socket.remoteAddress !== "127.0.0.1") {
@@ -579,6 +595,16 @@ async function handleRequest(
       result = await registry.invoke(
         JSON.parse((await readBody(request)).toString("utf8"))
       );
+    } else if (request.method === "POST" && url.pathname.startsWith("/v1/mcp/")) {
+      const mcp = mcpServers[decodeURIComponent(url.pathname.slice("/v1/mcp/".length))];
+      if (!mcp) throw new ClientControlError(404, "Unknown MCP server.");
+      const reply = await mcp(JSON.parse((await readBody(request)).toString("utf8")));
+      if (reply === null) {
+        response.statusCode = 202;
+        response.end();
+        return;
+      }
+      result = reply;
     } else {
       throw new ClientControlError(404, "Not found.");
     }

@@ -25,45 +25,49 @@ Provider cards and client timeouts cannot complete, cancel, or reopen Tasks. Tel
 
 ## Station Tasks
 
-A Task with `runs_on` runs on a station: the Group's Cloud VM or a person's desktop station. Its Worker is a Session of that station, not of Salix.
-`SalixWeb.StationTasks` invites the station, gives it each Message (`task.put`), and writes its posts into the Task as the Worker (`task.post`).
-The Worker participant of such a Task is delivered nothing. Its Session id names no Session that Salix runs, so `SalixIM.TaskWorkerWatch` reminds and reports nothing for it.
+A Task with `runs_on` uses a VMM, Cloudflare, physical Station, or explicit [coding sandbox](../compute-devices.md#coding-sandboxes). Its Worker Session runs there.
+`SalixWeb.StationTasks` invites the station, gives it each Message (`task.put`) and writes its posts into the Task as the Worker (`task.post`).
+A desktop station must be connected when the Task is made; the Group's Cloud VM need not be: the VM is woken or made, and its station invited and given the Task once the VM is ready.
+The Worker participant is delivered nothing, and its Session id names no Session Salix runs, so `SalixIM.TaskWorkerWatch` reminds and reports nothing for it.
 
 `SalixIM.StationTaskWatch` watches a station Task instead.
-A delegation is the latest Message given to the Worker that the Worker did not write. The first Worker Message after it answers it.
-The watch keeps one timer per active station Task with an unanswered delegation. There is no scan over Tasks and no poll of the station.
-The owner hands each appended Message to the watch, so a Message costs no read. A check reads the Task's last 50 Messages and the station's standing (`SalixIM.Ports.TaskStations.standing/2`). Once the station has the delegation, the check also asks it where its Session stands (`task.status`, `session_status/2`: one request, answered at once, which starts nothing there). The next check comes after `recheck_ms` (10 minutes).
-A delegation older than the 50-Message window is still waited for. A Worker Message in the window answers it.
-The stages below come from the standing and the Session's status. Thresholds are measured from the delegation. Set them in `config :salix_im, :station_task_watch`.
+A delegation is the latest Message given to the Worker that the Worker did not write; the first Worker Message after it answers it.
+One timer per active station Task with an unanswered delegation; no scan, no poll.
+The owner hands each appended Message to the watch: a Message costs no read. A check reads the Task's last 50 Messages and the station's standing (`SalixIM.Ports.TaskStations.standing/2`); once the station has the delegation, it also asks where its Session stands (`task.status`: one request, answered at once, starting nothing there). The next check comes after `recheck_ms` (10 minutes).
+A delegation older than the 50-Message window is still waited for.
+The stages below come from the standing and the Session's status. Thresholds count from the delegation; set them in `config :salix_im, :station_task_watch`.
 
 | Stage | Meaning | Default threshold |
 | --- | --- | --- |
-| `vm_not_ready` | The Group's Cloud VM Workload is not `ready`, or the Group has none | 10 minutes (`vm_not_ready_ms`) |
+| `vm_not_ready` | The Cloud VM or coding sandbox is not `ready`, or the Group has no Cloud VM. For the Cloud VM the Router is told once (`task_worker_stopped`, `vm_not_ready`) | 10 minutes (`vm_not_ready_ms`) |
 | `station_offline` | The station's connector is not connected | 10 minutes (`station_offline_ms`) |
 | `not_given` | The station was not given the delegation yet | 10 minutes (`not_given_ms`) |
 | `running` | The station's Session runs a turn, or waits on work it started. Not a stall | 2 hours (`running_ms`), one `station_task_running` info event |
-| `idle_no_reply` | The Session runs nothing, has nothing pending, and posted nothing; or the station has no Session of the Task any more | 10 minutes (`idle_no_reply_ms`), see below |
+| `idle_no_reply` | The Session runs nothing, has nothing pending and posted nothing, or the station has no Session of the Task left | 10 minutes (`idle_no_reply_ms`), see below |
 | `cannot_start` | Messages are pending, and the station's runtime does not start a turn. `last_failure` says why | 10 minutes (`cannot_start_ms`), or at once for a sign-in, quota or billing failure |
-| `given_no_reply` | The station has the delegation and cannot say where its Session stands: a station from before `task.status`, no answer in 10 seconds, or a Session idle with Messages pending (held, not handed over) | 30 minutes (`given_no_reply_ms`) |
+| `given_no_reply` | The station has the delegation and cannot say where its Session stands (a station from before `task.status`, no answer in 10 s, or a Session idle with Messages pending, held) | 30 minutes (`given_no_reply_ms`) |
 
-A standing that cannot be read is not a stage. The watch logs the failure and checks again after `recheck_ms`.
-For `idle_no_reply` the watch reminds and reports as `SalixIM.TaskWorkerWatch` does for a Worker inside Salix, with the same Messages and idempotency keys, at most once each per delegation.
-When the delegation and the Session's idleness (`for_ms`, a duration the station measures) are both `idle_no_reply_ms` old, it appends one `task_worker_nudge` to the Worker. The station gives it to the Session, which runs a turn on it. The watch logs `station_task_nudged`.
-When the Session is idle that long again after the reminder, with no reply, it appends one `task_worker_stopped` to the Router (`reason: stopped_after_reminder`). The Router's `wait_for` ends with it.
+A standing that cannot be read is no stage: the watch logs it and checks again after `recheck_ms`.
+For `idle_no_reply` the watch reminds and reports as `SalixIM.TaskWorkerWatch` does inside Salix, with the same Messages and idempotency keys, at most once each per delegation.
+When the delegation and the Session's idleness (`for_ms`, a duration the station measures) are both `idle_no_reply_ms` old, it appends one `task_worker_nudge` to the Worker, which runs a turn on it, and logs `station_task_nudged`.
+Idle that long again after the reminder, with no reply, it appends one `task_worker_stopped` to the Router (`reason: stopped_after_reminder`), which ends the Router's `wait_for`.
 For `cannot_start` there is no reminder. The watch appends `task_worker_stopped` (`reason: cannot_start`, with `last_failure`) once the stage is `cannot_start_ms` old, or at once when `last_failure` reads as a sign-in, quota or billing problem.
-A Session that is `running` is never reminded. Whether a reminder or a report was sent is read from the Task's Messages, so a restarted watch sends neither twice. A failed append is retried on a short timer, at most 5 times, and the stage waits for it. A Task with no Router participant to tell still gets its stall logged and counted.
-The watch logs `station_task_stalled` once per delegation and stage: for the waiting stages when the delegation is as old as the threshold, for `idle_no_reply` and `cannot_start` when the Router is told. A reminder that works is no incident.
-The event carries `group_id`, `conversation_id`, `worker_agent_id`, `stage`, `place` (`cloud_vm` or `device`), `vm_status`, `station_state`, `pending_messages`, `last_failure`, `epoch_seq`, and `age_ms`.
-The counter `salix.station_tasks.stalled.total{phase, kind}` counts the same events. The metric labels use the allowlisted names: `phase` is the stage, `kind` is the place.
-A reported delegation that the station answers later logs `station_task_recovered` with its total wait.
-Every answered delegation records `salix.station_tasks.first_reply.seconds{kind}`.
-The Cloud Monitoring policy `comma_alerting:station_task_stalled` (P2, staging) fires for `place=cloud_vm` on `vm_not_ready`, `station_offline`, `not_given`, `idle_no_reply` and `cannot_start`, and not for a canary Task. `running` and `given_no_reply` do not page.
-A Task of a Group named in `canary_group_ids` is the [Cloud VM canary](../observability.md#cloud-vm-canary). Its events and samples carry `canary`, and two more staging policies watch it.
-The station reports its own failures (a turn that failed, a runtime that did not start) as Worker Messages too, which answer the delegation.
-A desktop station that goes offline is logged and counted only. Its owner closing the laptop is not a failure.
-Release order: a station from before `task.status` answers an error, which the watch takes for `given_no_reply`, as before this request. Salix can be released before, with, or after the station and the Cloud VM image.
-A restarted watch rebuilds the delegation from the Messages. A delegation younger than `stale_ms` (24 hours) can be reported a second time. An older one is logged as `station_task_stale` and not watched, and the watch records no first reply for a delegation it did not wait for.
-A failure inside the watch is logged as `station_task_watch_failed` and the check is made again. It never stops the Task's owner.
+A `running` Session is never reminded. Sent reminders and reports are read from the Task's Messages, so a restarted watch sends neither twice. A failed append is retried at most 5 times, the stage waiting for it. With no Router to tell, the stall is still logged and counted.
+A station whose Sessions of the Task ended answers `gone` to `task.put`. Salix removes it from the Task; new Messages do not reach it and the standing is `:not_station`.
+When a check finds that with the delegation unanswered, the watch appends one `task_worker_stopped` for the Router (`reason: station_left`), logs `station_task_stalled` with stage `station_left`, and ends. A Router told for the epoch is not told again; an answered delegation ends quietly.
+`place` comes from the Task record's `runs_on` (a Task from before it: the last standing read, else `other`).
+The watch logs `station_task_stalled` once per delegation and stage: waiting stages when the delegation is as old as the threshold; `idle_no_reply`, `cannot_start` and `station_left` when the Router is told. A reminder that works is no incident.
+The event carries `group_id`, `conversation_id`, `worker_agent_id`, `stage`, `place` (`cloud_vm`, `sandbox` or `device`), `vm_status`, `station_state`, `pending_messages`, `last_failure`, `epoch_seq` and `age_ms`.
+The counter `salix.station_tasks.stalled.total{phase, kind}` counts the same events (`phase` is the stage, `kind` the place).
+A reported delegation answered later logs `station_task_recovered` with its total wait.
+Each answered delegation records `salix.station_tasks.first_reply.seconds{kind}`.
+The Cloud Monitoring policy `comma_alerting:station_task_stalled` (P2, staging) fires for `place=cloud_vm` on every stage but `running` and `given_no_reply`, not for a canary.
+A Task of a Group named in `canary_group_ids` is the [Cloud VM canary](../observability.md#cloud-vm-canary). Its events and samples carry `canary`; two more staging policies watch it.
+The station reports its own failures (a failed turn, a runtime that did not start) as Worker Messages, which answer the delegation.
+A desktop station that goes offline is logged and counted only: a closed laptop is no failure.
+A station from before `task.status` answers an error, taken for `given_no_reply`: Salix, station and VM image release in any order.
+A restarted watch rebuilds the delegation from the Messages. One younger than `stale_ms` (24 hours) can be reported a second time; an older one is logged as `station_task_stale` and not watched, and its first reply is not recorded.
+A failure inside the watch is logged as `station_task_watch_failed` and the check is made again; it never stops the Task's owner.
 
 ## Continuation and containment
 
@@ -73,6 +77,7 @@ See [IFC](../verification.md) for source and destination checks.
 
 Schedules create bounded work through existing owners. Keep schedule identity, trigger occurrence, and Task activation distinct for retries.
 An overdue trigger must not cause unbounded synchronous fan-out. The scheduler cannot widen the original disclosure audience.
+A Task that is not `active` skips its windows and keeps its Schedule; only an ended Task or an unbound Schedule deletes it ([rules](../observability.md#task-schedule-lifecycle)).
 
 ## Background loops
 
@@ -134,7 +139,7 @@ See [Composio triggers](../identity-security.md#composio-trigger-authorization).
 
 Each transition into `active` (create, resume, unarchive) is admitted atomically under the Group's lock. An unarchived Loop that the quota refuses stays `paused(quota)`.
 The spinfoam child restarts with backoff at most five times an hour. Then the node reports Loops unavailable.
-Runtime facts: [SalixAgent.Loops](../../systems/apps/salix_agent/lib/salix_agent/loops.ex), [Host](../../systems/apps/salix_agent/lib/salix_agent/loops/host.ex), [Reconciler](../../systems/apps/salix_agent/lib/salix_agent/loops/reconciler.ex), [Capabilities](../../systems/apps/salix_agent/lib/salix_agent/loops/capabilities.ex).
+Runtime facts: [SalixAgent.Loops](../../systems/apps/salix_agent/lib/salix_agent/loops.ex) and [its Host, Reconciler and Capabilities](../../systems/apps/salix_agent/lib/salix_agent/loops/).
 
 ## Scripts
 
@@ -168,9 +173,10 @@ Provider bodies have a 64 KiB read cap. Oversized responses archive the bounded 
 
 ## Archive
 
-Archive is read-only Conversation state that keeps Messages, history, and resources.
-`archived_from_status` and `archived_at` define restoration. Product authorization controls archive and restore.
-A local hidden card is not canonical archive state.
+Archive is read-only and keeps Messages, history, and resources.
+`archived_from_status` and `archived_at` define restore. Product authorization gates archive and restore.
+Archive unbinds a Task Schedule; restore does not rebind it.
+A local card is not archive state.
 
 ## Telegram topics
 

@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, userEvent, waitFor, within } from "storybook/test";
+import { installUiClock, realUiClock } from "../../clock";
 import { ResizeContainer } from "../../dev";
 import {
   AiInput,
@@ -396,6 +397,9 @@ export const Small: Story = {
 };
 
 export const VoiceRecording: Story = {
+  // The elapsed time is read from the UI clock: held still here, the story
+  // reads 0:00 however long the machine takes to reach the assertion.
+  beforeEach: () => installUiClock({ ...realUiClock, monotonic: () => 0 }),
   render: () => (
     <ComposerPreview>
       <AiInput onAttachPress={() => {}} onVoicePress={() => {}} size="small" />
@@ -1005,8 +1009,9 @@ export const DropTarget: Story = {
       "placeholder",
       "Type / for commands, @ for context"
     );
-    expect(canvas.getByRole("button", { name: "Add attachment" })).toBeDisabled();
-    expect(canvas.getByRole("button", { name: "Full-access" })).toBeDisabled();
-    expect(canvas.getByRole("button", { name: "Voice input" })).toBeDisabled();
+    // Hidden under the overlay, not showing at its inset, rounded corners.
+    const buttons = Array.from(shell.querySelectorAll("button"));
+    expect(buttons.length).toBeGreaterThan(0);
+    for (const button of buttons) expect(button).not.toBeVisible();
   },
 };

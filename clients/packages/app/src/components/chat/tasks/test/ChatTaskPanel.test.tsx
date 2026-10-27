@@ -177,6 +177,51 @@ describe("chat task panel", () => {
     expect(item).not.toHaveAttribute("data-arriving");
   });
 
+  it("keeps the panel folded when a conversation opens again", async () => {
+    const user = userEvent.setup();
+    const task = {
+      archiveVersion: undefined,
+      conversationId: "cnv_task_folded",
+      messageId: "msg_a1",
+      needsAttention: false,
+      needsInput: false,
+      statusBucket: "in_progress" as const,
+      title: "Folded away",
+      turnKey: "msg_u1",
+      version: 1,
+    };
+    const actions = {
+      onArchive: vi.fn(),
+      onDismiss: vi.fn(),
+      onOpen: vi.fn(),
+      onReveal: vi.fn(),
+    };
+    const first = render(<ChatTaskPanel {...actions} items={[task]} />);
+    await user.click(screen.getByTestId("chat-task-panel-toggle"));
+    expect(screen.queryByTestId("chat-task-item-cnv_task_folded")).toBeNull();
+    first.unmount();
+
+    // Another conversation, or this one reopened after a relaunch.
+    const second = render(
+      <ChatTaskPanel
+        {...actions}
+        items={[{ ...task, conversationId: "cnv_task_other" }]}
+      />
+    );
+    const toggle = screen.getByTestId("chat-task-panel-toggle");
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByTestId("chat-task-item-cnv_task_other")).toBeNull();
+
+    await user.click(toggle);
+    expect(await screen.findByTestId("chat-task-item-cnv_task_other")).toBeVisible();
+    second.unmount();
+    render(<ChatTaskPanel {...actions} items={[task]} />);
+    expect(screen.getByTestId("chat-task-panel-toggle")).toHaveAttribute(
+      "aria-expanded",
+      "true"
+    );
+  });
+
   it("ignores user-authored task mentions and stays out of the rail", async () => {
     const { unmount } = renderConversation({
       state: settled({

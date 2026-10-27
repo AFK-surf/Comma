@@ -44,23 +44,23 @@ final class CommandKeyMonitor {
         } else {
             input = flags.contains(.command) ? .commandDown : .commandUp
         }
-        switch tap.handle(input, at: event.timestamp, activity: Self.activity()) {
+        switch tap.handle(input, at: event.timestamp, lastInput: Self.lastInput()) {
         case .single: onTap?()
         case .double: onDoubleTap?()
         case nil: break
         }
     }
 
-    /// Key-down, mouse-down and scroll counts for the login session.
-    private static func activity() -> CommandTap.Activity {
-        let state = CGEventSourceStateID.combinedSessionState
-        let clicks = [CGEventType.leftMouseDown, .rightMouseDown, .otherMouseDown].reduce(UInt32(0)) {
-            $0 &+ CGEventSource.counterForEventType(state, eventType: $1)
-        }
-        return CommandTap.Activity(
-            keyDowns: CGEventSource.counterForEventType(state, eventType: .keyDown),
-            mouseDowns: clicks,
-            scrolls: CGEventSource.counterForEventType(state, eventType: .scrollWheel)
-        )
+    /// When the latest key-down, click or scroll happened, in event timestamps
+    /// (seconds since startup). The HID system's state sees keys the window
+    /// server keeps for itself, such as ⌘Tab and ⌘Space; the session's state
+    /// sees posted events too.
+    private static func lastInput() -> TimeInterval {
+        let types: [CGEventType] = [.keyDown, .leftMouseDown, .rightMouseDown, .otherMouseDown, .scrollWheel]
+        let states: [CGEventSourceStateID] = [.hidSystemState, .combinedSessionState]
+        let since = states.flatMap { state in
+            types.map { CGEventSource.secondsSinceLastEventType(state, eventType: $0) }
+        }.min() ?? .infinity
+        return ProcessInfo.processInfo.systemUptime - since
     }
 }

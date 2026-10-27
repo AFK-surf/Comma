@@ -2,6 +2,11 @@ import {
   dynamicUiDocument,
   dynamicUiCsp,
 } from "@comma/chat-contract/dynamic-ui-runtime";
+import {
+  miniAppRuntimeCsp,
+  miniAppRuntimeDocument,
+  miniAppRuntimeUrl,
+} from "@comma/chat-contract/mini-app-runtime";
 import { existsSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -13,8 +18,10 @@ import {
 } from "@comma/session-contract";
 import { net, protocol, session } from "electron";
 import log from "electron-log/main";
+import { realMainClock, type MainClock } from "./clock";
 import type { MainProductCredentialLease } from "./modules/session";
 import { driveStreamScheme } from "./modules/synchronicity/stream";
+import { fileStreamScheme } from "./modules/core/file-streams";
 
 const internalOrigin = "assets://.";
 const commaApiPrefix = "/v1";
@@ -38,6 +45,13 @@ const rendererRequestHeaderAllowlist = new Set([
   "if-none-match",
   "last-event-id",
   "range",
+  // What the app is and what its core can do (the core's `clientHeaders`): no authority.
+  "x-comma-client",
+  "x-comma-client-capabilities",
+  // Mini App access, preview version and backend method. The server checks access.
+  "x-comma-app-via",
+  "x-comma-app-version",
+  "x-comma-app-method",
 ]);
 
 const rendererResponseHeaderAllowlist = new Set([
@@ -95,10 +109,15 @@ export interface CommaApiCredentialAuthority {
 }
 
 export interface AppProtocolOptions {
+  clock?: MainClock | undefined;
   fetch?: CommaNetFetch | undefined;
   getCredentialAuthority?: (() => CommaApiCredentialAuthority | undefined) | undefined;
   /** Serves `comma-drive:` media streams Drive opened through the native bridge. */
   getDriveStreams?:
+    | (() => { serveStream(request: Request): Promise<Response> } | undefined)
+    | undefined;
+  /** Serves `comma-file:` media streams of Comma API files the client core opened. */
+  getFileStreams?:
     | (() => { serveStream(request: Request): Promise<Response> } | undefined)
     | undefined;
 }
@@ -129,6 +148,20 @@ export function registerAppProtocol(
     });
   });
 
+  // The Comma app runtime (design AFK-surf/Cue#4070 §7.1): only its exact URL.
+  // App content reaches it over the frame's port, never through this scheme.
+  protocol.handle("comma-app", (request) => {
+    if (request.url !== miniAppRuntimeUrl || request.method !== "GET")
+      return new Response("Not found", { status: 404 });
+    return new Response(miniAppRuntimeDocument(), {
+      headers: {
+        "content-type": "text/html; charset=utf-8",
+        "content-security-policy": miniAppRuntimeCsp,
+        "cache-control": "no-store",
+      },
+    });
+  });
+
   protocol.handle(driveStreamScheme, async (request) => {
     const streams = options.getDriveStreams?.();
     if (!streams) return new Response(null, { status: 503 });
@@ -136,6 +169,17 @@ export function registerAppProtocol(
       return await streams.serveStream(request);
     } catch (error) {
       log.warn("Drive stream request failed", error);
+      return new Response(null, { status: 502 });
+    }
+  });
+
+  protocol.handle(fileStreamScheme, async (request) => {
+    const streams = options.getFileStreams?.();
+    if (!streams) return new Response(null, { status: 503 });
+    try {
+      return await streams.serveStream(request);
+    } catch (error) {
+      log.warn("File stream request failed", error);
       return new Response(null, { status: 502 });
     }
   });
@@ -157,7 +201,14 @@ export function registerAppProtocol(
     if (isCommaApiPath(url.pathname)) {
       const authority = options.getCredentialAuthority?.();
       return authority
-        ? proxyCommaApiRequest(request, url, authority, options.fetch)
+        ? proxyCommaApiRequest(
+            request,
+            url,
+            authority,
+            options.fetch,
+            undefined,
+            options.clock
+          )
         : sessionLeaseUnavailableResponse();
     }
 
@@ -184,7 +235,21 @@ export function registerPrivilegedSchemes() {
       privileges: { standard: true, secure: true, supportFetchAPI: true },
     },
     {
+      scheme: "comma-app",
+      privileges: { standard: true, secure: true },
+    },
+    {
       scheme: driveStreamScheme,
+      privileges: {
+        corsEnabled: true,
+        secure: true,
+        standard: true,
+        stream: true,
+        supportFetchAPI: true,
+      },
+    },
+    {
+      scheme: fileStreamScheme,
       privileges: {
         corsEnabled: true,
         secure: true,
@@ -222,8 +287,12 @@ export async function proxyCommaApiRequest(
   request: Request,
   url: URL,
   authority: CommaApiCredentialAuthority,
-  fetchImpl: CommaNetFetch = fetchCommaApi
+  fetchImpl?: CommaNetFetch,
+  /** A body sent as it is read (an upload from a file), in place of `request`'s; never sent twice. */
+  streamedBody?: ReadableStream<Uint8Array>,
+  clock: MainClock = realMainClock
 ): Promise<Response> {
+  const send = fetchImpl ?? (streamedBody ? uploadCommaApi : fetchCommaApi);
   const expected = readRendererSessionExpectation(request.headers);
   if (!expected) {
     return sessionLeaseUnavailableResponse(authority.admissionFailure());
@@ -253,14 +322,15 @@ export async function proxyCommaApiRequest(
     signal: AbortSignal.any([lease.signal, request.signal, upstream.signal]),
   };
 
-  if (request.method !== "GET" && request.method !== "HEAD" && request.body) {
+  if (streamedBody) init.body = streamedBody;
+  else if (request.method !== "GET" && request.method !== "HEAD" && request.body) {
     init.body = await request.clone().arrayBuffer();
   }
 
   let response: Response | undefined;
   for (let attempt = 1; !response; attempt += 1) {
     try {
-      response = await fetchImpl(targetUrl.toString(), init);
+      response = await send(targetUrl.toString(), init);
     } catch (error) {
       if (!authority.isCurrentProductCredential(lease)) {
         return sessionLeaseUnavailableResponse(authority.admissionFailure());
@@ -271,10 +341,10 @@ export async function proxyCommaApiRequest(
         `Comma API ${request.method} ${pathShape(url.pathname)} got no response ` +
           `(attempt ${attempt}): ${error instanceof Error ? error.message : String(error)}`
       );
-      if (attempt > 1 || !replayableMethods.has(request.method)) {
+      if (attempt > 1 || streamedBody || !replayableMethods.has(request.method)) {
         return upstreamUnavailableResponse();
       }
-      await pause(upstreamRetryDelayMs, lease.signal);
+      await pause(clock, upstreamRetryDelayMs, lease.signal);
       if (!authority.isCurrentProductCredential(lease)) {
         return sessionLeaseUnavailableResponse(authority.admissionFailure());
       }
@@ -300,13 +370,83 @@ export async function proxyCommaApiRequest(
   return rebuildRendererResponse(response, lease, authority, upstream);
 }
 
+/**
+ * Sends `body` as it is read, in chunks: `net.fetch` reads a stream body whole before it sends anything (Electron 42),
+ * `net.request` with chunked encoding does not. The answer, a small JSON document, is read whole. Redirects fail.
+ */
+const uploadCommaApi: CommaNetFetch = (url, init) =>
+  new Promise<Response>((answer, reject) => {
+    if (!(init.body instanceof ReadableStream)) {
+      reject(new Error("An upload needs a stream body."));
+      return;
+    }
+    const body = init.body as ReadableStream<Uint8Array>;
+    const headers: Record<string, string> = {};
+    new Headers(init.headers).forEach((value, name) => {
+      headers[name] = value;
+    });
+    const request = net.request({
+      bypassCustomProtocolHandlers: true,
+      credentials: "omit",
+      headers,
+      method: init.method ?? "PUT",
+      redirect: "error",
+      url,
+    });
+    request.chunkedEncoding = true;
+    const reader = body.getReader();
+    const fail = (error: unknown) => {
+      void reader.cancel().catch(() => undefined);
+      reject(error instanceof Error ? error : new Error(String(error)));
+    };
+    init.signal?.addEventListener("abort", () => {
+      request.abort();
+      fail(new Error("The upload was given up."));
+    });
+    request.on("error", fail);
+    request.on("response", (response) => {
+      const chunks: Buffer[] = [];
+      response.on("data", (chunk) => chunks.push(chunk));
+      response.on("error", fail);
+      response.on("end", () => {
+        const received = new Headers();
+        for (const [name, value] of Object.entries(response.headers))
+          for (const each of Array.isArray(value) ? value : [value])
+            received.append(name, each);
+        answer(
+          new Response(Buffer.concat(chunks), {
+            headers: received,
+            status: response.statusCode,
+          })
+        );
+      });
+    });
+    void (async () => {
+      try {
+        for (;;) {
+          const next = await reader.read();
+          if (next.done) break;
+          // The callback comes once Chromium took the chunk: waiting for it holds the file back to the network's
+          // pace (300 MB to a slow reader kept Main within 20 MB of its idle size).
+          await new Promise<void>((taken) =>
+            request.write(Buffer.from(next.value), undefined, () => taken())
+          );
+        }
+        request.end();
+      } catch (error) {
+        request.abort();
+        fail(error);
+      }
+    })();
+  });
+
 /** Resolves after `ms`, or at once when the lease ends. */
-function pause(ms: number, signal: AbortSignal) {
+function pause(clock: MainClock, ms: number, signal: AbortSignal) {
   return new Promise<void>((wake) => {
-    const timer = setTimeout(done, ms);
+    const cancelTimer = clock.setTimer(ms, done);
     signal.addEventListener("abort", done, { once: true });
     function done() {
-      clearTimeout(timer);
+      cancelTimer();
       signal.removeEventListener("abort", done);
       wake();
     }

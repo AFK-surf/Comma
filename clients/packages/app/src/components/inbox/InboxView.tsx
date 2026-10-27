@@ -15,11 +15,13 @@ import { ContentHeader } from "@comma/ui/components/content-header";
 import { ScrollArea, ScrollAreaLoadMore } from "@comma/ui/components/scroll-area";
 import { XIcon } from "@comma/ui/components/icons";
 import { toast } from "@comma/ui/components/toast";
-import { useCallback, useMemo, useState } from "react";
+import { useNavigate } from "@tanstack/react-router";
+import { useCallback, useMemo } from "react";
 import { commaInboxConversationRailWidth } from "../shellGeometry";
 import { useTaskReviewSeenMarks } from "../tasks/taskReviewAttention";
 import { InboxActionsMenu } from "./InboxActionsMenu";
 import { InboxFilterMenu } from "./filters/InboxFilterMenu";
+import { useInboxFilters } from "./filters/InboxFiltersState";
 import type { InboxWorkspaceSelector } from "./filters/InboxFilterPanels";
 import {
   applyInboxFilters,
@@ -38,6 +40,7 @@ import {
   useInboxUnreadMarks,
 } from "./inboxDeletion";
 import { useInboxSyncToasts } from "./useInboxSyncToasts";
+import { usePublishTaskSequence, type TaskSequence } from "../tasks/taskSequence";
 
 export interface InboxViewProps {
   loadMoreError?: string | undefined;
@@ -64,7 +67,7 @@ export function InboxView({
 }: InboxViewProps) {
   const locale = useCommaLocale();
   const messages = useCommaMessages();
-  const [filters, setFilters] = useState(unfilteredInbox);
+  const [filters, setFilters] = useInboxFilters();
   const deletedMarks = useInboxDeletedMarks();
   const markActions = useInboxMarkActions();
   const unreadMarks = useInboxUnreadMarks();
@@ -94,6 +97,31 @@ export function InboxView({
     () => groupInboxItems(visibleItems, locale, day),
     [visibleItems, locale, day]
   );
+  // The open conversation's header steps through the rail in the order it shows.
+  const navigate = useNavigate();
+  const { clearUnread } = markActions;
+  const sequence = useMemo<TaskSequence | undefined>(() => {
+    if (!result) return undefined;
+    const rows = groups.flatMap((group) => group.items);
+    return {
+      entries: rows,
+      open: (index) => {
+        const item = rows[index];
+        if (!item) return;
+        clearUnread([item.id]);
+        void navigate({
+          params: {
+            conversationId: item.conversationId,
+            groupId: item.groupId,
+            workspaceId: item.workspaceId,
+          },
+          replace: true,
+          to: "/inbox/$workspaceId/$groupId/$conversationId",
+        });
+      },
+    };
+  }, [clearUnread, groups, navigate, result]);
+  usePublishTaskSequence(sequence);
   const platformCounts = useMemo(() => countInboxItemsByPlatform(items), [items]);
   const statusCounts = useMemo(() => countInboxTasksByStatus(items), [items]);
   const scheduleCounts = useMemo(() => countInboxTasksBySchedule(items), [items]);
@@ -105,7 +133,7 @@ export function InboxView({
   const editLoopRule = useCallback(
     (loopRule: string | undefined) =>
       setFilters((current) => ({ ...current, loopRule })),
-    []
+    [setFilters]
   );
   const ruleSection = useTaskLoopRuleFilter(
     loopRules,
@@ -272,9 +300,10 @@ function InboxFilterFooter({
       </p>
       <Button
         hierarchy="tertiary-gray"
+        className="h-3xl! pl-sm [--comma-button-hover-bg:var(--color-bg-quaternary)]"
         iconTrailing={<XIcon />}
         onPress={onClear}
-        size="sm"
+        size="xs"
       >
         {messages.inbox_clear_filters()}
       </Button>

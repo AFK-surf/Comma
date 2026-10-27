@@ -49,7 +49,7 @@ test("a device's station has no managed lifecycle", async () => {
   await run(c.close());
 });
 
-test("a Workload's station takes the profiles Salix lends; a device's takes none", async () => {
+test("a Workload's station and a desktop app's connection take the profiles Salix lends; another device's takes none", async () => {
   const received: unknown[] = [];
   const profiles = { received: (p: unknown) => void received.push(p), attach: () => {} };
   const c = makeConnector({ root: tempDir(), env: { HOME: tempDir() }, workloadCredential: "bootstrap", testClock: true }, undefined, { profiles });
@@ -59,4 +59,9 @@ test("a Workload's station takes the profiles Salix lends; a device's takes none
   const device = makeConnector({ root: tempDir(), env: { HOME: tempDir() } }, undefined, { profiles });
   await fails(device.dispatchForTest("p", "station_profiles", { profiles: [] }), /not a managed runtime connector/);
   await run(device.close());
+  // A desktop instance: its Workspace's accounts, an empty list included.
+  const desktop = makeConnector({ root: tempDir(), env: { HOME: tempDir() } }, undefined, { profiles: { ...profiles, device: true } });
+  assert.deepEqual(await run(desktop.dispatchForTest("p", "station_profiles", { profiles: [] })), { received: true });
+  assert.deepEqual(received.at(-1), []);
+  await run(desktop.close());
 });

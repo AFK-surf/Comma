@@ -64,7 +64,14 @@ test("production Compose logs in, provisions a workspace, and serves its source"
     .filter({ visible: true })
     .first()
     .click();
-  await expect(page.getByText(/LOCAL_TASK_DONE/).first()).toBeVisible();
+  // The chat stays mounted behind the Task, hidden, and its Task card shows
+  // the same words.
+  await expect(
+    page
+      .getByText(/LOCAL_TASK_DONE/)
+      .filter({ visible: true })
+      .first()
+  ).toBeVisible();
   if (process.env.COMMA_SELFHOST_STATE_PATH) {
     await context.storageState({ path: process.env.COMMA_SELFHOST_STATE_PATH });
   }

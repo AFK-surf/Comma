@@ -1,11 +1,7 @@
 import type { ChatInlineTask } from "@comma/chat-contract";
 import type { ChatMessage } from "@comma/core/chat";
-import { useCommaLocale, useCommaMessages } from "@comma/i18n/react";
-import {
-  TaskSummaryCard,
-  taskAriaLabel,
-  taskStatusBucket,
-} from "@comma/ui/components/task-workspace";
+import { useCommaMessages } from "@comma/i18n/react";
+import { TaskSummaryCard, taskStatusBucket } from "@comma/ui/components/task-workspace";
 import { TaskArchiveMenu } from "@comma/ui/components/task-workspace/TaskArchiveMenu";
 import { cx } from "@comma/ui/components/utils";
 import {
@@ -88,7 +84,6 @@ function MessageTaskCard({
   workspaceId: string;
 }) {
   const messages = useCommaMessages();
-  const locale = useCommaLocale();
   const adapter = useInlineTaskLinkAdapter();
   const conversationId = task.conversationId!;
   const canonical = useTaskSummary(groupId, conversationId);
@@ -123,7 +118,7 @@ function MessageTaskCard({
   const link = renderInlineTaskLink(adapter, {
     // Named like every Task card: by its Task, apart from the inline chip's
     // "Open task" link to the same Task.
-    ariaLabel: taskAriaLabel({ ...summary, title }, locale),
+    ariaLabel: title,
     conversationId,
     groupId,
     title,
@@ -156,6 +151,8 @@ function MessageTaskCard({
                 progress={follows ? step : undefined}
                 task={{ ...summary, title }}
                 titleClassName="line-clamp-2"
+                // The placeholder giving way to the first title is no rename.
+                titleIdentity={summary.title ? conversationId : undefined}
               />
             </>
           ),

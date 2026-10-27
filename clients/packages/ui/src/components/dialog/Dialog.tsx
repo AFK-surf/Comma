@@ -19,7 +19,7 @@ import { NativeSurfaceSuppressor } from "../native-surface/NativeSurfaceSuppress
 import { cx, definedProps, isImeKeyEvent } from "../utils";
 import { resolveShortcut } from "./DialogActions";
 import { DialogPanel, dialogPanelShellClass } from "./DialogPanel";
-import { dialogModal, dialogOverlay, dialogShell } from "./styles";
+import { dialogComposeShell, dialogModal, dialogOverlay, dialogShell } from "./styles";
 import type { DialogPanelProps, DialogProps } from "./types";
 
 const dialogOverlayMotion = {
@@ -162,7 +162,12 @@ const DialogSurface = ({
     <RacDialog
       {...definedProps({ "aria-describedby": descriptionId })}
       aria-labelledby={titleId}
-      className={cx(dialogShell, dialogPanelShellClass, className)}
+      className={cx(
+        panelProps.variant === "compose"
+          ? dialogComposeShell
+          : cx(dialogShell, dialogPanelShellClass),
+        className
+      )}
       render={(domProps) => (
         <section
           {...domProps}

@@ -1,16 +1,17 @@
 import { useCommaMessages } from "@comma/i18n/react";
 import { Button as AriaButton } from "react-aria-components";
 import { HoverCard } from "../../hover-card";
-import {
-  ChevronRightSmallIcon,
-  CloseQuoteIcon,
-  FileIcon,
-  FileTextIcon,
-} from "../../icons";
+import { ChevronRightSmallIcon, FileIcon, FileTextIcon } from "../../icons";
 import { cx } from "../../utils";
 import {
   aiInputAttachment,
+  aiInputFileAttachment,
+  aiInputFileFooter,
+  aiInputFileIconSurface,
+  aiInputFileMeta,
+  aiInputFileName,
   aiInputQuoteAttachment,
+  aiInputQuoteExcerpt,
   aiInputQuoteHoverCard,
   aiInputQuotePreview,
   aiInputQuotePreviewText,
@@ -18,6 +19,7 @@ import {
   aiInputSnippetAttachment,
   aiInputSnippetExpand,
   aiInputSnippetIconSurface,
+  aiInputSnippetTitle,
 } from "../styles";
 import {
   AttachmentRemoveButton,
@@ -25,55 +27,35 @@ import {
 } from "./AttachmentRemoveButton";
 import { ImageAttachment, type ImageAttachmentProps } from "./ImageAttachment";
 
-/**
- * The hairline is an inset ring, not a border: a border takes layout (and
- * Chromium rounds 0.5px up to 1px), which would push the inset close control
- * off the tile edge and make this chip taller than the 48px image and quote
- * tiles beside it.
- */
 const FileAttachment = ({ attachment, onRemove }: AttachmentTileProps) => (
   <div
-    className={cx(
-      aiInputAttachment,
-      "flex w-[150px] items-start gap-sm rounded-xl bg-popup-primary p-sm shadow-[inset_0_0_0_var(--border-width-0-5)_var(--color-border-primary)]"
-    )}
+    className={cx(aiInputAttachment, aiInputFileAttachment)}
     data-slot="file-attachment"
   >
-    <div
-      className="flex w-9 self-stretch shrink-0 items-center justify-center rounded-sm bg-panel-bg-file text-ai-input-header-text-secondary"
-      data-slot="file-icon-surface"
-    >
-      <FileIcon className="size-5" />
-    </div>
-    <div className="flex min-w-0 flex-1 flex-col text-xs leading-[18px]">
-      {/* The name line shares its row with the inset close control: past the
-          chip's own padding, spacing-xl clears the control's 16px + 2px inset
-          and leaves spacing-xs before the ellipsis. The meta line sits below
-          the control and keeps the full width. */}
-      <span className="truncate pr-xl text-ai-input-panel-text-attachment-primary">
-        {attachment.name}
-      </span>
-      {attachment.meta && (
-        <span className="truncate text-ai-input-panel-text-attachment-secondary">
-          {attachment.meta}
-        </span>
-      )}
+    <span className={aiInputFileName} data-slot="file-name">
+      {attachment.name}
+    </span>
+    <div className={aiInputFileFooter}>
+      <div className={aiInputFileIconSurface} data-slot="file-icon-surface">
+        <FileIcon />
+      </div>
+      {attachment.meta && <span className={aiInputFileMeta}>{attachment.meta}</span>}
     </div>
     <AttachmentRemoveButton attachment={attachment} onRemove={onRemove} />
   </div>
 );
 
 /**
- * A quoted passage staged for the next message. The tile itself is the hover
- * trigger — React Aria makes it focusable so the full text is reachable by
- * keyboard too, not just by pointer.
+ * A quoted passage staged for the next message. The tile shows the passage's
+ * opening lines and is itself the hover trigger for the whole text — React
+ * Aria makes it focusable so that text is reachable by keyboard too.
  */
 const QuoteAttachment = ({ attachment, onRemove }: AttachmentTileProps) => {
   const messages = useCommaMessages();
   const detail = attachment.detail ?? attachment.name;
 
   return (
-    <div className={cx(aiInputAttachment, "size-12")} data-slot="quote-attachment">
+    <div className={aiInputAttachment} data-slot="quote-attachment">
       <HoverCard
         className={aiInputQuoteHoverCard}
         content={
@@ -91,7 +73,9 @@ const QuoteAttachment = ({ attachment, onRemove }: AttachmentTileProps) => {
           className={aiInputQuoteAttachment}
           type="button"
         >
-          <CloseQuoteIcon className="size-5" />
+          <span aria-hidden className={aiInputQuoteExcerpt}>
+            {detail}
+          </span>
         </button>
       </HoverCard>
       <AttachmentRemoveButton attachment={attachment} onRemove={onRemove} />
@@ -112,14 +96,12 @@ const SnippetAttachment = ({ attachment, onRemove }: AttachmentTileProps) => {
       className={cx(aiInputAttachment, aiInputSnippetAttachment)}
       data-slot="snippet-attachment"
     >
-      <div className={aiInputSnippetIconSurface} data-slot="snippet-icon-surface">
-        {attachment.icon ?? <FileTextIcon />}
-      </div>
-      <div className="flex min-w-0 flex-1 flex-col text-xs leading-[var(--text-xs--line-height)]">
-        {/* Like the file chip's name, the title clears the inset close control. */}
-        <span className="truncate pr-xl text-ai-input-panel-text-attachment-primary">
-          {attachment.name}
-        </span>
+      {/* Like the file chip's name, the title clears the inset close control. */}
+      <span className={aiInputSnippetTitle}>{attachment.name}</span>
+      <div className="flex min-w-0 items-center gap-sm">
+        <div className={aiInputSnippetIconSurface} data-slot="snippet-icon-surface">
+          {attachment.icon ?? <FileTextIcon />}
+        </div>
         {attachment.onExpand ? (
           <AriaButton
             aria-label={messages.ui_ai_show_in_text_field_named({

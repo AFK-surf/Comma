@@ -165,7 +165,7 @@ defmodule SalixMeet.CalendarEnrollmentCache do
       |> Map.merge(
         Map.take(
           group,
-          ~w(preparation_lead_minutes research_enabled series personal_preparation settings_revision)
+          ~w(preparation_lead_minutes research_enabled series personal_preparation channel_notice settings_revision)
         )
       )
 
@@ -241,7 +241,7 @@ defmodule SalixMeet.CalendarEnrollmentCache do
       |> Map.merge(
         Map.take(
           entry,
-          ~w(channel_id preparation_lead_minutes research_enabled series personal_preparation settings_revision)
+          ~w(channel_id preparation_lead_minutes research_enabled series personal_preparation channel_notice settings_revision)
         )
       )
 

@@ -63,6 +63,76 @@ defmodule SalixAgent.Tools.Web do
   @read_opts [safety: "read"]
   @write_opts [safety: "write"]
 
+  @doc "The shared Exa search used by agent tools and Mini Apps."
+  def search(query, opts \\ [])
+
+  def search(query, opts) when is_binary(query) do
+    if String.trim(query) == "" do
+      {:error, :invalid}
+    else
+      case SystemsRuntime.get_env(:salix_agent, :exa_api_key) do
+        key when is_binary(key) and key != "" -> search_request(query, key, opts)
+        _ -> {:error, :not_configured}
+      end
+    end
+  end
+
+  def search(_query, _opts), do: {:error, :invalid}
+
+  defp search_request(query, key, opts) do
+    options =
+      [
+        json: %{
+          query: String.trim(query),
+          numResults: 5,
+          contents: %{text: %{maxCharacters: 1500}}
+        },
+        headers: [{"x-api-key", key}],
+        receive_timeout: 30_000,
+        retry: :transient
+      ]
+      |> Keyword.merge(opts)
+
+    case Req.post(exa_base_url() <> "/search", options) do
+      {:ok, %{status: 200, body: %{"results" => results}}} when is_list(results) ->
+        results
+        |> Enum.take(5)
+        |> Enum.reduce_while({:ok, []}, fn
+          %{"url" => url} = result, {:ok, acc} when is_binary(url) ->
+            title = result["title"] || ""
+            text = result["text"] || ""
+
+            if is_binary(title) and is_binary(text) and String.length(url) <= 4096 do
+              item = %{
+                "title" => String.slice(title, 0, 512),
+                "url" => url,
+                "text" => String.slice(text, 0, 1200)
+              }
+
+              {:cont, {:ok, [item | acc]}}
+            else
+              {:halt, {:error, :invalid_response}}
+            end
+
+          _, _ ->
+            {:halt, {:error, :invalid_response}}
+        end)
+        |> case do
+          {:ok, items} -> {:ok, Enum.reverse(items)}
+          error -> error
+        end
+
+      {:ok, %{status: 200}} ->
+        {:error, :invalid_response}
+
+      {:ok, %{status: status}} ->
+        {:error, {:http, status}}
+
+      {:error, reason} ->
+        {:error, {:transport, reason}}
+    end
+  end
+
   @doc "Tool defs in stable registration order (willow registry order)."
   @spec defs() ::
           [

@@ -235,6 +235,61 @@ defmodule SalixWeb.OAuthFlowTest do
            ).status == 400
   end
 
+  test "connecting an account ends an Agent's request for it, however the person connected it",
+       %{group: group} do
+    agent =
+      SalixAgent.TestSupport.create_control_agent_in_group!(tenant_id(), group, %{
+        "role" => "router",
+        "runtime_config" => %{"kind" => "internal"}
+      })
+
+    request = fn alias_name ->
+      {:ok, request} =
+        SalixAgent.CapabilityRequests.create_capability_request(%{
+          "source_agent_id" => agent["agent_id"],
+          "source_session_id" => SalixStore.Ids.new_session_id(),
+          "tool_call_id" => "call-" <> alias_name,
+          "request_type" => "oauth_authorization",
+          "group_id" => group,
+          "tenant_id" => tenant_id(),
+          "request_payload" => %{
+            "oauth_authorization" => %{
+              "provider" => "github",
+              "alias" => alias_name,
+              "state" => "agent-flow-" <> alias_name,
+              "reason" => "An app keeps its code in GitHub."
+            }
+          }
+        })
+
+      request
+    end
+
+    asked = request.("work")
+    other_account = request.("personal")
+
+    # The person connects the same account elsewhere (the Plugins page's web flow, not the Agent's).
+    {_url, state} = authorize(group)
+    assert callback("github", %{"state" => state, "code" => "test-code"}).status == 200
+
+    stored = fn r ->
+      {:ok, record} =
+        SalixAgent.CapabilityRequests.get(group, r["request_id"], tenant_id())
+
+      record
+    end
+
+    assert %{
+             "status" => "completed",
+             "response_payload" => %{
+               "status" => "connected",
+               "provider_account_name" => "octocat"
+             }
+           } = stored.(asked)
+
+    assert stored.(other_account)["status"] == "pending"
+  end
+
   test "only trusted product context survives OAuth as member provenance", %{group: group} do
     member = %{"user_id" => "comma-user", "workspace_id" => "comma-workspace"}
 
@@ -266,6 +321,34 @@ defmodule SalixWeb.OAuthFlowTest do
     {:ok, connection} = SalixStore.OAuth.get(completed["connection_id"])
     assert connection["comma_member"] == member
     refute Map.has_key?(hd(Salix.Control.OAuthBindings.list(group)), "comma_member")
+  end
+
+  test "a BFT member grant has no Group binding and only its owner deletes it", %{group: group} do
+    owner = %{"org_id" => "org-1", "member_id" => "member-1", "user_id" => "user-1"}
+
+    assert {:ok, started} =
+             OAuthFlow.start_authorization(tenant_id(), group, "github", %{"alias" => "brief"},
+               bft_member: owner
+             )
+
+    assert callback("github", %{"state" => started["state"], "code" => "code"}).status == 200
+    {:ok, completed} = AuthState.get(started["state"])
+    assert completed["binding_id"] == nil
+    {:ok, connection} = SalixStore.OAuth.get(completed["connection_id"])
+    assert connection["bft_member"] == owner
+    assert Salix.Control.OAuthBindings.list(group) == []
+
+    other = %{owner | "member_id" => "member-2"}
+
+    assert OAuthFlow.delete_member_connection(tenant_id(), completed["connection_id"], other) ==
+             {:error, :not_found}
+
+    assert {:ok, _still_there} = SalixStore.OAuth.get(completed["connection_id"])
+
+    assert OAuthFlow.delete_member_connection(tenant_id(), completed["connection_id"], owner) ==
+             :ok
+
+    assert {:error, :not_found} = SalixStore.OAuth.get(completed["connection_id"])
   end
 
   test "callback replay loses: the state is consumed atomically", %{group: group} do

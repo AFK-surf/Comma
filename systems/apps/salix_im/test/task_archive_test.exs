@@ -18,6 +18,20 @@ defmodule SalixIM.TaskArchiveTest do
     end
   end
 
+  test "an ended Task still bound to a Schedule archives and leaves the binding behind" do
+    scheduled =
+      Map.put(task("cancelled"), "schedule", %{"schedule_id" => "sch_1", "command" => "Run"})
+
+    assert %{"allowed" => true, "reason" => nil} = TaskArchive.availability(scheduled)
+    archived = TaskArchive.transition(scheduled, :archive, 1, 2)
+    assert archived["status"] == "archived"
+    assert archived["schedule"] == %{"schedule_id" => nil, "command" => "Run"}
+
+    restored = TaskArchive.transition(archived, :unarchive, 2, 3)
+    assert restored["status"] == "cancelled"
+    assert restored["schedule"] == %{"schedule_id" => nil, "command" => "Run"}
+  end
+
   test "late operations cannot undo a newer archive cycle" do
     first = TaskArchive.transition(task("failed"), :archive, 1, 2)
     restored = TaskArchive.transition(first, :unarchive, 2, 3)

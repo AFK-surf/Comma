@@ -231,7 +231,7 @@ defmodule SalixAgent.TriageCallProvenanceTest do
     assert_receive {:triage_provider_call, pid, args}
     assert args["tool_context"]["trusted_origins"] == [human]
     SystemsRuntime.Proc.send(pid, {:triage_provider_return, %{"conversation_id" => "human-task"}})
-    assert {:ok, result} = DependencyJob.yield(pending.dependency_job, 1_000)
+    assert {:ok, result} = DependencyJob.yield(pending.dependency_job, wait_limit())
     refute result.error
     assert_source(pending, [human])
 
@@ -268,7 +268,7 @@ defmodule SalixAgent.TriageCallProvenanceTest do
       assert_source(pending, [origin])
       assert_source(Enum.find(early.events, &(&1["type"] == "async_tool_call_started")), [origin])
       SystemsRuntime.Proc.send(pid, {:triage_provider_return, %{"created" => true}})
-      assert {:ok, completed} = DependencyJob.yield(pending.dependency_job, 1_000)
+      assert {:ok, completed} = DependencyJob.yield(pending.dependency_job, wait_limit())
 
       internal = AsyncToolResults.internal_events(pending, completed)
       assert_source(Enum.find(internal, &(&1["type"] == "async_tool_call_completed")), [origin])
@@ -363,6 +363,10 @@ defmodule SalixAgent.TriageCallProvenanceTest do
     assert :none = SalixAgent.VisibleReplyScope.derive(state, [])
     assert :none = SalixAgent.VisibleReplyScope.derive(state, ["ordinary-source"])
   end
+
+  # A dependency job answers when it is done: only the suite's shared limit for
+  # a message that never comes (config/test.exs) stops the wait.
+  defp wait_limit, do: ExUnit.configuration()[:assert_receive_timeout]
 
   defp origin(ctx, obligation_id, index) do
     ref = "triage-delegation:#{obligation_id}:#{index}"

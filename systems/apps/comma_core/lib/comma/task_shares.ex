@@ -13,12 +13,19 @@ defmodule Comma.TaskShares do
   or before the cutoff. The `snapshot` manifest is a disposable projection that
   publish rebuilds; downloads re-read the canonical Message instead of trusting
   it. See `docs/architecture/DOMAIN_CONCEPTS.md` (Task Share).
+
+  A Task a station hosts (`station:<station_id>:<thread>`) has no Salix log:
+  its chat is its station's, read over the station's Connector as the Router
+  reads it (`Comma.Salix.Client.read_station_task/4`), so its link opens while
+  its station is connected. Its station gives its Messages' words alone: it has
+  no artifacts. Its snapshot keeps its title for the owner's list.
   """
 
   import Ecto.Query
 
   alias Comma.{ConversationAttachments, Conversations, Repo, Workspaces}
   alias Comma.Data.TaskShare
+  alias SalixIM.Ports.StationHostedTasks
 
   @token_bytes 32
   @token_pattern ~r/\A[A-Za-z0-9_-]{43}\z/
@@ -97,6 +104,8 @@ defmodule Comma.TaskShares do
            authorize_task(user, session, group_id, conversation_id),
          through_seq = tail_seq(conversation),
          {:ok, snapshot} <- build_snapshot(workspace, conversation_id, through_seq) do
+      snapshot = station_title(snapshot, conversation_id, conversation)
+
       case upsert_share(workspace, user, conversation_id, %{
              through_seq: through_seq,
              snapshot: snapshot
@@ -230,7 +239,10 @@ defmodule Comma.TaskShares do
     end
   end
 
-  @doc "Bytes of one shared artifact, addressed by Message sequence and block index."
+  @doc """
+  One shared artifact, addressed by Message sequence and block index, opened for
+  `Comma.ConversationAttachments.stream/2`.
+  """
   def public_attachment(token, seq, index) do
     with {:ok, share, workspace, _conversation} <- resolve(token),
          {:ok, seq} <- positive(seq),
@@ -240,7 +252,7 @@ defmodule Comma.TaskShares do
          true <- message["seq"] == seq and artifact_message?(message),
          %{"type" => type} when type in @artifact_types <-
            Enum.at(List.wrap(message["content"]), index) do
-      ConversationAttachments.fetch_message(workspace, message, index)
+      ConversationAttachments.open_message(workspace, message, index)
     else
       {:error, reason} when reason not in [:not_found] -> {:error, reason}
       _ -> {:error, :not_found}
@@ -513,9 +525,7 @@ defmodule Comma.TaskShares do
          %TaskShare{revoked_at: nil} = share <- Repo.get_by(TaskShare, token: token),
          {:ok, workspace} <-
            Workspaces.authorize_group_owner(share.workspace_id, share.group_id, share.created_by),
-         {:ok, workspace} <- Comma.Salix.Client.impl().resolve_workspace_scope(workspace),
-         {:ok, %{"kind" => "agent_task"} = conversation} <-
-           Comma.Salix.Client.impl().get_group_conversation(workspace, share.conversation_id) do
+         {:ok, workspace, conversation} <- shared_task(workspace, share.conversation_id) do
       {:ok, share, workspace, conversation}
     else
       {:error, reason} when reason != :not_found -> {:error, {:unavailable, reason}}
@@ -523,7 +533,69 @@ defmodule Comma.TaskShares do
     end
   end
 
+  # The shared Task as a public read resolves it: its Salix Conversation, or a station's Task read from its station.
+  defp shared_task(workspace, conversation_id) do
+    case StationHostedTasks.parse(conversation_id) do
+      {station_id, thread} ->
+        with {:ok, conversation} <-
+               station_conversation(workspace, conversation_id, station_id, thread),
+             do: {:ok, workspace, conversation}
+
+      :error ->
+        with {:ok, workspace} <- Comma.Salix.Client.impl().resolve_workspace_scope(workspace),
+             {:ok, %{"kind" => "agent_task"} = conversation} <-
+               Comma.Salix.Client.impl().get_group_conversation(workspace, conversation_id) do
+          {:ok, workspace, conversation}
+        else
+          {:ok, _other_kind} -> {:error, :not_found}
+          {:error, _reason} = error -> error
+        end
+    end
+  end
+
+  # A Task a station hosts, as a Conversation reads here: its title and how far its chat goes, from its station (one
+  # read). The Group's Task index must hold it.
+  defp station_conversation(workspace, conversation_id, station_id, thread) do
+    with {:ok, %{} = read} <-
+           Comma.Salix.Client.read_station_task(workspace, station_id, thread, %{
+             "after" => 0,
+             "limit" => 1
+           }) do
+      {:ok,
+       %{
+         "id" => conversation_id,
+         "kind" => "agent_task",
+         "title" => read["title"],
+         "message_tail_seq" => read["through"]
+       }}
+    end
+  end
+
+  defp station_title(snapshot, conversation_id, conversation) do
+    case StationHostedTasks.parse(conversation_id) do
+      {_station_id, _thread} -> Map.put(snapshot, "title", public_title(conversation))
+      :error -> snapshot
+    end
+  end
+
   defp authorize_task(user, session, group_id, conversation_id) do
+    case StationHostedTasks.parse(conversation_id) do
+      {_station_id, _thread} ->
+        with false <- session["restricted"] == true,
+             {:ok, workspace} <- Workspaces.authorize_group(user, session, group_id),
+             {:ok, workspace, conversation} <- shared_task(workspace, conversation_id) do
+          {:ok, workspace, conversation}
+        else
+          true -> {:error, :forbidden}
+          {:error, _reason} = error -> error
+        end
+
+      :error ->
+        authorize_salix_task(user, session, group_id, conversation_id)
+    end
+  end
+
+  defp authorize_salix_task(user, session, group_id, conversation_id) do
     with false <- session["restricted"] == true,
          true <- SalixStore.Ids.valid_conversation_id?(conversation_id),
          {:ok, workspace} <- Workspaces.authorize_group(user, session, group_id),
@@ -576,12 +648,37 @@ defmodule Comma.TaskShares do
 
   defp share_conversations(_user, _session, _group_id, []), do: {:ok, %{}}
 
+  # A station's Task is listed as its share last read it (its snapshot's title): its station may be offline.
   defp share_conversations(user, session, group_id, shares) do
-    ids = Enum.map(shares, & &1.conversation_id)
+    {hosted, salix} =
+      Enum.split_with(shares, &match?({_, _}, StationHostedTasks.parse(&1.conversation_id)))
 
-    with {:ok, %{"data" => summaries}} <-
-           Conversations.task_summaries(user, session, group_id, ids) do
-      {:ok, Map.new(summaries, &{&1["id"], &1})}
+    listed =
+      Map.new(hosted, fn share ->
+        {share.conversation_id,
+         %{
+           "id" => share.conversation_id,
+           "group_id" => group_id,
+           "kind" => "agent_task",
+           "status" => "active",
+           "title" => (share.snapshot || %{})["title"] || "Task"
+         }}
+      end)
+
+    case salix do
+      [] ->
+        {:ok, listed}
+
+      salix ->
+        with {:ok, %{"data" => summaries}} <-
+               Conversations.task_summaries(
+                 user,
+                 session,
+                 group_id,
+                 Enum.map(salix, & &1.conversation_id)
+               ) do
+          {:ok, Map.merge(listed, Map.new(summaries, &{&1["id"], &1}))}
+        end
     end
   end
 
@@ -660,6 +757,46 @@ defmodule Comma.TaskShares do
   end
 
   defp read_messages(workspace, conversation_id, after_seq, limit) do
+    case StationHostedTasks.parse(conversation_id) do
+      {station_id, thread} ->
+        read_station_messages(workspace, station_id, thread, after_seq, limit)
+
+      :error ->
+        read_salix_messages(workspace, conversation_id, after_seq, limit)
+    end
+  end
+
+  # A station's Task's Messages, as a Salix Message reads for the public projection: their words alone.
+  defp read_station_messages(workspace, station_id, thread, after_seq, limit) do
+    case Comma.Salix.Client.read_station_task(workspace, station_id, thread, %{
+           "after" => after_seq,
+           "limit" => limit
+         }) do
+      {:ok, %{"messages" => messages}} when is_list(messages) ->
+        {:ok,
+         for %{"seq" => seq} = message when is_integer(seq) <- messages do
+           %{
+             "seq" => seq,
+             "actor_type" => station_actor(message["author_kind"]),
+             "kind" => "message",
+             "content" => [%{"type" => "text", "text" => message["text"] || ""}],
+             "created_at" => message["at"]
+           }
+         end}
+
+      {:ok, _invalid} ->
+        {:error, :invalid_station_task}
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  defp station_actor("person"), do: "user"
+  defp station_actor("agent"), do: "agent"
+  defp station_actor(_kind), do: "system"
+
+  defp read_salix_messages(workspace, conversation_id, after_seq, limit) do
     case Comma.Salix.Client.impl().get_group_conversation_with_messages(
            workspace,
            conversation_id,

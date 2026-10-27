@@ -9,6 +9,7 @@ import {
   type NativeAudioApplication,
   type NativeAudioCapture,
 } from "../audio-capture/native-audio";
+import { clockInterval, realMainClock, type MainClock } from "../../clock";
 
 /**
  * Mic-usage flips do not raise a process-list event, so poll the known
@@ -98,20 +99,18 @@ export class MeetingPresenceService implements MeetingPresenceProvider {
   readonly #browserBundleIdentifier: string;
   readonly #readBrowserMeetings: () => Promise<BrowserMeeting[]>;
   readonly #catalog: readonly MeetingAppDescriptor[];
+  readonly #clock: MainClock;
   readonly #inactiveGraceMs: number;
   readonly #loadNative: () => Promise<NativeAudioCapture | undefined>;
-  readonly #now: () => number;
   readonly #onStateChanged: (state: MeetingPresenceState) => void;
   readonly #pollIntervalMs: number;
-  readonly #setInterval: (fn: () => void, ms: number) => unknown;
-  readonly #clearInterval: (handle: unknown) => void;
   readonly #readAppIcon: (bundleIdentifier: string) => Promise<string | undefined>;
 
   #native: NativeAudioCapture | undefined;
   #available = false;
   #revision = 1;
   #tracked = new Map<string, TrackedMeeting>();
-  #timer: unknown;
+  #stopPolling: (() => void) | undefined;
   #unsubscribe: (() => void) | undefined;
   #started = false;
   #closed = false;
@@ -132,38 +131,33 @@ export class MeetingPresenceService implements MeetingPresenceProvider {
     browserBundleIdentifier = "surf.comma.desktop",
     readBrowserMeetings = async () => [],
     catalog = MEETING_APPS,
-    clearInterval: clearIntervalImpl = (handle) => clearInterval(handle as never),
+    clock = realMainClock,
     inactiveGraceMs = DEFAULT_INACTIVE_GRACE_MS,
     loadNative = loadNativeAudioCapture,
-    now = () => Date.now(),
     onStateChanged,
     readAppIcon = async () => undefined,
     pollIntervalMs = DEFAULT_POLL_INTERVAL_MS,
-    setInterval: setIntervalImpl = (fn, ms) => setInterval(fn, ms),
   }: {
     browserBundleIdentifier?: string | undefined;
     readBrowserMeetings?: () => Promise<BrowserMeeting[]>;
     catalog?: readonly MeetingAppDescriptor[];
-    clearInterval?: (handle: unknown) => void;
+    /** Main's clock: the poll, the list backstop and the inactive grace. */
+    clock?: MainClock;
     inactiveGraceMs?: number;
     loadNative?: () => Promise<NativeAudioCapture | undefined>;
-    now?: () => number;
     onStateChanged: (state: MeetingPresenceState) => void;
     readAppIcon?: (bundleIdentifier: string) => Promise<string | undefined>;
     pollIntervalMs?: number;
-    setInterval?: (fn: () => void, ms: number) => unknown;
   }) {
     this.#browserBundleIdentifier = browserBundleIdentifier;
     this.#readBrowserMeetings = readBrowserMeetings;
     this.#catalog = catalog;
     this.#readAppIcon = readAppIcon;
-    this.#clearInterval = clearIntervalImpl;
+    this.#clock = clock;
     this.#inactiveGraceMs = inactiveGraceMs;
     this.#loadNative = loadNative;
-    this.#now = now;
     this.#onStateChanged = onStateChanged;
     this.#pollIntervalMs = pollIntervalMs;
-    this.#setInterval = setIntervalImpl;
   }
 
   /** Resolve the native SDK and begin watching. Safe to call once. */
@@ -177,9 +171,9 @@ export class MeetingPresenceService implements MeetingPresenceProvider {
     this.#unsubscribe = this.#native.onApplicationListChanged(() => {
       void this.refresh();
     });
-    this.#timer = this.#setInterval(() => {
+    this.#stopPolling = clockInterval(this.#clock, this.#pollIntervalMs, () => {
       void this.#tickOnce();
-    }, this.#pollIntervalMs);
+    });
     await this.refresh();
     return this.#snapshot();
   }
@@ -220,15 +214,15 @@ export class MeetingPresenceService implements MeetingPresenceProvider {
     this.#closed = true;
     this.#unsubscribe?.();
     this.#unsubscribe = undefined;
-    if (this.#timer !== undefined) this.#clearInterval(this.#timer);
-    this.#timer = undefined;
+    this.#stopPolling?.();
+    this.#stopPolling = undefined;
   }
 
   async #tick() {
     const native = this.#native;
     if (!native || this.#closed) return;
 
-    if (this.#listStale || this.#now() - this.#listedAt >= LIST_BACKSTOP_MS) {
+    if (this.#listStale || this.#clock.now() - this.#listedAt >= LIST_BACKSTOP_MS) {
       let applications: NativeAudioApplication[];
       try {
         applications = native.applications();
@@ -236,14 +230,14 @@ export class MeetingPresenceService implements MeetingPresenceProvider {
         return;
       }
       this.#listStale = false;
-      this.#listedAt = this.#now();
+      this.#listedAt = this.#clock.now();
       this.#candidates = applications.flatMap((application) => {
         const app = matchMeetingApp(application.bundleIdentifier, this.#catalog);
         return app ? [{ app, processId: application.processId }] : [];
       });
     }
 
-    const now = this.#now();
+    const now = this.#clock.now();
     const live = new Map<
       string,
       { app: MeetingAppDescriptor; processId: number; browserTabId?: string }

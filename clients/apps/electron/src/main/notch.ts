@@ -15,6 +15,7 @@ import {
   type NotchStatus,
   type NotchTaskItem,
 } from "@comma/native-bridge";
+import { realMainClock, type MainClock } from "./clock";
 import { readMainLocale, type MainLocaleSource } from "./main-locale";
 import { isMacOS } from "./os";
 
@@ -29,7 +30,7 @@ export interface NotchPresentation {
 interface PendingRequest {
   resolve: (event: NotchHostEvent) => void;
   reject: (error: Error) => void;
-  timer: NodeJS.Timeout;
+  cancelTimer: () => void;
 }
 
 interface NotchHostGeneration {
@@ -84,6 +85,7 @@ type SpawnNotchHost = (
 ) => ChildProcessWithoutNullStreams;
 
 export interface NotchServiceOptions {
+  clock?: MainClock | undefined;
   isSupportedPlatform?: (() => boolean) | undefined;
   /** Main's language: the Task list's labels until a renderer sends its own. */
   locale?: MainLocaleSource | undefined;
@@ -150,6 +152,7 @@ export function isNotchHostEvent(value: unknown): value is NotchHostEvent {
 }
 
 export class NotchService implements MainNotchTasks {
+  readonly #clock: MainClock;
   readonly #isSupportedPlatform: () => boolean;
   readonly #locale: MainLocaleSource;
   readonly #pathExists: (path: string) => boolean;
@@ -181,12 +184,14 @@ export class NotchService implements MainNotchTasks {
   private lastHostRestore = Number.NEGATIVE_INFINITY;
 
   constructor({
+    clock = realMainClock,
     isSupportedPlatform = isMacOS,
     locale = baseLocale,
     pathExists = existsSync,
     resolveHostPath = defaultNotchHostPath,
     spawnHost = defaultSpawnNotchHost,
   }: NotchServiceOptions = {}) {
+    this.#clock = clock;
     this.#isSupportedPlatform = isSupportedPlatform;
     this.#locale = locale;
     this.#pathExists = pathExists;
@@ -461,16 +466,16 @@ export class NotchService implements MainNotchTasks {
 
     return new Promise<NotchHostEvent>((resolve, reject) => {
       let pending: PendingRequest;
-      const timer = setTimeout(() => {
+      const cancelTimer = this.#clock.setTimer(5000, () => {
         if (host.pending.get(id) !== pending) {
           return;
         }
 
         host.pending.delete(id);
         reject(new Error(`NotchHost command timed out: ${method}`));
-      }, 5000);
+      });
 
-      pending = { resolve, reject, timer };
+      pending = { resolve, reject, cancelTimer };
       host.pending.set(id, pending);
 
       try {
@@ -479,12 +484,12 @@ export class NotchService implements MainNotchTasks {
             return;
           }
 
-          clearTimeout(pending.timer);
+          pending.cancelTimer();
           host.pending.delete(id);
           pending.reject(error);
         });
       } catch (error) {
-        clearTimeout(pending.timer);
+        pending.cancelTimer();
         host.pending.delete(id);
         pending.reject(error instanceof Error ? error : new Error(String(error)));
       }
@@ -598,7 +603,7 @@ export class NotchService implements MainNotchTasks {
         return;
       }
 
-      clearTimeout(pending.timer);
+      pending.cancelTimer();
       host.pending.delete(event.id);
 
       if (event.type === "error") {
@@ -722,7 +727,7 @@ export class NotchService implements MainNotchTasks {
     if (!this.presentation.visible || Object.keys(scene).length === 0) {
       return;
     }
-    const now = Date.now();
+    const now = this.#clock.now();
     if (now - this.lastHostRestore < notchHostRestoreIntervalMs) {
       log.warn("NotchHost exited again; its scene returns with the next change.");
       return;
@@ -741,7 +746,7 @@ export class NotchService implements MainNotchTasks {
     host.buffer = "";
 
     for (const pending of host.pending.values()) {
-      clearTimeout(pending.timer);
+      pending.cancelTimer();
       pending.reject(error);
     }
     host.pending.clear();

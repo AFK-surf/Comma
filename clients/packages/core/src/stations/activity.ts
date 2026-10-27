@@ -15,6 +15,7 @@ import { Effect, Result } from "effect";
 import type { Account } from "../account.ts";
 import { route } from "../api.ts";
 import type {
+  StationAttachment,
   StationChatsValue,
   StationDecision,
   StationDecisionsValue,
@@ -58,6 +59,14 @@ type Followed = {
   rows: Map<string, StationChatRow> | null;
   jobs: StationJob[];
   jobsDue: boolean;
+};
+
+/** A message of a chat on a station, and its workspace: where a card is. */
+export type CardAt = {
+  workspace: string;
+  station: string;
+  thread: number;
+  seq: number;
 };
 
 const where = {
@@ -148,20 +157,7 @@ export class StationActivity {
       },
       "stations.dismiss": {
         doing: true,
-        run: (p) => {
-          const at = where.of(p);
-          return this.#stations
-            .ask(
-              at.workspace,
-              at.station,
-              "PUT",
-              route`/threads/${String(at.thread)}/dismissed`,
-              {
-                n: at.seq,
-              }
-            )
-            .pipe(Effect.as(null));
-        },
+        run: (p) => this.dismiss(where.of(p)),
       },
       "stations.defer": {
         run: (p) => {
@@ -243,6 +239,35 @@ export class StationActivity {
   }
 
   /** The row of `station`'s chat `thread`, as last read; null when there is none. */
+  /** Answers the card of a chat's message (`at.seq`) with its option `label`, as a person on the station's page does. */
+  answer(at: CardAt, label: string): Effect.Effect<null, CoreError> {
+    return this.#answer(at, label);
+  }
+
+  /** Answers the card of a chat's message in a person's own words, with the files that went up for it. */
+  reply(
+    at: CardAt,
+    text: string,
+    attachments: StationAttachment[] = []
+  ): Effect.Effect<null, CoreError> {
+    return this.#reply(at, text, attachments);
+  }
+
+  /** The viewer will not answer the card of a chat's message: it leaves their list, on the station. */
+  dismiss(at: CardAt): Effect.Effect<null, CoreError> {
+    return this.#stations
+      .ask(
+        at.workspace,
+        at.station,
+        "PUT",
+        route`/threads/${String(at.thread)}/dismissed`,
+        {
+          n: at.seq,
+        }
+      )
+      .pipe(Effect.as(null));
+  }
+
   rowOf(station: string, thread: number): StationChatRow | null {
     return this.#row(station, thread);
   }
@@ -260,6 +285,52 @@ export class StationActivity {
   #changed(workspace: string): void {
     for (const name of TOPICS)
       this.#ctx.kernel.store.invalidate({ topic: name, workspace });
+    for (const listener of this.#changeListeners) listener(workspace);
+  }
+
+  readonly #changeListeners = new Set<(workspace: string) => void>();
+
+  /** Told whenever what is known of `workspace`'s stations' chats changed. */
+  onChanged(listener: (workspace: string) => void): void {
+    this.#changeListeners.add(listener);
+  }
+
+  /**
+   * Keeps chat `thread` of `station` at the top of the viewer's list (`pinned`) or lets it go, on its station: shown so
+   * at once, and as it was when the station refused.
+   */
+  pin(
+    workspace: string,
+    station: string,
+    thread: number,
+    pinned: boolean
+  ): Effect.Effect<void, CoreError> {
+    return Effect.suspend(() => {
+      const followed = this.#followed.get(station);
+      const row = this.#row(station, thread);
+      if (!row)
+        return Effect.fail(new CoreError("not_found", "The machine has no such chat."));
+      const was = row.pinned ?? null;
+      // Shown so where its station's chats are followed; elsewhere their next read says it.
+      const set = (to: number | null) => {
+        const now = followed?.rows?.get(row.id);
+        if (!followed || !now) return;
+        followed.rows!.set(row.id, { ...now, pinned: to });
+        this.#keep(followed, station);
+      };
+      set(pinned ? this.#ctx.now() : null);
+      return this.#stations
+        .ask(
+          workspace,
+          station,
+          pinned ? "PUT" : "DELETE",
+          route`/sessions/${row.id}/pin`
+        )
+        .pipe(
+          Effect.tapError(() => Effect.sync(() => set(was))),
+          Effect.asVoid
+        );
+    });
   }
 
   #compute(topic: Topic): StationChatsValue | StationDecisionsValue | StationJobsValue {
@@ -510,7 +581,8 @@ export class StationActivity {
   #send(
     at: ReturnType<typeof where.of>,
     words: string,
-    quote: NonNullable<ReturnType<typeof quoteOf>>
+    quote: NonNullable<ReturnType<typeof quoteOf>>,
+    attachments: StationAttachment[] = []
   ): Effect.Effect<null, CoreError> {
     return this.#stations
       .ask(
@@ -520,6 +592,7 @@ export class StationActivity {
         route`/threads/${String(at.thread)}/messages`,
         {
           text: words,
+          ...(attachments.length > 0 ? { attachments } : {}),
           quotes: [quote],
         }
       )
@@ -582,7 +655,8 @@ export class StationActivity {
 
   #reply(
     at: ReturnType<typeof where.of>,
-    reply: string
+    reply: string,
+    attachments: StationAttachment[] = []
   ): Effect.Effect<null, CoreError> {
     return Effect.suspend(() => {
       const row = this.#row(at.station, at.thread);
@@ -591,7 +665,7 @@ export class StationActivity {
         return Effect.fail(
           new CoreError("already_answered", "It was answered already.")
         );
-      return this.#send(at, reply, quote);
+      return this.#send(at, reply, quote, attachments);
     });
   }
 

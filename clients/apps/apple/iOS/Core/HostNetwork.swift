@@ -140,9 +140,10 @@ final class StreamSession: NSObject, URLSessionDataDelegate, @unchecked Sendable
         session = URLSession(configuration: configuration, delegate: self, delegateQueue: queue)
     }
 
-    /// Starts `request`; its answer is read from the stream.
-    func start(_ request: URLRequest) -> ResponseStream {
-        let task = session.dataTask(with: request)
+    /// Starts `request`, its body the file `upload` when given (sent from disk as it is read); its answer is read
+    /// from the stream.
+    func start(_ request: URLRequest, upload: URL? = nil) -> ResponseStream {
+        let task = upload.map { session.uploadTask(with: request, fromFile: $0) } ?? session.dataTask(with: request)
         let stream = ResponseStream(task: task)
         lock.withLock { streams[task.taskIdentifier] = stream }
         task.resume()
@@ -174,20 +175,22 @@ final class StreamSession: NSObject, URLSessionDataDelegate, @unchecked Sendable
 
 /**
  * The client core's downloads (`DownloadPorts` in the core's phone host), as `HostDownloads.kt` is Android's: files of
- * any size written from the network straight to `root`, each under the path the core names. A file takes its place
- * only once its body is whole; until then it is a partial file beside it, removed when the download is given up. The
- * core decides what is downloaded, kept and removed; this class moves the bytes.
+ * any size written from the network straight to `root`, or from the parts the core reads itself (a file of a Task a
+ * station hosts), each under the path the core names. A file takes its place only once its body is whole; until then
+ * it is a partial file beside it, removed when the download is given up. The core decides what is downloaded, kept and
+ * removed; this class moves the bytes.
  */
 final class HostDownloads: @unchecked Sendable {
+    /** A file being written: from a `stream`, or from the core's parts when it has none. */
     private final class Download {
-        let stream: ResponseStream
+        let stream: ResponseStream?
         let target: URL
         let partial: URL
         let out: FileHandle
         let declared: Int64?
         var digest = SHA256()
         var received: Int64 = 0
-        init(stream: ResponseStream, target: URL, partial: URL, out: FileHandle, declared: Int64?) {
+        init(stream: ResponseStream?, target: URL, partial: URL, out: FileHandle, declared: Int64?) {
             self.stream = stream; self.target = target; self.partial = partial; self.out = out; self.declared = declared
         }
     }
@@ -210,6 +213,35 @@ final class HostDownloads: @unchecked Sendable {
 
     /// A 200 answer begins writing to `path`: its id.
     func begin(_ stream: ResponseStream, head: ResponseHead, path: String) throws -> Int {
+        try start(stream, declared: head.length, path: path)
+    }
+
+    /// Begins writing a file the core reads itself a part at a time to `path`: its id.
+    func create(_ path: String) throws -> Int {
+        try start(nil, declared: nil, path: path)
+    }
+
+    /// Writes the core's next part of the file `id`: how much is written so far.
+    func append(_ id: Int, _ bytes: Data) throws -> [String: Any] {
+        guard let download = lock.withLock({ open[id] }) else { throw HostFailure(message: "No such download.") }
+        do {
+            try download.out.write(contentsOf: bytes)
+            download.digest.update(data: bytes)
+            download.received += Int64(bytes.count)
+            return ["received": download.received]
+        } catch {
+            close(id)
+            throw error
+        }
+    }
+
+    /// The core's file `id` is whole: in place, with its size and SHA-256.
+    func finish(_ id: Int) throws -> [String: Any] {
+        guard let download = lock.withLock({ open[id] }) else { throw HostFailure(message: "No such download.") }
+        return try finish(id, download)
+    }
+
+    private func start(_ stream: ResponseStream?, declared: Int64?, path: String) throws -> Int {
         guard let target = file(path) else { throw HostFailure(message: "The path leaves the download directory.") }
         let directory = target.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -222,7 +254,7 @@ final class HostDownloads: @unchecked Sendable {
             throw HostFailure(message: "Cannot make the download's file.")
         }
         let out = try FileHandle(forWritingTo: partial)
-        lock.withLock { open[id] = Download(stream: stream, target: target, partial: partial, out: out, declared: head.length) }
+        lock.withLock { open[id] = Download(stream: stream, target: target, partial: partial, out: out, declared: declared) }
         return id
     }
 
@@ -236,7 +268,8 @@ final class HostDownloads: @unchecked Sendable {
             var read = 0
             while read < Self.chunk {
                 guard current() else { throw HostFailure(message: "The session ended.") }
-                guard let data = try await download.stream.read() else { return try finish(id, download) }
+                guard let stream = download.stream else { throw HostFailure(message: "The download has no answer.") }
+                guard let data = try await stream.read() else { return try finish(id, download) }
                 try download.out.write(contentsOf: data)
                 download.digest.update(data: data)
                 download.received += Int64(data.count)
@@ -272,7 +305,7 @@ final class HostDownloads: @unchecked Sendable {
     func close(_ id: Int) {
         guard let download = lock.withLock({ open.removeValue(forKey: id) }) else { return }
         try? download.out.close()
-        download.stream.cancel()
+        download.stream?.cancel()
         try? FileManager.default.removeItem(at: download.partial)
     }
 

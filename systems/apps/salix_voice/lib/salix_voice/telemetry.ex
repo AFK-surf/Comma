@@ -14,7 +14,8 @@ defmodule SalixVoice.Telemetry do
 
   @transports ~w(twilio websocket)
   @reasons ~w(completed caller_hangup agent_hangup busy timeout model_error carrier_error revoked draining)
-  @profile_outcomes ~w(ok empty timeout not_configured no_evidence egress_denied rate_limited)
+  @profile_outcomes ~w(ok empty persona timeout not_configured no_evidence egress_denied rate_limited
+    router_unavailable)
 
   @doc "Emit the end of a call."
   def call_stop(duration, transport, reason) do

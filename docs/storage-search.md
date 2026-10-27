@@ -118,6 +118,14 @@ Visible chats check one Participant and binding at first and ten seconds after c
 Hidden or inactive surfaces skip checks. Windows check the main and selected sidebar chats.
 Each chat has one request, a ten-second timeout, and no Agent or workspace scan. Close refreshes the UI.
 
+Agent actions (`navigate`, `click`, `fill`, `press`, `scroll`, `select`, `wait`, `dialog`) return a receipt: URL, title and a viewport snapshot of the page after the action.
+An action that starts a navigation waits for the new document; while it has not committed, the receipt says `loading` instead of a snapshot.
+`browser.actions` runs up to ten steps in one command and stops at the first step that cannot run, which it reports with the steps completed.
+A snapshot is an indented outline of roles, names and states. Interactive elements carry refs (`e12`) that stay valid until the tab navigates.
+Targets are a ref, visible text, a role with a name, or a CSS selector, and must match one visible element.
+A failure before any input reaches the page (no target, an ambiguous target, a stale ref, a wait timeout, an open dialog) releases admission at once.
+An open JavaScript dialog blocks page reads and actions until `browser.dialog` accepts or dismisses it.
+
 `browser.request_control` pauses agent mutations, which require agent control, and returns user instructions.
 Takeover requires no pending operation and grants one user, auth session, and viewer a ten-second input lease.
 Streams renew it every two seconds. Other viewers are read-only.

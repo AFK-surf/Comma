@@ -9,6 +9,7 @@ import { basename, dirname, join } from "node:path";
 import { Cause, Clock, Duration, Effect } from "effect";
 import { killGroup, runBounded, spawnGroup } from "./child.ts";
 import { COMPUTER_USE_HELLO_MESSAGE, COMPUTER_USE_SOCKET_DIRECTORY_NAME } from "./computer-use-paths.ts";
+import { makeWindowsComputerUse } from "./computer-use-windows.ts";
 import { Mutex } from "./locks.ts";
 import { platform } from "../platform/index.ts";
 
@@ -30,6 +31,7 @@ export type DaemonResponse = {
   error?: string;
   interrupted?: boolean;
   message?: string;
+  text?: string;
   imageData?: Buffer;
   imageContentType?: string;
   imageWidth?: number;
@@ -65,7 +67,15 @@ export function makeComputerUse(cfg: ComputerUseConfig, fork: (effect: Effect.Ef
   const token = () => (authToken ||= randomBytes(32).toString("base64url"));
 
   const available = () => {
-    if (!darwin || !cfg.computerUseHelperApp) return false;
+    if (!cfg.computerUseHelperApp) return false;
+    if (platform.hasWindowsComputerUse) {
+      try {
+        return statSync(cfg.computerUseHelperApp).isFile();
+      } catch {
+        return false;
+      }
+    }
+    if (!darwin) return false;
     try {
       return statSync(cfg.computerUseHelperApp).isDirectory();
     } catch {
@@ -220,6 +230,7 @@ export function makeComputerUse(cfg: ComputerUseConfig, fork: (effect: Effect.Ef
   });
 
   const shutdown: Effect.Effect<void> = Effect.gen(function* () {
+    if (windows) return yield* windows.shutdown;
     if (!darwin || !cfg.computerUseSocketPath.trim()) return;
     if (!(yield* socketReady)) {
       rmSync(cfg.computerUseSocketPath, { force: true });
@@ -322,6 +333,17 @@ export function makeComputerUse(cfg: ComputerUseConfig, fork: (effect: Effect.Ef
       }),
     );
 
+  // Windows reaches Cua Driver instead of the macOS helper's daemon (computer-use-windows.ts).
+  const windows = platform.hasWindowsComputerUse
+    ? makeWindowsComputerUse({
+        executable: cfg.computerUseHelperApp,
+        home: join(cfg.computerUseRuntimePath || tmpdir(), "cua-driver"),
+        cursorThemes: join(dirname(cfg.computerUseHelperApp), "cursor-themes"),
+        env,
+        storeImage,
+      })
+    : null;
+
   const readImage = (name: string): Effect.Effect<Result> =>
     images.with(
       Effect.gen(function* () {
@@ -355,8 +377,22 @@ export function makeComputerUse(cfg: ComputerUseConfig, fork: (effect: Effect.Ef
       if (!action) return failure("'action' is required");
       const normalized = normalizeComputerUseAction(action);
       if (normalized === "read_image") return yield* readImage(text((params.args as Record<string, unknown> | undefined)?.path));
-      if (normalized === "mode_help") return { ok: true, help: computerUseForegroundHelp() };
+      if (windows) {
+        if (normalized === "mode_help") return { ok: true, mode: "background", help: computerUseBackgroundHelp("windows") };
+        if (!available()) return failure(`computer_use helper was not found at ${cfg.computerUseHelperApp}`);
+        const args = params.args && typeof params.args === "object" && !Array.isArray(params.args) ? (params.args as Record<string, unknown>) : {};
+        const result = yield* windows.call(normalized, args);
+        return normalized === "start" && result.ok ? { ...result, help: computerUseBackgroundHelp("windows") } : result;
+      }
       let request: DaemonRequest;
+      if (normalized === "mode_help") {
+        try {
+          const mode = computerUseMode((params.args ?? {}) as Record<string, unknown>);
+          return { ok: true, mode, help: computerUseHelp(mode) };
+        } catch (error) {
+          return failure((error as Error).message);
+        }
+      }
       try {
         request = buildDaemonRequest(normalized, params);
       } catch (error) {
@@ -369,9 +405,13 @@ export function makeComputerUse(cfg: ComputerUseConfig, fork: (effect: Effect.Ef
       const { response, raw, notices } = sent.value;
       if (response.ok && response.imageData && response.imageData.length > 0) {
         const stored = yield* Effect.exit(storeImage(response));
-        return stored._tag === "Success" ? stored.value : failure(errorText(stored.cause));
+        if (stored._tag === "Failure") return failure(errorText(stored.cause));
+        // Background snapshots carry the window's accessibility tree beside its screenshot; the agent needs both from
+        // the same call.
+        const state = (response.text ?? "").trim();
+        return state ? { ...stored.value, text: state } : stored.value;
       }
-      return connectorResponse(normalized, response, raw, notices);
+      return connectorResponse(normalized, request, response, raw, notices);
     });
 
   /** Clears expired screenshots left by an earlier process. */
@@ -407,7 +447,7 @@ function permissionMap(permissions: Permissions | undefined): Permissions | null
   return permissions ? { accessibility: !!permissions.accessibility, screenRecording: !!permissions.screenRecording } : null;
 }
 
-function connectorResponse(action: string, response: DaemonResponse, raw: Record<string, unknown>, notices: string[]): Result {
+function connectorResponse(action: string, request: DaemonRequest, response: DaemonResponse, raw: Record<string, unknown>, notices: string[]): Result {
   const permissions = permissionMap(response.permissions);
   if (!response.ok) {
     let message = ((response.error ?? "").trim() ? response.error! : (response.message ?? "")).trim();
@@ -417,9 +457,10 @@ function connectorResponse(action: string, response: DaemonResponse, raw: Record
     return result;
   }
   const message = [...notices, ...((response.message ?? "").trim() ? [response.message!] : [])].join("\n\n");
+  const mode = text((request.action?.start as Record<string, unknown> | undefined)?.mode);
   const result: Result =
     action === "start"
-      ? { ok: true, message: message || "session started", mode: "foreground", help: computerUseForegroundHelp(), text: render(response, raw) }
+      ? { ok: true, message: message || "session started", mode, help: computerUseHelp(mode), text: render(response, raw) }
       : { ok: true, text: render(response, raw) || message };
   if (permissions) result.permissions = permissions;
   return result;
@@ -438,6 +479,7 @@ function render(response: DaemonResponse, raw: Record<string, unknown>): string 
   }
   if ((response.coordinate ?? []).length >= 2) parts.push(`Cursor\n  Position: (${response.coordinate![0]}, ${response.coordinate![1]})`);
   if ((response.instructions ?? "").trim()) parts.push(`How to fix it\n  ${response.instructions!.trim().replaceAll("\n", "\n  ")}`);
+  if ((response.text ?? "").trim()) parts.push(response.text!.trim());
   if (parts.length) return parts.join("\n\n");
   const { imageData: _image, ...rest } = raw;
   return JSON.stringify(rest, null, 2);
@@ -482,6 +524,64 @@ function requiredText(args: Record<string, unknown>, key: string): string {
   return value;
 }
 
+/** Start's mode. Background is the default: it reads the target window's accessibility tree and acts on its elements
+ * without taking over the user's screen. Foreground is for apps without usable accessibility. */
+function computerUseMode(args: Record<string, unknown>): "background" | "foreground" {
+  const mode = text(args.mode).trim();
+  if (mode === "" || mode === "background") return "background";
+  if (mode === "foreground") return mode;
+  throw new Error(`'mode' must be background or foreground, got ${JSON.stringify(mode)}`);
+}
+
+/** The background-mode actions, which act on a snapshot from get_app_state. click, scroll and drag exist in both modes;
+ * a snapshot_id selects the background form. Null for a foreground action. */
+function backgroundPayload(action: string, args: Record<string, unknown>): Record<string, unknown> | null {
+  const snapshotId = text(args.snapshot_id).trim();
+  if (action === "get_app_state") {
+    const title = text(args.window_title).trim();
+    return { app: requiredText(args, "app"), ...(title ? { window_title: title } : {}) };
+  }
+  if (["type_text", "set_value", "press_key", "perform_secondary_action"].includes(action)) {
+    if (!snapshotId) throw new Error("'snapshot_id' is required; call get_app_state first");
+  } else if (!["click", "scroll", "drag"].includes(action) || !snapshotId) return null;
+  const payload: Record<string, unknown> = { snapshot_id: snapshotId };
+  const optional = (key: string) => {
+    const value = optionalInt(args, key);
+    if (value !== null) payload[key] = value;
+  };
+  switch (action) {
+    case "click":
+      if ("element_index" in args) payload.element_index = requiredInt(args, "element_index");
+      else Object.assign(payload, { x: requiredInt(args, "x"), y: requiredInt(args, "y") });
+      break;
+    case "type_text":
+      // Typed text and a field's value go as written: spaces and newlines are part of them.
+      if (!text(args.text)) throw new Error("'text' is required");
+      payload.text = args.text;
+      optional("element_index");
+      break;
+    case "set_value":
+      // An empty value clears the field.
+      if (typeof args.value !== "string") throw new Error("'value' is required");
+      Object.assign(payload, { element_index: requiredInt(args, "element_index"), value: args.value });
+      break;
+    case "press_key":
+      payload.key = requiredText(args, "key");
+      break;
+    case "perform_secondary_action":
+      Object.assign(payload, { element_index: requiredInt(args, "element_index"), action: requiredText(args, "action") });
+      break;
+    case "scroll":
+      Object.assign(payload, { element_index: requiredInt(args, "element_index"), direction: requiredText(args, "direction") });
+      optional("pages");
+      break;
+    case "drag":
+      for (const key of ["from_x", "from_y", "to_x", "to_y"]) payload[key] = requiredInt(args, key);
+      break;
+  }
+  return payload;
+}
+
 function buildDaemonRequest(action: string, params: Record<string, unknown>): DaemonRequest {
   const args = params.args && typeof params.args === "object" && !Array.isArray(params.args) ? (params.args as Record<string, unknown>) : {};
   const request: DaemonRequest = {};
@@ -502,12 +602,17 @@ function buildDaemonRequest(action: string, params: Record<string, unknown>): Da
     const modifier = text(args.modifier).trim();
     return modifier ? { ...payload, modifier } : payload;
   };
+  const background = backgroundPayload(action, args);
+  if (background) {
+    act(action, background);
+    return request;
+  }
   switch (action) {
     case "open_permission_flow":
       request.control = "open-permission-flow";
       break;
     case "start":
-      act("start", { apps: Array.isArray(args.apps) ? args.apps.map((a) => text(a).trim()).filter(Boolean) : [] });
+      act("start", { apps: Array.isArray(args.apps) ? args.apps.map((a) => text(a).trim()).filter(Boolean) : [], mode: computerUseMode(args) });
       break;
     case "end":
     case "stop":
@@ -588,6 +693,48 @@ function buildDaemonRequest(action: string, params: Record<string, unknown>): Da
       throw new Error(`unsupported computer_use action ${JSON.stringify(action)}`);
   }
   return request;
+}
+
+export function computerUseHelp(mode: string): string {
+  return mode === "foreground" ? computerUseForegroundHelp() : computerUseBackgroundHelp();
+}
+
+export function computerUseBackgroundHelp(os: "macos" | "windows" = "macos"): string {
+  const launch = os === "windows" ? 'env.exec "Start-Process <App>"' : 'env.exec "open -a <App>"';
+  const shortcut = os === "windows" ? '"ctrl+a"' : '"cmd+a"';
+  return `ComputerUse background mode
+
+Background mode drives one app window through its accessibility tree. The user keeps their screen, pointer and keyboard; other apps are never touched. Pass action-specific inputs under args, and a short top-level thinking string with each action.
+
+Rules:
+- Work on one app at a time: the app named in get_app_state. Name the app the task is about; never act on whatever window happens to be in front.
+- Launch or activate the app first (${launch} on this environment) when list_apps does not show it.
+- Every get_app_state and every action returns the window's new state: its accessibility tree as text and its screenshot. Read that result before the next step; you do not need a separate get_app_state after an action.
+- Check that the state is the target app and window before acting. If it is not, call get_app_state for the target app again instead of acting.
+- Prefer element_index from the latest state over x/y. Use x/y (screenshot pixels of the latest state) only for elements missing from the tree.
+- A snapshot_id is valid until the UI changes. On a stale-state error, call get_app_state and retry with the new snapshot_id.
+- Decide what success looks like before acting, and confirm it from the returned tree (for a switch or checkbox, its value) rather than from the screenshot alone.
+
+Session:
+- start: args.mode? = "background" (default) or "foreground", args.apps? = [app names]
+- status or permissions-status: inspect permissions and session state
+- open-permission-flow: open CommaComputerUse's guided permission flow
+- end or stop: end the session
+
+Inspection:
+- list_apps: running apps with their bundle ids
+- get_app_state: args.app (name or bundle id), args.window_title? -> snapshot_id, accessibility tree, screenshot
+
+Actions (each takes args.snapshot_id from the latest state and returns the settled new state):
+- click: args.element_index, or args.x and args.y
+- type_text: args.text, args.element_index? (defaults to the focused element)
+- set_value: args.element_index, args.value
+- press_key: args.key (e.g. ${shortcut}, "return")
+- scroll: args.element_index, args.direction ("up"|"down"|"left"|"right"), args.pages?
+- perform_secondary_action: args.element_index, args.action (an action name listed on that element)
+- drag: args.from_x, args.from_y, args.to_x, args.to_y
+
+Use foreground mode (start with args.mode="foreground") only when the app exposes no usable accessibility tree, or for drag-and-drop across windows.`;
 }
 
 export function computerUseForegroundHelp(): string {

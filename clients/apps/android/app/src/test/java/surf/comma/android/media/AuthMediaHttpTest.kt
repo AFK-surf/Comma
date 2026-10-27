@@ -162,8 +162,8 @@ class AuthMediaHttpTest {
             try { kotlinx.coroutines.awaitCancellation() } finally { ended.complete(Unit) }
         }
         val timeline = FakeChatViewCore()
-        val draft = ChatImageDraft(http, prepared, scope, ChatView(AuthConversationSessions(auth), timeline))
-        draft.add(listOf(ComposerAttachment("a", Uri.parse("content://picker/1"))))
+        val draft = ChatImageDraft(http, prepared, { _, _ -> error("not a file") }, scope, ChatView(AuthConversationSessions(auth), timeline))
+        draft.add(listOf(ComposerAttachment("a", Uri.parse("content://picker/1"), PickedFile("1.jpg", "image/jpeg", 10))))
         preparing.await()
         assertEquals(AttachmentUploadState.Pending, draft.states.first()["a"])
         auth.logout()
@@ -204,7 +204,7 @@ class AuthMediaHttpTest {
         val repository = ChatView(sessions, timeline)
         val loader = MediaImageLoader.open(context, http, MediaFileStore(http, media, downloaded, scope), scope, File(folder.root, "images"))
         val draft = ChatImageDraft(http, AndroidImagePreprocessor(context.contentResolver, File(folder.root, "outgoing")),
-            scope, repository) { image, _, session -> loader.remember(image, session) }
+            AndroidPickedFileRefs(context.contentResolver), scope, repository) { image, _, session -> loader.remember(image, session) }
         // The first upload fails when asked to; the core uploads, so no upload request is the app's.
         timeline.uploads = !failUpload
         fun attached() = timeline.calls.filter { it.first == "chatView.attach" }
@@ -216,7 +216,7 @@ class AuthMediaHttpTest {
             val bitmap = Bitmap.createBitmap(120, 60, Bitmap.Config.ARGB_8888).apply { eraseColor(Color.GREEN) }
             input.outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
             bitmap.recycle()
-            val selection = listOf(ComposerAttachment("photo", Uri.fromFile(input)))
+            val selection = listOf(ComposerAttachment("photo", Uri.fromFile(input), PickedFile.describe(context.contentResolver, Uri.fromFile(input))))
             val requestId = draft.requestId
             draft.add(selection)
             if (failUpload) {
@@ -269,6 +269,55 @@ class AuthMediaHttpTest {
         } finally {
             draft.close(); repository.close(); loader.close()
         }
+    }
+
+    @Test fun aPickedVideoIsUploadedFromWhereItIsAndSendsWithTheDraft() = runBlocking {
+        signIn()
+        val context = RuntimeEnvironment.getApplication()
+        val timeline = FakeChatViewCore()
+        val repository = ChatView(AuthConversationSessions(auth), timeline)
+        val remembered = mutableListOf<UploadedImage>()
+        // Only images are made ready on the device; the core never gets a video's bytes.
+        val draft = ChatImageDraft(http, { error("a video is not an image") }, AndroidPickedFileRefs(context.contentResolver),
+            scope, repository) { image, _, _ -> remembered += image }
+        try {
+            repository.start()
+            repository.setForeground(true)
+            repository.awaitState { it.conversationId == "chat-alice" && it.cacheLoaded }
+            val bytes = ByteArray(300_000) { (it % 251).toByte() }
+            val input = File(folder.root, "clip.mp4").apply { writeBytes(bytes) }
+            val picked = PickedFile.describe(context.contentResolver, Uri.fromFile(input))
+            assertEquals(PickedFile("clip.mp4", picked.mimeType, 300_000), picked)
+            assertEquals(FileKind.VIDEO, picked.kind)
+            val selection = listOf(ComposerAttachment("video", Uri.fromFile(input), picked))
+            draft.add(selection)
+            settled { runBlocking { draft.states.first()["video"] == AttachmentUploadState.Done } }
+            assertTrue(timeline.calls.none { it.first == "chatView.attach" })
+            val file = timeline.calls.single { it.first == "chatView.attachLocalFiles" }.second.getJSONArray("files").getJSONObject(0)
+            assertEquals("clip.mp4", file.getString("name"))
+            assertEquals(300_000L, file.getLong("size"))
+            assertEquals("video/mp4", file.getString("mediaType"))
+            // The ref names the picked file for the core's host, which reads it as it sends it.
+            val held = PickedLocalFiles.host(context.contentResolver).open(file.getString("localFileRef"))!!
+            assertEquals(300_000L, held.size)
+            assertTrue(bytes.contentEquals(held.open().use { it.readBytes() }))
+            val requestId = draft.requestId
+            assertTrue(draft.send("", selection))
+            assertEquals(listOf(requestId), timeline.sends.map { it.getString("clientRequestId") })
+            assertTrue(remembered.isEmpty())
+        } finally {
+            draft.close(); repository.close()
+        }
+    }
+
+    @Test fun aPickedFileWithoutADeclaredSizeIsMeasured() = runBlocking {
+        val context = RuntimeEnvironment.getApplication()
+        val input = File(folder.root, "notes.txt").apply { writeBytes(ByteArray(1_001)) }
+        val local = AndroidPickedFileRefs(context.contentResolver).register(Uri.fromFile(input), null)
+        assertEquals(1_001L, local.size)
+        assertEquals(1_001L, PickedLocalFiles.host(context.contentResolver).open(local.ref)!!.size)
+        assertTrue(Regex("lfi1_[A-Za-z0-9_-]{43}").matches(local.ref))
+        assertNull(PickedLocalFiles.host(context.contentResolver).open("lfi1_" + "x".repeat(43)))
     }
 
     @Test fun logoutClearsSharedImageFileAndVideoMetadataCachesAndVisibleImage() = runBlocking {

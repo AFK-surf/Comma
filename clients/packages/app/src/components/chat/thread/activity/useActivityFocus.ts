@@ -16,6 +16,7 @@ import {
 } from "./activityFocus";
 
 const NO_IDS: readonly string[] = [];
+const NO_MESSAGES: readonly ChatMessage[] = [];
 const NO_WORKERS: ReadonlyMap<string, ActivityFocusWorker | null> = new Map();
 
 /**
@@ -34,7 +35,12 @@ export function useActivityFocus({
   messages: readonly ChatMessage[];
   participantStatus: ChatParticipantStatus | undefined;
 }): ActivityFocus | undefined {
-  const createdTasks = useChatCreatedTasks({ groupId, messages });
+  // A view that follows no Task (a Task view, a retained Home not shown) reads
+  // no Task rows, so their changes do not render it.
+  const createdTasks = useChatCreatedTasks({
+    groupId,
+    messages: enabled ? messages : NO_MESSAGES,
+  });
   const currentTurnKey = useMemo(() => focusTurnKey(messages), [messages]);
   const target = useMemo(
     () =>

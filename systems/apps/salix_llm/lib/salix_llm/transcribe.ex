@@ -116,7 +116,8 @@ defmodule SalixLlm.Transcribe do
         :timeout_ms,
         :deadline_ms,
         :ffmpeg,
-        :ffprobe
+        :ffprobe,
+        :silk_decoder
       ])
     )
   end

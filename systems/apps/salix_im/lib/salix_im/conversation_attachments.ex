@@ -11,6 +11,58 @@ defmodule SalixIM.ConversationAttachments do
 
   @max_download_bytes 10_000_000
   @max_file_name_bytes 1_024
+  @max_user_uploads 64
+  @user_upload ~r/\(workspace file: (\/uploads\/[A-Za-z0-9_-]{22}-([A-Za-z0-9._-]{1,255}))\)/
+
+  @doc """
+  Binds a user's composer uploads before the Conversation owner accepts a Task Message.
+
+  The Group's Router VFS authorizes each path. The Message retains the blob
+  references, so later path changes cannot change an accepted attachment.
+  `ConversationMessage.build/3` never takes `owner_uploads` from caller input.
+  """
+  def bind_user_uploads(group_id, %{"actor_type" => "user", "content" => content} = message)
+      when is_list(content) do
+    uploads =
+      for(
+        %{"type" => "text", "text" => text} <- content,
+        is_binary(text),
+        [path, name] <- Regex.scan(@user_upload, text, capture: :all_but_first),
+        do: {path, name}
+      )
+      |> Enum.uniq()
+
+    case uploads do
+      [] ->
+        {:ok, message}
+
+      uploads when length(uploads) > @max_user_uploads ->
+        {:error, {:task_upload_over_limit, @max_user_uploads}}
+
+      uploads ->
+        with {:ok, group} <- SalixIM.GroupDirectory.get_group(group_id),
+             router when is_binary(router) and router != "" <- group["router_agent_id"],
+             {:ok, files} <-
+               map(uploads, fn upload, _index -> bind_user_upload(router, upload) end) do
+          {:ok, Map.put(message, "owner_uploads", %{"agent_id" => router, "files" => files})}
+        else
+          {:error, _} = error -> error
+          _ -> {:error, {:bad_request, "Group upload storage is unavailable."}}
+        end
+    end
+  end
+
+  def bind_user_uploads(_group_id, message), do: {:ok, message}
+
+  defp bind_user_upload(router, {path, name}) do
+    case AgentWorkspace.file_ref(router, path) do
+      {:ok, ref} ->
+        {:ok, %{"type" => "file", "path" => path, "file_name" => name, "blob_ref" => ref}}
+
+      {:error, _reason} ->
+        {:error, {:task_upload_unavailable, name}}
+    end
+  end
 
   @doc """
   Reads one immutable attachment from an already authorized group's Message.

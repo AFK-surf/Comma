@@ -157,6 +157,7 @@ defmodule SalixIM.ConversationMessage do
 
       true ->
         with :ok <- validate_dynamic_ui_blocks(content),
+             :ok <- validate_mini_app_blocks(content),
              :ok <- validate_local_file_blocks(content),
              :ok <- SalixIM.ConversationQuestion.validate_blocks(content),
              :ok <- SalixIM.ConversationMilestone.validate_blocks(content) do
@@ -280,6 +281,48 @@ defmodule SalixIM.ConversationMessage do
         "Send one dynamic_ui attachment with version, ui_ref, path and matching summary/text"}}
     end
   end
+
+  # A Mini App Version a build Task deployed (`SalixWeb.StationTasks`): clients
+  # show a card that opens the app; everything else (Task Share, delivery to
+  # Agents, notifications) reads only the Message's text, which is the
+  # block's summary.
+  defp validate_mini_app_blocks(content) do
+    case Enum.filter(content, &match?(%{"type" => "mini_app"}, &1)) do
+      [] ->
+        :ok
+
+      [block] ->
+        if valid_mini_app_block?(block) and text_content(content) == block["summary"],
+          do: :ok,
+          else: mini_app_refusal()
+
+      _more ->
+        mini_app_refusal()
+    end
+  end
+
+  defp valid_mini_app_block?(
+         %{
+           "version" => 1,
+           "app_id" => app_id,
+           "app_version" => app_version,
+           "name" => name,
+           "summary" => summary
+         } = block
+       ) do
+    map_size(block) == 6 and is_binary(app_id) and byte_size(app_id) in 1..64 and
+      is_integer(app_version) and app_version > 0 and is_binary(name) and
+      String.length(name) in 1..60 and is_binary(summary) and
+      String.length(summary) in 1..4000
+  end
+
+  defp valid_mini_app_block?(_block), do: false
+
+  defp mini_app_refusal,
+    do:
+      {:error,
+       {:bad_request,
+        "Send one mini_app block with version, app_id, app_version, name and summary, and the summary as the Message text"}}
 
   defp validate_local_file_blocks(content) do
     blocks = Enum.filter(content, &match?(%{"type" => "local_file"}, &1))

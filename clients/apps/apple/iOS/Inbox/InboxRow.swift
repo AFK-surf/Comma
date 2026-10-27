@@ -1,8 +1,8 @@
 import SwiftUI
 import CommaCore
 
-/// An Inbox row: the Task row every list shows, with its unread dot, then whether it is stale and how long
-/// ago the Task changed. The press surface appears on touch-down; the action runs on touch-up.
+/// An Inbox row: the Task row every list shows, with its unread dot, then how long ago the Task changed. The
+/// press surface appears on touch-down; the action runs on touch-up.
 struct InboxRow: View {
     let task: TaskSummary
     let unread: Bool
@@ -20,26 +20,20 @@ struct InboxRow: View {
         .accessibilityIdentifier("inbox-" + task.id)
     }
 
-    /// Stale and the compact age, after the row's pin, in the desktop's order.
+    /// The compact age, after the row's pin, in the desktop's order.
     @ViewBuilder private func tail(date: Date) -> some View {
-        if isStale {
-            Text("Stale").font(.footnote.weight(.medium)).foregroundStyle(CommaTheme.attention)
-        }
         TimelineView(.everyMinute) { context in
             Text(Self.age(of: date, now: context.date))
                 .font(.footnote.monospacedDigit()).foregroundStyle(CommaTheme.textTertiary)
         }
     }
 
-    private var isStale: Bool { task.freshness == "stale" }
-
-    /// What VoiceOver reads after the title: the status, the Loop's kind on a Loop Task, whether it is pinned or
-    /// stale, where it was asked for and when it changed.
+    /// What VoiceOver reads after the title: the status, the Loop's kind on a Loop Task, whether it is pinned,
+    /// where it was asked for and when it changed.
     private func details(date: Date) -> String {
         [String(localized: task.bucket.label),
          task.loop?.kind.label,
          pinned ? String(localized: "Pinned") : nil,
-         isStale ? String(localized: "Stale") : nil,
          task.origin.flatMap(TaskOrigin.init(rawValue:))?.label,
          date.formatted(.relative(presentation: .named))]
             .compactMap { $0 }.joined(separator: ", ")

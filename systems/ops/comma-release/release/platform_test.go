@@ -697,6 +697,38 @@ func TestBuildHelmValuesPreservesRuntimeWorkloadIdentity(t *testing.T) {
 	})
 }
 
+func TestBuildHelmValuesTurnsOnCodingSandboxesOnlyWithAnL4ESURL(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		manifest := "https://cue-release.afk.surf/coding-sandbox/inputs/abc.json"
+		runtimeOf := func(spec L4ESEnvironmentSpec) map[string]any {
+			platform := KubectlPlatform{Spec: EnvironmentSpec{Environment: "staging", Project: "example-staging-project", RuntimeServiceAccount: "runtime-staging@example-staging-project.iam.gserviceaccount.com", L4ES: spec}}
+			replacements := testCandidateReplacements()
+			replacements["COMMA_SANDBOX_IMAGE_MANIFEST"] = manifest
+			body, err := platform.buildHelmValues(replacements)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var values struct {
+				Runtime map[string]any `json:"runtime"`
+			}
+			if err = json.Unmarshal(body, &values); err != nil {
+				t.Fatal(err)
+			}
+			return values.Runtime
+		}
+		off := runtimeOf(L4ESEnvironmentSpec{})
+		for _, key := range []string{"l4esURL", "l4esImage", "l4esImageManifest", "l4esSize", "l4esMaxSandboxes"} {
+			if _, ok := off[key]; ok {
+				t.Fatalf("an environment without L4ES set %s", key)
+			}
+		}
+		on := runtimeOf(L4ESEnvironmentSpec{URL: "https://l4es.example", Image: "comma-coding-7", Size: "large", MaxSandboxes: 5})
+		if on["l4esURL"] != "https://l4es.example" || on["l4esImage"] != "comma-coding-7" || on["l4esImageManifest"] != manifest || on["l4esSize"] != "large" || on["l4esMaxSandboxes"] != float64(5) {
+			t.Fatalf("L4ES runtime values = %#v", on)
+		}
+	})
+}
+
 func TestBuildHelmValuesEnablesAlertRouterOnlyWithMatchingReleaseSubsystem(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		replacements := testCandidateReplacements()

@@ -179,6 +179,10 @@ data class RecommendationItem(
     val detail: String?,
     val imageUrl: String?,
     val action: RecommendationAction?,
+    /** A row that is only its source link is the member's task: its objective (the link's label without one) leads its card. */
+    val objective: String? = null,
+    /** The source words that row quotes, as the client core reads them. */
+    val quote: RoutineQuote? = null,
 ) {
     val text: String get() = RecommendationPart.plainText(parts)
 
@@ -190,15 +194,29 @@ data class RecommendationItem(
             return tasks.singleOrNull()?.conversationId
         }
 
+    /** The source item the row stands for, which the member can dismiss: its source and URL. A Task row has none. */
+    val sourceItem: Pair<String, String>?
+        get() {
+            if (linkedTaskId != null) return null
+            val link = parts.filterIsInstance<RecommendationPart.Link>().firstOrNull { it.sourceId != null } ?: return null
+            return link.sourceId!! to link.url
+        }
+
     companion object {
         fun parse(json: JSONObject, prompts: Map<String, String>): RecommendationItem? {
             val id = json.optString("id").takeIf(String::isNotEmpty) ?: return null
             val parts = RecommendationPart.parse(json.optJSONArray("parts"))
             val title = json.optString("title").takeIf(String::isNotEmpty)
             if (title == null && parts.isEmpty()) return null
+            // A row that is only its source link is the member's task. The client core gives its link the task's
+            // objective and the source words it quotes, read for display.
+            val raw = RecommendationFeed.objects(json.optJSONArray("parts"))
+            val link = if (raw.size == 1 && parts.size == 1) raw[0].optJSONObject("link") else null
             return RecommendationItem(id, title, parts, json.optString("description").takeIf(String::isNotEmpty),
                 json.optString("imageUrl").takeIf { it.startsWith("https://") },
-                RecommendationAction.parse(json.optJSONObject("action"), prompts))
+                RecommendationAction.parse(json.optJSONObject("action"), prompts),
+                objective = link?.let { (it.optString("objective").ifEmpty { it.optString("label") }).ifEmpty { null } },
+                quote = link?.let { RoutineQuote.parse(it.optJSONArray("quote")) })
         }
     }
 }

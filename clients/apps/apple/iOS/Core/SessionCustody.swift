@@ -7,6 +7,8 @@ protocol CredentialRecord: Sendable {
     func read() throws -> Data?
     /// Replaces the record; done once this returns.
     func write(_ data: Data) throws
+    /// Removes the record; a record that is already gone is removed.
+    func delete() throws
 }
 
 /// The credential store's record as one Keychain item of this device only, never synced or backed up.
@@ -39,6 +41,11 @@ struct KeychainRecord: CredentialRecord {
             status = SecItemAdd(insert as CFDictionary, nil)
         }
         guard status == errSecSuccess else { throw HostFailure(message: "The Keychain answered \(status).") }
+    }
+
+    func delete() throws {
+        let status = SecItemDelete(query as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else { throw HostFailure(message: "The Keychain answered \(status).") }
     }
 }
 

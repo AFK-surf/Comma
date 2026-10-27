@@ -150,6 +150,7 @@
       "required": [
         "title"
       ],
+      "description": "weather for one place: now, today or the coming days",
       "needs": [
         "days",
         "current"
@@ -325,6 +326,7 @@
         "title",
         "items"
       ],
+      "description": "choices to pick one from, such as trains, flights, hotels or plans",
       "layouts": "timetable and list (every item has secondary), pick (no item has secondary)"
     },
     "metric": {
@@ -476,6 +478,7 @@
       "required": [
         "title"
       ],
+      "description": "one to four key numbers, or progress toward a goal",
       "needs": [
         "metrics",
         "goal"
@@ -705,6 +708,7 @@
       "required": [
         "title"
       ],
+      "description": "how numbers change over time, or a watchlist of prices",
       "needs": [
         "ranges",
         "bars",
@@ -859,6 +863,7 @@
         "subjects",
         "rows"
       ],
+      "description": "two or three subjects compared attribute by attribute",
       "sameLength": [
         [
           "rows[].values",
@@ -1013,6 +1018,7 @@
       "required": [
         "title"
       ],
+      "description": "a day's events, an itinerary, or the stages of a process",
       "needs": [
         "events",
         "stages"
@@ -1123,6 +1129,7 @@
         "title",
         "groups"
       ],
+      "description": "things to do, pack or check off",
       "layouts": "progress, grouped (2 or more groups)"
     },
     "composition": {
@@ -1222,6 +1229,7 @@
         "total",
         "segments"
       ],
+      "description": "how a total splits into parts",
       "layouts": "stacked, donut"
     },
     "place": {
@@ -1292,10 +1300,16 @@
                 "type": "string",
                 "pattern": "\\S"
               },
+              "note": {
+                "description": "what it is or why it fits, in one line",
+                "type": "string",
+                "pattern": "\\S"
+              },
               "rating": {
                 "type": "number"
               },
               "reviews": {
+                "description": "a review count such as \"2,310 条评价\"",
                 "type": "string",
                 "pattern": "\\S"
               },
@@ -1346,13 +1360,14 @@
               "name"
             ]
           },
-          "limit": 5
+          "limit": 8
         }
       },
       "required": [
         "title",
         "places"
       ],
+      "description": "places to go: nearby results or recommendations",
       "layouts": "single (1 place), nearby (2 or more)"
     },
     "feed": {
@@ -1492,7 +1507,7 @@
               "title"
             ]
           },
-          "limit": 6
+          "limit": 60
         },
         "filters": {
           "type": "array",
@@ -1559,12 +1574,12 @@
       "required": [
         "title"
       ],
-      "description": "news, updates and status lists such as pull requests or CI runs",
+      "description": "news, updates and status lists such as a day's pull requests, issues or CI runs; over 12 items show title, status, source and time, and each filter shows its count",
       "needs": [
         "items",
         "groups"
       ],
-      "layouts": "news (items), digest (groups)"
+      "layouts": "news (<= 12 items), list (items without excerpts or tags, or over 12), digest (groups)"
     },
     "timer": {
       "$schema": "http://json-schema.org/draft-07/schema#",
@@ -1684,6 +1699,7 @@
         "title",
         "label"
       ],
+      "description": "a countdown to a moment, a focus timer, or days until an event",
       "needs": [
         "endsAt",
         "remainingSeconds",
@@ -1702,16 +1718,16 @@
     "status: {label, tone?}",
     "delta: {value, direction?: up | down | flat, good?: boolean (true when the change is good)}",
     "url: an HTTPS URL",
-    "forecast: {location?, current?: {temperature: number, condition?, label?, feelsLike?: number, humidity?: number (percent), wind?}, days?: [{label, condition, conditionLabel, high: number, low: number, precipitation?: number (percent)}] (<= 7), highlight?}; needs days or current; layouts: today (needs current), week, compact (current and <= 2 days)",
-    "options: {items: [{primary, id?, secondary? (arrival time), span?, meta?, price?, priceNote?, status?, tags?: [text] (<= 3), reason?, recommended?: boolean, filterKeys?: [text] (<= 8)}] (1 to 8), filters?: [{key, label}] (<= 4)}; layouts: timetable and list (every item has secondary), pick (no item has secondary)",
-    "metric: {metrics?: [{label, value (display text), unit?, delta?, caption?, series?: [number] (<= 64)}] (<= 4), goal?: {current: number, target: number, valueLabel, targetLabel, note?}}; needs metrics or goal; layouts: single (1 metric), grid (2 to 4), goal",
-    "trend: {brand?, value?, delta?, ranges?: [{key, label, points: [number] (2 to 64), axis: [text] (<= 6)}] (<= 4), bars?: {labels: [text] (1 to 31), values: [number] (1 to 31), valueLabels?: [text] (<= 31), averageLabel?}, series?: [{label, value, points: [number] (2 to 64), brand?, delta?}] (<= 6)}; needs ranges, bars or series; bars.labels has as many entries as bars.values; layouts: area (ranges), bars, watchlist (series)",
-    "comparison: {subjects: [{name, caption?, recommended?: boolean, brand?}] (2 to 3), rows: [{label, values: [text or null] (<= 3; one per subject; null shows a dash), best?: integer >= 0 (subject index), scores?: [number from 0 to 10] (2 entries)}] (1 to 8), verdict?}; rows[].values has as many entries as subjects; layouts: columns, table (<= 4 rows), versus (2 subjects, scores on every row)",
-    "schedule: {now?, events?: [{start, title, end?, detail?, state?, tone?}] (<= 8), stages?: [{label, state, detail?}] (2 to 6), summary?}; needs events or stages; layouts: agenda and timeline (events), stages",
-    "checklist: {groups: [{label?, items: [{label, id?, detail?, done?: boolean}] (>= 1)}] (1 to 4; at most 12 items in total)}; layouts: progress, grouped (2 or more groups)",
-    "composition: {total, totalLabel?, segments: [{label, value: number >= 0, valueLabel?, muted?: boolean}] (1 to 6)}; layouts: stacked, donut",
-    "place: {places: [{name, category?, rating?: number, reviews?, status?, address?, distance?, eta?, href?: url}] (1 to 5)}; layouts: single (1 place), nearby (2 or more)",
-    "feed (news, updates and status lists such as pull requests or CI runs): {items?: [{source, title, brand?, excerpt?, time? (a label such as \"2 小时前\"), at?: ISO time (when it happened), status?, tags?: [text] (<= 3), href?: url, filterKeys?: [text] (<= 8)}] (<= 6), filters?: [{key, label}] (<= 4), groups?: [{source, summary, brand?, count?: integer >= 0, tone?}] (<= 6)}; needs items or groups; layouts: news (items), digest (groups)",
-    "timer: {label, endsAt?: ISO time, remainingSeconds?: number, daysLeft?: number, totalSeconds?: number, paused?: boolean, phase?: focus | break, cycle?: {current: integer >= 1, total: integer from 1 to 8}, date?, elapsedRatio?: number from 0 to 1, note?}; needs endsAt, remainingSeconds or daysLeft; layouts: countdown, event (daysLeft)"
+    "forecast (weather for one place: now, today or the coming days): {location?, current?: {temperature: number, condition?, label?, feelsLike?: number, humidity?: number (percent), wind?}, days?: [{label, condition, conditionLabel, high: number, low: number, precipitation?: number (percent)}] (<= 7), highlight?}; needs days or current; layouts: today (needs current), week, compact (current and <= 2 days)",
+    "options (choices to pick one from, such as trains, flights, hotels or plans): {items: [{primary, id?, secondary? (arrival time), span?, meta?, price?, priceNote?, status?, tags?: [text] (<= 3), reason?, recommended?: boolean, filterKeys?: [text] (<= 8)}] (1 to 8), filters?: [{key, label}] (<= 4)}; layouts: timetable and list (every item has secondary), pick (no item has secondary)",
+    "metric (one to four key numbers, or progress toward a goal): {metrics?: [{label, value (display text), unit?, delta?, caption?, series?: [number] (<= 64)}] (<= 4), goal?: {current: number, target: number, valueLabel, targetLabel, note?}}; needs metrics or goal; layouts: single (1 metric), grid (2 to 4), goal",
+    "trend (how numbers change over time, or a watchlist of prices): {brand?, value?, delta?, ranges?: [{key, label, points: [number] (2 to 64), axis: [text] (<= 6)}] (<= 4), bars?: {labels: [text] (1 to 31), values: [number] (1 to 31), valueLabels?: [text] (<= 31), averageLabel?}, series?: [{label, value, points: [number] (2 to 64), brand?, delta?}] (<= 6)}; needs ranges, bars or series; bars.labels has as many entries as bars.values; layouts: area (ranges), bars, watchlist (series)",
+    "comparison (two or three subjects compared attribute by attribute): {subjects: [{name, caption?, recommended?: boolean, brand?}] (2 to 3), rows: [{label, values: [text or null] (<= 3; one per subject; null shows a dash), best?: integer >= 0 (subject index), scores?: [number from 0 to 10] (2 entries)}] (1 to 8), verdict?}; rows[].values has as many entries as subjects; layouts: columns, table (<= 4 rows), versus (2 subjects, scores on every row)",
+    "schedule (a day's events, an itinerary, or the stages of a process): {now?, events?: [{start, title, end?, detail?, state?, tone?}] (<= 8), stages?: [{label, state, detail?}] (2 to 6), summary?}; needs events or stages; layouts: agenda and timeline (events), stages",
+    "checklist (things to do, pack or check off): {groups: [{label?, items: [{label, id?, detail?, done?: boolean}] (>= 1)}] (1 to 4; at most 12 items in total)}; layouts: progress, grouped (2 or more groups)",
+    "composition (how a total splits into parts): {total, totalLabel?, segments: [{label, value: number >= 0, valueLabel?, muted?: boolean}] (1 to 6)}; layouts: stacked, donut",
+    "place (places to go: nearby results or recommendations): {places: [{name, category?, note? (what it is or why it fits, in one line), rating?: number, reviews? (a review count such as \"2,310 条评价\"), status?, address?, distance?, eta?, href?: url}] (1 to 8)}; layouts: single (1 place), nearby (2 or more)",
+    "feed (news, updates and status lists such as a day's pull requests, issues or CI runs; over 12 items show title, status, source and time, and each filter shows its count): {items?: [{source, title, brand?, excerpt?, time? (a label such as \"2 小时前\"), at?: ISO time (when it happened), status?, tags?: [text] (<= 3), href?: url, filterKeys?: [text] (<= 8)}] (<= 60), filters?: [{key, label}] (<= 4), groups?: [{source, summary, brand?, count?: integer >= 0, tone?}] (<= 6)}; needs items or groups; layouts: news (<= 12 items), list (items without excerpts or tags, or over 12), digest (groups)",
+    "timer (a countdown to a moment, a focus timer, or days until an event): {label, endsAt?: ISO time, remainingSeconds?: number, daysLeft?: number, totalSeconds?: number, paused?: boolean, phase?: focus | break, cycle?: {current: integer >= 1, total: integer from 1 to 8}, date?, elapsedRatio?: number from 0 to 1, note?}; needs endsAt, remainingSeconds or daysLeft; layouts: countdown, event (daysLeft)"
   ]
 }

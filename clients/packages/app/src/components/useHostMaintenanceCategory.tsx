@@ -2,7 +2,13 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { getNativeBridge, type HostMaintenanceState } from "@comma/native-bridge";
 import { useCommaMessages } from "@comma/i18n/react";
 
-type MaintenanceAction = "update" | "reinstall" | "uninstall" | "clear";
+/** `clear` deletes the local data; `reinstall_reset` reinstalls on empty data. */
+type MaintenanceAction =
+  | "update"
+  | "reinstall"
+  | "uninstall"
+  | "clear"
+  | "reinstall_reset";
 
 /** Local owner state survives cloud account changes. Uses the existing visible read clock. */
 export function useHostMaintenanceCategory(
@@ -17,6 +23,8 @@ export function useHostMaintenanceCategory(
   const [readingError, setReadingError] = useState(false);
   const [error, setError] = useState("");
   const [pending, setPending] = useState(false);
+  /** The last "Continue maintenance" ran the request again and it failed again. */
+  const [retryFailed, setRetryFailed] = useState(false);
   const reading = useRef(false);
   const mutating = useRef(false);
   const generation = useRef(0);
@@ -46,17 +54,22 @@ export function useHostMaintenanceCategory(
     },
     []
   );
-  const mutate = async (operation: () => Promise<HostMaintenanceState>) => {
+  const mutate = async (
+    operation: () => Promise<HostMaintenanceState>,
+    retry = false
+  ) => {
     if (mutating.current) return;
     mutating.current = true;
     generation.current++;
     setPending(true);
     setError("");
+    setRetryFailed(false);
     try {
       const next = await operation();
       generation.current++;
       setState(next);
       setReadingError(false);
+      setRetryFailed(retry && next.operation?.outcome === "failed");
       return next;
     } catch {
       generation.current++;
@@ -68,13 +81,30 @@ export function useHostMaintenanceCategory(
       setPending(false);
     }
   };
-  const operation = state?.operation;
+  // While Main runs a failed request again, the person sees its preparation, not the old failure.
+  const shown =
+    pending && state?.operation?.outcome === "failed"
+      ? {
+          ...state,
+          operation: {
+            requestId: state.operation.requestId,
+            action: state.operation.action,
+            dataPolicy: state.operation.dataPolicy,
+            phase: "preparing" as const,
+            outcome: "pending" as const,
+          },
+        }
+      : state;
+  const operation = shown?.operation;
   const unfinished = !!operation && operation.outcome !== "succeeded";
   const failed = operation?.outcome === "failed";
   const running = operation?.outcome === "pending";
   const needsInstall = state?.installation === "not_installed";
   const needsUpdate = updateRequired || !!state?.updateAvailable;
+  /** Update, repair and clearing wait for a running request; Main recovers a stuck one by itself. */
   const blocked = pending || readingError || !state || running;
+  /** After the current client request returns, uninstall can replace stuck native maintenance. */
+  const uninstallBlocked = pending || readingError;
   const phaseLabel: string = failed
     ? m.compute_maintenance_failed()
     : operation?.phase === "preparing"
@@ -116,23 +146,34 @@ export function useHostMaintenanceCategory(
                 ? m.compute_maintenance_installed()
                 : m.compute_maintenance_unknown();
   const submit = async (next: MaintenanceAction) => {
-    if (blocked || (unfinished && next !== "uninstall" && next !== "clear")) return;
+    const resets = next === "clear" || next === "reinstall_reset";
+    // Main decides which request the new one may supersede.
+    if (next === "uninstall" ? uninstallBlocked : blocked) return;
     return await mutate(() =>
       bridge.computeNode.maintainHost({
-        action: next === "clear" ? (needsInstall ? "uninstall" : "reinstall") : next,
-        dataPolicy: next === "clear" ? "reset" : "preserve",
+        action:
+          next === "reinstall_reset"
+            ? "reinstall"
+            : next === "clear"
+              ? needsInstall
+                ? "uninstall"
+                : "reinstall"
+              : next,
+        dataPolicy: resets ? "reset" : "preserve",
       })
     );
   };
   const resume = () => {
     if (!operation || pending) return;
     if (readingError) return void refresh();
-    void mutate(() =>
-      bridge.computeNode.resumeHostMaintenance({ requestId: operation.requestId })
+    void mutate(
+      () =>
+        bridge.computeNode.resumeHostMaintenance({ requestId: operation.requestId }),
+      true
     );
   };
   return {
-    state,
+    state: shown,
     title,
     phaseLabel,
     refresh,
@@ -143,8 +184,10 @@ export function useHostMaintenanceCategory(
     needsInstall,
     needsUpdate,
     blocked,
+    uninstallBlocked,
     error,
     readingError,
+    retryFailed,
     submit,
     resume,
   };

@@ -1,4 +1,4 @@
-import { useCall } from "@comma/core-client";
+import { useCall, type ModelProfile } from "@comma/core-client";
 import { getNativeBridge } from "@comma/native-bridge";
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -13,12 +13,12 @@ export const tokenDanceAvailable = () => getNativeBridge().platform === "electro
 /**
  * One-click TokenDance: the browser authorizes, the client core receives the
  * key and saves it as one profile serving every chat model TokenDance lists
- * (`models.tokenDance.connect`). `onSaved` runs once the profile exists.
+ * (`models.tokenDance.connect`). `onSaved` receives the profile once it exists.
  */
 export function useTokenDanceConnect(
   workspace: string | undefined,
   name: string,
-  onSaved: () => void | Promise<void>
+  onSaved: (profile: ModelProfile) => void | Promise<void>
 ) {
   const call = useCall();
   const [state, setState] = useState<TokenDanceConnectState>({ status: "idle" });
@@ -40,11 +40,11 @@ export function useTokenDanceConnect(
     active.current = controller;
     setState({ status: "pending" });
     call("models.tokenDance.connect", { workspace, name }, controller.signal).then(
-      async () => {
+      async (profile) => {
         if (active.current !== controller) return;
         active.current = undefined;
         setState({ status: "idle" });
-        await saved.current();
+        await saved.current(profile);
       },
       (reason: unknown) => {
         if (active.current !== controller) return;

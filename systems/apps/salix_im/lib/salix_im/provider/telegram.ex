@@ -38,7 +38,7 @@ defmodule SalixIM.Provider.Telegram do
       placement =
         if api == "telegram.remove_reply_keyboard",
           do: Map.put(placement, "reply_markup", %{"remove_keyboard" => true}),
-          else: placement
+          else: app_buttons(placement, connect, str(params["text"]))
 
       send_message(connect, placement, rendered, SystemsClock.monotonic_time())
     end
@@ -126,6 +126,21 @@ defmodule SalixIM.Provider.Telegram do
 
   defp do_call_telegram(_agent_id, _connect, _api, _params),
     do: {:error, "unsupported Telegram provider api"}
+
+  # A Comma-managed chat shows no app cards, so the Router gives an app's Comma URL (`internal.apps.*`). Each such
+  # URL gets a button under the message that opens the app inside Telegram (`SalixIM.MiniApps.telegram_buttons/2`).
+  defp app_buttons(placement, %{"managed_by" => "comma_product", "group_id" => group_id}, text)
+       when is_binary(group_id) and group_id != "" do
+    case SalixIM.MiniApps.telegram_buttons(group_id, text) do
+      [] ->
+        placement
+
+      buttons ->
+        Map.put(placement, "reply_markup", %{"inline_keyboard" => Enum.map(buttons, &[&1])})
+    end
+  end
+
+  defp app_buttons(placement, _connect, _text), do: placement
 
   defp reply_sent({:ok, _} = result, agent_id, connect, params) do
     SalixIM.PrivateChatStatus.provider_reply_sent(agent_id, connect, params)

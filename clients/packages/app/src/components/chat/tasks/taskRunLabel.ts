@@ -6,23 +6,36 @@ type CommaMessages = ReturnType<typeof useCommaMessages>;
 const RUNTIME_NAMES: Record<string, string> = { claude: "Claude Code", codex: "Codex" };
 
 /**
- * A Task's place and model in reader words ("on Mac Studio · Claude Sonnet"):
- * what Task panels show instead of the Agent that runs the Task.
+ * A Task's place and model in reader words ("Mac Studio · Claude Sonnet"):
+ * what names a Task's Worker instead of the Agent that runs the Task.
  */
 export function taskRunLabel(messages: CommaMessages, run: ChatTaskRun): string {
-  const place =
-    run.place.kind === "salix"
-      ? messages.task_panel_run_place_comma()
-      : run.place.kind === "cloud_vm"
-        ? messages.task_panel_run_place_cloud_vm()
-        : run.place.name || messages.task_panel_run_place_computer();
+  const place = taskRunPlace(messages, run.place);
   const model = taskRunModel(messages, run.model);
-  return model
-    ? messages.task_panel_run({ place, model })
-    : messages.task_panel_run_place_only({ place });
+  return model ? messages.task_panel_run({ place, model }) : place;
 }
 
-function taskRunModel(
+/** Where a Task runs: Comma, a Cloud VM, a coding sandbox (with its repository), or the computer's own name. */
+export function taskRunPlace(
+  messages: CommaMessages,
+  place: ChatTaskRun["place"]
+): string {
+  switch (place.kind) {
+    case "salix":
+      return messages.task_panel_run_place_comma();
+    case "cloud_vm":
+      return messages.task_panel_run_place_cloud_vm();
+    case "sandbox":
+      return messages.task_panel_run_place_sandbox({
+        repo: `${place.repo.owner}/${place.repo.name}`,
+      });
+    default:
+      return place.name || messages.task_panel_run_place_computer();
+  }
+}
+
+/** The model a Task runs on; absent when the run names none. */
+export function taskRunModel(
   messages: CommaMessages,
   model: ChatTaskRun["model"]
 ): string | undefined {

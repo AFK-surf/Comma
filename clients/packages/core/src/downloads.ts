@@ -3,17 +3,23 @@
 // for the next showing. A file is visible only once it is whole and, when its source names one, matches the size and
 // SHA-256 it was asked for; one that does not is removed and said unavailable. Each account has a directory of its
 // own: signed out, or signed in as another account, the others' are removed. An account keeps at most 256 MB, the
-// least recently shown removed first.
+// least recently shown removed first. A message's attachment in a Task a station hosts (`hosted`) is read by the core
+// from its station a part at a time and given to the host as it is read (`create`, `append`, `finish`), at any size.
 //
 // Bounds: two downloads at a time, one per file however many surfaces show it; no automatic retry (the person's next
 // action starts it again); progress is said at most as often as the topic emits.
 import { CoreError, type Topic, type Value, utf8 } from "@comma/core-kernel";
-import { Effect, type Fiber, Semaphore } from "effect";
+import { Effect, type Fiber, Result, Semaphore } from "effect";
 import { z } from "zod";
 import type { Account } from "./account.ts";
 import type { DownloadValue, FileSource } from "./contract.ts";
 import type { Ctx } from "./ctx.ts";
-import { fileRequest, fileSourceSchema } from "./files.ts";
+import {
+  fileRequest,
+  fileSourceSchema,
+  readHostedParts,
+  type HostedFiles,
+} from "./files.ts";
 import type { DownloadPorts } from "./host.ts";
 
 const DOC = "downloads";
@@ -34,6 +40,8 @@ type Running = {
 };
 
 export class Downloads {
+  /** Tasks Comma's server does not keep: their attachments are read where they are kept, not downloaded from it. */
+  hosted: HostedFiles | undefined;
   readonly #ctx: Ctx;
   readonly #ports: DownloadPorts | undefined;
   readonly #running = new Map<string, Running>();
@@ -54,19 +62,23 @@ export class Downloads {
     });
     ctx.session.onChange(() => {
       const key = ctx.session.accountKey();
-      if (key === this.#accountKey) return;
+      // Starting, the core does not know yet who is signed in: that is no sign-out, and nothing goes.
+      const unknown = key === null && ctx.session.value().phase === "unknown";
+      if (key === this.#accountKey || unknown) {
+        // The account's data may have just opened: what it keeps shows.
+        this.#changed();
+        return;
+      }
       this.#accountKey = key;
       for (const running of this.#running.values()) ctx.runner.interrupt(running.fiber);
       this.#running.clear();
       this.#failed.clear();
       this.#asked.clear();
       this.#changed();
-      // Nothing one account downloaded stays for another, or once signed out.
+      // Nothing one account downloaded stays for another, or once signed out. The account is named while its data
+      // still opens: its files stay.
       const ports = this.#ports;
-      if (ports)
-        ctx.runner.fork(
-          Effect.ignore(ports.retain(ctx.session.current()?.dbName ?? null))
-        );
+      if (ports) ctx.runner.fork(Effect.ignore(ports.retain(ctx.session.dbName())));
     });
     kernel.calls({
       "downloads.start": {
@@ -181,18 +193,58 @@ export class Downloads {
       received: 0,
       total: expect?.size ?? null,
     };
+    const hosted =
+      source.source === "attachment" && this.hosted?.owns(source.conversation)
+        ? this.hosted
+        : undefined;
     const download = Effect.gen({ self: this }, function* () {
+      // One a station hosts: read from it a part at a time, each written as it comes, then put in place. Given up
+      // (cancelled, signed out) or failed, nothing of it stays.
+      if (hosted && source.source === "attachment") {
+        const { id } = yield* ports.create(path);
+        const read = yield* Effect.result(
+          Effect.onInterrupt(
+            readHostedParts(hosted, source, (bytes, size) =>
+              Effect.gen({ self: this }, function* () {
+                running.total = size;
+                running.received = (yield* ports.append(id, bytes)).received;
+                this.#changed();
+              })
+            ),
+            () => Effect.ignore(ports.close(id))
+          )
+        );
+        if (Result.isFailure(read)) {
+          yield* Effect.ignore(ports.close(id));
+          return read.failure instanceof CoreError && read.failure.code === "not_found"
+            ? "unavailable"
+            : "network";
+        }
+        const written = yield* ports.finish(id);
+        if (
+          expect &&
+          (written.size !== expect.size || written.sha256 !== expect.sha256)
+        ) {
+          yield* Effect.ignore(ports.remove(path));
+          return "unavailable";
+        }
+        this.#keep(account, key, path, written.size);
+        return null;
+      }
+      // The request goes out for the session as it is now: `account()` brings the account's lease up to date (a
+      // confirmed kept account, or a new generation of the same session).
+      const { lease } = yield* ctx.session.account();
       const opened = yield* ports.open(
         {
           method: request.method,
           path: request.path,
           headers: "body" in request ? [["content-type", "application/json"]] : [],
           body: "body" in request ? utf8(JSON.stringify(request.body)) : null,
-          lease: account.lease,
+          lease,
         },
         path
       );
-      if (opened.status === 401) ctx.session.rejected(account.lease, 401);
+      if (opened.status === 401) ctx.session.rejected(lease, 401);
       if (opened.status !== 200)
         return [403, 404, 410].includes(opened.status) ? "unavailable" : "network";
       running.total = expect?.size ?? opened.total;

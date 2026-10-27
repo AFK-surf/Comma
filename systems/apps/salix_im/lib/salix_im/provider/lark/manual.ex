@@ -16,12 +16,15 @@ defmodule SalixIM.Provider.Lark.Manual do
   @doc_type_param "Optional. docx (default) or wiki; only needed when doc is a bare wiki node token."
   @minute_param "Lark Minutes link (/minutes/<token>) or minute token."
   @account_param "Optional signed-in Lark account (alias or open_id from lark.list_accounts) to read as that person instead of as the bot."
-  @meeting_account_param "Optional signed-in Lark account (alias or open_id from lark.list_accounts). Omit to use every signed-in account."
+  @meeting_account_param "Optional: app for the app's own identity, or a signed-in Lark account (alias or open_id from lark.list_accounts). Omit to use the app and then every signed-in account."
+
+  @accounts_from_param "Optional: the accounts_from of the result before. A call reads as at most 10 identities; more_accounts names where the next call starts."
 
   # Reads that can run as a signed-in person when the request names an
   # `account` (`SalixIM.Provider.Lark.Meetings.as_account/3`).
   @account_apis ~w(lark.fetch_doc lark.list_doc_comments lark.fetch_doc_media lark.get_minute
-                   lark.list_minutes lark.fetch_minute_media)
+                   lark.list_minutes lark.fetch_minute_media lark.list_wiki_spaces
+                   lark.list_wiki_nodes)
 
   @doc "The names of the cloud document operations."
   @spec document_api_names() :: [String.t()]
@@ -83,7 +86,7 @@ defmodule SalixIM.Provider.Lark.Manual do
         "lark.update_message and lark.delete_message work only on the bot's own messages: use the message_id a send returned, never the message of a person.",
         "Lark cloud documents (Docx and Docx pages in a wiki) are read and written as this app, by the Router and by Workers. The app opens a document only when it is shared with a chat that includes the bot, shared with the app, or open by link inside the tenant; on a permission error, ask the person to share the document with the source chat, and never say a document is empty or missing. Read with lark.fetch_doc (the outline first for a long document), then edit with lark.update_doc using block IDs from a detail=with-ids fetch, and fetch again after every write because block IDs change. Create with lark.create_doc and share_chat_id set to the source chat unless the person names another audience, then answer with the returned URL. Comments, collaborators, link sharing, embedded media and wiki discovery have their own lark.*doc* and lark.list_wiki_* operations. Sharing a document opens all of its content to that audience. Spreadsheets, Base, legacy /doc/ documents and Feishu (feishu.cn) links are not supported.",
         "Lark Minutes recordings are read as this app, by the Router and by Workers: lark.get_minute with include for the AI summary, todos, chapters, keywords or transcript; lark.list_minutes to find recordings; lark.fetch_minute_media for the audio or video. The same sharing rule applies as for documents. Minutes cannot be edited here. Ask before you call lark.request_minute_access, because Lark notifies the owner.",
-        "Lark shows a meeting, its AI meeting notes, its transcript and its recording only to people. When people of the Agent Swarm signed in (lark.list_accounts), read them as those people without asking anyone to share: find the meeting with lark.search_meetings, read it with lark.get_meeting, then the notes with lark.get_note and lark.fetch_doc, and the recording with lark.get_minute, passing the account that found the meeting. The document and Minutes reads take the same account parameter when the bot itself cannot open a link. When the person who asks has no signed-in account (or theirs expired), let them sign in from the chat: call oauth.request_authorization with provider lark, an alias such as lark-<their name> (an expired account's own alias to renew it) and a reason, send the returned authorization_url in the chat the request came from (like any answer), and continue once the authorization completes. Swarm admins can also add accounts on the swarm's Connections page.",
+        "Find Lark content yourself; never ask a person to paste a link. The app and every person who signed in for the Agent Swarm (lark.list_accounts) each see their own documents, wiki, meetings, AI meeting notes and Minutes, lark.search_docs (documents and wiki pages by keyword), lark.list_drive_files (a cloud space) and lark.search_meetings run as the app and then as each signed-in person unless you name one account (account=app for the app alone); lark.list_wiki_spaces, lark.list_wiki_nodes and lark.list_minutes run as the app, so call them again with each signed-in account to see what that person sees. Read what you found with the same account: documents and wiki pages with lark.fetch_doc, a meeting with lark.get_meeting and then its notes with lark.get_note and lark.fetch_doc, a recording with lark.get_minute. A person sees far more than the app. When the person who asks has no signed-in account (or theirs expired) and the app finds nothing, let them sign in from the chat: call oauth.request_authorization with provider lark, an alias such as lark-<their name> (an expired account's own alias to renew it) and a reason, send the returned authorization_url in the chat the request came from (like any answer), and continue once the authorization completes. Swarm admins can also add accounts on the swarm's Connections page.",
         "The runtime publishes the Task card after im_api.internal.task.create for a request a person made in Lark. Do not publish again when task_card.status is queued. When that publication failed, call lark.post_task_card once for the existing conversation_id. The card answers the source message and follows the Task by itself; never create another Task to repair the card.",
         "When Lark refuses for a missing permission, do not retry. Tell the person that the app's owner must add the scope in the Lark Developer Console and publish a new version of the app.",
         SalixIM.Provider.Lark.RouterGuidance.meeting_instruction() <>
@@ -116,7 +119,8 @@ defmodule SalixIM.Provider.Lark.Manual do
             "mention_all" =>
               "Optional boolean. Mentions everyone; the chat must allow the bot to do so.",
             "path" =>
-              "Optional workspace path of one file to send after the text. An image of at most 10 MB shows inline; any other file of at most 30 MB shows as a file."
+              "Optional workspace path of one file to send after the text. An image of at most 10 MB shows inline; any other file of at most 30 MB shows as a file.",
+            "question" => SalixIM.QuestionCard.parameter()
           }
         },
         %{
@@ -424,26 +428,54 @@ defmodule SalixIM.Provider.Lark.Manual do
     end)
   end
 
-  # Meetings as a person who signed in for the Group: Lark shows a meeting,
-  # its notes and its recording only to people.
+  # Discovery and meetings, as the app or a person who signed in for the
+  # Group (`SalixIM.Provider.Lark.Meetings`).
   defp meeting_apis do
     [
       %{
         "name" => "lark.list_accounts",
         "safety" => "read",
         "description" =>
-          "List the Lark people who signed in for this Agent Swarm: alias, open_id, name and status. The bot reads meetings, meeting notes, recordings and documents as one of them.",
+          "List the Lark people who signed in for this Agent Swarm: alias, open_id, name, status, and account (what to pass as account to read as them). The bot reads meetings, meeting notes, recordings and documents as one of them.",
         "required_params" => [],
         "parameters" => %{}
+      },
+      %{
+        "name" => "lark.search_docs",
+        "safety" => "read",
+        "description" =>
+          "Search Lark documents and wiki pages by keyword (title and content), as the app and as the signed-in accounts: each hit with title, type, url, token, owner and the account that found it. A person finds what they may open, so search before asking anyone for a link. Read a hit with lark.fetch_doc (docx and wiki pages) passing its url and the same account. next_pages names a page_token per account; pass it with that account.",
+        "required_params" => ["query"],
+        "parameters" => %{
+          "query" => "Keyword, at most 30 characters.",
+          "account" => @meeting_account_param,
+          "accounts_from" => @accounts_from_param,
+          "page_size" => "Optional, at most 20.",
+          "page_token" => "Optional page_token from next_pages, with its account."
+        }
+      },
+      %{
+        "name" => "lark.list_drive_files",
+        "safety" => "read",
+        "description" =>
+          "List one folder of a Lark cloud space, as the app and as the signed-in accounts: name, type, token and url of each file and folder, and the account it belongs to. Without folder, the root of each identity's own space. Open a folder by passing its token as folder with the same account; read a docx with lark.fetch_doc.",
+        "required_params" => [],
+        "parameters" => %{
+          "folder" => "Optional folder token; omit for the root of the space.",
+          "account" => @meeting_account_param,
+          "accounts_from" => @accounts_from_param,
+          "page_token" => "Optional page_token from next_pages, with its account."
+        }
       },
       %{
         "name" => "lark.search_meetings",
         "safety" => "read",
         "description" =>
-          "Search finished Lark meetings, newest first, as the signed-in accounts: each meeting the account took part in or can see, with meeting id, topic and times, and the account that found it. Pass at least one filter. For a recurring meeting such as a daily stand-up, search its topic with start and end. next_pages names a page_token per account; pass it with that account.",
+          "Search finished Lark meetings, newest first, as the app and as the signed-in accounts: each meeting the identity took part in or can see, with meeting id, topic and times, and the account that found it. Pass at least one filter. For a recurring meeting such as a daily stand-up, search its topic with start and end. next_pages names a page_token per account; pass it with that account.",
         "required_params" => [],
         "parameters" => %{
           "account" => @meeting_account_param,
+          "accounts_from" => @accounts_from_param,
           "query" => "Optional keyword or 9-digit meeting number, at most 50 characters.",
           "organizer_ids" => "Optional list of organizer open_ids (any of them).",
           "participant_ids" => "Optional list of participant open_ids (any of them).",
@@ -457,26 +489,28 @@ defmodule SalixIM.Provider.Lark.Manual do
         "name" => "lark.get_meeting",
         "safety" => "read",
         "description" =>
-          "Read one finished Lark meeting as a signed-in account: topic, times, host and participants, its note_id (AI meeting notes) and the minute_token of its recording. Read the notes with lark.get_note and the recording with lark.get_minute, passing the same account.",
+          "Read one finished Lark meeting as the app or a signed-in account (each in turn until one may see it): topic, times, host and participants, its note_id (AI meeting notes) and the minute_token of its recording. Read the notes with lark.get_note and the recording with lark.get_minute, passing the same account.",
         "required_params" => ["meeting_id"],
         "parameters" => %{
           "meeting_id" =>
             "The meeting id from lark.search_meetings (a long number, not the 9-digit meeting number).",
-          "account" => @meeting_account_param
+          "account" => @meeting_account_param,
+          "accounts_from" => @accounts_from_param
         }
       },
       %{
         "name" => "lark.get_note",
         "safety" => "read",
         "description" =>
-          "Read the AI meeting notes of a Lark meeting as a signed-in account: note_doc_token (the notes document), verbatim_doc_token (the transcript document) and shared_doc_tokens. Read each document with lark.fetch_doc, passing its token and the same account. A unified note (display_type unified) has no transcript document: pass include_transcript=true to get its transcript.",
+          "Read the AI meeting notes of a Lark meeting as the app or a signed-in account: note_doc_token (the notes document), verbatim_doc_token (the transcript document) and shared_doc_tokens. Read each document with lark.fetch_doc, passing its token and the same account. A unified note (display_type unified) has no transcript document: pass include_transcript=true to get its transcript, which Lark gives only to a signed-in account.",
         "required_params" => ["note_id"],
         "parameters" => %{
           "note_id" => "The note_id from lark.get_meeting.",
           "include_transcript" =>
             "Optional true: for a unified note, read its whole transcript as Markdown (a long one is put in your workspace).",
           "locale" => "Optional transcript language, such as zh_cn (default) or en_us.",
-          "account" => @meeting_account_param
+          "account" => @meeting_account_param,
+          "accounts_from" => @accounts_from_param
         }
       }
     ]

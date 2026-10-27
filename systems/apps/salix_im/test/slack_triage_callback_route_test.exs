@@ -63,6 +63,20 @@ defmodule SalixIM.SlackTriageCallbackRouteTest do
           "/api/users.info" ->
             %{"ok" => true, "user" => %{"profile" => %{"display_name" => "Test participant"}}}
 
+          # Ingress marks every delivered @-mention with :eyes:.
+          "/api/reactions.add" ->
+            %{"ok" => true}
+
+          path when path in ["/api/chat.update", "/api/chat.postEphemeral"] ->
+            {:ok, raw, _conn} = read_body(conn)
+
+            SystemsRuntime.Proc.send(
+              SystemsRuntime.fetch_env!(:salix_im, :triage_route_test_pid),
+              {:slack_write, path, URI.decode_query(raw)}
+            )
+
+            %{"ok" => true}
+
           _ ->
             SystemsRuntime.Proc.send(
               SystemsRuntime.fetch_env!(:salix_im, :triage_route_test_pid),
@@ -206,6 +220,65 @@ defmodule SalixIM.SlackTriageCallbackRouteTest do
     assert agent_id == connect["inbound_agent_id"]
     assert ThreadRouteOwner.lookup(route_scope(connect, envelope)) == {:ok, :legacy}
     refute_received {:triage_consumer_called, _, _}
+  end
+
+  test "a press on a question card is the presser's command, once per card", %{connect: connect} do
+    press = fn user ->
+      payload = %{
+        "type" => "block_actions",
+        "api_app_id" => connect["app_id"],
+        "team" => %{"id" => connect["workspace_id"]},
+        "user" => %{"id" => user},
+        "channel" => %{"id" => connect["approved_channel_id"]},
+        "message" => %{
+          "ts" => "1787019050.000001",
+          "text" => "Deploy now?",
+          "blocks" => [
+            %{"type" => "markdown", "text" => "Deploy now?"},
+            %{"type" => "actions", "block_id" => "bft_question_actions", "elements" => []}
+          ]
+        },
+        "actions" => [
+          %{
+            "action_id" => "bft_question_send",
+            "value" => Jason.encode!(%{"l" => ["Yes", "No"], "k" => "en"}),
+            "action_ts" => "1787019051.000001"
+          }
+        ],
+        "state" => %{
+          "values" => %{
+            "bft_question_actions" => %{
+              "bft_question_pick" => %{"selected_option" => %{"value" => "0"}}
+            }
+          }
+        }
+      }
+
+      raw = "payload=" <> URI.encode_www_form(Jason.encode!(payload))
+      timestamp = SystemsClock.system_time(:second)
+
+      mac =
+        :crypto.mac(:hmac, :sha256, connect["signing_secret"], "v0:#{timestamp}:#{raw}")
+        |> Base.encode16(case: :lower)
+
+      headers = [
+        {"x-slack-request-timestamp", Integer.to_string(timestamp)},
+        {"x-slack-signature", "v0=" <> mac}
+      ]
+
+      ProviderHTTP.handle_slack_interaction(connect["app_id"], payload, headers, raw)
+    end
+
+    assert press.("U_TRIAGE_HUMAN") == {:ok, :accepted}
+    settle_receive({:explicit_mention_delivery, agent_id, payload, _opts})
+    assert agent_id == connect["inbound_agent_id"]
+    assert inspect(payload) =~ "Yes"
+    settle_receive({:slack_write, "/api/chat.update", %{"ts" => "1787019050.000001"}})
+
+    assert press.("U_OTHER_HUMAN") == {:ok, :accepted}
+    settle_receive({:slack_write, "/api/chat.postEphemeral", %{"user" => "U_OTHER_HUMAN"}})
+    refute_received {:explicit_mention_delivery, _, _, _}
+    refute_received {:unexpected_slack_request, _}
   end
 
   test "another app's reply in a command thread reaches the Router", %{connect: connect} do

@@ -103,6 +103,13 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
         :invalid ->
           {:final, "not JSON"}
 
+        # MiniMax writes its reasoning into the answer before the object.
+        :thinking ->
+          {:final, "<think>Rank the work.</think>\n\n" <> Jason.encode!(draft(messages))}
+
+        :fenced ->
+          {:final, "```json\n" <> Jason.encode!(draft(messages)) <> "\n```"}
+
         :failed ->
           {:error, %{"category" => "transport"}}
 
@@ -430,6 +437,9 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
             %{"ok" => true, "user_id" => "UCOMMALOCAL", "team_id" => "TCOMMALOCAL"},
             Map.get(state, :auth, %{})
           )
+
+        {"/api/users.info", nil} ->
+          %{"ok" => true, "user" => %{"name" => "comma-local-user"}}
 
         {"/api/search.messages", _query} when is_map_key(state, :search_error) ->
           %{"ok" => false, "error" => state.search_error}
@@ -1186,6 +1196,107 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
     assert :ok = RecommendationGenerate.perform(%Oban.Job{args: %{"run_id" => run["id"]}})
     assert {:ok, %{run: %{status: "published"}}} = Recommendations.run_context(run["id"])
     assert objectives.() == ["Review First", "Review Third"]
+  end
+
+  test "a Router answer after inline reasoning or in a code block publishes" do
+    {user, workspace, _profile, _token, _connection} = member_fixture!()
+
+    member_response([
+      %{
+        "id" => "release",
+        "title" => "Release checks",
+        "url" => "https://linear.app/team/issue/release",
+        "assignee" => %{"id" => "viewer"},
+        "state" => %{"type" => "started"}
+      }
+    ])
+
+    for mode <- [:thinking, :fenced] do
+      DraftLLM.mode(mode)
+      {:ok, %{run: run}} = Recommendations.request_refresh(user, %{}, workspace["id"])
+      assert :ok = RecommendationGenerate.perform(%Oban.Job{args: %{"run_id" => run["id"]}})
+      assert {:ok, %{run: %{status: "published"}}} = Recommendations.run_context(run["id"])
+    end
+  end
+
+  test "a dismissed item leaves the briefing at once and is not offered to the Router again" do
+    {user, workspace, _profile, _token, _connection} = member_fixture!()
+
+    member_response(
+      Enum.map(~w(First Second), fn title ->
+        %{
+          "id" => title,
+          "title" => title,
+          "url" => "https://linear.app/team/issue/#{title}",
+          "assignee" => %{"id" => "viewer"},
+          "state" => %{"type" => "started"}
+        }
+      end)
+    )
+
+    {:ok, %{run: run}} = Recommendations.request_refresh(user, %{}, workspace["id"])
+    assert :ok = RecommendationGenerate.perform(%Oban.Job{args: %{"run_id" => run["id"]}})
+    assert {:ok, %{"snapshot" => snapshot}} = Recommendations.get(user, %{}, workspace["id"])
+    [card] = snapshot["cards"]
+
+    links =
+      for item <- card["items"], %{"kind" => "inline-link", "link" => l} <- item["parts"], do: l
+
+    second = Enum.find(links, &(&1["href"] == "https://linear.app/team/issue/Second"))
+
+    assert {:error, :invalid_recommendation_dismissal} =
+             Recommendations.dismiss(user, %{}, workspace["id"], second["sourceId"], "")
+
+    assert {:ok, %{"state" => "fresh", "snapshot" => dismissed}} =
+             Recommendations.dismiss(
+               user,
+               %{},
+               workspace["id"],
+               second["sourceId"],
+               second["href"]
+             )
+
+    # The row, its prompt and its attention item leave. The summary keeps its
+    # lead-in and the other item's clause, now its last.
+    assert [%{"items" => [only]}] = dismissed["cards"]
+
+    assert [
+             %{
+               "kind" => "inline-link",
+               "link" => %{"href" => "https://linear.app/team/issue/First"}
+             }
+           ] =
+             only["parts"]
+
+    assert [
+             %{"kind" => "markdown", "text" => lead},
+             %{
+               "kind" => "inline-link",
+               "link" => %{"href" => "https://linear.app/team/issue/First"}
+             },
+             %{"kind" => "markdown", "text" => "."}
+           ] = dismissed["summary"]
+
+    [title, _] = String.split(hd(snapshot["summary"])["text"], "\n\n", parts: 2)
+    assert String.starts_with?(lead, title <> "\n\n")
+    assert String.ends_with?(lead, "Review First ")
+    refute lead =~ "Second"
+    assert Map.keys(dismissed["prompts"]) == [only["action"]["promptId"]]
+
+    assert Enum.map(dismissed["attentionItems"], & &1["sourceUrl"]) == [
+             "https://linear.app/team/issue/First"
+           ]
+
+    assert {:ok, %{"snapshot" => ^dismissed}} = Recommendations.get(user, %{}, workspace["id"])
+
+    # The next run offers the Router only the other item.
+    DraftLLM.mode(:normal)
+    {:ok, %{run: run}} = Recommendations.request_refresh(user, %{}, workspace["id"])
+    assert :ok = RecommendationGenerate.perform(%Oban.Job{args: %{"run_id" => run["id"]}})
+    assert {:ok, %{run: %{status: "published"}}} = Recommendations.run_context(run["id"])
+    {messages, [], _} = List.last(DraftLLM.requests())
+    candidates = Jason.decode!(List.last(messages).content)["candidates"]
+    assert Enum.map(candidates, & &1["title"]) == ["First"]
   end
 
   test "an unusable Router answer fails the run and keeps the last briefing" do

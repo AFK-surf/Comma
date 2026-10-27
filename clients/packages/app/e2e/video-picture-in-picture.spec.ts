@@ -46,15 +46,17 @@ const openHomeWithVideo = async (page: Page) => {
     ...message,
     created_at: 1_720_000_000 + index,
   }));
-  const stub = await startChatSmokeStub({ workspaceTranscript: transcript });
+  // The stub answers the attachment as the endpoint does: whole, or the byte
+  // range a media element asks for.
+  const stub = await startChatSmokeStub({
+    workspaceTranscript: transcript,
+    attachmentFiles: { "msg_video:1": { bytes: video, contentType: "video/webm" } },
+  });
   await installBrowserTestSession(page, {
     apiBaseUrl: stub.baseUrl,
     email: "pip@comma.local",
     token: "comma_sess_pip",
   });
-  await page.route("**/messages/msg_video/attachments/*", (route) =>
-    route.fulfill({ status: 200, contentType: "video/webm", body: video })
-  );
   await page.goto("/");
   // The bytes load once the message nears the view; scroll up to it like a
   // reader. The player then replaces its same-sized placeholder.
@@ -70,9 +72,11 @@ const openHomeWithVideo = async (page: Page) => {
   const frame = message.locator("figure.chat-panel-video");
   await expect(frame.locator("video")).toBeAttached();
   await expect(frame).toBeInViewport({ ratio: 1 });
+  // The player streams with `preload="metadata"`: the browser promises the metadata and may hold the rest until it
+  // plays.
   await expect
     .poll(() => frame.locator("video").evaluate((v: HTMLVideoElement) => v.readyState))
-    .toBeGreaterThan(1);
+    .toBeGreaterThan(0);
   // One element for the whole test: it must keep playing wherever it is shown.
   await page.evaluate(() => {
     const element = document.querySelector<HTMLVideoElement>(

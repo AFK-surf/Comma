@@ -137,18 +137,15 @@ defmodule Salix.Bindings.AgentConversations do
 
   defp station_runs(_scope, _choice), do: :ok
 
-  # The station must be connected now, and a desktop station take Tasks as
-  # stations ask each other (`tasks` 2, systems/station/docs/tasks.md):
-  # nothing is woken on the way. An agent starts the Group's Cloud VM itself (`cloud_vm.start`); a
-  # Task runs there when the Group's Cloud VM switch is on. Giving a station the Task is the
-  # `station.session` egress; with no transcript to label, a Group in IFC
-  # enforce mode refuses it.
-  #
-  # A Loop Task (`loop`) runs its Loop while every app is closed. A person's
-  # own computer, a station minted for its owner (`meta.owner_user_id`, the
-  # Comma desktop station), stops taking Tasks when the app quits and is never
-  # woken, so it is refused for one, connected or not. Stations Salix or a
-  # provisioner runs, and the Cloud VM, stay allowed.
+  # A desktop station must be connected now, and take Tasks as stations ask
+  # each other (`tasks` 2, systems/station/docs/tasks.md): nothing wakes a
+  # person's computer. The Group's Cloud VM need not be running: a Task runs
+  # there when the Group's Cloud VM switch is on, and one made while the VM
+  # sleeps, wakes, or was never made is kept for it and given to it once
+  # Salix has it up (`SalixWeb.StationTasks`). Giving a station the Task is
+  # the `station.session` egress; with no transcript to label, a Group in IFC
+  # enforce mode refuses it. A Loop Task never asks: it runs inside Salix
+  # (`SalixIM.TaskPlacement`).
   @impl SalixIM.Ports.TaskCreate
   def runs_on(scope, request) do
     ctx = %{tenant_id: scope.tenant_id, group_id: scope.group_id, agent_id: scope[:agent_id]}
@@ -168,7 +165,7 @@ defmodule Salix.Bindings.AgentConversations do
       {:ok, %{"tenant_id" => tenant, "group_id" => group} = agent}
       when tenant == scope.tenant_id and group == scope.group_id ->
         if SalixAgent.CloudVM.allowed?(agent),
-          do: cloud_vm_running(scope),
+          do: {:ok, %{"kind" => "cloud_vm", "device_id" => cloud_vm_device_id(scope)}},
           else: {:error, :cloud_vm_disabled}
 
       {:ok, _other_group} ->
@@ -179,35 +176,140 @@ defmodule Salix.Bindings.AgentConversations do
     end
   end
 
+  defp resolve_runs_on(scope, %{"kind" => "automatic", "model" => model}),
+    do: SalixWeb.TaskStations.resolve(scope, model)
+
   defp resolve_runs_on(scope, %{"kind" => "station", "device_id" => device_id} = request)
        when map_size(request) == 2 and is_binary(device_id) and device_id != "" do
     if device_id == SalixStore.RuntimeIds.cloud_vm_device_id(scope.group_id) do
       {:error, :use_cloud_vm_kind}
     else
-      with {:ok, device} <- device(scope, device_id),
-           :ok <- unattended(scope, device),
+      with :ok <-
+             SalixStore.ComputeStation.admit_device(
+               scope.tenant_id,
+               scope.group_id,
+               device_id
+             ),
+           {:ok, device} <- device(scope, device_id),
            {:ok, _device} <- connected_station(device),
+           {:ok, _owner} <-
+             SalixEnv.StationConnection.authorize(
+               SalixStore.ComputeStation.connection(scope.tenant_id, scope.group_id, device)
+             ),
            do: {:ok, %{"kind" => "station", "device_id" => device_id}}
+    end
+  end
+
+  # A coding Task: a new sandbox of its own (`SalixWeb.CodingSandboxes`) with
+  # GitHub repository `repo` checked out. The repository must be one the
+  # Group's connected GitHub account reads, and the Group under its limit of
+  # sandboxes. Answers the repository with its base ref.
+  #
+  # A Task that continues pull request `repo.pull_request` works on that pull
+  # request's head branch, into its base: the sandbox's grant pushes to the
+  # Task branch, so the Worker's pushes update the pull request itself.
+  defp resolve_runs_on(scope, %{"kind" => "sandbox", "repo" => repo} = request)
+       when map_size(request) == 2 do
+    with true <- SalixWeb.L4ES.enabled?() || {:error, :sandbox_unavailable},
+         {:ok, repo} <- repo(repo),
+         :ok <- sandbox_room(scope),
+         {:ok, %{token: token}} <-
+           SalixWeb.CodingSandboxes.github().token(scope.tenant_id, scope.group_id),
+         {:ok, found} <- github_repo(token, repo),
+         {:ok, repo} <- carried_pull_request(token, repo) do
+      {:ok,
+       %{
+         "kind" => "sandbox",
+         "repo" => Map.put_new(repo, "base_ref", found.default_branch)
+       }}
     end
   end
 
   defp resolve_runs_on(_scope, _request), do: {:error, :invalid_runs_on}
 
-  defp cloud_vm_running(scope) do
-    device_id = SalixStore.RuntimeIds.cloud_vm_device_id(scope.group_id)
+  @github_name ~r/^[A-Za-z0-9_.-]{1,100}$/
+  @git_ref ~r/^(?!\/)(?!.*\.\.)(?!.*\/\/)[A-Za-z0-9._\/-]{1,255}(?<!\/)(?<!\.lock)$/
 
-    # Its station is Salix's own image's: it takes Tasks as Salix asks. It
-    # is running once the VM is ready: a station that connected while its
-    # archive is still to be restored takes no work (a used station cannot
-    # take its archive back).
-    with {:ok, %{"status" => "ready"}} <-
-           SalixWeb.ComputeProviders.Cloudflare.get_record(scope.group_id),
-         {:ok, _device} <- connected(scope, device_id) do
-      {:ok, %{"kind" => "cloud_vm", "device_id" => device_id}}
+  # A pull request names the Task's branches itself: it comes without them.
+  defp repo(%{"pull_request" => number} = repo)
+       when is_integer(number) and number > 0 do
+    with false <- Map.has_key?(repo, "base_ref") or Map.has_key?(repo, "branch"),
+         {:ok, rest} <- repo(Map.delete(repo, "pull_request")) do
+      {:ok, Map.put(rest, "pull_request", number)}
     else
-      _not_running -> {:error, :cloud_vm_not_running}
+      true -> {:error, :invalid_repo}
+      error -> error
     end
   end
+
+  defp repo(%{"owner" => owner, "name" => name} = repo)
+       when is_binary(owner) and is_binary(name) do
+    refs = Map.take(repo, ["base_ref", "branch"])
+
+    if Regex.match?(@github_name, owner) and Regex.match?(@github_name, name) and
+         map_size(Map.drop(repo, ["owner", "name", "base_ref", "branch"])) == 0 and
+         Enum.all?(refs, fn {_k, v} -> is_binary(v) and Regex.match?(@git_ref, v) end),
+       do: {:ok, Map.merge(%{"owner" => owner, "name" => name}, refs)},
+       else: {:error, :invalid_repo}
+  end
+
+  defp repo(_repo), do: {:error, :invalid_repo}
+
+  # An open pull request of the repository, its head branch in the repository
+  # itself: the sandbox's grant covers that repository only.
+  defp carried_pull_request(
+         token,
+         %{"owner" => owner, "name" => name, "pull_request" => number} = repo
+       ) do
+    case SalixWeb.CodingSandboxes.github().pull_request_refs(token, owner, name, number) do
+      {:ok, %{state: state}} when state not in ["open", "draft"] ->
+        {:error, {:pull_request_not_open, number, state}}
+
+      {:ok, %{head_ref: head, head_repo: head_repo, base_ref: base}} ->
+        cond do
+          not is_binary(head_repo) or not Regex.match?(@git_ref, head) or
+              not Regex.match?(@git_ref, base) ->
+            {:error, {:pull_request_branch_unusable, number}}
+
+          String.downcase(head_repo) != String.downcase("#{owner}/#{name}") ->
+            {:error, {:pull_request_from_fork, number}}
+
+          true ->
+            {:ok, Map.merge(repo, %{"base_ref" => base, "branch" => head})}
+        end
+
+      {:error, :github_reauthorization_required} = error ->
+        error
+
+      {:error, :not_found} ->
+        {:error, {:pull_request_not_found, "#{owner}/#{name}##{number}"}}
+
+      {:error, _} ->
+        {:error, {:pull_request_unreadable, "#{owner}/#{name}##{number}"}}
+    end
+  end
+
+  defp carried_pull_request(_token, repo), do: {:ok, repo}
+
+  defp sandbox_room(scope) do
+    max = SalixWeb.L4ES.max_sandboxes(scope.tenant_id)
+
+    if SalixStore.CodingSandboxes.live_count(scope.tenant_id, scope.group_id) < max,
+      do: :ok,
+      else: {:error, {:sandbox_limit, max}}
+  end
+
+  defp github_repo(token, %{"owner" => owner, "name" => name}) do
+    case SalixWeb.CodingSandboxes.github().repo(token, owner, name) do
+      {:ok, found} -> {:ok, found}
+      {:error, :github_reauthorization_required} = error -> error
+      {:error, _} -> {:error, {:repo_not_found, "#{owner}/#{name}"}}
+    end
+  end
+
+  # Its station is Salix's own image's: it takes Tasks as Salix asks, once
+  # the VM is ready and it has connected (`SalixWeb.StationTasks.invite/1`).
+  defp cloud_vm_device_id(scope), do: SalixStore.RuntimeIds.cloud_vm_device_id(scope.group_id)
 
   # A device that reports no `tasks` capability runs the old connector
   # (`salix-connect`), which runs no Task: its user installs the Comma station
@@ -227,16 +329,6 @@ defmodule Salix.Bindings.AgentConversations do
       {_unknown, {:error, _} = offline} when not is_map(capabilities) -> offline
       {refusal, _online} -> {:error, refusal}
     end
-  end
-
-  defp unattended(%{loop: true}, %{"meta" => %{"owner_user_id" => owner}})
-       when is_binary(owner) and owner != "",
-       do: {:error, :personal_station_for_loop}
-
-  defp unattended(_scope, _device), do: :ok
-
-  defp connected(scope, device_id) do
-    with {:ok, device} <- device(scope, device_id), do: online(device)
   end
 
   defp device(scope, device_id) do

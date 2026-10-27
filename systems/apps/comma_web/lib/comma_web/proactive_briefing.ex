@@ -101,7 +101,7 @@ defmodule CommaWeb.ProactiveBriefing do
         "- " <> String.slice(item["title"] || "", 0, 300) <> link(item["url"])
       end)
 
-    "The owner's scheduled Routine briefing was published. Its first items:\n" <> lines
+    "The user's scheduled Routine briefing was published. Its first items:\n" <> lines
   end
 
   defp link(url) when is_binary(url) and url != "",

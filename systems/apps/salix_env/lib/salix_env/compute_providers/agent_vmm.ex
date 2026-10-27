@@ -295,11 +295,18 @@ defmodule SalixEnv.ComputeProviders.AgentVMM do
            ),
          {:ok, container} <- find_container(listed, container_id(workload)) do
       if container do
-        with {:ok, allocation} <- persist_container_facts(allocation, container) do
+        with :ok <- ensure_current_runtime_session(workload, session),
+             {:ok, allocation} <- persist_container_facts(allocation, container, workload) do
           {:ok, %{outcome: :pending, resource: allocation}}
         end
       else
-        reconcile_absent_container(allocation, workload, image_metadata, session)
+        if field(workload, :observed_state) == "ready" do
+          with :ok <- ensure_current_runtime_session(workload, session),
+               {:ok, %{resource: allocation}} <- persist_absent_container(allocation, workload),
+               do: {:ok, %{outcome: :pending, resource: allocation}}
+        else
+          reconcile_absent_container(allocation, workload, image_metadata, session)
+        end
       end
     end
   end
@@ -428,14 +435,11 @@ defmodule SalixEnv.ComputeProviders.AgentVMM do
   end
 
   defp refresh_runtime_container(allocation, workload) do
-    with {:ok, session} <- AgentVMM.current_host_session_for_workload(field(workload, :id)),
-         {:ok, listed} <-
-           AgentVMMHostClient.provider_call(:container_list, %{}, field(workload, :id)),
-         {:ok, container} <- find_container(listed, container_id(workload)) do
+    with {:ok, session, container} <- current_container_observation(workload) do
       case container && normalize_container_state(container["state"]) do
         nil ->
           with :ok <- ensure_current_runtime_session(workload, session),
-               {:ok, %{resource: allocation}} <- persist_absent_container(allocation) do
+               {:ok, %{resource: allocation}} <- persist_absent_container(allocation, workload) do
             {:ok, allocation}
           end
 
@@ -454,6 +458,15 @@ defmodule SalixEnv.ComputeProviders.AgentVMM do
     end
   end
 
+  defp current_container_observation(workload) do
+    with {:ok, session} <- AgentVMM.current_host_session_for_workload(field(workload, :id)),
+         {:ok, listed} <-
+           AgentVMMHostClient.provider_call(:container_list, %{}, field(workload, :id)),
+         {:ok, container} <- find_container(listed, container_id(workload)) do
+      {:ok, session, container}
+    end
+  end
+
   defp confirm_runtime_container(allocation, workload, container, session) do
     with true <- is_map(container),
          true <- normalize_container_state(container["state"]) == "running",
@@ -467,26 +480,69 @@ defmodule SalixEnv.ComputeProviders.AgentVMM do
   end
 
   defp persist_verified_runtime_container(allocation, workload, container, session) do
+    with {:ok, facts} <-
+           verified_runtime_container_facts(allocation, workload, container, session),
+         do: persist_facts(allocation, facts, workload)
+  end
+
+  defp verified_runtime_container_facts(allocation, workload, container, session) do
     with true <- is_map(container),
-         generation when is_binary(generation) and generation != "" <-
-           provider_fact(allocation, "runtime_container_generation_id", nil),
-         true <- container["generation_id"] == generation,
-         {:ok, instance} <- verified_container_instance(allocation, container),
-         :ok <- ensure_current_runtime_session(workload, session),
-         {:ok, allocation} <- persist_container_facts(allocation, container) do
-      persist_facts(allocation, %{
-        "runtime_container_instance_id" => instance,
-        "runtime_verified_host_epoch" => session.connection_epoch
-      })
+         {:ok, generation} <- verified_container_generation(allocation, container),
+         {:ok, instance} <- verified_container_instance(allocation, workload, container),
+         :ok <- ensure_current_runtime_session(workload, session) do
+      {:ok,
+       %{
+         "current_container" => container,
+         "container_status" => normalize_container_state(container["state"]),
+         "container_generation_id" => generation,
+         "runtime_container_generation_id" => generation,
+         "runtime_container_instance_id" => instance,
+         "runtime_verified_host_epoch" => session.connection_epoch
+       }}
     else
       {:error, _} = error -> error
       _ -> {:error, :runtime_instance_changed}
     end
   end
 
-  defp verified_container_instance(allocation, container) do
+  # The generation Salix verified last must match the listed container. Before
+  # the first verification, adopt a running container whose generation is the
+  # delete fence `container_generation_id`: the container Salix recorded under
+  # this name, at creation or when `reconcile_container` found it listed with
+  # no container recorded. Created/stopped observations can confirm that
+  # same container without granting a live execution identity.
+  defp verified_container_generation(allocation, container) do
+    generation = container["generation_id"]
+    verified = provider_fact(allocation, "runtime_container_generation_id", nil)
+    created = provider_fact(allocation, "container_generation_id", nil)
+
+    cond do
+      not (is_binary(generation) and generation != "") ->
+        {:error, :runtime_instance_changed}
+
+      is_binary(verified) and verified != "" ->
+        if generation == verified,
+          do: {:ok, generation},
+          else: {:error, :runtime_instance_changed}
+
+      generation == created and
+          normalize_container_state(container["state"]) in ["created", "stopped", "running"] ->
+        {:ok, generation}
+
+      true ->
+        {:error, :runtime_instance_changed}
+    end
+  end
+
+  # Only a meeting_runtime's carrier binds one execution instance. Another
+  # Workload's verified container generation can run as a new instance after
+  # a Guest restart, and that instance replaces the recorded one.
+  defp verified_container_instance(allocation, workload, container) do
     instance = container["instance_id"]
-    expected = provider_fact(allocation, "runtime_container_instance_id", nil)
+
+    expected =
+      if runtime_bearing?(workload),
+        do: provider_fact(allocation, "runtime_container_instance_id", nil)
 
     case normalize_container_state(container["state"]) do
       "running"
@@ -820,7 +876,8 @@ defmodule SalixEnv.ComputeProviders.AgentVMM do
                    field(workload, :id)
                  ),
                {:ok, container} <- find_container(listed, container_id(workload)),
-               {:ok, allocation} <- persist_expired_container_facts(allocation, container) do
+               {:ok, allocation} <-
+                 persist_expired_container_facts(allocation, workload, container) do
             {:ok, %{outcome: :pending, resource: allocation}}
           else
             value when not is_binary(value) or value == "" ->
@@ -854,7 +911,8 @@ defmodule SalixEnv.ComputeProviders.AgentVMM do
                    field(workload, :id)
                  ),
                {:ok, container} <- find_container(listed, container_id(workload)),
-               {:ok, allocation} <- persist_expired_container_facts(allocation, container) do
+               {:ok, allocation} <-
+                 persist_expired_container_facts(allocation, workload, container) do
             {:ok, %{outcome: :pending, resource: allocation}}
           else
             value when not is_binary(value) or value == "" ->
@@ -865,7 +923,7 @@ defmodule SalixEnv.ComputeProviders.AgentVMM do
           end
 
         nil ->
-          persist_expired_container_facts(allocation, nil)
+          persist_expired_container_facts(allocation, workload, nil)
           |> case do
             {:ok, allocation} -> {:ok, %{outcome: :pending, resource: allocation}}
             {:error, _} = error -> error
@@ -877,27 +935,38 @@ defmodule SalixEnv.ComputeProviders.AgentVMM do
     end
   end
 
-  defp persist_expired_container_facts(allocation, nil) do
-    persist_facts(allocation, %{
-      "current_container" => %{},
-      "container_status" => nil,
-      "container_generation_id" => nil,
-      "runtime_bootstrap_expires_at" => nil,
-      "runtime_execution_epoch" => nil,
-      "runtime_container_instance_id" => nil,
-      "runtime_container_generation_id" => nil,
-      "runtime_verified_host_epoch" => nil
-    })
+  defp persist_expired_container_facts(allocation, workload, nil) do
+    persist_facts(
+      allocation,
+      %{
+        "current_container" => %{},
+        "container_status" => "absent",
+        "container_generation_id" => nil,
+        "runtime_bootstrap_expires_at" => nil,
+        "runtime_execution_epoch" => nil,
+        "runtime_container_instance_id" => nil,
+        "runtime_container_generation_id" => nil,
+        "runtime_verified_host_epoch" => nil
+      },
+      workload
+    )
   end
 
-  defp persist_expired_container_facts(allocation, container) do
-    with {:ok, allocation} <- persist_container_facts(allocation, container) do
-      if normalize_container_state(container["state"]) in ["created", "stopped"] do
-        persist_facts(allocation, %{"runtime_container_instance_id" => nil})
-      else
-        {:ok, allocation}
-      end
-    end
+  defp persist_expired_container_facts(allocation, workload, container) do
+    state = normalize_container_state(container["state"])
+
+    facts = %{
+      "current_container" => container,
+      "container_status" => state,
+      "container_generation_id" => container["generation_id"]
+    }
+
+    facts =
+      if state in ["created", "stopped"],
+        do: Map.put(facts, "runtime_container_instance_id", nil),
+        else: facts
+
+    persist_facts(allocation, facts, workload)
   end
 
   defp reconcile_ready_workload(current, workload, _observation) do
@@ -966,18 +1035,22 @@ defmodule SalixEnv.ComputeProviders.AgentVMM do
     end
   end
 
-  defp persist_absent_container(allocation) do
+  defp persist_absent_container(allocation, workload \\ nil) do
     with {:ok, allocation} <-
-           persist_facts(allocation, %{
-             "current_container" => %{},
-             "container_status" => "absent",
-             "container_generation_id" => nil,
-             "runtime_bootstrap_expires_at" => nil,
-             "runtime_execution_epoch" => nil,
-             "runtime_container_instance_id" => nil,
-             "runtime_container_generation_id" => nil,
-             "runtime_verified_host_epoch" => nil
-           }) do
+           persist_facts(
+             allocation,
+             %{
+               "current_container" => %{},
+               "container_status" => "absent",
+               "container_generation_id" => nil,
+               "runtime_bootstrap_expires_at" => nil,
+               "runtime_execution_epoch" => nil,
+               "runtime_container_instance_id" => nil,
+               "runtime_container_generation_id" => nil,
+               "runtime_verified_host_epoch" => nil
+             },
+             workload
+           ) do
       {:ok, %{outcome: :succeeded, resource: allocation, observation: %{}}}
     end
   end
@@ -991,21 +1064,60 @@ defmodule SalixEnv.ComputeProviders.AgentVMM do
   end
 
   defp reconcile_container_start(allocation, workload) do
-    with {:ok, session} <- AgentVMM.current_host_session_for_workload(field(workload, :id)),
+    with {:ok, session, container} <- current_container_observation(workload) do
+      case container && normalize_container_state(container["state"]) do
+        "running" ->
+          with {:ok, current} <-
+                 confirm_runtime_container(allocation, workload, container, session),
+               do: reconcile_runtime_ready(current, workload, current.provider_observation)
+
+        state when state in ["created", "stopped"] ->
+          with {:ok, facts} <-
+                 verified_runtime_container_facts(allocation, workload, container, session) do
+            if field(workload, :observed_state) == "ready" do
+              with {:ok, current} <- persist_facts(allocation, facts, workload),
+                   do: {:ok, %{outcome: :pending, resource: current}}
+            else
+              # Keep the fresh proof local until the last RPC completes. The
+              # Workload is already pending; no new row lock spans the Start.
+              current = %{
+                allocation
+                | provider_observation: Map.merge(allocation.provider_observation || %{}, facts)
+              }
+
+              start_observed_container(current, workload)
+            end
+          end
+
+        nil ->
+          with :ok <- ensure_current_runtime_session(workload, session),
+               {:ok, %{resource: current}} <- persist_absent_container(allocation, workload),
+               do: {:ok, %{outcome: :pending, resource: current}}
+
+        _ ->
+          {:error, :invalid_container_state}
+      end
+    end
+  end
+
+  defp start_observed_container(allocation, workload) do
+    with {:ok, request_id} <- container_start_request_id(allocation, workload),
+         {:ok, session} <- AgentVMM.current_host_session_for_workload(field(workload, :id)),
          {:ok, _response} <-
            AgentVMMHostClient.provider_call(
              :container_start,
              %{
-               "request_id" =>
-                 operation_request_id(
-                   "start:" <> provider_fact(allocation, "container_generation_id", ""),
-                   workload
-                 ),
+               "request_id" => request_id,
                "container_id" => container_id(workload),
                "expected_generation_id" =>
                  provider_fact(allocation, "container_generation_id", "")
              },
-             field(workload, :id)
+             field(workload, :id),
+             %{
+               workload_generation: field(workload, :generation),
+               allocation_id: field(allocation, :id),
+               allocation_generation: field(allocation, :generation)
+             }
            ),
          {:ok, listed} <-
            AgentVMMHostClient.provider_call(
@@ -1014,12 +1126,30 @@ defmodule SalixEnv.ComputeProviders.AgentVMM do
              field(workload, :id)
            ),
          {:ok, container} <- find_container(listed, container_id(workload)),
-         {:ok, allocation} <-
-           if(runtime_bearing?(workload),
-             do: confirm_runtime_container(allocation, workload, container, session),
-             else: persist_container_facts(allocation, container)
-           ) do
+         {:ok, allocation} <- confirm_runtime_container(allocation, workload, container, session) do
       {:ok, %{outcome: :pending, resource: allocation}}
+    end
+  end
+
+  defp container_start_request_id(allocation, workload) do
+    container = provider_fact(allocation, "current_container", %{})
+    generation = provider_fact(allocation, "container_generation_id", nil)
+    previous = container["start_request_instance_id"]
+    state = normalize_container_state(container["state"])
+
+    intent =
+      case state do
+        "created" -> "initial"
+        "stopped" when is_binary(previous) and previous != "" -> previous
+        _ -> nil
+      end
+
+    if is_binary(generation) and generation != "" and container["generation_id"] == generation and
+         is_binary(intent) and
+         (state != "stopped" or container["instance_id"] in [nil, "", previous]) do
+      {:ok, operation_request_id("start:" <> generation <> ":" <> intent, workload)}
+    else
+      {:error, :container_start_evidence_unavailable}
     end
   end
 
@@ -1178,23 +1308,28 @@ defmodule SalixEnv.ComputeProviders.AgentVMM do
     end
   end
 
-  defp persist_container_facts(allocation, container) do
+  defp persist_container_facts(allocation, container, workload \\ nil) do
     with state when is_binary(state) <- normalize_container_state(container["state"]) do
-      persist_facts(allocation, %{
-        "current_container" => container,
-        "container_status" => state,
-        "container_generation_id" => container["generation_id"]
-      })
+      persist_facts(
+        allocation,
+        %{
+          "current_container" => container,
+          "container_status" => state,
+          "container_generation_id" => container["generation_id"]
+        },
+        workload
+      )
     end
   end
 
-  defp persist_facts(allocation, facts) do
+  defp persist_facts(allocation, facts, workload \\ nil) do
     case Compute.observe_allocation_facts(
            field(allocation, :id),
            field(allocation, :revision),
            field(allocation, :generation),
            facts,
-           ["health"]
+           ["health"],
+           workload
          ) do
       {:ok, allocation} -> {:ok, allocation}
       {:error, _} = error -> error
@@ -1473,14 +1608,28 @@ defmodule SalixEnv.ComputeProviders.AgentVMM do
   # operation. Include the current session incarnation so one desired refresh
   # remains idempotent while a newly observed session can be refreshed later.
   defp command_request_id(allocation, workload, "runtime.open_session", epoch) do
-    session_incarnation =
-      case AgentVMM.current_host_session_for_workload(field(workload, :id)) do
-        {:ok, %{expires_at: %DateTime{} = expires_at}} ->
-          DateTime.to_unix(expires_at, :microsecond)
+    # Expired sessions still distinguish a replacement from the initial open.
+    # This is a command deduplication key, not execution authority.
+    workload_id = field(workload, :id)
+    workload_generation = field(workload, :generation)
 
-        _ ->
-          "none"
-      end
+    expires_at =
+      Repo.one(
+        from(s in AgentVMM.Session,
+          join: r in Compute.RuntimeInstance,
+          on: r.id == s.runtime_instance_id,
+          where:
+            r.workload_id == ^workload_id and r.generation == ^workload_generation and
+              r.allocation_id == ^allocation.id and s.allocation_id == ^allocation.id and
+              s.allocation_generation == ^allocation.generation and s.connection_epoch == ^epoch,
+          order_by: [desc: s.updated_at],
+          limit: 1,
+          select: s.expires_at
+        )
+      )
+
+    session_incarnation =
+      if expires_at, do: DateTime.to_unix(expires_at, :microsecond), else: "none"
 
     "runtime.open_session:#{field(workload, :id)}:#{field(workload, :generation)}:#{allocation.generation}:#{allocation.revision}:#{epoch}:#{session_incarnation}"
   end

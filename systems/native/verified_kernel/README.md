@@ -910,6 +910,8 @@ The NIF shares BEAM's process and runs on bounded dirty-scheduler stacks.
 Termination proofs do not establish a native stack bound. Do not increase the
 scheduler stack to compensate for traversal depth proportional to list width.
 Use loops or accumulators for byte scans and wide-list folds.
+Core's compiled `List.zip` recurses once per item; `VerifiedKernel.Zip` gives every kernel
+call to it an accumulator loop through a `@[csimp]` lemma.
 
 JSON parsing admits at most 64 value levels (the root counts as one). This bounds
 syntax conversion and destruction before native recursion can exhaust a scheduler

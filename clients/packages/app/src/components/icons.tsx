@@ -17,6 +17,7 @@ import {
   MicrophoneIcon,
   ListBulletsIcon,
   PanelLeftIcon,
+  PanelRightIcon,
   PlusIcon,
   PuzzleIcon,
   PuzzleFilledIcon,
@@ -24,6 +25,7 @@ import {
   SearchIcon,
   SettingsIcon,
   SparklesIcon,
+  SquareGridCircleIcon,
   WindowCloseIcon,
   WindowMaximizeIcon,
   WindowMinimizeIcon,
@@ -37,6 +39,7 @@ type CentralAppIcon = ComponentType<{
 }>;
 
 export type AppIconName =
+  | "apps"
   | "arrow-left"
   | "arrow-right"
   | "arrow-up"
@@ -48,6 +51,7 @@ export type AppIconName =
   | "home"
   | "inbox"
   | "layout-left"
+  | "layout-right"
   | "list-bullets"
   | "mic"
   | "plus"
@@ -63,6 +67,7 @@ export type AppIconName =
   | "window-restore";
 
 const appIcons: Record<AppIconName, CentralAppIcon> = {
+  apps: SquareGridCircleIcon,
   "arrow-left": ArrowLeftIcon,
   "arrow-right": ArrowRightIcon,
   "arrow-up": ArrowUpIcon,
@@ -74,6 +79,7 @@ const appIcons: Record<AppIconName, CentralAppIcon> = {
   home: HomeIcon,
   inbox: InboxIcon,
   "layout-left": PanelLeftIcon,
+  "layout-right": PanelRightIcon,
   "list-bullets": ListBulletsIcon,
   mic: MicrophoneIcon,
   plus: PlusIcon,

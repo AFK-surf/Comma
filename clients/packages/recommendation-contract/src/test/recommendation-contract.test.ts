@@ -7,6 +7,7 @@ import {
   recommendationLimits,
   mediaListCardSchema,
   recommendationSnapshotSchema,
+  recommendationSourceQuote,
   recommendationTemplateCatalog,
 } from "../index";
 
@@ -101,7 +102,9 @@ describe("recommendation contract", () => {
     expect(decoded.summary[0]).toMatchObject({
       link: {
         label: "Slack source",
+        objective: "Verify the fix",
         previewText: "Please test reconnect.",
+        quote: [{ runs: [{ kind: "text", text: "Please test reconnect." }] }],
         taskPrompt: "Verify the fix",
       },
     });
@@ -177,6 +180,50 @@ describe("recommendation contract", () => {
       recommendationInlineLinkSchema.safeParse({ ...link, previewHtml: "<img>" })
         .success
     ).toBe(false);
+  });
+
+  it("reads a quote's markup once, for every client", () => {
+    expect(
+      recommendationSourceQuote(
+        "Ada: <@U1|zanwei> in <#C2|launch> see <https://example.com/fix|the fix> &amp; https://github.com/acme/app/pull/3986).\n\n• Retry <https://user:pw@example.com|private>",
+        "https://acme.slack.com/archives/C2/p1"
+      )
+    ).toEqual([
+      {
+        runs: [
+          { kind: "text", text: "Ada: " },
+          { href: "https://acme.slack.com/team/U1", kind: "mention", text: "@zanwei" },
+          { kind: "text", text: " in " },
+          {
+            href: "https://acme.slack.com/archives/C2",
+            kind: "channel",
+            text: "#launch",
+          },
+          { kind: "text", text: " see " },
+          { href: "https://example.com/fix", kind: "link", text: "the fix" },
+          { kind: "text", text: " & " },
+          {
+            href: "https://github.com/acme/app/pull/3986",
+            kind: "link",
+            text: "github.com/acme/app/pull/3986",
+            title: "https://github.com/acme/app/pull/3986",
+          },
+          { kind: "text", text: ")." },
+        ],
+      },
+      // A list item drops its bullet; a link with credentials does not open.
+      {
+        listItem: true,
+        runs: [
+          { kind: "text", text: "Retry " },
+          { kind: "link", text: "private" },
+        ],
+      },
+    ]);
+    // A mention outside Slack names its person without a link.
+    expect(recommendationSourceQuote("<@U1|Ada>", "https://github.com/o/r")).toEqual([
+      { runs: [{ kind: "mention", text: "@Ada" }] },
+    ]);
   });
 
   it("allows source-aware inline tasks without accepting renderer props", () => {

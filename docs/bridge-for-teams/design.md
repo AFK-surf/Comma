@@ -149,6 +149,15 @@ Do not label an accepted setup request as completed history import or working bo
 After connection, verify a real bounded message flow and its runtime outcome.
 Do not scan every historical thread on an interactive status request.
 
+## Daily brief
+
+`BridgeForTeams.DailyBrief` owns the settings, members, aliases, and runs. A run is the team's brief (`team_brief`) or a member's (`personal_brief`), with its window, tokens, coverage, and the text the model wrote.
+Briefs read only the bot's public, non-shared channels in the Salix Slack mirror, to 10 minutes ago; they store no message text. Direct messages are not read (owner, 2026-10-26).
+Once a day, one per Swarm at a time, the team brief is written from the window since the last one, with that brief as context. Each member's brief reads the member's messages since their last sent brief (mentions, aliases, threads they are in, their own), and the model writes it with the team brief and their last brief.
+The bot sends each member's brief on org workdays after `deliver_at` in their zone; an extra send keeps the next. The team brief goes to the team channel at `team_post_at`, once.
+A brief waits as `pending` until Slack takes it; a failed send is resent without another model call. A brief the model cannot write is not sent; a passing failure is tried again in about an hour, over the same window.
+Retention deletes runs older than the org's period (at most 90 days). Admin pages show counts, states, and errors, no brief text.
+
 ## Feishu
 
 Dashboard SSO and bot-message routing are separate setup workflows.
@@ -160,9 +169,9 @@ For a bot connection, verify the selected app, published permissions, installati
 Use the callback and redirect values that the product shows. Check the current provider console before setup.
 Never paste app secrets into a support thread or screenshot.
 
-The bot reads documents and Minutes as the app. Meetings, their AI notes, transcripts and recordings are shown only to people, so people of an Agent Swarm sign in with their Feishu account under Connections → Accounts.
+The bot finds and reads content as the app and as people of the Agent Swarm who signed in with their Feishu account (under Connections → Accounts, or through the link the bot posts in a chat). A person sees what they took part in or may open; the app sees what was shared with it.
 The organization's OAuth app for `feishu` is the organization's Feishu app, with the redirect URL the dialog shows and the user scopes of the "SSO + group bot" import (`BridgeForTeams.FeishuScopes.sign_in_user_scopes/0`).
-A swarm holds any number of signed-in people. `feishu.search_meetings`, `feishu.get_meeting` and `feishu.get_note` run as every active account, or as the one named by `account`; document and Minutes reads with `account` run as that person.
+A swarm holds any number of signed-in people. The bot finds content without a link: `feishu.search_docs`, `feishu.list_drive_files` and `feishu.search_meetings` run as the app and then as each active account, and `feishu.get_meeting` / `feishu.get_note` try them in that order, unless `account` names one (`app` for the app alone); `feishu.list_wiki_spaces`, `feishu.list_wiki_nodes` and `feishu.list_minutes` run as the app unless `account` names a person. It reads what it finds with the same `account`: `feishu.fetch_doc`, `feishu.get_minute`. A unified note's transcript is given only to a person.
 
 ## Runner and devices
 

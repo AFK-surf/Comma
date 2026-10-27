@@ -257,3 +257,130 @@ enum ChatTranscriptModel {
         return quote
     }
 }
+
+// MARK: - Window
+
+/// The rows the transcript lays out: about `budget` points of a long conversation, the newest when it opens, and a
+/// budget more above or below each time the reader's scroll comes to rest near that end of them. They are laid out
+/// whole, in a plain stack: a lazy stack estimates the rows it has not built, and over hundreds of rows from one line
+/// to several screens its estimate was thousands of points out. The transcript opened at an end that was not there, a
+/// blank screen until a touch, and sends and resizes left the reader past the end of the content. Past `limit` the
+/// window lets go of rows on the side away from the reader, so it never lays out more than a few budgets. It is held
+/// by its first and last rows, so rows that load above a full window or arrive below a window away from the end stay
+/// out of it.
+struct TranscriptWindow: Equatable {
+    /// About three screens: what opening a conversation lays out, and each step up or down. Every row in the window
+    /// takes part in each layout of the transcript, as a reply streams in, so the window stays small.
+    static let budget: CGFloat = 2_500
+    static let limit = budget * 3
+    /// The oldest row shown; nil shows the newest budget's worth.
+    private(set) var oldest: String?
+    /// The newest row shown once the reader went to rows far above the end; nil shows through the end.
+    private(set) var newest: String?
+
+    /// Whether the window reaches the conversation's newest row.
+    var live: Bool { newest == nil }
+
+    /// The rows shown, as indices of `rows`: from the oldest row, or more while that leaves less than a budget's worth.
+    func range(in rows: [ChatRow]) -> Range<Int> {
+        let end = newest.flatMap { id in rows.firstIndex { $0.id == id } }.map { $0 + 1 } ?? rows.count
+        let full = Self.start(before: end, in: rows)
+        let start = oldest.flatMap { id in rows[..<end].firstIndex { $0.id == id } }.map { min($0, full) } ?? full
+        return start..<end
+    }
+
+    /// Holds the window where it starts now, so rows that load above it join it only to fill a budget.
+    mutating func pin(_ rows: [ChatRow]) {
+        let range = range(in: rows)
+        oldest = range.isEmpty ? nil : rows[range.lowerBound].id
+    }
+
+    /// Back to the newest budget's worth, through the end.
+    mutating func reset(_ rows: [ChatRow]) {
+        newest = nil
+        oldest = rows.isEmpty ? nil : rows[Self.start(before: rows.count, in: rows)].id
+    }
+
+    /// Takes in a budget's worth more above. False when nothing is left out above.
+    @discardableResult mutating func expandUp(_ rows: [ChatRow]) -> Bool {
+        let range = range(in: rows)
+        guard range.lowerBound > 0 else { return false }
+        oldest = rows[Self.start(before: range.lowerBound, in: rows)].id
+        return true
+    }
+
+    /// Takes in a budget's worth more below, and the rest once that reaches the end. False when the window is live.
+    @discardableResult mutating func expandDown(_ rows: [ChatRow]) -> Bool {
+        guard !live else { return false }
+        let end = Self.end(after: range(in: rows).upperBound, in: rows)
+        newest = end < rows.count ? rows[end - 1].id : nil
+        return true
+    }
+
+    /// Shows `id`'s row with a few rows above it: the window grows to it when it is within a budget, and moves to it
+    /// when it is farther. False when it is shown already or not in the conversation.
+    mutating func reveal(_ id: String, in rows: [ChatRow]) -> Bool {
+        let range = range(in: rows)
+        guard let index = rows.firstIndex(where: { $0.id == id }), !range.contains(index) else { return false }
+        let first = max(0, index - 4)
+        if index < range.lowerBound, Self.extent(rows[first..<range.lowerBound]) <= Self.budget {
+            oldest = rows[first].id
+        } else if index >= range.upperBound, Self.extent(rows[range.upperBound...index]) <= Self.budget {
+            let end = Self.end(after: index + 1, in: rows, budget: 0)
+            newest = end < rows.count ? rows[end - 1].id : nil
+        } else {
+            oldest = rows[first].id
+            let end = Self.end(after: first, in: rows)
+            newest = end < rows.count ? rows[end - 1].id : nil
+        }
+        return true
+    }
+
+    /// Lets go of rows on one side once the window holds more than `limit`, keeping two budgets on the other.
+    /// False when it holds no more than that.
+    @discardableResult mutating func shed(_ rows: [ChatRow], above: Bool) -> Bool {
+        let range = range(in: rows)
+        guard Self.extent(rows[range]) > Self.limit else { return false }
+        if above {
+            oldest = rows[Self.start(before: range.upperBound, in: rows, budget: Self.budget * 2)].id
+        } else {
+            let end = Self.end(after: range.lowerBound, in: rows, budget: Self.budget * 2)
+            newest = end < rows.count ? rows[end - 1].id : nil
+        }
+        return true
+    }
+
+    /// The oldest of the rows just above `end` that fill `budget`; at least one.
+    private static func start(before end: Int, in rows: [ChatRow], budget: CGFloat = budget) -> Int {
+        var start = end, height: CGFloat = 0
+        while start > 0, height < budget {
+            start -= 1
+            height += extent(of: rows[start])
+        }
+        return start
+    }
+
+    /// Just past the newest of the rows from `start` that fill `budget`.
+    private static func end(after start: Int, in rows: [ChatRow], budget: CGFloat = budget) -> Int {
+        var end = start, height: CGFloat = 0
+        while end < rows.count, height < budget || end == start {
+            height += extent(of: rows[end])
+            end += 1
+        }
+        return end
+    }
+
+    private static func extent(_ rows: ArraySlice<ChatRow>) -> CGFloat { rows.reduce(0) { $0 + extent(of: $1) } }
+
+    /// A rough height for a row, from its lines of text (about 40 bytes to a bubble's line) and what it carries.
+    static func extent(of row: ChatRow) -> CGFloat {
+        var lines = 0, run = 0
+        for byte in row.text.utf8 {
+            if byte == 10 { lines += 1 + run / 40; run = 0 } else { run += 1 }
+        }
+        lines += 1 + run / 40
+        let carried = row.files.count + row.attachedTexts.count
+            + (row.message.map { $0.attachments.count + $0.refs.count + ($0.question == nil ? 0 : 3) } ?? 0)
+        return 36 + CGFloat(lines) * 20 + CGFloat(carried) * 60
+    }
+}

@@ -18,10 +18,17 @@ import {
 } from "../dynamic-ui/DynamicUiWidget";
 import { HomeLayout } from "../../home/HomeRailFolds";
 import { ConversationParticipants } from "../session-history/SessionHistory";
-import { useOptionalChatSidebar } from "../../chat-sidebar/ChatSidebarContext";
+import { useOptionalChatSidebarActions } from "../../chat-sidebar/ChatSidebarContext";
+import { getNativeBridge } from "@comma/native-bridge";
+import { CodingPullRequestPrompt } from "../tasks/CodingPullRequestPrompt";
+import { publishCodingTaskFacts } from "../tasks/CodingSession";
 import { useRouter } from "@tanstack/react-router";
 import { acceptedSendPromise } from "./sendAcceptance";
-import type { ManualTaskStatus } from "@comma/chat-contract";
+import type {
+  ChatConversationFile,
+  ChatTaskRunChoice,
+  ManualTaskStatus,
+} from "@comma/chat-contract";
 import { useStageTaskStatus } from "../../../product-inbox";
 import type {
   ComposerDraftFill,
@@ -37,6 +44,8 @@ import { Button } from "@comma/ui/components/Button";
 import { uiClock } from "@comma/ui/clock";
 import { isImeKeyEvent } from "@comma/ui/components/utils";
 import { ContentHeader } from "@comma/ui/components/content-header";
+import { useFileDrop } from "@comma/ui/components/ai-input/files/useFileDrop";
+import { TitleSwap } from "@comma/ui/components/title-swap";
 import { CommaLogoAnimation } from "@comma/ui/components/comma-mascot";
 import {
   CopyContextMenu,
@@ -63,14 +72,18 @@ import {
   useMemo,
   useRef,
   useState,
+  type ComponentProps,
   type MouseEvent as ReactMouseEvent,
   type ReactNode,
 } from "react";
 import type { CommaSkill } from "@comma/core/api-schemas";
+import type { ChatSuggestion } from "@comma/core/contract";
 import { createConversationAnalytics } from "../../../analytics/experience";
 import { beginCommaMessageSend } from "../../../analytics/client";
 import { FocusComputerUseScreen } from "../../remote-screen/WorkerComputerUseScreen";
 import { ParticipantStatusSlot } from "../thread/activity/ActivityLine";
+import { TaskRunDialog } from "../tasks/TaskRunDialog";
+import { TaskRunSwitchContext } from "../tasks/taskRunSwitch";
 import type { ActivityFocusTask } from "../thread/activity/activityFocus";
 import { useActivityFocus } from "../thread/activity/useActivityFocus";
 import { ThreadWorkerVendorContext } from "../thread/threadContexts";
@@ -78,7 +91,6 @@ import { ChatBanner } from "./ChatBanner";
 import { CreditWarningToast } from "../../billing/CreditWarningToast";
 import { showOutOfCreditsToast } from "../../billing/outOfCredits";
 import { fundingStopKind, showFundingStopToast } from "../../billing/fundingStops";
-import { FundingStopActions } from "../../billing/FundingStopActions";
 import { ChatLinkHoverCard } from "../thread/inline/ChatLinkHoverCard";
 import {
   ChatLabelProposals,
@@ -98,6 +110,7 @@ import {
 } from "../tasks/TaskPanelFold";
 import { useTaskActivity } from "../tasks/useTaskActivity";
 import { Composer } from "../composer/Composer";
+import { attachTransferredFiles } from "../composer/fileIntake";
 import { createChatDraftQuote, type ChatDraftQuote } from "../composer/draftQuotes";
 import {
   composeMessageWithSnippets,
@@ -119,7 +132,10 @@ import {
   ConversationThread,
   type ChatOutgoingLaunch,
 } from "../thread/ConversationThread";
-import { measureOutgoingBubbleSource } from "../motion/outgoingBubbleMotion";
+import {
+  measureOutgoingBubbleSource,
+  measureOutgoingTranscriptAnchor,
+} from "../motion/outgoingBubbleMotion";
 import {
   InlineTaskLinkAdapterProvider,
   renderInlineTaskLink,
@@ -152,14 +168,30 @@ import {
 } from "@comma/core/chat";
 import { useComposerMentionSources } from "../composer/useComposerMentionSources";
 import { conversationMessageTurnKey } from "@comma/core/chat";
+import { ChatSuggestionChips } from "../suggestions/ChatSuggestionChips";
+import {
+  AgentRequestCardsContext,
+  useAgentRequests,
+} from "../requests/useAgentRequests";
+import { useChatSuggestions } from "../suggestions/useChatSuggestions";
 import { useMarkLoadedTaskReviewSeen } from "../tasks/useMarkLoadedTaskReviewSeen";
+import {
+  MiniAppTaskContext,
+  useShareMiniAppTask,
+  type MiniAppTaskState,
+} from "../../apps/MiniAppMessageCard";
+import { MiniAppDraftContext } from "../../apps/MiniAppFrame";
 
 export type ConversationViewActions = {
   acceptTaskReview?: (reviewVersion: number) => unknown;
   /** Ends the Task by hand at the exact version the viewer saw. */
   setTaskStatus?: (status: ManualTaskStatus, expectedUpdatedAt: number) => unknown;
+  /** Runs the Task on another model; fails with why not. Absent where this host cannot. */
+  setTaskRun?: (run: ChatTaskRunChoice) => Promise<unknown>;
   /** Files for the draft, or with `questionMessageId` for that question card's other answer. */
   attachFiles?: (files: AttachmentUploadInput[], questionMessageId?: string) => unknown;
+  /** Message attachments for the draft, by reference (Add to Context on a message's file). */
+  attachConversationFiles?: (files: ChatConversationFile[]) => unknown;
   /** Replaces the Task's labels; absent when this host cannot edit labels. */
   setTaskLabels?: (labelIds: string[]) => unknown;
   discard: (clientRequestId: string) => unknown;
@@ -208,12 +240,14 @@ export const ConversationView = memo(function ConversationView({
   conversationId: selectedConversationId,
   draftSource,
   groupId,
+  headerTrailing,
   inlineTaskLinkAdapter,
   leadingPanel,
   live = false,
   state,
   surfaceActive = true,
   trailingPanel,
+  homeAccessory,
   variant = "route",
   workspaceId,
   skills = [],
@@ -230,6 +264,8 @@ export const ConversationView = memo(function ConversationView({
   /** The composer's draft; only the composer subscribes to it. */
   draftSource: ComposerDraftSource;
   groupId?: string | undefined;
+  /** Route controls at the header's trailing end, such as the Task sequence. */
+  headerTrailing?: ReactNode;
   inlineTaskLinkAdapter?: InlineTaskLinkAdapter | undefined;
   leadingPanel?: ReactNode;
   /**
@@ -251,6 +287,8 @@ export const ConversationView = memo(function ConversationView({
   surfaceActive?: boolean | undefined;
   skills?: CommaSkill[];
   trailingPanel?: ReactNode;
+  /** Home's own controls at the top right of its chat, beside the browser trigger (the desktop's call). */
+  homeAccessory?: ReactNode;
   variant?: "home" | "route" | "rail";
   workspaceId?: string | undefined;
 }) {
@@ -262,7 +300,8 @@ export const ConversationView = memo(function ConversationView({
     () => observeAnalytics(state, surfaceActive),
     [observeAnalytics, state, surfaceActive]
   );
-  const sidebar = useOptionalChatSidebar();
+  // Its actions only: the view does not show the sidebar, so the sidebar's own changes do not render it.
+  const sidebar = useOptionalChatSidebarActions();
   const router = useRouter({ warn: false });
   const routeRef = useRef<HTMLElement | null>(null);
   const messages = useCommaMessages();
@@ -424,6 +463,20 @@ export const ConversationView = memo(function ConversationView({
   const taskLoop = taskSummary?.loop;
   const taskConversationId = state.conversation?.id;
   const taskReviewVersion = state.conversation?.review_version;
+  // A deployed app's card offers Publish while this Task is in review.
+  const miniAppTask = useMemo<MiniAppTaskState | undefined>(
+    () =>
+      isTask && taskConversationId
+        ? {
+            conversationId: taskConversationId,
+            status: taskStatus,
+            reviewVersion: taskReviewVersion,
+          }
+        : undefined,
+    [isTask, taskConversationId, taskStatus, taskReviewVersion]
+  );
+  // The right panel, outside this view, offers Publish for the apps this Task built.
+  useShareMiniAppTask(miniAppTask);
   const optimisticTaskStatus =
     settingTaskStatus !== undefined &&
     settingTaskStatus.conversationId === taskConversationId &&
@@ -552,8 +605,10 @@ export const ConversationView = memo(function ConversationView({
         : undefined,
     [attachFiles, heicToastId, messages, transcodesImages]
   );
-  const { open: openImageMenu, menu: imageMenu } =
-    useMediaContextMenu(handleAttachFiles);
+  const { open: openImageMenu, menu: imageMenu } = useMediaContextMenu(
+    handleAttachFiles,
+    actions.attachConversationFiles
+  );
   // handleSend only needs the state at click time. Reading it through a ref
   // keeps the callback identity stable across emits, which keeps the memoized
   // Composer from re-rendering on every stream chunk.
@@ -594,6 +649,10 @@ export const ConversationView = memo(function ConversationView({
         ),
         id: launchId,
         sourceFrame: source,
+        // Read only for a launch: it lays out the transcript.
+        transcriptAnchor: text.trim()
+          ? measureOutgoingTranscriptAnchor(routeRef.current)
+          : undefined,
         motionConfig: outgoingMotionRef.current,
         playbackRate: outgoingPlaybackRateRef.current,
         text,
@@ -666,6 +725,15 @@ export const ConversationView = memo(function ConversationView({
   const conversationIdRef = useRef(conversationId);
   conversationIdRef.current = conversationId;
 
+  // Reuse settled-turn generation on full chat surfaces.
+  const { clear: clearSuggestions, items: suggestionItems } = useChatSuggestions({
+    conversationId,
+    enabled: !isArchived && (variant === "route" || variant === "home"),
+    groupId: threadGroupId || undefined,
+    locale,
+    state,
+  });
+
   // Tasks the agent created in this conversation dock above the composer, on
   // the full chat surfaces only — the rail is too narrow for a second panel.
   const showTaskDock = variant === "route" || variant === "home";
@@ -675,14 +743,19 @@ export const ConversationView = memo(function ConversationView({
   const revealMessageHandleRef = useRef<((messageId: string) => void) | null>(null);
 
   // Tasks, routines, and plugins for the composer's "@" panel, as the core
-  // keeps them; a Task chat never lists itself.
-  const mentionSources = useComposerMentionSources({
-    excludeConversationId: conversationId,
-    groupId: threadGroupId || undefined,
-    // Home is the Router chat: a model named there starts a Task with it.
-    models: variant === "home",
-    workspaceId: threadWorkspaceId || undefined,
-  });
+  // keeps them; a Task chat never lists itself. A retained surface the reader
+  // does not see follows none of them: showing it again reads them afresh.
+  const mentionScope = useMemo(
+    () => ({
+      enabled: surfaceActive,
+      excludeConversationId: conversationId,
+      groupId: threadGroupId || undefined,
+      // Home is the Router chat: a model named there starts a Task with it.
+      models: variant === "home",
+      workspaceId: threadWorkspaceId || undefined,
+    }),
+    [conversationId, surfaceActive, threadGroupId, threadWorkspaceId, variant]
+  );
 
   // Quoted passages are renderer-only draft state, folded into the message
   // text on send. Keeping them out of the channel avoids widening the
@@ -710,6 +783,14 @@ export const ConversationView = memo(function ConversationView({
   const replyFromDynamicUi = useCallback(
     (text: string, messageId: string) => {
       uiReplyRef.current = messageId;
+      const draft = draftSource.getSnapshot();
+      setDraft(draft ? `${draft}\n\n${text}` : text);
+    },
+    [draftSource, setDraft]
+  );
+  // An app running in this thread writes into its composer; the person sends it.
+  const draftFromMiniApp = useCallback(
+    (text: string) => {
       const draft = draftSource.getSnapshot();
       setDraft(draft ? `${draft}\n\n${text}` : text);
     },
@@ -767,8 +848,21 @@ export const ConversationView = memo(function ConversationView({
 
   // Staging a quote is a reading gesture, so it stays available even while
   // the composer is momentarily blocked on a send in flight.
-  const { clear: clearSelectionQuote, selection: selectionQuote } =
+  const { clear: clearSelectionQuote, selection: liveSelectionQuote } =
     useChatSelectionQuote(routeRef);
+  // Typing a reply under the selection moves the page selection into that
+  // field, so the passage being replied to is kept here until it is sent or
+  // put away.
+  const [pinnedSelectionQuote, setPinnedSelectionQuote] =
+    useState<typeof liveSelectionQuote>(null);
+  const selectionQuote = pinnedSelectionQuote ?? liveSelectionQuote;
+  const pinnedSelectionQuoteRef = useRef(pinnedSelectionQuote);
+  useEffect(() => {
+    pinnedSelectionQuoteRef.current = pinnedSelectionQuote;
+  }, [pinnedSelectionQuote]);
+  useEffect(() => {
+    setPinnedSelectionQuote(null);
+  }, [conversationId]);
 
   const removeDraftQuote = useCallback((id: string) => {
     setDraftQuotes((current) => current.filter((quote) => quote.id !== id));
@@ -820,15 +914,83 @@ export const ConversationView = memo(function ConversationView({
     [draftSource, removeDraftSnippet, setDraft]
   );
 
+  const finishSelectionQuote = useCallback(() => {
+    // Leaving the passage highlighted would keep the bar up and invite a
+    // second, duplicate quote of the same text.
+    window.getSelection()?.removeAllRanges();
+    clearSelectionQuote();
+    setPinnedSelectionQuote(null);
+  }, [clearSelectionQuote]);
+
+  // What the person has typed in the selection's own field so far.
+  const selectionReplyTextRef = useRef("");
+  const setSelectionReplyText = useCallback((text: string) => {
+    selectionReplyTextRef.current = text;
+  }, []);
+
   const quoteSelection = useCallback(() => {
     const text = selectionQuote?.text.trim();
     if (!text) return;
     setDraftQuotes((current) => [...current, createChatDraftQuote(text)]);
-    // The passage is staged now; leaving it highlighted would keep the bar up
-    // and invite a second, duplicate quote of the same text.
-    window.getSelection()?.removeAllRanges();
-    clearSelectionQuote();
-  }, [clearSelectionQuote, selectionQuote]);
+    // A question already typed about the passage goes with it into the
+    // composer instead of vanishing with the bar.
+    const question = selectionReplyTextRef.current.trim();
+    selectionReplyTextRef.current = "";
+    if (question) {
+      const draft = draftSource.getSnapshot();
+      const next = draft ? `${draft}\n\n${question}` : question;
+      setDraft(next);
+      setComposerFill({ draft: next });
+    }
+    finishSelectionQuote();
+  }, [draftSource, finishSelectionQuote, selectionQuote, setDraft]);
+
+  const selectionReply = useMemo(() => {
+    if (!selectionQuote) return undefined;
+    return {
+      excerpt: selectionQuote.text.trim(),
+      onDismiss: () => setPinnedSelectionQuote(null),
+      onEngage: () => setPinnedSelectionQuote((current) => current ?? selectionQuote),
+      // The reply goes out on its own with the passage as its quote; the main
+      // draft and its staged quotes stay as they are.
+      onSubmit: (text: string) => {
+        const quote = selectionQuote.text.trim();
+        const result = launchOutgoing(
+          composeMessageWithQuotes(text, quote ? [quote] : []),
+          { consumeDraft: false, skills: [] }
+        );
+        // The card, its passage and the typed reply stay until the runtime
+        // takes the send: a refusal (another send still holding the
+        // conversation) creates no turn, so nothing else would keep them.
+        const accepted =
+          acceptedSendPromise(result) ??
+          (result && typeof (result as PromiseLike<unknown>).then === "function"
+            ? Promise.resolve(result)
+            : undefined);
+        if (!accepted) {
+          finishSelectionQuote();
+          return undefined;
+        }
+        // Only the card this reply came from closes: the reader may have put it
+        // away and selected something else while the send was taken.
+        const replied = pinnedSelectionQuoteRef.current;
+        return accepted.then(() => {
+          if (!replied || pinnedSelectionQuoteRef.current === replied) {
+            finishSelectionQuote();
+          }
+        });
+      },
+      onTextChange: setSelectionReplyText,
+      failedLabel: messages.chat_selection_reply_failed(),
+      placeholder: messages.chat_selection_reply_placeholder(),
+    };
+  }, [
+    finishSelectionQuote,
+    launchOutgoing,
+    messages,
+    selectionQuote,
+    setSelectionReplyText,
+  ]);
 
   useEffect(() => {
     if (!selectionQuote) return undefined;
@@ -950,6 +1112,17 @@ export const ConversationView = memo(function ConversationView({
     [launchOutgoing, onOpenInCommaBrowser]
   );
 
+  const handleSelectSuggestion = useCallback(
+    (suggestion: ChatSuggestion) => {
+      clearSuggestions();
+      return launchOutgoing(suggestion.prompt, {
+        consumeDraft: false,
+        skills: [],
+      });
+    },
+    [clearSuggestions, launchOutgoing]
+  );
+
   const handleAcceptTask = useCallback(async () => {
     if (!canAcceptTask || !actions.acceptTaskReview || !taskConversationId) return;
     const request = {
@@ -1044,6 +1217,18 @@ export const ConversationView = memo(function ConversationView({
 
   // Only a canonical message can be answered, and only where the reader can send.
   const canReply = !isArchived && !unboundComposerDisabled;
+  // Files dropped anywhere on the conversation, not only on the composer, are
+  // attached to the draft; while they are dragged over it, the composer shows
+  // its drop overlay.
+  const dropFiles = useMemo(
+    () =>
+      handleAttachFiles && canReply
+        ? (transfer: DataTransfer) =>
+            attachTransferredFiles(transfer, handleAttachFiles)
+        : undefined,
+    [canReply, handleAttachFiles]
+  );
+  const conversationDrop = useFileDrop(dropFiles);
   const resolveReplyTarget = useCallback(
     (article: HTMLElement): ReplyThreadSelection | null => {
       const messageId = article.dataset.messageId;
@@ -1269,6 +1454,39 @@ export const ConversationView = memo(function ConversationView({
     [setCopyMenuOpen]
   );
 
+  // The menus stay mounted while the conversation streams; their props keep
+  // their identity, so the memoized menus do not render with each chunk.
+  const linkMenuDisabledActions = useMemo(
+    () => ({ openInComma: !onOpenInCommaBrowser }),
+    [onOpenInCommaBrowser]
+  );
+  const linkMenuLabels = useMemo(
+    () => ({
+      ariaLabel: messages.chat_link_menu(),
+      copyLink: messages.chat_copy_link(),
+      copyMessage: messages.chat_copy_message(),
+      openInComma: messages.chat_open_in_comma(),
+      openInExternalBrowser: messages.chat_open_in_external_browser(),
+    }),
+    [messages]
+  );
+  // What the copy menu offers is read when it opens: the press that opens it
+  // writes the text and the reply target first.
+  const copyMenuDisabledActions = useMemo(
+    () => ({ copy: !copyMenuTextRef.current }),
+    // oxlint-disable-next-line react-hooks/exhaustive-deps -- re-read on open
+    [isCopyMenuOpen]
+  );
+  const copyMenuLabels = useMemo(
+    () => ({
+      ariaLabel: messages.chat_text_menu(),
+      copy: messages.common_copy(),
+      reply: replyMenuTargetRef.current ? messages.chat_reply() : undefined,
+    }),
+    // oxlint-disable-next-line react-hooks/exhaustive-deps -- re-read on open
+    [isCopyMenuOpen, messages]
+  );
+
   const actionsMemo = useMemo(
     () => ({
       discard: actions.discard,
@@ -1361,11 +1579,158 @@ export const ConversationView = memo(function ConversationView({
     (messageId: string) => revealMessageHandleRef.current?.(messageId),
     []
   );
+  // The model picker for a Task: opened from its panel's Environment, or from the notice that its model cannot start.
+  const [switchingRun, setSwitchingRun] = useState(false);
+  const canSwitchRun =
+    isTask &&
+    hasCanonicalConversation &&
+    actions.setTaskRun !== undefined &&
+    !!threadWorkspaceId &&
+    // A coding Task runs on its own sandbox: it is not switched.
+    state.taskRun?.place.kind !== "sandbox" &&
+    // Nor one the core says cannot switch (a Task a station hosts switches its model alone: `move`).
+    !state.unsupported?.includes("run");
+  const openRunSwitch = useMemo(
+    () => (canSwitchRun ? () => setSwitchingRun(true) : undefined),
+    [canSwitchRun]
+  );
+  // A Task's chat draws its `task_run_blocked` message as a card that switches the model in place.
+  const taskRunSwitch = useMemo(
+    () =>
+      canSwitchRun && actions.setTaskRun
+        ? {
+            blockedMessageId: state.taskRunBlocked?.messageId,
+            run: state.taskRun,
+            switchRun: actions.setTaskRun,
+            workspaceId: threadWorkspaceId,
+          }
+        : undefined,
+    [
+      actions.setTaskRun,
+      canSwitchRun,
+      state.taskRun,
+      state.taskRunBlocked,
+      threadWorkspaceId,
+    ]
+  );
   // A Loop Task stays in progress between runs; its Activity reads as working only while an Agent is.
   const taskAgentWorking = (
     state.participantStatuses ??
     (state.participantStatus ? [state.participantStatus] : [])
   ).some((status) => status.state === "active");
+  // A coding Task's changes open as a tab of the sidebar, at the file pressed in the panel.
+  const sandboxBranch =
+    state.taskRun?.place.kind === "sandbox"
+      ? state.taskRun.place.repo.branch
+      : undefined;
+  const isSandboxTask = state.taskRun?.place.kind === "sandbox";
+  const sandboxBase =
+    state.taskRun?.place.kind === "sandbox"
+      ? state.taskRun.place.repo.baseRef
+      : undefined;
+  const sandboxOwner =
+    state.taskRun?.place.kind === "sandbox"
+      ? state.taskRun.place.repo.owner
+      : undefined;
+  const sandboxRepoName =
+    state.taskRun?.place.kind === "sandbox" ? state.taskRun.place.repo.name : undefined;
+  const sandboxReady =
+    state.taskRun?.place.kind === "sandbox" && state.taskRun.place.state === "ready";
+  const openCodingChanges = useMemo(
+    () =>
+      sidebar && isSandboxTask && workspaceId && threadGroupId && taskConversationId
+        ? (file?: string) =>
+            sidebar.openCodingChanges(
+              sidebar.getActiveHost() ?? {
+                workspaceId,
+                groupId: threadGroupId,
+                conversationId: taskConversationId,
+              },
+              {
+                workspaceId,
+                taskId: taskConversationId,
+                ready: sandboxReady,
+                ...(file ? { file } : {}),
+                ...(sandboxBranch ? { branch: sandboxBranch } : {}),
+                ...(sandboxBase ? { base: sandboxBase } : {}),
+                ...(sandboxOwner && sandboxRepoName
+                  ? { repo: { owner: sandboxOwner, name: sandboxRepoName } }
+                  : {}),
+              }
+            )
+        : undefined,
+    [
+      isSandboxTask,
+      sandboxReady,
+      sandboxBase,
+      sandboxOwner,
+      sandboxRepoName,
+      sandboxBranch,
+      sidebar,
+      taskConversationId,
+      threadGroupId,
+      workspaceId,
+    ]
+  );
+  // The sandbox's terminal opens as a browser tab of the sidebar where the app embeds one; the browser outside else.
+  const embedsBrowser = getNativeBridge().platform === "electron";
+  const openCodingTerminal = useMemo(
+    () =>
+      sidebar &&
+      embedsBrowser &&
+      isSandboxTask &&
+      workspaceId &&
+      threadGroupId &&
+      taskConversationId
+        ? (url: string) =>
+            sidebar.openBrowser(
+              sidebar.getActiveHost() ?? {
+                workspaceId,
+                groupId: threadGroupId,
+                conversationId: taskConversationId,
+              },
+              // One terminal tab per Task: opened again, it comes to the front and reconnects.
+              {
+                kind: "terminal",
+                taskId: taskConversationId,
+                title: messages.coding_terminal_tab(),
+                url,
+              }
+            )
+        : undefined,
+    [
+      embedsBrowser,
+      isSandboxTask,
+      messages,
+      sidebar,
+      taskConversationId,
+      threadGroupId,
+      workspaceId,
+    ]
+  );
+  // One target for the panel's reads and the prompt: a new object each render would read the sandbox again each render.
+  const codingTarget = useMemo(
+    () =>
+      isSandboxTask && workspaceId && taskConversationId
+        ? { workspaceId, taskId: taskConversationId }
+        : undefined,
+    [isSandboxTask, taskConversationId, workspaceId]
+  );
+  // What the conversation knows of a coding Task now, for the surfaces outside its panel (the sidebar's Changes tab).
+  const sandboxPlaceState =
+    state.taskRun?.place.kind === "sandbox" ? state.taskRun.place.state : undefined;
+  useEffect(() => {
+    if (taskConversationId && sandboxPlaceState !== undefined)
+      publishCodingTaskFacts(taskConversationId, {
+        placeState: sandboxPlaceState,
+        working: taskAgentWorking,
+      });
+  }, [sandboxPlaceState, taskAgentWorking, taskConversationId]);
+  // The moment to propose the branch: the coding Task in review or done, its sandbox running or not (Comma opens the
+  // pushed branch on GitHub once it is gone). Through a Worker's turn the prompt stays and waits.
+  const pullRequestDue =
+    isSandboxTask &&
+    (headerTaskStatus === "needs_review" || headerTaskStatus === "done");
   const taskPanelProps =
     showTaskPanel && presentation
       ? {
@@ -1378,9 +1743,14 @@ export const ConversationView = memo(function ConversationView({
           groupId: threadGroupId,
           loop: taskLoop,
           run: state.taskRun,
+          // A coding Task's panel reads its changes and record from its sandbox, and acts on it.
+          coding: codingTarget,
+          onSwitchRun: openRunSwitch,
           onOpenTasksFilter,
           onReadEarlierActivity: readEarlierActivity,
           onRevealActivityStep: revealActivityStep,
+          onOpenCodingChanges: openCodingChanges,
+          onOpenCodingTerminal: openCodingTerminal,
           onSetLabels: hasCanonicalConversation ? actions.setTaskLabels : undefined,
           onSetStatus: canSetTaskStatus ? handleSetTaskStatus : undefined,
           statusState: taskStatusState,
@@ -1430,6 +1800,7 @@ export const ConversationView = memo(function ConversationView({
           focus={activityFocus}
           taskLink={focusTaskLink}
           workerVendor={workerVendor}
+          onSwitchRun={openRunSwitch}
         />
         {threadGroupId && state.participantStatus?.state === "active" ? (
           <FocusComputerUseScreen
@@ -1438,12 +1809,6 @@ export const ConversationView = memo(function ConversationView({
             participantId={state.participantStatus.participantId}
           />
         ) : null}
-        <FundingStopActions
-          participantStatuses={
-            state.participantStatuses ??
-            (state.participantStatus ? [state.participantStatus] : [])
-          }
-        />
       </>
     ),
     [
@@ -1455,6 +1820,7 @@ export const ConversationView = memo(function ConversationView({
       focusTaskLink,
       threadGroupId,
       workerVendor,
+      openRunSwitch,
     ]
   );
   // The newest reply's identity: a Router reply may have filed label
@@ -1524,14 +1890,43 @@ export const ConversationView = memo(function ConversationView({
     threadGroupId,
     threadWorkspaceId,
   ]);
+  // An Agent's requests (connect an account): a card in the reply that owns it, or on the newest turn. A retained
+  // surface the reader does not see follows none, as for the rest of the live data.
+  const { cards: requestCards, tails: requestTails } = useAgentRequests({
+    live: surfaceActive && live === true,
+    groupId: threadGroupId,
+    conversationId,
+    messages: state.messages,
+  });
+  const anchoredTails = useMemo(
+    () =>
+      requestTails.length === 0
+        ? labelProposalsTails
+        : [...(labelProposalsTails ?? []), ...requestTails],
+    [labelProposalsTails, requestTails]
+  );
   const transcriptTail = useMemo(
     () => (
       <>
         {showTaskPanel ? null : taskReviewAction}
+        {!isArchived && suggestionItems.length > 0 ? (
+          <ChatSuggestionChips
+            items={suggestionItems}
+            onSelect={handleSelectSuggestion}
+          />
+        ) : null}
         {isTask ? responseFeedback({ hasResponse: false }) : null}
       </>
     ),
-    [isTask, responseFeedback, showTaskPanel, taskReviewAction]
+    [
+      isTask,
+      responseFeedback,
+      showTaskPanel,
+      taskReviewAction,
+      isArchived,
+      suggestionItems,
+      handleSelectSuggestion,
+    ]
   );
 
   useEffect(() => {
@@ -1602,7 +1997,11 @@ export const ConversationView = memo(function ConversationView({
     ) : !hasCanonicalConversation && terminalError && variant !== "home" ? (
       <ChatBanner errorKind={state.errorKind} />
     ) : (
-      <>
+      <div
+        className="comma-chat-drop-zone"
+        data-drop-active={conversationDrop.dropActive ? "true" : undefined}
+        {...conversationDrop.shellDropProps}
+      >
         <ChatBanner errorKind={state.errorKind} />
         {sidebar && workspaceId && threadGroupId && historyParticipants.length > 0 ? (
           <ConversationParticipants
@@ -1611,7 +2010,7 @@ export const ConversationView = memo(function ConversationView({
             taskRun={state.taskRun}
             onOpen={(participant) =>
               sidebar.openSessionHistory(
-                sidebar.activeHost ?? {
+                sidebar.getActiveHost() ?? {
                   workspaceId,
                   groupId: threadGroupId,
                   conversationId: participant.conversationId,
@@ -1640,32 +2039,46 @@ export const ConversationView = memo(function ConversationView({
                         value={questionAttachments}
                       >
                         <ThreadWorkerVendorContext.Provider value={workerVendor}>
-                          <ConversationThread
-                            live={live}
-                            assistantDraft={state.assistantDraft}
-                            assistantResponseSlotId={
-                              state.conversation?.id ?? "conversation"
-                            }
-                            conversationId={state.conversation?.id}
-                            conversationKind={isTask ? "agent_task" : "user_chat"}
-                            defaultAssistantActorRole={isTask ? undefined : "router"}
-                            groupId={threadGroupId}
-                            afterMessages={transcriptTail}
-                            anchoredTails={labelProposalsTails}
-                            responseFeedback={isTask ? undefined : responseFeedback}
-                            messages={state.messages}
-                            onOpenConversationRef={onOpenConversationRef}
-                            onOutgoingAnimationComplete={finishOutgoingLaunch}
-                            onPreviewLocalFile={actions.previewLocalFile}
-                            onDiscard={actionsMemo.discard}
-                            onExitReplyThread={closeReplyThread}
-                            onRetry={actionsMemo.retry}
-                            outgoingLaunches={outgoingLaunches}
-                            replyThread={replyThread}
-                            revealMessageHandle={revealMessageHandleRef}
-                            revealTurnHandle={revealTurnHandleRef}
-                            workspaceId={threadWorkspaceId}
-                          />
+                          <TaskRunSwitchContext.Provider value={taskRunSwitch}>
+                            <AgentRequestCardsContext.Provider value={requestCards}>
+                              <MiniAppTaskContext.Provider value={miniAppTask}>
+                                <MiniAppDraftContext.Provider value={draftFromMiniApp}>
+                                  <ConversationThread
+                                    live={live}
+                                    assistantDraft={state.assistantDraft}
+                                    assistantResponseSlotId={
+                                      state.conversation?.id ?? "conversation"
+                                    }
+                                    conversationId={state.conversation?.id}
+                                    conversationKind={
+                                      isTask ? "agent_task" : "user_chat"
+                                    }
+                                    defaultAssistantActorRole={
+                                      isTask ? undefined : "router"
+                                    }
+                                    groupId={threadGroupId}
+                                    afterMessages={transcriptTail}
+                                    anchoredTails={anchoredTails}
+                                    responseFeedback={
+                                      isTask ? undefined : responseFeedback
+                                    }
+                                    messages={state.messages}
+                                    onOpenConversationRef={onOpenConversationRef}
+                                    onOutgoingAnimationComplete={finishOutgoingLaunch}
+                                    onPreviewLocalFile={actions.previewLocalFile}
+                                    onDiscard={actionsMemo.discard}
+                                    onExitReplyThread={closeReplyThread}
+                                    onRetry={actionsMemo.retry}
+                                    outgoingLaunches={outgoingLaunches}
+                                    replyThread={replyThread}
+                                    revealMessageHandle={revealMessageHandleRef}
+                                    revealTurnHandle={revealTurnHandleRef}
+                                    workspaceId={threadWorkspaceId}
+                                  />
+                                </MiniAppDraftContext.Provider>
+                              </MiniAppTaskContext.Provider>
+                            </AgentRequestCardsContext.Provider>
+                          </TaskRunSwitchContext.Provider>
                         </ThreadWorkerVendorContext.Provider>
                       </QuestionCardAttachmentsContext.Provider>
                     </QuestionCardActionsContext.Provider>
@@ -1695,10 +2108,22 @@ export const ConversationView = memo(function ConversationView({
               workspaceId={workspaceId}
               active={surfaceActive && !isArchived}
             />
-            <Composer
+            {codingTarget ? (
+              <CodingPullRequestPrompt
+                branch={sandboxBranch}
+                coding={codingTarget}
+                due={pullRequestDue}
+                // Another Task's changes never show while this one's are read.
+                key={codingTarget.taskId}
+                working={taskAgentWorking}
+              />
+            ) : null}
+            <SourcedComposer
               controlCommandsEnabled={state.conversation?.kind === "user_chat"}
               disabled={unboundComposerDisabled}
               draftSource={draftSource}
+              suggestion={isArchived ? undefined : suggestionItems[0]?.prompt}
+              onAcceptSuggestion={clearSuggestions}
               draftAttachments={state.draftAttachments}
               draftQuotes={draftQuotes}
               draftSnippets={draftSnippets}
@@ -1710,7 +2135,7 @@ export const ConversationView = memo(function ConversationView({
               {...(actions.previewLocalFile
                 ? { onPreviewLocalFile: actions.previewLocalFile }
                 : {})}
-              mentionSources={mentionSources}
+              mentionScope={mentionScope}
               onDraftChange={actions.setDraft}
               onRemoveAttachment={actions.removeAttachment}
               onExpandSnippet={expandDraftSnippet}
@@ -1737,6 +2162,9 @@ export const ConversationView = memo(function ConversationView({
               submitDisabled={
                 unboundComposerDisabled || unboundSubmitDisabled || anyFailedAttachment
               }
+              {...(conversationDrop.dropEnabled
+                ? { surfaceDropActive: conversationDrop.dropActive }
+                : {})}
             />
             {composerPresentation?.feedback}
           </div>
@@ -1750,7 +2178,7 @@ export const ConversationView = memo(function ConversationView({
             ""
           )}
         </div>
-      </>
+      </div>
     );
 
   const browserParticipantId = isTask
@@ -1813,14 +2241,21 @@ export const ConversationView = memo(function ConversationView({
                   data-testid="chat-title-loading"
                 />
               ) : (
-                <h1 className="comma-chat-title">{title}</h1>
+                <h1 className="comma-chat-title">
+                  {/* The placeholder giving way to the first title is no rename. */}
+                  <TitleSwap
+                    identity={presentation?.title ? selectedConversationId : undefined}
+                    text={title}
+                  />
+                </h1>
               )}
               {isTask &&
               !connecting &&
               variant === "route" &&
               live &&
               groupId &&
-              selectedConversationId ? (
+              selectedConversationId &&
+              !state.unsupported?.includes("share") ? (
                 <TaskShareButton
                   conversationId={selectedConversationId}
                   groupId={groupId}
@@ -1853,6 +2288,7 @@ export const ConversationView = memo(function ConversationView({
                 </div>
               ) : null}
             </div>
+            {headerTrailing}
             {browserTrigger}
             {variant !== "rail" && taskPanelProps ? (
               <TaskPanelFoldedTrigger fold={taskPanelFold} panel={taskPanelProps} />
@@ -1866,8 +2302,9 @@ export const ConversationView = memo(function ConversationView({
           <HomeLayout>
             {leadingPanel}
             <div className="comma-home-chat">
-              {browserTrigger ? (
-                <div className="flex h-11 shrink-0 items-center justify-end px-xl">
+              {browserTrigger || homeAccessory ? (
+                <div className="flex h-11 shrink-0 items-center justify-end gap-sm px-xl">
+                  {homeAccessory}
                   {browserTrigger}
                 </div>
               ) : null}
@@ -1887,16 +2324,19 @@ export const ConversationView = memo(function ConversationView({
         ) : (
           conversationContent
         )}
+        {switchingRun && actions.setTaskRun ? (
+          <TaskRunDialog
+            unsupported={state.unsupported}
+            onClose={() => setSwitchingRun(false)}
+            onSwitch={actions.setTaskRun}
+            run={state.taskRun}
+            workspaceId={threadWorkspaceId}
+          />
+        ) : null}
         <LinkContextMenu
-          disabledActions={{ openInComma: !onOpenInCommaBrowser }}
+          disabledActions={linkMenuDisabledActions}
           isOpen={isLinkMenuOpen}
-          labels={{
-            ariaLabel: messages.chat_link_menu(),
-            copyLink: messages.chat_copy_link(),
-            copyMessage: messages.chat_copy_message(),
-            openInComma: messages.chat_open_in_comma(),
-            openInExternalBrowser: messages.chat_open_in_external_browser(),
-          }}
+          labels={linkMenuLabels}
           onAction={handleLinkMenuAction}
           onOpenChange={handleLinkMenuOpenChange}
           pointerOffsets={linkMenuPointerOffsets}
@@ -1907,15 +2347,12 @@ export const ConversationView = memo(function ConversationView({
           anchor={selectionQuote?.anchor ?? null}
           ariaLabel={messages.chat_selection_menu()}
           direction={selectionQuote?.direction ?? "none"}
+          {...(selectionReply ? { reply: selectionReply } : {})}
         />
         <CopyContextMenu
           isOpen={isCopyMenuOpen}
-          disabledActions={{ copy: !copyMenuTextRef.current }}
-          labels={{
-            ariaLabel: messages.chat_text_menu(),
-            copy: messages.common_copy(),
-            reply: replyMenuTargetRef.current ? messages.chat_reply() : undefined,
-          }}
+          disabledActions={copyMenuDisabledActions}
+          labels={copyMenuLabels}
           onAction={handleCopyMenuAction}
           onOpenChange={handleCopyMenuOpenChange}
           pointerOffsets={copyMenuPointerOffsets}
@@ -1925,6 +2362,21 @@ export const ConversationView = memo(function ConversationView({
       </section>
     </MediaMenuContext.Provider>
   );
+});
+
+/**
+ * The composer with its "@" panel's sources. Only the composer shows them, so
+ * it subscribes to them itself: a Task list that moves renders the composer,
+ * not the conversation around it.
+ */
+const SourcedComposer = memo(function SourcedComposer({
+  mentionScope,
+  ...props
+}: Omit<ComponentProps<typeof Composer>, "mentionSources"> & {
+  mentionScope: Parameters<typeof useComposerMentionSources>[0];
+}) {
+  const mentionSources = useComposerMentionSources(mentionScope);
+  return <Composer {...props} mentionSources={mentionSources} />;
 });
 
 let chatOutgoingLaunchSequence = 0;

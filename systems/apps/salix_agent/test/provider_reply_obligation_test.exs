@@ -713,7 +713,8 @@ defmodule SalixAgent.ProviderReplyObligationTest do
                )
 
       if unquote(adapter) == :model_failure do
-        assert inspect(message["content"]) =~ "model service"
+        # A platform-funded provider out of quota stops as `model_unavailable`.
+        assert inspect(message["content"]) =~ "Choose another model"
         refute inspect(message["content"]) =~ "private credit details"
       else
         assert message["content"] == [
@@ -1887,6 +1888,74 @@ defmodule SalixAgent.ProviderReplyObligationTest do
     assert ProviderReplyObligation.pending_count(SalixAgent.InternalSession.open(settled)) == 0
   end
 
+  # A Slack bot gets no automatic Task card, so its Task must not leave a card
+  # obligation that blocks the Router's wait from yielding to a person.
+  test "a Task for a Slack bot's request adds no card obligation and its wait yields", %{
+    agent_id: agent_id,
+    session_id: session_id
+  } do
+    group_id = SalixStore.Ids.group_id_from_agent!(agent_id)
+
+    deliver!(
+      agent_id,
+      @source_a1,
+      slack_input(@thread_a, "A: the nightly build is ready for handoff"),
+      obligation(@thread_a),
+      %{"source_actor_type" => "provider_system", "agent_group_id" => group_id}
+    )
+
+    {create_pid, _messages, _tools} = await_request!()
+
+    SystemsRuntime.Proc.send(
+      create_pid,
+      {:reply_obligation_llm_response, task_create("create-for-bot", %{"test_auto_card" => true})}
+    )
+
+    settle_receive({:reply_obligation_task_create, ^agent_id, _args, task_create_pid})
+    SystemsRuntime.Proc.send(task_create_pid, :reply_obligation_complete_task_create)
+
+    {reply_pid, _messages, _tools} = await_request!()
+
+    SystemsRuntime.Proc.send(
+      reply_pid,
+      {:reply_obligation_llm_response, slack_post("reply-bot", @thread_a)}
+    )
+
+    assert_slack_call!(agent_id, @thread_a)
+    {wait_pid, _messages, _tools} = await_request!()
+
+    SystemsRuntime.Proc.send(
+      wait_pid,
+      {:reply_obligation_llm_response, wait_for("wait-for-worker", 1800)}
+    )
+
+    waiting = await_waiting!(agent_id, session_id)
+    assert ProviderReplyObligation.pending(SalixAgent.InternalSession.open(waiting)) == []
+    settle_refute_receive({:reply_obligation_card_post, ^agent_id, _args}, 100)
+
+    deliver!(
+      agent_id,
+      @source_b,
+      slack_input(@thread_b, "B: a person asks a question"),
+      obligation(@thread_b)
+    )
+
+    {b_pid, messages, _tools} = await_request!()
+    assert request_text(messages) =~ "B: a person asks a question"
+    current = read_session!(agent_id, session_id)
+    assert Enum.any?(current.events, &(&1["kind"] == "provider_wait_yielded"))
+
+    SystemsRuntime.Proc.send(
+      b_pid,
+      {:reply_obligation_llm_response, slack_post("answer-b", @thread_b)}
+    )
+
+    assert_slack_call!(agent_id, @thread_b, @source_b)
+    {end_pid, _messages, _tools} = await_request!()
+    SystemsRuntime.Proc.send(end_pid, {:reply_obligation_llm_response, end_turn("end-b")})
+    await_source_settled!(agent_id, session_id, @source_b)
+  end
+
   test "archive movement and restart preserve reply targets until explicit settlement" do
     state = fresh_state("session")
 
@@ -2051,6 +2120,79 @@ defmodule SalixAgent.ProviderReplyObligationTest do
     assert params["conversation_id"] == CaptureSlack.task_conversation_id()
     assert [%{error: false, content: content}] = settled_await(task)
     assert Jason.decode!(content)["task_topic"]["status"] == "ready"
+  end
+
+  # A Task created for a Worker report or a schedule has no Slack source. It
+  # must not take a person's Slack reply target, admitted later in the same
+  # activation, as a card that nobody publishes. A person keeps the card rule.
+  internal_origin = fn actor_type ->
+    %{
+      "provider" => "internal",
+      "source_actor_type" => actor_type,
+      "agent_group_id" => "test-group",
+      "source_message_id" => "worker-report"
+    }
+  end
+
+  for {label, origin, owes_card?} <- [
+        {"a Worker report", internal_origin.("agent"), false},
+        {"a schedule", nil, false},
+        {"a Comma user", internal_origin.("user"), true},
+        {"a provider user in a Task conversation", internal_origin.("provider_user"), true}
+      ] do
+    test "a Task created for #{label} #{if owes_card?, do: "keeps", else: "owes no"} Slack card candidate",
+         context do
+      ctx =
+        %{
+          agent_id: context.agent_id,
+          session_id: context.session_id,
+          group_id: "test-group",
+          role: "router",
+          runtime_kind: :internal,
+          source_message_id: "worker-report",
+          llm_tool_envelope: false,
+          trusted_origin: unquote(Macro.escape(origin))
+        }
+        |> SalixAgent.TestSupport.with_plugin_projection()
+
+      ctx =
+        Map.put(
+          ctx,
+          :tool_disclosure,
+          SalixAgent.ToolDisclosure.materialize("router", :internal, ctx)
+        )
+
+      args = %{"connect_id" => "internal", "test_auto_card" => true, "content" => "Follow up"}
+
+      task =
+        SystemsRuntime.Task.async(fn ->
+          SalixAgent.SessionToolDispatch.execute(
+            [%{id: "internal-create", name: "im_api.internal.task.create", args: args}],
+            ctx
+          )
+        end)
+
+      settle_receive({:reply_obligation_task_create, _, _, pid})
+      SystemsRuntime.Proc.send(pid, :reply_obligation_complete_task_create)
+      assert [%{error: false, content: content}] = settled_await(task)
+
+      result = %{
+        name: "im_api.internal.task.create",
+        status: "completed",
+        content: content,
+        args: args
+      }
+
+      candidates = ProviderReplyObligation.card_obligation_events(context.session_id, result)
+
+      if unquote(owes_card?) do
+        refute Map.has_key?(Jason.decode!(content), "task_card")
+        assert [%{"type" => "provider_card_obligation_added"}] = candidates
+      else
+        assert Jason.decode!(content)["task_card"]["status"] == "not_applicable"
+        assert candidates == []
+      end
+    end
   end
 
   defp fresh_state(session_id),
@@ -2235,7 +2377,7 @@ defmodule SalixAgent.ProviderReplyObligationTest do
     }
   end
 
-  defp deliver!(agent_id, source_message_id, content, provider_reply_obligation) do
+  defp deliver!(agent_id, source_message_id, content, provider_reply_obligation, origin \\ %{}) do
     thread_ts = provider_reply_obligation["thread_ts"]
 
     assert {:ok, :created} =
@@ -2246,17 +2388,21 @@ defmodule SalixAgent.ProviderReplyObligationTest do
                  role: "user",
                  created_at: SystemsClock.system_time(:second),
                  provider_reply_obligation: provider_reply_obligation,
-                 trusted_origin: %{
-                   "provider" => "slack",
-                   "source_actor_type" => "provider_user",
-                   "source_message_id" => source_message_id,
-                   "provider_context" => %{
-                     "connect_id" => provider_reply_obligation["connect_id"],
-                     "channel_id" => provider_reply_obligation["channel"],
-                     "thread_ts" => thread_ts,
-                     "message_ts" => thread_ts
-                   }
-                 }
+                 trusted_origin:
+                   Map.merge(
+                     %{
+                       "provider" => "slack",
+                       "source_actor_type" => "provider_user",
+                       "source_message_id" => source_message_id,
+                       "provider_context" => %{
+                         "connect_id" => provider_reply_obligation["connect_id"],
+                         "channel_id" => provider_reply_obligation["channel"],
+                         "thread_ts" => thread_ts,
+                         "message_ts" => thread_ts
+                       }
+                     },
+                     origin
+                   )
                },
                source_message_id: source_message_id
              )

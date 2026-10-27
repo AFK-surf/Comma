@@ -2,11 +2,8 @@ import { expect, test } from "@playwright/test";
 import { installBrowserTestSession } from "../../../e2e/helpers/browser-auth";
 import { chatSmokeWorkspace, startChatSmokeStub } from "../../../e2e/p0/chat-stub";
 
-// A routine row is a pre-task: a Task-style line with its entity chip inside.
-// When the rail is too narrow it truncates the way a title does, from the
-// end - the prose after the chip yields first, the opening verb and the chip
-// stay legible. That order is a layout fact, so it is pinned in a real
-// browser.
+// A linked mail row stands for an existing Task: its card opens that Task and
+// leaves once the Task ends.
 test.use({ timezoneId: "UTC" });
 
 const sources = [
@@ -19,8 +16,6 @@ const sources = [
     label: "Slack",
   },
 ];
-
-const tail = " on the weekend report handoff before the collection window closes again";
 
 function envelope() {
   return {
@@ -55,7 +50,6 @@ function envelope() {
                     sourceId: "local-slack",
                   },
                 },
-                { kind: "markdown", text: tail },
               ],
             },
           ],
@@ -75,79 +69,6 @@ function envelope() {
     state: "fresh",
   };
 }
-
-test("a pre-task row truncates from the end, keeping its verb and chip", async ({
-  page,
-}) => {
-  const stub = await startChatSmokeStub();
-
-  try {
-    await installBrowserTestSession(page, {
-      apiBaseUrl: stub.baseUrl,
-      email: "routine-rows@comma.local",
-      token: "comma_sess_routine_rows",
-    });
-    await page.route(
-      `**/v1/comma/workspaces/${chatSmokeWorkspace.id}/recommendations**`,
-      async (route) => {
-        if (route.request().method() === "GET") {
-          const data = envelope();
-          const card = data.snapshot.cards[0]!;
-          card.items.push({ ...card.items[0]!, id: "second-reply" });
-          await route.fulfill({ contentType: "application/json", json: data });
-          return;
-        }
-        await route.continue();
-      }
-    );
-    await page.setViewportSize({ width: 1280, height: 900 });
-    await page.goto("/");
-
-    const content = page.locator(".comma-recommendation-text-item-content").first();
-    await expect(content).toContainText("Reply to");
-
-    const rows = page.locator(".comma-recommendation-text-item");
-    await expect(rows).toHaveCount(2);
-    const rowGap = await rows.evaluateAll(([first, second]) => {
-      return (
-        second!.getBoundingClientRect().top - first!.getBoundingClientRect().bottom
-      );
-    });
-    expect(rowGap).toBeCloseTo(1, 5);
-
-    const geometry = await content.evaluate((element) => {
-      const spans = Array.from(element.querySelectorAll("p > span"));
-      const chip = element.querySelector(".comma-recommendation-inline")!;
-      const [lead, rest] = spans as [HTMLElement, HTMLElement];
-      const chipLabel = chip.querySelector("span")!;
-      return {
-        rowOverflows:
-          spans.reduce((width, span) => width + span.scrollWidth, 0) +
-            chip.getBoundingClientRect().width >
-          element.clientWidth,
-        leadIntact: lead.scrollWidth <= lead.clientWidth + 1,
-        leadText: lead.textContent,
-        chipIntact: chipLabel.scrollWidth <= chipLabel.clientWidth + 1,
-        tailTruncates:
-          rest.scrollWidth > rest.clientWidth &&
-          getComputedStyle(rest).textOverflow === "ellipsis",
-        order:
-          lead.getBoundingClientRect().right <= chip.getBoundingClientRect().left &&
-          chip.getBoundingClientRect().right <= rest.getBoundingClientRect().left + 1,
-      };
-    });
-    expect(geometry).toEqual({
-      rowOverflows: true,
-      leadIntact: true,
-      leadText: "Reply to ",
-      chipIntact: true,
-      tailTruncates: true,
-      order: true,
-    });
-  } finally {
-    await stub.close();
-  }
-});
 
 const linkedTaskPart = {
   kind: "inline-task",
@@ -222,13 +143,17 @@ for (const [layout, status] of [
         }
       );
       await page.goto("/");
-      await expect(page.getByRole("heading", { name: "Mail follow-up" })).toBeVisible();
+      const cards = page.locator(
+        '.comma-recommendation-card[aria-label="Mail follow-up"]'
+      );
+      await expect(cards).toBeAttached();
       const row = page
         .getByRole("button", { name: "Follow up on contract", exact: true })
         .first();
       if (status === "active") {
+        await expect(cards).toBeVisible();
         await expect(row).toBeVisible();
-        // The Task chip has its own action. Press the row's own target, under
+        // The Task chip has its own action. Press the card's own target, under
         // its padding, to exercise the row action.
         const rowAction = page
           .locator(".comma-recommendation-text-item-action")
@@ -240,6 +165,8 @@ for (const [layout, status] of [
         await sidebar.getByRole("button", { name: "Open task", exact: true }).click();
         await expect(page).toHaveURL(/cnv_public_task_smoke$/);
       } else {
+        // The source's only row left with its Task, so the source takes no place.
+        await expect(cards).toBeHidden();
         await expect(row).toHaveCount(0);
         await expect(
           page.getByRole("button", { name: "Open mail", exact: true })

@@ -81,9 +81,9 @@ func TestComputerUseStartSendsDaemonRequestAndReturnsHelp(t *testing.T) {
 	})
 
 	assertCapability(t, result, "ok", true)
-	assertCapability(t, result, "mode", "foreground")
-	if !strings.Contains(result["help"].(string), "get_screenshot") {
-		t.Fatalf("start help missing get_screenshot: %v", result["help"])
+	assertCapability(t, result, "mode", "background")
+	if !strings.Contains(result["help"].(string), "get_app_state") {
+		t.Fatalf("start help missing get_app_state: %v", result["help"])
 	}
 
 	request := receiveComputerUseRequest(t, requests)
@@ -91,9 +91,99 @@ func TestComputerUseStartSendsDaemonRequestAndReturnsHelp(t *testing.T) {
 	assertCapability(t, request, "display", float64(2))
 	action := request["action"].(map[string]any)
 	start := action["start"].(map[string]any)
+	assertCapability(t, start, "mode", "background")
 	apps := start["apps"].([]any)
 	if len(apps) != 1 || apps[0] != "Safari" {
 		t.Fatalf("start apps = %v, want [Safari]", apps)
+	}
+}
+
+func TestComputerUseStartForegroundOnRequest(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("computer_use daemon launch is macOS-only")
+	}
+
+	socketPath, requests := startFakeComputerUseSocket(t, `{"kind":"final","response":{"ok":true}}`+"\n")
+	c := newComputerUseTestConnector(t, socketPath)
+
+	result := c.methodComputerUse(context.Background(), map[string]any{
+		"action": "start",
+		"args":   map[string]any{"mode": "foreground"},
+	})
+
+	assertCapability(t, result, "mode", "foreground")
+	if !strings.Contains(result["help"].(string), "get_screenshot") {
+		t.Fatalf("foreground help missing get_screenshot: %v", result["help"])
+	}
+	start := receiveComputerUseRequest(t, requests)["action"].(map[string]any)["start"].(map[string]any)
+	assertCapability(t, start, "mode", "foreground")
+
+	bad := c.methodComputerUse(context.Background(), map[string]any{
+		"action": "start",
+		"args":   map[string]any{"mode": "sideways"},
+	})
+	assertCapability(t, bad, "ok", false)
+}
+
+func TestComputerUseBackgroundActionsAddressSnapshotElements(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("computer_use daemon launch is macOS-only")
+	}
+
+	for _, test := range []struct {
+		name string
+		args map[string]any
+		want map[string]any
+	}{
+		{"get_app_state", map[string]any{"app": "Comma", "window_title": "Settings"}, map[string]any{"app": "Comma", "window_title": "Settings"}},
+		{"click", map[string]any{"snapshot_id": "s1", "element_index": 7}, map[string]any{"snapshot_id": "s1", "element_index": float64(7)}},
+		{"click", map[string]any{"snapshot_id": "s1", "x": 10, "y": 20}, map[string]any{"snapshot_id": "s1", "x": float64(10), "y": float64(20)}},
+		{"set_value", map[string]any{"snapshot_id": "s1", "element_index": 3, "value": "on"}, map[string]any{"snapshot_id": "s1", "element_index": float64(3), "value": "on"}},
+		{"set_value", map[string]any{"snapshot_id": "s1", "element_index": 3, "value": ""}, map[string]any{"snapshot_id": "s1", "element_index": float64(3), "value": ""}},
+		{"type_text", map[string]any{"snapshot_id": "s1", "text": "  two\nlines "}, map[string]any{"snapshot_id": "s1", "text": "  two\nlines "}},
+		{"scroll", map[string]any{"snapshot_id": "s1", "element_index": 2, "direction": "down"}, map[string]any{"snapshot_id": "s1", "element_index": float64(2), "direction": "down"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			socketPath, requests := startFakeComputerUseSocket(t, `{"kind":"final","response":{"ok":true,"text":"state"}}`+"\n")
+			c := newComputerUseTestConnector(t, socketPath)
+
+			result := c.methodComputerUse(context.Background(), map[string]any{"action": test.name, "args": test.args})
+
+			assertCapability(t, result, "ok", true)
+			payload := receiveComputerUseRequest(t, requests)["action"].(map[string]any)[test.name].(map[string]any)
+			if fmt.Sprint(payload) != fmt.Sprint(test.want) {
+				t.Fatalf("daemon %s payload = %v, want %v", test.name, payload, test.want)
+			}
+		})
+	}
+
+	// Element actions need the snapshot they address.
+	result := (&connector{}).methodComputerUse(context.Background(), map[string]any{
+		"action": "set_value",
+		"args":   map[string]any{"element_index": 3, "value": "on"},
+	})
+	assertCapability(t, result, "ok", false)
+}
+
+func TestComputerUseBackgroundStateReturnsTreeWithScreenshot(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("computer_use daemon launch is macOS-only")
+	}
+
+	socketPath, _ := startFakeComputerUseSocket(t, `{"kind":"final","response":{"ok":true,"text":"Computer Use state (ComputerUseNext Snapshot: s2)\n<app_state>tree</app_state>","imageData":"AQID","imageContentType":"image/png","imageWidth":10,"imageHeight":20}}`+"\n")
+	c := newComputerUseTestConnector(t, socketPath)
+
+	result := c.methodComputerUse(context.Background(), map[string]any{
+		"action": "click",
+		"args":   map[string]any{"snapshot_id": "s1", "element_index": 7},
+	})
+
+	assertCapability(t, result, "ok", true)
+	if _, ok := result["image_path"].(string); !ok {
+		t.Fatalf("missing image reference: %v", result)
+	}
+	if !strings.Contains(result["text"].(string), "<app_state>tree</app_state>") {
+		t.Fatalf("missing accessibility tree: %v", result["text"])
 	}
 }
 

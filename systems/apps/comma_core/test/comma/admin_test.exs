@@ -11,10 +11,6 @@ defmodule Comma.AdminTest do
   alias Comma.Repo
 
   setup do
-    unless SystemsRuntime.Proc.whereis(BillingCore.Repo) do
-      start_supervised!(BillingCore.Repo)
-    end
-
     billing_owner = Ecto.Adapters.SQL.Sandbox.start_owner!(BillingCore.Repo, shared: true)
     on_exit(fn -> Ecto.Adapters.SQL.Sandbox.stop_owner(billing_owner) end)
     :ok

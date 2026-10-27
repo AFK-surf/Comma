@@ -7,6 +7,8 @@ import kotlin.math.sqrt
 object MediaLimits {
     /** The upload API budget; received media has no fixed byte-size ceiling. */
     const val MAX_UPLOAD_BYTES = 10_000_000L
+    /** A file sent as it is: uploaded from where it is as it is read, so far larger (the server's bound). */
+    const val MAX_FILE_UPLOAD_BYTES = 512L * 1024 * 1024
     const val TARGET_BYTES = 2_000_000L
     const val MAX_EDGE = 4096
     const val MAX_PIXELS = 16_000_000L

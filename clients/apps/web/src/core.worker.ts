@@ -9,4 +9,6 @@ const name = (self as unknown as { name: string }).name;
 runWebCoreWorker({
   apiBase: name.slice(name.indexOf(":") + 1),
   build: COMMA_DEFINED_CORE_BUILD,
+  // iroh's browser build, which reaches stations (vite.config.ts `commaMeshModule`).
+  loadMesh: () => import("virtual:comma-mesh").then((mesh) => mesh.load()),
 });

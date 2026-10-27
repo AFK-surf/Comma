@@ -114,7 +114,15 @@ defmodule CommaWeb.ProactiveCheck do
         |> Enum.map(&view/1)
         |> Enum.split_with(&already_routed?(routed, watched, &1))
 
+      # The owner dismissed these from Routine and does not want to hear about them.
+      {dismissed, fresh} =
+        Enum.split_with(
+          fresh,
+          &Comma.Recommendations.dismissed?(profile, &1["sourceId"], &1["url"])
+        )
+
       settle(earlier, "routed_earlier")
+      settle(dismissed, "dismissed")
       # The Home Conversation records each spend on this clock.
       now = SystemsClock.system_time(:millisecond)
 
@@ -661,6 +669,8 @@ defmodule CommaWeb.ProactiveCheck do
       # The earlier matter this one continues: the Router sees its decision,
       # and the notebook shows them together.
       "continues" => continues(item, key),
+      # How the item reached the owner, such as through the junk folder.
+      "relationship" => item["relationship"],
       "key" => key,
       "request_id" =>
         "check:" <>

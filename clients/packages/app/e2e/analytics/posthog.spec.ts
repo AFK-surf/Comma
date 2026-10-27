@@ -5,6 +5,7 @@ import {
   apiBaseUrl,
   posthogHost,
   startPosthogCapture,
+  websiteOrigin,
   type Event,
 } from "./posthog-capture";
 
@@ -23,17 +24,20 @@ test("hosted web build joins website first touch without an injected project tok
   // Different origins have separate localStorage but share the SDK's cookie.
   // Exercise the real website and app entry points, not a replacement SDK fixture.
   await page.goto(
-    "http://127.0.0.1:4188/?utm_source=slack&utm_medium=social&utm_campaign=launch&email=private@example.com&utm_content=private-content"
+    `${websiteOrigin}/?utm_source=slack&utm_medium=social&utm_campaign=launch&email=private@example.com&utm_content=private-content`
   );
   await expect.poll(() => events.filter((e) => e.event === "$pageview").length).toBe(1);
   const visitor = events[0]!.properties.distinct_id;
   await page.goto(
-    "http://127.0.0.1:4188/download?utm_source=overwrite&utm_campaign=overwrite"
+    `${websiteOrigin}/download?utm_source=overwrite&utm_campaign=overwrite`,
+    { referer: "http://news.example/story" }
   );
-  await page.route("**/download/mac", (route) =>
+  await page.route("**/download/{mac,windows}", (route) =>
     route.fulfill({ status: 200, body: "download fixture" })
   );
-  await page.locator(".download-cta").click();
+  // The page shows the download for the reader's system (Windows for this
+  // browser); the other stays hidden in the page.
+  await page.locator(".download-cta:visible").click();
   // Both events of this page reach the test's PostHog before the test leaves
   // it: the pageview leaves in a beacon of its own as the page goes.
   await expect
@@ -60,7 +64,8 @@ test("hosted web build joins website first touch without an injected project tok
     initial_utm_campaign: "launch",
     initial_landing_page: "/",
   });
-  // A pageview names its own visit's campaign; later visits never replace the
+  // A pageview names its own visit's campaign and referring host, the host
+  // also as PostHog's web analytics reads it; later visits never replace the
   // first touch, on any event or on the person.
   const download = events.find(
     (e) => e.event === "$pageview" && e.properties.route === "/download"
@@ -68,6 +73,12 @@ test("hosted web build joins website first touch without an injected project tok
   expect(download.properties).toMatchObject({
     utm_source: "overwrite",
     utm_campaign: "overwrite",
+    referrer_host: "news.example",
+    $referring_domain: "news.example",
+  });
+  expect(events[0]!.properties).toMatchObject({
+    referrer_host: "direct",
+    $referring_domain: "$direct",
   });
   for (const e of events)
     for (const fields of [e.properties, e.$set_once ?? {}])
@@ -93,6 +104,35 @@ test("hosted web build joins website first touch without an injected project tok
   expect(next.properties.distinct_id).toBe(other.id);
   expect(next.properties.$anon_distinct_id).not.toBe(visitor);
   expect(next.$set_once).not.toHaveProperty("initial_utm_campaign");
+});
+
+test("a website contact form reports the page it was sent from, never its answers", async ({
+  page,
+}) => {
+  const { events, waitForEvents } = await captureEvents(page);
+  await page.goto(`${websiteOrigin}/teams`);
+  await waitForEvents("$pageview", 1);
+  const form = page.locator("form[data-contact]");
+  await form.getByLabel("Full name").fill("Private Person");
+  await form.getByLabel("Work email").fill("private@example.com");
+  await form.getByLabel("Company size").selectOption("20–199");
+  await form.getByLabel("What's the intended use?").fill("private-use");
+  await form.getByLabel("Which product are you interested in?").selectOption("Both");
+  await form.getByLabel("Anything else we should know?").fill("private-message");
+  await form.getByRole("button", { name: "Email sales" }).click();
+  await waitForEvents("comma_website_contact_submitted", 1);
+  expect(
+    events.find((e) => e.event === "comma_website_contact_submitted")!.properties.route
+  ).toBe("/teams");
+  const serialized = JSON.stringify(events);
+  for (const value of [
+    "Private Person",
+    "private@example.com",
+    "private-use",
+    "private-message",
+    "20–199",
+  ])
+    expect(serialized).not.toContain(value);
 });
 
 async function captureEvents(

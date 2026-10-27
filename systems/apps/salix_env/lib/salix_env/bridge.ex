@@ -80,9 +80,22 @@ defmodule SalixEnv.Bridge do
   defp register_owner_scope(_env_id, nil), do: :ok
   defp register_owner_scope(env_id, :unmanaged), do: put_owner_scope(env_id, :unmanaged)
 
-  defp register_owner_scope(env_id, %{tenant_id: tenant, group_id: group, device_id: device})
+  defp register_owner_scope(
+         env_id,
+         %{tenant_id: tenant, group_id: group, device_id: device} = scope
+       )
        when is_binary(tenant) and is_binary(group) and is_binary(device) do
-    put_owner_scope(env_id, {tenant, group, device})
+    put_owner_scope(
+      env_id,
+      Map.take(scope, [
+        :tenant_id,
+        :group_id,
+        :device_id,
+        :workload_id,
+        :workload_generation,
+        :connector_run_id
+      ])
+    )
   end
 
   defp register_owner_scope(_, _), do: {:error, :invalid_owner_scope}
@@ -394,8 +407,9 @@ defmodule SalixEnv.Bridge do
 
   defp provider_cutover_admission(env_id, owner, _method) do
     case SystemsRuntime.Registry.lookup(@registry, {:owner_scope, env_id}) do
-      [{^owner, {tenant, group, device}}] ->
-        SalixStore.Compute.group_provider_mutation_admission(tenant, group, device)
+      [{^owner, %{tenant_id: tenant, group_id: group, device_id: device} = scope}] ->
+        with {:ok, _owner} <- SalixEnv.StationConnection.authorize(scope),
+             do: SalixStore.Compute.group_provider_mutation_admission(tenant, group, device)
 
       [{^owner, :unmanaged}] ->
         :ok

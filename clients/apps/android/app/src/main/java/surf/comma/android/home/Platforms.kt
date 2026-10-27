@@ -8,14 +8,17 @@ import android.graphics.DashPathEffect
 import android.graphics.Paint
 import android.graphics.RectF
 import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.text.SpannableStringBuilder
 import android.text.Spanned
 import android.text.TextPaint
 import android.text.method.LinkMovementMethod
 import android.text.style.ClickableSpan
+import android.text.style.ForegroundColorSpan
 import android.text.style.ImageSpan
 import android.text.style.StyleSpan
+import android.text.style.UnderlineSpan
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
@@ -24,6 +27,7 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.activity.ComponentActivity
+import androidx.core.view.children
 import androidx.core.view.isVisible
 import surf.comma.android.R
 import surf.comma.android.routines.PlatformRoutine
@@ -34,10 +38,10 @@ import surf.comma.android.routines.RecommendationItem
 import surf.comma.android.routines.RecommendationPart
 import surf.comma.android.routines.RecommendationSource
 import surf.comma.android.routines.RemoteImages
+import surf.comma.android.routines.RoutineQuote
 import surf.comma.android.scroll.widget.LinearLayoutManager
 import surf.comma.android.scroll.widget.RecyclerView
 import surf.comma.android.scroll.widget.ScrollContainer
-import surf.comma.android.tasks.list.group
 import surf.comma.android.ui.ActionMenu
 import surf.comma.android.ui.kit.CommaSheet
 import surf.comma.android.ui.kit.dp
@@ -370,27 +374,42 @@ class LogoStack(context: Context, appIds: List<String?>) : LinearLayout(context)
 }
 
 /**
- * A pre-task in a sheet: what it is over what is known about it, its picture when it has one, then where choosing
- * it goes, a chevron into Comma (the composer or the Task) or an arrow out to the link. Nothing is ever sent from
- * here. A row with nothing to do is drawn without the cue.
+ * A pre-task in a sheet, as a card of its own as on the desktop: what it is, the source words it quotes as its
+ * evidence, then where it comes from ([origin], left out where the page's title already names it). The whole card
+ * is what the member taps; nothing is ever sent from here. The minus in its top-end corner stops suggesting the
+ * row's source item, and the card leaves at once. A row with nothing to do is drawn without the press.
  */
 internal fun preTaskRow(context: Context, item: RecommendationItem, feed: RecommendationFeed, source: RecommendationSource?,
-                        choose: (RecommendationItem) -> Unit): View = LinearLayout(context).apply {
-    orientation = LinearLayout.HORIZONTAL
-    gravity = Gravity.CENTER_VERTICAL
-    minimumHeight = context.dp(50)
-    setPadding(context.dp(14), context.dp(12), context.dp(14), context.dp(12))
-    val words = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
-    item.title?.let { words.addView(context.label(Level.REGULAR, R.color.token_text_primary, DesignFonts.medium, lines = 0).apply { text = it }) }
-    if (item.parts.isNotEmpty()) {
-        words.addView(prose(context, item.parts, feed, lead = false, home = source?.appId), LinearLayout.LayoutParams(-1, -2).apply { topMargin = context.dp(3) })
-    } else item.detail?.let {
-        words.addView(context.label(Level.MINI, R.color.token_text_tertiary, lines = 0).apply { text = it },
-            LinearLayout.LayoutParams(-1, -2).apply { topMargin = context.dp(3) })
+                        origin: String? = null, dismiss: ((RecommendationItem) -> Unit)? = null,
+                        choose: (RecommendationItem) -> Unit): View = FrameLayout(context).apply {
+    val radius = context.dp(CARD_RADIUS_DP).toFloat()
+    background = rounded(context.getColor(R.color.token_bg_tertiary), radius)
+    clipToOutline = true
+    val dismissible = dismiss != null && item.sourceItem != null
+    val column = LinearLayout(context).apply {
+        orientation = LinearLayout.VERTICAL
+        setPadding(context.dp(14), context.dp(12), context.dp(14), context.dp(12))
     }
-    addView(words, LinearLayout.LayoutParams(0, -2, 1f))
+    // Words first on every card, so the cards' text keeps one leading edge; a picture trails them.
+    val head = LinearLayout(context).apply {
+        orientation = LinearLayout.HORIZONTAL
+        if (dismissible) setPadding(0, 0, context.dp(DISMISS_DP - 14), 0)
+    }
+    val words = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
+    if (item.objective != null) {
+        words.addView(context.label(Level.REGULAR, R.color.token_text_primary, DesignFonts.medium, lines = 0).apply { text = item.objective })
+    } else {
+        item.title?.let { words.addView(context.label(Level.REGULAR, R.color.token_text_primary, DesignFonts.medium, lines = 0).apply { text = it }) }
+        if (item.parts.isNotEmpty()) {
+            words.addView(prose(context, item.parts, feed, lead = false, home = source?.appId), LinearLayout.LayoutParams(-1, -2).apply { topMargin = context.dp(3) })
+        } else item.detail?.let {
+            words.addView(context.label(Level.MINI, R.color.token_text_tertiary, lines = 0).apply { text = it },
+                LinearLayout.LayoutParams(-1, -2).apply { topMargin = context.dp(3) })
+        }
+    }
+    head.addView(words, LinearLayout.LayoutParams(0, -2, 1f))
     item.imageUrl?.let { url ->
-        addView(ImageView(context).apply {
+        head.addView(ImageView(context).apply {
             setImageDrawable(ProviderMarks.drawable(context, source?.appId))
             scaleType = ImageView.ScaleType.CENTER_CROP
             background = rounded(context.getColor(R.color.token_surface_ink), context.dp(10).toFloat())
@@ -399,22 +418,87 @@ internal fun preTaskRow(context: Context, item: RecommendationItem, feed: Recomm
             RemoteImages.load(this, url, context.dp(36))
         }, LinearLayout.LayoutParams(context.dp(36), context.dp(36)).apply { marginStart = context.dp(12) })
     }
-    val goesOut = item.linkedTaskId == null && item.action is RecommendationAction.OpenUrl
+    column.addView(head, LinearLayout.LayoutParams(-1, -2))
+    item.quote?.let { column.addView(quote(context, it), LinearLayout.LayoutParams(-1, -2).apply { topMargin = context.dp(8) }) }
+    origin?.let { name ->
+        column.addView(LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(ImageView(context).apply { setImageDrawable(ProviderMarks.drawable(context, source?.appId)) },
+                LinearLayout.LayoutParams(context.dp(16), context.dp(16)))
+            addView(context.label(Level.MINI, R.color.token_text_quaternary).apply { text = name },
+                LinearLayout.LayoutParams(-2, -2).apply { marginStart = context.dp(6) })
+        }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = context.dp(8) })
+    }
+    addView(column, FrameLayout.LayoutParams(-1, -2))
     val acts = item.linkedTaskId != null || item.action != null
-    if (acts) addView(ImageView(context).apply {
-        setImageResource(if (goesOut) R.drawable.ic_arrow_up_right else R.drawable.ic_settings_chevron)
-        imageTintList = ColorStateList.valueOf(context.getColor(R.color.token_text_quaternary))
-    }, LinearLayout.LayoutParams(context.dp(if (goesOut) 14 else 18), context.dp(if (goesOut) 14 else 18)).apply { marginStart = context.dp(12) })
-    contentDescription = listOfNotNull(item.title, item.text.ifEmpty { item.detail }).joinToString(", ")
+    contentDescription = listOfNotNull(item.objective ?: item.title, if (item.objective != null) null else item.text.ifEmpty { item.detail },
+        item.quote?.plainText, origin).joinToString(", ")
     if (acts) {
+        val goesOut = item.linkedTaskId == null && item.action is RecommendationAction.OpenUrl
         stateDescription = context.getString(when {
             item.linkedTaskId != null -> R.string.routines_opens_task
             goesOut -> R.string.routines_opens_link
             else -> R.string.routines_adds_prompt
         })
-        pressedFill()
+        pressedFill(radius = radius)
         setOnClickListener { choose(item) }
     }
+    if (dismiss != null && item.sourceItem != null) {
+        val card = this
+        addView(FrameLayout(context).apply {
+            addView(ImageView(context).apply {
+                setImageResource(R.drawable.ic_circle_minus)
+                imageTintList = ColorStateList.valueOf(context.getColor(R.color.token_text_quaternary))
+                importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+            }, FrameLayout.LayoutParams(context.dp(18), context.dp(18), Gravity.CENTER))
+            contentDescription = context.getString(R.string.routines_dismiss)
+            isClickable = true
+            isFocusable = true
+            // The minus sits on the card's own press, so it asks once, as the long press did, before the card leaves.
+            setOnClickListener { minus ->
+                ActionMenu(context).item(context.getString(R.string.routines_dismiss), R.drawable.ic_action_close) {
+                    card.isVisible = false
+                    // A platform whose last card left leaves with it.
+                    (card.parent as? ViewGroup)?.let { group -> if (group.children.none(View::isVisible)) group.isVisible = false }
+                    dismiss(item)
+                }.show(minus, haptic = true)
+            }
+        }, FrameLayout.LayoutParams(context.dp(DISMISS_DP), context.dp(DISMISS_DP), Gravity.TOP or Gravity.END))
+    }
+}
+
+private const val CARD_RADIUS_DP = 24
+/** The minus's touch target in a card's top-end corner, which the card's title leaves room for. */
+private const val DISMISS_DP = 44
+
+/**
+ * A member task's quoted source words under a quote rule, in the title's size and a quieter ink: at most four lines, a
+ * mention a weight heavier, a link underlined.
+ */
+private fun quote(context: Context, quote: RoutineQuote): View = LinearLayout(context).apply {
+    orientation = LinearLayout.HORIZONTAL
+    addView(View(context).apply { background = rounded(context.getColor(R.color.token_border_primary), context.dp(1).toFloat()) },
+        LinearLayout.LayoutParams(context.dp(2), LinearLayout.LayoutParams.MATCH_PARENT))
+    val text = SpannableStringBuilder()
+    quote.lines.forEachIndexed { index, line ->
+        if (index > 0) text.append("\n")
+        if (line.listItem) text.append("• ")
+        line.runs.forEach { run ->
+            val start = text.length
+            text.append(run.text)
+            when (run.kind) {
+                RoutineQuote.Kind.MENTION -> {
+                    text.setSpan(StyleSpan(Typeface.BOLD), start, text.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                    text.setSpan(ForegroundColorSpan(context.getColor(R.color.token_text_primary)), start, text.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                }
+                RoutineQuote.Kind.LINK -> text.setSpan(UnderlineSpan(), start, text.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                RoutineQuote.Kind.TEXT, RoutineQuote.Kind.CHANNEL -> Unit
+            }
+        }
+    }
+    addView(context.label(Level.REGULAR, R.color.token_text_tertiary, lines = 4).apply { this.text = text },
+        LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = context.dp(8) })
 }
 
 /**
@@ -473,32 +557,32 @@ private fun appendInlineMarkdown(out: SpannableStringBuilder, value: String) {
     out.append(value, last, value.length)
 }
 
-/** A platform's mark and name over its group, in the caption style. */
-internal fun platformCaption(context: Context, platform: PlatformRoutine): View = LinearLayout(context).apply {
-    orientation = LinearLayout.HORIZONTAL
-    gravity = Gravity.CENTER_VERTICAL
-    setPadding(context.dp(4), 0, context.dp(4), 0)
-    addView(ImageView(context).apply { setImageDrawable(ProviderMarks.drawable(context, platform.source?.appId)) },
-        LinearLayout.LayoutParams(context.dp(18), context.dp(18)))
-    addView(context.label(Level.SMALL, R.color.token_text_quaternary, DesignFonts.semibold).apply { text = platform.heading },
-        LinearLayout.LayoutParams(-2, -2).apply { marginStart = context.dp(8) })
-    isAccessibilityHeading = true
-}
-
-/** A platform's pre-tasks on one rounded surface, or the card's own words when this app can't draw its template. */
+/**
+ * A platform's pre-tasks, each a card of its own, or the card's own words when this app can't draw its template.
+ * [showsOrigin] names the platform under each card's words, where nothing above them does.
+ */
 internal fun preTaskGroup(context: Context, platform: PlatformRoutine, items: List<RecommendationItem>, feed: RecommendationFeed,
-                          choose: (RecommendationItem) -> Unit): View {
-    val rows = mutableListOf<View>()
-    platform.card?.fallbackText?.let { rows += context.label(Level.REGULAR, R.color.token_text_primary, lines = 0).apply {
+                          showsOrigin: Boolean = false, dismiss: ((RecommendationItem) -> Unit)? = null,
+                          choose: (RecommendationItem) -> Unit): View = cardColumn(context).apply {
+    val cards = mutableListOf<View>()
+    platform.card?.fallbackText?.let { cards += context.label(Level.REGULAR, R.color.token_text_primary, lines = 0).apply {
         text = it
+        background = rounded(context.getColor(R.color.token_bg_tertiary), context.dp(CARD_RADIUS_DP).toFloat())
         setPadding(context.dp(14), context.dp(12), context.dp(14), context.dp(12))
     } }
-    items.forEach { rows += preTaskRow(context, it, feed, platform.source, choose) }
-    return group(rows)
+    items.forEach { cards += preTaskRow(context, it, feed, platform.source, if (showsOrigin) platform.heading else null, dismiss, choose) }
+    cards.forEach { addView(it, LinearLayout.LayoutParams(-1, -2)) }
+}
+
+/** A column of pre-task cards, 8dp apart. The gap sits between visible cards only, so a dismissed card leaves none. */
+private fun cardColumn(context: Context) = LinearLayout(context).apply {
+    orientation = LinearLayout.VERTICAL
+    showDividers = LinearLayout.SHOW_DIVIDER_MIDDLE
+    dividerDrawable = GradientDrawable().apply { setSize(0, context.dp(8)) }
 }
 
 /**
- * A platform's pre-tasks: the app's mark and name as the title, then its suggestions on one rounded surface. A
+ * A platform's pre-tasks: the app's mark and name as the title, then its suggestions, each a card of its own. A
  * sideways swipe pages to the previous or next platform in the carousel's order, over page dots, and the title
  * follows the page; it opens on the card that was tapped. Choosing a row closes the sheet, then acts.
  */
@@ -560,7 +644,7 @@ class PreTaskSheet(activity: ComponentActivity, private val store: WorkspaceStor
             setPadding(activity.dp(16), activity.dp(8), activity.dp(16), activity.dp(16))
         }
         if (feed != null && platform.hasPreTasks(store::task)) {
-            column.addView(preTaskGroup(activity, platform, platform.preTasks(store::task), feed) { item ->
+            column.addView(preTaskGroup(activity, platform, platform.preTasks(store::task), feed, dismiss = store.routines::dismiss) { item ->
                 chosen = item
                 dismiss()
             })
@@ -597,8 +681,9 @@ private fun emptyLine(context: Context, platform: PlatformRoutine): View = conte
 }
 
 /**
- * The whole briefing in one sheet, opened from Home's greeting: the summary as plain prose, then each platform with
- * something to do under its mark and name, in the carousel's order. Platforms with nothing fold into one quiet line.
+ * The whole briefing in one sheet, opened from Home's greeting: the summary as plain prose, then every pre-task as a
+ * card of its own that names its platform under its words, in the carousel's order, as the desktop's Routines do.
+ * Platforms with nothing fold into one quiet line.
  */
 class RoutineSheet(activity: ComponentActivity, private val store: WorkspaceStore, private val actions: RoutineActions,
                    private val openTask: (String) -> Unit) : CommaSheet(activity, activity.getString(R.string.routines_title)) {
@@ -617,13 +702,16 @@ class RoutineSheet(activity: ComponentActivity, private val store: WorkspaceStor
                     openUrl = actions::openUrl).apply { setPadding(activity.dp(4), 0, activity.dp(4), 0) })
             }
             val platforms = feed.platforms
-            platforms.filter { it.hasPreTasks(store::task) }.forEach { platform ->
-                column.addView(platformCaption(activity, platform), LinearLayout.LayoutParams(-1, -2).apply { topMargin = activity.dp(24) })
-                column.addView(preTaskGroup(activity, platform, platform.preTasks(store::task), feed) { item ->
-                    after = { actions.perform(item) }
-                    dismiss()
-                }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = activity.dp(8) })
-            }
+            val busy = platforms.filter { it.hasPreTasks(store::task) }
+            if (busy.isNotEmpty()) column.addView(cardColumn(activity).apply {
+                busy.forEach { platform ->
+                    addView(preTaskGroup(activity, platform, platform.preTasks(store::task), feed, showsOrigin = true,
+                        dismiss = store.routines::dismiss) { item ->
+                        after = { actions.perform(item) }
+                        dismiss()
+                    }, LinearLayout.LayoutParams(-1, -2))
+                }
+            }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = activity.dp(24) })
             val quiet = platforms.filterNot { it.hasPreTasks(store::task) }
             if (quiet.isNotEmpty()) column.addView(LinearLayout(activity).apply {
                 orientation = LinearLayout.VERTICAL

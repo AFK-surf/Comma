@@ -52,6 +52,8 @@ defmodule BridgeForTeams.Salix.Client do
               attrs()
             ) :: result()
   @optional_callbacks create_placed_task_conversation: 3
+  @callback create_placed_task_conversation(String.t(), String.t(), attrs(), map()) :: result()
+  @optional_callbacks create_placed_task_conversation: 4
   @callback get_group_conversation(group_id :: String.t(), conversation_id :: String.t()) ::
               result()
   @callback get_group_conversation_with_messages(
@@ -865,6 +867,26 @@ defmodule BridgeForTeams.Salix.Client do
 
   # One generation- and channel-fenced normalized history/replies page.
   @callback slack_history_read_page(request :: map()) :: result()
+
+  # ---- Daily brief Slack source (SalixIM.DailyBriefSource) ----
+  # Readable public channels of a connect's bot.
+  @callback daily_brief_channels(request :: map()) :: result()
+  # One page of a readable channel's current messages in a time window.
+  @callback daily_brief_read_window(request :: map()) :: result()
+  # Named messages of one readable channel, at most 200.
+  @callback daily_brief_messages(request :: map()) :: result()
+  # Threads in readable channels where one member wrote.
+  @callback daily_brief_member_threads(request :: map()) :: result()
+  # BFT emails resolved to Slack members of the connect's workspace.
+  @callback daily_brief_lookup_members(request :: map()) :: result()
+  # The names Slack shows for users of the connect's workspace, by user id.
+  @callback daily_brief_user_names(request :: map()) :: result()
+
+  # Message permalinks from the bot.
+  @callback daily_brief_permalinks(request :: map()) :: result()
+
+  # Posts one brief into a member's direct conversation with the Swarm's bot.
+  @callback daily_brief_post(request :: map()) :: result()
 
   # ---- Slack Triage authority writes (SalixIM.ProviderConnects) ----
   # The one-way provisioning door: stamps the approved channel, the router

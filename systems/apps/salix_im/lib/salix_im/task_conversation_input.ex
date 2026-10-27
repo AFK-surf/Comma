@@ -32,7 +32,7 @@ defmodule SalixIM.TaskConversationInput do
         opts \\ []
       )
       when is_map(attrs) do
-    attrs = stringify(attrs)
+    attrs = attrs |> stringify() |> sandbox_place(conversation_id)
     schedule = attrs["schedule"]
     content = trim(attrs["content"])
 
@@ -67,6 +67,15 @@ defmodule SalixIM.TaskConversationInput do
                "created_by_agent_id" => delegator_agent_id,
                "owner_user_id" => owner_user_id,
                "source_refs" => source_refs,
+               # Where the Task runs, resolved to a device: what a station Task
+               # is still known to run on once its station left it.
+               "runs_on" => attrs["runs_on"],
+               # A coding Task's repository and session branch (`runs_on {kind:
+               # sandbox}`).
+               "repo" => attrs["repo"],
+               # The Mini App a build Task makes (`SalixIM.TaskPlacement`): its
+               # sandbox's station may deploy that app only.
+               "mini_app" => attrs["mini_app"],
                "metadata" => stringify(attrs["conversation_metadata"] || %{}),
                "labels" => attrs["labels"],
                "latest_artifact" => attrs["latest_artifact"],
@@ -96,7 +105,13 @@ defmodule SalixIM.TaskConversationInput do
              now,
              worker_participant_opts(attrs, group)
            ),
-         {:ok, station_session} <- invite_station(group, conversation_id, worker, attrs),
+         {:ok, station_session} <-
+           invite_station(
+             group,
+             conversation_id,
+             worker,
+             Map.put(attrs, "owner_user_id", owner_user_id)
+           ),
          participants <-
            SalixIM.Triage.Investigation.result_participants(investigation, now) ++
              owner_participants(owner_user_id, now) ++
@@ -169,16 +184,19 @@ defmodule SalixIM.TaskConversationInput do
   defp worker_participant_opts(attrs, group),
     do: [session_model: attrs["session_model"] || default_task_model(group)]
 
-  # A Task inside Salix that names no model runs the Group's default Task
-  # model (`SalixAgent.TaskModel`, the Group record's `default_task_model`): a
-  # catalog choice or the platform model. A Group that has set none takes its
-  # product's default (a BridgeForTeams org's default Task model,
-  # `SalixIM.Ports.TaskCreate.default_task_model/1`); without one the Task
-  # runs its Worker's model. A Task created through any path (a Router, a
-  # product, a Schedule, a Slack thread) takes it, and it is not part of the
-  # create command, so a create asked again after the default changed is the
-  # same Task.
-  defp default_task_model(group) do
+  @doc """
+  The model a Task inside Salix runs when it names none: the Group's default
+  Task model (`SalixAgent.TaskModel`, the Group record's
+  `default_task_model`): a catalog choice or the platform model. A Group that
+  has set none takes its product's default (a BridgeForTeams org's default
+  Task model, `SalixIM.Ports.TaskCreate.default_task_model/1`); without one
+  (nil) the Task runs its Worker's model. A Task created through any path (a
+  Router, a product, a Schedule, a Slack thread) takes it, and it is not part
+  of the create command, so a create asked again after the default changed is
+  the same Task. A Task switched into Salix without a model takes it too
+  (`SalixIM.TaskRun`).
+  """
+  def default_task_model(group) do
     case task_model(group["default_task_model"]) do
       nil -> product_task_model(group)
       choice -> choice
@@ -207,6 +225,9 @@ defmodule SalixIM.TaskConversationInput do
 
   defp task_model(_value), do: nil
 
+  @doc "The notification filter of the Worker of a Task that runs on a station: delivered nothing."
+  def station_worker_filter, do: @station_worker_filter
+
   @doc """
   Whether a Task's Worker participant is the one of a Task that runs on a
   station: the only Worker delivered nothing (`worker_participant_opts/2`).
@@ -218,10 +239,73 @@ defmodule SalixIM.TaskConversationInput do
 
   def station_worker?(_participant), do: false
 
+  # A coding Task's sandbox does not exist yet: it is reserved instead, and its
+  # station is invited once it connects (`SalixIM.Ports.TaskStations.sandbox/1`).
+  defp invite_station(
+         group,
+         conversation_id,
+         worker,
+         %{"runs_on" => %{"kind" => "sandbox", "device_id" => device_id}} = attrs
+       ) do
+    case SalixIM.Ports.TaskStations.sandbox(%{
+           tenant_id: group["tenant_id"],
+           group_id: group["group_id"],
+           conversation_id: conversation_id,
+           device_id: device_id,
+           agent_id: worker["agent_id"],
+           start:
+             station_start(
+               worker["agent_id"],
+               attrs["session_model"],
+               attrs["repo"],
+               attrs["mini_app"]
+             ),
+           repo: attrs["repo"],
+           account_id: attrs["account_id"],
+           requester: attrs["owner_user_id"]
+         }) do
+      :ok ->
+        {:ok, nil}
+
+      {:error, reason} ->
+        {:error, {:bad_request, "the sandbox was not reserved: #{inspect(reason)}"}}
+    end
+  end
+
   # The station is asked before the Task is made: one that cannot take it
   # (not connected, no such model) refuses the create, and nothing is written.
   # A create asked again asks again; the station keeps its first Session.
+  # The Group's Cloud VM that is not connected now (it sleeps, or was never
+  # made) is the one exception: the product wakes it, so the Task is made and
+  # the station expected in it (`:when_connected`), invited and given the
+  # Task once it connects (`station_joined/5`).
   defp invite_station(
+         group,
+         conversation_id,
+         worker,
+         %{"runs_on" => %{"device_id" => device_id}} = attrs
+       ) do
+    # An already joined Task owns its Session even while the Station is away.
+    # The delivery path handles reconnect/catchup; a create replay starts none.
+    joined =
+      case SalixStore.StationTaskSessions.of_task(group["group_id"], conversation_id) do
+        {:ok, rows} ->
+          Enum.find(rows, &(&1.device_id == device_id and &1.agent_id == worker["agent_id"]))
+
+        _ ->
+          nil
+      end
+
+    if joined do
+      {:ok, joined.session}
+    else
+      ask_station(group, conversation_id, worker, attrs)
+    end
+  end
+
+  defp invite_station(_group, _conversation_id, _worker, _attrs), do: {:ok, nil}
+
+  defp ask_station(
          group,
          conversation_id,
          worker,
@@ -234,8 +318,11 @@ defmodule SalixIM.TaskConversationInput do
            device_id: device_id,
            start: station_start(worker["agent_id"], attrs["session_model"])
          }) do
-      {:ok, session} ->
+      {:ok, session} when is_binary(session) ->
         {:ok, session}
+
+      {:ok, :when_connected} ->
+        {:ok, :when_connected}
 
       {:error, :device_offline} ->
         {:error, {:bad_request, "that station is not connected now; the Task was not made"}}
@@ -248,23 +335,48 @@ defmodule SalixIM.TaskConversationInput do
     end
   end
 
-  defp invite_station(_group, _conversation_id, _worker, _attrs), do: {:ok, nil}
+  # A coding Task (`runs_on {kind: sandbox}`) runs on the device its sandboxes'
+  # stations register as, the same for every sandbox, and works on a session
+  # branch named after it unless the request named one.
+  defp sandbox_place(%{"runs_on" => %{"kind" => "sandbox"}} = attrs, conversation_id) do
+    repo = attrs["repo"] || %{}
+
+    attrs
+    |> Map.put("runs_on", %{
+      "kind" => "sandbox",
+      "device_id" => SalixStore.CodingSandboxes.device_id(conversation_id)
+    })
+    |> Map.put("repo", Map.put_new(repo, "branch", session_branch(conversation_id)))
+  end
+
+  defp sandbox_place(attrs, _conversation_id), do: attrs
+
+  defp session_branch(conversation_id) do
+    "comma/" <> (conversation_id |> String.replace(~r/[^A-Za-z0-9]/, "") |> String.slice(-10, 10))
+  end
 
   @doc """
   What a station is asked to start the Session of a Task of Worker `agent_id`
-  with (`task.invite`'s `start`), from the Task's runtime model choice.
+  with (`task.invite`'s `start`), from the Task's runtime model choice. A
+  coding Task's start names its repository, and a Mini App build's its app
+  (`mini_app {app_id}`), which gives its Session the app tools. The station
+  keeps the start with its Session, so an invite again carries them too.
   """
-  def station_start(agent_id, session_model) do
+  def station_start(agent_id, session_model, repo \\ nil, mini_app \\ nil) do
     model = if is_map(session_model), do: session_model, else: %{}
 
     %{"requester" => agent_id <> "@agents.salix", "title" => agent_id}
     |> put_present("runtime", if(model["provider"] in ~w(claude codex), do: model["provider"]))
     |> put_present("model", model["model"])
     |> put_present("effort", model["reasoning_effort"])
+    |> put_present("repo", repo)
+    |> put_present("mini_app", mini_app)
   end
 
   defp station_joined(_group, _conversation_id, _worker, _attrs, nil), do: :ok
 
+  # A station expected in the Task (`:when_connected`) joins it with no
+  # Session: the product invites it when it connects.
   defp station_joined(
          group,
          conversation_id,
@@ -278,7 +390,7 @@ defmodule SalixIM.TaskConversationInput do
            group_id: group["group_id"],
            conversation_id: conversation_id,
            device_id: device_id,
-           session: session,
+           session: if(session == :when_connected, do: nil, else: session),
            agent_id: worker["agent_id"],
            start: station_start(worker["agent_id"], attrs["session_model"])
          })

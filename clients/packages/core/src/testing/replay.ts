@@ -20,6 +20,7 @@ import type {
   Loopback,
   MeetingEvent,
   Pull,
+  VoiceCallSocketEvent,
   ResetPorts,
   StationLinks,
   StreamResponse,
@@ -334,6 +335,9 @@ class ReplayHost extends FakeHost {
       open: () => port("downloads.open"),
       step: () => port("downloads.step"),
       close: () => port("downloads.close"),
+      create: () => port("downloads.create"),
+      append: () => port("downloads.append"),
+      finish: () => port("downloads.finish"),
       remove: () => port("downloads.remove"),
       retain: () => port("downloads.retain"),
     };
@@ -393,6 +397,17 @@ class ReplayHost extends FakeHost {
   #meetingListener: ((event: MeetingEvent) => void) | null = null;
 
   /** Main's meeting parts, answered from the log, when the recorded core had them. */
+  /** A part of a file a pick left with the app, as the log answered it. */
+  override readLocalFile(
+    ref: string,
+    offset: number,
+    length: number
+  ): Effect.Effect<Uint8Array, HostError> {
+    return this.#port<string>("HOST", `localFile:${ref}:${offset}:${length}`).pipe(
+      Effect.map((bytes) => fromBase64(bytes))
+    );
+  }
+
   serveMeeting(): void {
     this.meeting = {
       command: (op) =>
@@ -403,6 +418,23 @@ class ReplayHost extends FakeHost {
         this.#meetingListener = listener;
       },
     };
+  }
+
+  #voiceCallListener: ((event: VoiceCallSocketEvent) => void) | null = null;
+
+  /** Main's voice call socket, when the recorded core had it: what the core asks of it is its output. */
+  serveVoiceCall(): void {
+    this.voiceCall = {
+      command: () => undefined,
+      listen: (listener) => {
+        this.#voiceCallListener = listener;
+      },
+    };
+  }
+
+  /** What the voice call socket did, as the log has it. */
+  voiceCallEvent(event: VoiceCallSocketEvent): void {
+    this.#voiceCallListener?.(event);
   }
 
   /** The node said its files changed. */
@@ -451,6 +483,12 @@ class ReplayHost extends FakeHost {
       pickAttachments: () =>
         port<RecordedChatPick>("chatPick").pipe(Effect.map(chatPickOf)),
       saveDownload: () => port("saveDownload"),
+      saveOpen: () => port("saveOpen"),
+      saveWrite: () => Effect.asVoid(port("saveWrite")),
+      saveClose: () => port("saveClose"),
+      openStream: () => port("openStream"),
+      closeStream: () => Effect.asVoid(port("closeStream")),
+      saveStream: () => port("saveStream"),
       listen: (request) =>
         port<{ port: number }>(`listen:${request.port}`).pipe(
           Effect.map(
@@ -571,6 +609,9 @@ export async function replay(
   if (capabilities?.kind === "capabilities") {
     host.serveImages(capabilities.preview, capabilities.transcode);
     if (capabilities.meeting) host.serveMeeting();
+    if (capabilities.voiceCall) host.serveVoiceCall();
+    if (capabilities.localFiles) host.uploadsLocalFiles = true;
+    if (capabilities.client) host.client = capabilities.client;
   }
   const bearer = inputs.find((input) => input.kind === "bearer");
   if (bearer?.kind === "bearer") host.serveBearer(bearer);
@@ -805,6 +846,9 @@ export async function replay(
       }
       case "meeting":
         host.meetingEvent(structuredClone(input.event));
+        break;
+      case "voiceCall":
+        host.voiceCallEvent(structuredClone(input.event));
         break;
       case "random":
       case "legacy":

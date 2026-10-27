@@ -17,5 +17,6 @@ defmodule SalixAgent.Profiles.Native do
   def runtime_config_json(_profile, _runtime, _key), do: :erlang.nif_error(:nif_not_loaded)
   def model_key_of(_spelled), do: :erlang.nif_error(:nif_not_loaded)
   def usable_json(_profile, _model, _now), do: :erlang.nif_error(:nif_not_loaded)
+  def refills_at_json(_profile, _model, _now), do: :erlang.nif_error(:nif_not_loaded)
   def quota_json(_provider, _body, _now), do: :erlang.nif_error(:nif_not_loaded)
 end

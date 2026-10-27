@@ -8,10 +8,21 @@ defmodule Salix.Bindings.MeetingConnectDispatch do
   alias Salix.Bindings.MeetingNativeRuntime
   alias SalixStore.Ids
   alias SalixMeet.Store
+  alias SalixMeet.MeetingComputeCarrier
 
   @impl true
   def join(payload) do
+    case payload["runtime_target"] do
+      target when is_map(target) -> dispatch_target(payload, target)
+      _ -> join_unselected(payload)
+    end
+  end
+
+  defp join_unselected(payload) do
     case SalixMeet.MeetingRuntimePolicy.select(payload) do
+      {:ok, "automatic"} ->
+        join_automatic(payload)
+
       {:ok, "connected_runtime"} ->
         group_id = to_string(payload["group_id"] || "")
 
@@ -34,6 +45,186 @@ defmodule Salix.Bindings.MeetingConnectDispatch do
       {:error, _} = error ->
         error
     end
+  end
+
+  defp join_automatic(payload) do
+    if rejected_source?(payload, "compute_workload"),
+      do: join_connected_or_native(payload),
+      else: join_compute_or_fallback(payload)
+  end
+
+  defp join_compute_or_fallback(payload) do
+    with {:ok, {_registration, environment, binding}} <-
+           SalixStore.Compute.group_vmm_placement(payload["tenant_id"], payload["group_id"]),
+         request =
+           Map.merge(payload, %{
+             "compute_environment_id" => environment.id,
+             "compute_provider_binding_id" => binding.id
+           }),
+         {:ok, workload} <- MeetingComputeCarrier.ensure_workload(request) do
+      target = %{
+        "source" => "compute_workload",
+        "compute_environment_id" => environment.id,
+        "workload_id" => workload.id
+      }
+
+      with {:ok, selected} <- select_target(payload, target) do
+        dispatch_compute(selected, target)
+      end
+    else
+      {:error, :unavailable} ->
+        {:error, :meeting_compute_unavailable}
+
+      {:error, :meeting_workload_placement_conflict} = error ->
+        error
+
+      {:error, reason} when reason in [:ambiguous_vmm_hosts, :ambiguous_vmm_environments] ->
+        {:error, reason}
+
+      {:error, _reason} ->
+        join_connected_or_native(payload)
+    end
+  end
+
+  defp join_connected_or_native(payload) do
+    if rejected_source?(payload, "connected_runtime"),
+      do: join_native(payload),
+      else: join_connected(payload)
+  end
+
+  defp rejected_source?(payload, source),
+    do: Enum.any?(payload["runtime_rejections"] || [], &(&1["source"] == source))
+
+  defp join_connected(payload) do
+    case select_meeting_record(payload["group_id"]) do
+      {:ok, record} ->
+        target = %{
+          "source" => "connected_runtime",
+          "device_id" => record["device_id"],
+          "connect_id" => get_in(record, ["meta", "connect_id"])
+        }
+
+        # Capability minting precedes selection and cannot send a join.
+        case add_llm_capability(payload, record["connector_run_id"]) do
+          {:ok, request} ->
+            with {:ok, selected} <- select_target(request, target) do
+              dispatch_connected(selected, target, record["connector_run_id"])
+            end
+
+          {:error, _reason} ->
+            join_native(payload)
+        end
+
+      {:error, _reason} ->
+        join_native(payload)
+    end
+  end
+
+  defp join_native(payload) do
+    target = %{"source" => "native_runtime"}
+
+    with {:ok, selected} <- select_target(payload, target),
+         do: MeetingNativeRuntime.join(selected)
+  end
+
+  defp select_target(payload, target) do
+    with {:ok, doc, _etag} <-
+           Store.select_join_runtime(
+             payload["meeting_id"],
+             payload["join_dispatch_generation"],
+             target
+           ) do
+      {:ok,
+       payload
+       |> Map.merge(
+         Map.take(
+           doc["state"],
+           ~w(runtime_source runtime_target compute_environment_id workload_id)
+         )
+       )}
+    end
+  end
+
+  defp reject_target(payload, target, reason),
+    do:
+      Store.reject_join_runtime(
+        payload["meeting_id"],
+        payload["join_dispatch_generation"],
+        target,
+        reason
+      )
+
+  defp dispatch_target(payload, %{"source" => "compute_workload"} = target),
+    do:
+      dispatch_compute(
+        Map.merge(payload, Map.take(target, ~w(compute_environment_id workload_id))),
+        target
+      )
+
+  defp dispatch_target(payload, %{"source" => "native_runtime"}),
+    do: MeetingNativeRuntime.join(payload)
+
+  defp dispatch_target(payload, %{"source" => "connected_runtime"} = target) do
+    with {:ok, record} <- current_target_record(payload, target),
+         {:ok, request} <- add_llm_capability(payload, record["connector_run_id"]) do
+      dispatch_connected(request, target, record["connector_run_id"])
+    end
+  end
+
+  defp dispatch_compute(payload, target) do
+    outcome =
+      with {:ok, _runtime} <- MeetingComputeCarrier.await_ready(payload),
+           do: MeetingComputeCarrier.join(payload)
+
+    case outcome do
+      {:error, reason}
+      when reason in [
+             :meeting_runtime_not_ready,
+             :meeting_workload_terminal,
+             :runtime_not_found,
+             :stale_runtime_capability
+           ] ->
+        with {:ok, _stopped} <- MeetingComputeCarrier.release_unaccepted(payload),
+             {:ok, doc, _etag} <- reject_target(payload, target, reason) do
+          join_connected_or_native(after_rejection(payload, doc))
+        end
+
+      result ->
+        result
+    end
+  end
+
+  defp dispatch_connected(payload, target, connector_run_id) do
+    case Live.request(connector_run_id, "meeting_join", payload) do
+      {:ok, %{"accepted" => false} = rejection} ->
+        if SalixMeet.Outcome.normalize(rejection["reason_code"]) do
+          with {:ok, _doc, _etag} <-
+                 Store.refuse_join_runtime(
+                   payload["meeting_id"],
+                   payload["join_dispatch_generation"],
+                   target,
+                   rejection["reason_code"]
+                 ) do
+            {:error, {:meeting_join_rejected, rejection["reason_code"]}}
+          end
+        else
+          with {:ok, doc, _etag} <- reject_target(payload, target, rejection),
+               do: join_native(after_rejection(payload, doc))
+        end
+
+      result ->
+        result
+    end
+  end
+
+  defp after_rejection(payload, doc) do
+    payload
+    |> Map.drop(~w(runtime_target compute_environment_id workload_id llm_capability_token))
+    |> Map.put("runtime_source", "automatic")
+    |> Map.put(
+      "runtime_rejections",
+      get_in(doc, ["state", "join_dispatch", "runtime_rejections"]) || []
+    )
   end
 
   @impl true
@@ -70,10 +261,19 @@ defmodule Salix.Bindings.MeetingConnectDispatch do
       SalixMeet.MeetingRuntimePolicy.select(payload) == {:ok, "native_runtime"} ->
         MeetingNativeRuntime.session_status(payload)
 
+      SalixMeet.MeetingRuntimePolicy.select(payload) == {:ok, "compute_workload"} ->
+        MeetingComputeCarrier.session_status(payload)
+
+      SalixMeet.MeetingRuntimePolicy.select(payload) == {:ok, "automatic"} and
+        is_nil(payload["runtime_target"]) and
+          SystemsRuntime.get_env(:salix_meet, :runtime_driver) ==
+            SalixMeet.RuntimeDriver.SalixConnect ->
+        {:ok, :none}
+
       true ->
         with {:ok, "connected_runtime"} <- SalixMeet.MeetingRuntimePolicy.select(payload),
              {:ok, connect_id} <- meeting_connect_id(meeting_id, payload),
-             {:ok, connector_run_id} <- select_meeting_env(group_id, connect_id),
+             {:ok, connector_run_id} <- selected_meeting_env(payload, group_id, connect_id),
              {:ok, result} <-
                Live.request(connector_run_id, "meeting_session_status", %{
                  "meeting_id" => meeting_id
@@ -107,6 +307,9 @@ defmodule Salix.Bindings.MeetingConnectDispatch do
     )
   end
 
+  defp send_chat_for_source("automatic", _payload, _meeting_id, _text),
+    do: {:error, :meeting_runtime_not_selected}
+
   defp send_chat_for_source("native_runtime", payload, meeting_id, text) do
     MeetingNativeRuntime.send_chat(
       Map.merge(payload, %{"meeting_id" => meeting_id, "text" => text})
@@ -119,7 +322,7 @@ defmodule Salix.Bindings.MeetingConnectDispatch do
     # Resolve the connector run fresh per send, but keep the durable connect_id
     # selected by the meeting. Reconnect changes the run id, not the owner.
     with {:ok, connect_id} <- meeting_connect_id(meeting_id, payload),
-         {:ok, connector_run_id} <- select_meeting_env(group_id, connect_id) do
+         {:ok, connector_run_id} <- selected_meeting_env(payload, group_id, connect_id) do
       Live.request(connector_run_id, "meeting_send_chat", %{
         "meeting_id" => meeting_id,
         "message_id" => payload["message_id"],
@@ -170,6 +373,14 @@ defmodule Salix.Bindings.MeetingConnectDispatch do
     payload_connect_id = payload["connect_id"]
 
     case Store.get(meeting_id) do
+      {:ok,
+       %{
+         "state" => %{
+           "runtime_target" => %{"source" => "connected_runtime", "connect_id" => connect_id}
+         }
+       }, _etag} ->
+        {:ok, connect_id}
+
       {:ok, %{"state" => %{"connect_id" => connect_id}}, _etag}
       when is_binary(connect_id) and connect_id != "" ->
         cond do
@@ -186,8 +397,8 @@ defmodule Salix.Bindings.MeetingConnectDispatch do
   end
 
   defp select_meeting_env(group_id, connect_id \\ nil) do
-    case Registry.list_connected_by_group(group_id) do
-      {:ok, records} ->
+    case Registry.page_by_group(group_id, limit: 100) do
+      {:ok, %{records: records}} ->
         records
         |> Enum.filter(&meeting_ready?/1)
         |> Enum.filter(fn record ->
@@ -200,6 +411,35 @@ defmodule Salix.Bindings.MeetingConnectDispatch do
 
       {:error, _} = err ->
         err
+    end
+  end
+
+  defp select_meeting_record(group_id) do
+    with {:ok, %{records: records}} <- Registry.page_by_group(group_id, limit: 100) do
+      case Enum.find(records, &meeting_ready?/1) do
+        nil -> {:error, :no_meeting_runtime_available}
+        record -> {:ok, record}
+      end
+    end
+  end
+
+  defp selected_meeting_env(%{"runtime_target" => target} = payload, _group_id, _connect_id)
+       when is_map(target) do
+    with {:ok, record} <- current_target_record(payload, target),
+         do: {:ok, record["connector_run_id"]}
+  end
+
+  defp selected_meeting_env(_payload, group_id, connect_id),
+    do: select_meeting_env(group_id, connect_id)
+
+  defp current_target_record(payload, target) do
+    with {:ok, record} <-
+           Registry.get_device(payload["tenant_id"], payload["group_id"], target["device_id"]),
+         true <- meeting_ready?(record),
+         true <- get_in(record, ["meta", "connect_id"]) == target["connect_id"] do
+      {:ok, record}
+    else
+      _ -> {:error, :no_meeting_runtime_available}
     end
   end
 

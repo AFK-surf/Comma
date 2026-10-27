@@ -51,6 +51,7 @@ async function runDownload(request: FileDownloadRequest, locale: CommaLocale = "
 describe("file downloads", () => {
   afterEach(() => {
     toast.dismissAll();
+    document.querySelectorAll("iframe").forEach((frame) => frame.remove());
     Reflect.deleteProperty(globalThis, "commaNative");
     vi.restoreAllMocks();
   });
@@ -371,7 +372,7 @@ describe("file downloads", () => {
     const blob = reportBlob();
     await expect(
       runDownload({ fileName: "report.csv", resolve: async () => blob })
-    ).resolves.toEqual({ status: "success" });
+    ).resolves.toEqual({ status: "started" });
 
     expect(createObjectUrl).toHaveBeenCalledWith(blob);
     expect(clickAnchor).toHaveBeenCalledOnce();
@@ -380,9 +381,11 @@ describe("file downloads", () => {
     expect(anchor.href).toBe("blob:saved-report");
     expect(anchor.isConnected).toBe(false);
 
-    expect(await screen.findByText("Download complete")).toBeInTheDocument();
+    expect(await screen.findByText("Download started")).toBeInTheDocument();
     // The browser owns the destination here, so the copy must not name one.
-    expect(screen.getByText("report.csv was downloaded.")).toBeInTheDocument();
+    expect(
+      screen.getByText("Check your browser for the progress of report.csv.")
+    ).toBeInTheDocument();
     expect(
       screen.queryByText("report.csv was saved to your Downloads folder.")
     ).not.toBeInTheDocument();
@@ -393,6 +396,122 @@ describe("file downloads", () => {
       screen.queryByRole("button", { name: "Show in Folder" })
     ).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Open file" })).not.toBeInTheDocument();
+  });
+
+  it("starts a linked browser download even when pop-ups are blocked", async () => {
+    installNativeBridgeMock({ platform: "web" });
+    vi.spyOn(window, "open").mockReturnValue(null);
+    const resolve = vi.fn(async () => reportBlob());
+    renderToasts();
+
+    await expect(
+      runDownload({
+        fileName: "deck.pdf",
+        resolve,
+        link: async () => "http://localhost/files/deck.pdf",
+      })
+    ).resolves.toEqual({ status: "started" });
+    expect(resolve).not.toHaveBeenCalled();
+    expect(await screen.findByText("Download started")).toBeInTheDocument();
+  });
+
+  it("gives each linked download a frame of its own, so a later one never replaces an earlier one", async () => {
+    installNativeBridgeMock({ platform: "web" });
+    renderToasts();
+    const urls = [1, 2, 3, 4, 5].map((n) => `http://localhost/files/report-${n}.pdf`);
+
+    for (const url of urls)
+      await expect(
+        runDownload({
+          fileName: "report.pdf",
+          resolve: resolveReport,
+          link: async () => url,
+        })
+      ).resolves.toEqual({ status: "started" });
+
+    const frames = [...document.querySelectorAll("iframe")];
+    // The oldest is let go once there are more than four; the rest keep their own navigation.
+    expect(frames.map((frame) => frame.src)).toEqual(urls.slice(1));
+    expect(frames.every((frame) => frame.hidden)).toBe(true);
+    expect(
+      frames.every((frame) => frame.getAttribute("sandbox") === "allow-downloads")
+    ).toBe(true);
+  });
+
+  it("lets the reader retry when the browser cannot start the download", async () => {
+    installNativeBridgeMock({ platform: "web" });
+    vi.spyOn(HTMLIFrameElement.prototype, "src", "set").mockImplementation(() => {
+      throw new DOMException("Navigation denied", "SecurityError");
+    });
+    renderToasts();
+
+    await expect(
+      runDownload({
+        fileName: "report.pdf",
+        resolve: resolveReport,
+        link: async () => "http://localhost/files/report.pdf",
+      })
+    ).resolves.toMatchObject({ status: "error", retryable: true });
+    expect(await screen.findByText("Download failed")).toBeInTheDocument();
+    expect(
+      screen.getByText("The browser could not start downloading report.pdf. Try again.")
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Download started")).not.toBeInTheDocument();
+  });
+
+  it("preserves the retrieval error when the browser link cannot be minted", async () => {
+    installNativeBridgeMock({ platform: "web" });
+    renderToasts();
+
+    await expect(
+      runDownload({
+        fileName: "deck.pdf",
+        resolve: resolveReport,
+        link: async () => {
+          throw new CoreError({
+            code: "attachment_not_found",
+            message: "gone",
+            status: 404,
+          });
+        },
+      })
+    ).resolves.toMatchObject({ status: "error", code: "not-found" });
+    expect(
+      await screen.findByText(
+        "deck.pdf is unavailable. Ask the sender to attach the file again."
+      )
+    ).toBeInTheDocument();
+  });
+
+  it("reads a file with no link to it a part at a time, at any size, and hands it to the browser", async () => {
+    installNativeBridgeMock({ platform: "web" });
+    const createObjectUrl = vi
+      .spyOn(URL, "createObjectURL")
+      .mockReturnValue("blob:station-file");
+    vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
+    const clickAnchor = vi
+      .spyOn(HTMLAnchorElement.prototype, "click")
+      .mockImplementation(() => undefined);
+    const resolve = vi.fn(async () => reportBlob());
+    // Larger than a whole read may be.
+    const big = new Blob([new Uint8Array(chatAttachmentUploadMaxBytes + 1)]);
+    renderToasts();
+
+    await expect(
+      runDownload({
+        fileName: "run.mp4",
+        resolve,
+        link: async () => {
+          throw new CoreError({ code: "no_link", message: "A file on a machine." });
+        },
+        parts: async () => big,
+      })
+    ).resolves.toEqual({ status: "started" });
+    expect(resolve).not.toHaveBeenCalled();
+    expect(createObjectUrl).toHaveBeenCalledWith(big);
+    expect((clickAnchor.mock.instances[0] as HTMLAnchorElement).download).toBe(
+      "run.mp4"
+    );
   });
 
   it("drives the same path from a chat card's download capability", async () => {

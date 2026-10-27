@@ -10,6 +10,7 @@ import type {
   ChatImagePreviewRef,
   LocalFilePreview,
 } from "@comma/core/chat";
+import { copyImageBlob } from "../../../../runtime-files/imageClipboard";
 import { MessageInlineVideo } from "../inline/MessageInlineVideo";
 import { ThreadFileSourceContext } from "../threadContexts";
 import { AttachmentPill } from "./AttachmentPill";
@@ -112,10 +113,12 @@ export function MessageAttachments({
             // only bounds how large it may paint, so the whole picture stays
             // visible instead of a cropped fixed-ratio card.
             <div className="comma-chat-inline-images">
-              {groupedPreviews.map(({ image, key }) => (
+              {groupedPreviews.map(({ image, key, read }) => (
                 <ChatPanelImage
                   alt={image.alt}
                   className="comma-chat-inline-image"
+                  // The desktop renderer may not write the clipboard itself.
+                  onCopy={async () => copyImageBlob(await read())}
                   {...(image.onContextMenu
                     ? { onContextMenu: image.onContextMenu }
                     : {})}

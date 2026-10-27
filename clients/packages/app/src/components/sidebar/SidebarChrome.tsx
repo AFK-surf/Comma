@@ -1,4 +1,5 @@
 import { useCommaMessages } from "@comma/i18n/react";
+import { CallIcon } from "@comma/ui/components/icons";
 import { Tooltip } from "@comma/ui/components/tooltip";
 import { appKeybindingKeycaps } from "@comma/ui/components/settings-shortcut";
 import { cx } from "@comma/ui/components/utils";
@@ -35,17 +36,19 @@ import { reconcileSidebarNavOrder, type SidebarNavItemId } from "./sidebarNavOrd
 import { useSidebarNavReorder } from "./useSidebarNavReorder";
 import { useHomeTabUnread } from "./CommaCenterStatusContext";
 import { useOnboardingAhead } from "../onboarding/useOnboardingAhead";
+import { useDesktopCall } from "../voice/DesktopCall";
 
 type SidebarItem = {
   icon: AppIconName;
   id: SidebarNavItemId;
-  shortcutId:
+  /** Its keyboard shortcut; Apps has none yet. */
+  shortcutId?:
     | "go-comma-assistant"
     | "go-inbox"
     | "go-drive"
     | "go-tasks"
     | "go-plugins";
-  to: "/" | "/inbox" | "/drive" | "/tasks" | "/plugins";
+  to: "/" | "/inbox" | "/drive" | "/tasks" | "/apps" | "/plugins";
 };
 
 const sidebarItems: Record<SidebarNavItemId, SidebarItem> = {
@@ -53,6 +56,7 @@ const sidebarItems: Record<SidebarNavItemId, SidebarItem> = {
   inbox: { icon: "inbox", id: "inbox", shortcutId: "go-inbox", to: "/inbox" },
   drive: { icon: "drive", id: "drive", shortcutId: "go-drive", to: "/drive" },
   tasks: { icon: "tasks", id: "tasks", shortcutId: "go-tasks", to: "/tasks" },
+  apps: { icon: "apps", id: "apps", to: "/apps" },
   plugins: { icon: "plugins", id: "plugins", shortcutId: "go-plugins", to: "/plugins" },
 };
 
@@ -181,17 +185,26 @@ function HomeSidebarNavLink({
   const { open: settingsOpen } = useCommaSettingsOverlay();
   const onboardingAhead = useOnboardingAhead();
   const unread = useHomeTabUnread(active && !settingsOpen && !onboardingAhead);
+  const inCall = useDesktopCall() !== null;
   return (
-    <SidebarNavLink badge={unread} item={item} tooltipDisabled={tooltipDisabled} />
+    <SidebarNavLink
+      badge={unread && !inCall}
+      call={inCall}
+      item={item}
+      tooltipDisabled={tooltipDisabled}
+    />
   );
 }
 
 function SidebarNavLink({
   badge = false,
+  call = false,
   item,
   tooltipDisabled,
 }: {
   badge?: boolean;
+  /** A call to the Router is up (Home's): a green receiver on the icon. */
+  call?: boolean;
   item: SidebarItem;
   tooltipDisabled: boolean;
 }) {
@@ -213,6 +226,7 @@ function SidebarNavLink({
     inbox: messages.nav_inbox(),
     drive: messages.nav_drive(),
     tasks: messages.nav_tasks(),
+    apps: messages.nav_apps(),
     plugins: messages.nav_plugins(),
   }[item.id];
   const tooltipLabel = {
@@ -220,6 +234,7 @@ function SidebarNavLink({
     inbox: messages.nav_go_inbox(),
     drive: messages.nav_go_drive(),
     tasks: messages.nav_go_tasks(),
+    apps: messages.nav_go_apps(),
     plugins: messages.nav_go_plugins(),
   }[item.id];
   const iconRef = useRef<HTMLSpanElement>(null);
@@ -228,7 +243,7 @@ function SidebarNavLink({
     <SidebarItemTooltip
       isDisabled={tooltipDisabled}
       label={tooltipLabel}
-      shortcutId={item.shortcutId}
+      {...(item.shortcutId ? { shortcutId: item.shortcutId } : {})}
       triggerRef={iconRef}
     >
       <LeftRailItemControl
@@ -236,7 +251,18 @@ function SidebarNavLink({
           badge,
           className: cx("comma-sidebar-link", active && "comma-sidebar-link-active"),
           href: item.to === "/" ? "#/" : `#${item.to}`,
-          icon: (
+          icon: call ? (
+            <span className="relative flex" data-testid="sidebar-home-call">
+              <AppIcon
+                className="comma-sidebar-icon"
+                filled={active}
+                name={item.icon}
+              />
+              <span aria-hidden className="comma-sidebar-call-badge">
+                <CallIcon />
+              </span>
+            </span>
+          ) : (
             <AppIcon className="comma-sidebar-icon" filled={active} name={item.icon} />
           ),
           iconRef,
@@ -266,10 +292,11 @@ function SidebarItemTooltip({
   children: ReactElement;
   isDisabled?: boolean;
   label: string;
-  shortcutId: AppShortcutId;
+  shortcutId?: AppShortcutId;
   triggerRef: RefObject<HTMLSpanElement | null>;
 }) {
-  const shortcut = useAppShortcutBinding(shortcutId);
+  const bound = useAppShortcutBinding(shortcutId ?? "go-settings");
+  const shortcut = shortcutId ? bound : null;
   return (
     <Tooltip
       content={label}

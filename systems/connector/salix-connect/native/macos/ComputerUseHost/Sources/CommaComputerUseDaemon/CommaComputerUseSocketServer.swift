@@ -363,6 +363,12 @@ struct CommaComputerUseAction {
         optionalString(key)
     }
 
+    /// The string as sent, spaces and newlines kept: text to type or a
+    /// field's value.
+    func verbatimString(_ key: String) -> String? {
+        args[key] as? String
+    }
+
     func stringArray(_ key: String) -> [String] {
         guard let values = args[key] as? [Any] else { return [] }
         return values.compactMap { value in
@@ -465,7 +471,47 @@ struct CommaComputerUseResponse: Codable {
         if let image = imageResponse(from: text) {
             return image
         }
+        if let state = backgroundStateResponse(from: text) {
+            return state
+        }
         return .success(text: text)
+    }
+
+    /// Background snapshots (get_app_state and every action's settled
+    /// result) name their screenshot by a daemon-local path. Attach the image
+    /// itself so the model sees the new state in the same tool result, and
+    /// keep the accessibility tree as the text beside it.
+    static func backgroundStateResponse(from text: String) -> CommaComputerUseResponse? {
+        guard text.hasPrefix("Computer Use state (") else { return nil }
+        var path: String?
+        var width: Int?
+        var height: Int?
+        var kept: [Substring] = []
+        for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
+            if line.hasPrefix("Screenshot: ") {
+                path = String(line.dropFirst("Screenshot: ".count))
+                continue
+            }
+            if line.hasPrefix("ScreenshotSize: ") {
+                let size = line.dropFirst("ScreenshotSize: ".count).split(separator: "x")
+                if size.count == 2 {
+                    width = Int(size[0])
+                    height = Int(size[1])
+                }
+            }
+            kept.append(line)
+        }
+        guard let path, let imageData = FileManager.default.contents(atPath: path) else {
+            return nil
+        }
+        return CommaComputerUseResponse(
+            ok: true,
+            text: kept.joined(separator: "\n"),
+            imageData: imageData,
+            imageContentType: "image/png",
+            imageWidth: width,
+            imageHeight: height
+        )
     }
 
     private static func imageResponse(from text: String) -> CommaComputerUseResponse? {

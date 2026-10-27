@@ -6,6 +6,8 @@
 // changed, ask the renderer what it thinks it is and, on a mismatch, move
 // the content box one pixel and back so Chromium picks the real size up.
 
+import { realMainClock, type MainClock } from "./clock";
+
 export const viewportSyncEvents = [
   "show",
   "will-resize",
@@ -44,18 +46,23 @@ const settleDelayMs = 120;
 export function installWindowViewportSync(
   window: ViewportSyncWindowLike,
   {
+    clock = realMainClock,
     log,
     settleMs = settleDelayMs,
-  }: { log?: { info(message: string): void }; settleMs?: number } = {}
+  }: {
+    clock?: MainClock;
+    log?: { info(message: string): void };
+    settleMs?: number;
+  } = {}
 ) {
-  let timer: ReturnType<typeof setTimeout> | undefined;
+  let cancelCheck: (() => void) | undefined;
   let nudgedAt: string | undefined;
   let installed = true;
   let generation = 0;
   let liveResize = false;
 
   const check = async () => {
-    timer = undefined;
+    cancelCheck = undefined;
     if (!installed || liveResize || window.isDestroyed() || !window.isVisible()) return;
     if (window.webContents.isLoading()) return;
     const probeGeneration = generation;
@@ -100,18 +107,18 @@ export function installWindowViewportSync(
   const schedule = (event: ViewportSyncEvent) => {
     if (!installed) return;
     generation += 1;
-    if (timer !== undefined) clearTimeout(timer);
-    timer = undefined;
+    cancelCheck?.();
+    cancelCheck = undefined;
     if (event === "will-resize") liveResize = true;
     else if (event === "resized") liveResize = false;
     if (liveResize) return;
-    timer = setTimeout(() => void check(), settleMs);
+    cancelCheck = clock.setTimer(settleMs, () => void check());
   };
   for (const event of viewportSyncEvents) window.on(event, () => schedule(event));
 
   return () => {
     installed = false;
-    if (timer !== undefined) clearTimeout(timer);
-    timer = undefined;
+    cancelCheck?.();
+    cancelCheck = undefined;
   };
 }

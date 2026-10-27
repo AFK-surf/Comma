@@ -13,3 +13,19 @@
   flex: none;
   color: var(--comma-chat-platform-color);
 }
+
+/* Another Comma app is a label, not an action: like a platform's round mark,
+   a white glyph on a grey disc keeps it apart from Copy beside it. */
+.comma-chat-platform-badge[data-client-source] .comma-chat-platform-badge-icon {
+  box-sizing: border-box;
+  padding: 3px;
+  border-radius: 50%;
+  background: var(--color-fg-quaternary);
+  color: var(--color-fg-white);
+}
+
+[data-theme="Dark mode"]
+  .comma-chat-platform-badge[data-client-source]
+  .comma-chat-platform-badge-icon {
+  background: var(--color-fg-senary);
+}

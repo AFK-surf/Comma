@@ -321,7 +321,9 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmTest do
              }, "invalid_place"},
             {%{"model" => %{"kind" => "catalog", "model" => "claude-opus-4-7"}}, "invalid_model"},
             {%{"runs_on" => "station"}, "invalid_place"},
-            {%{"content" => " "}, "invalid_task"}
+            {%{"content" => " "}, "invalid_task"},
+            {%{"requester_user_id" => "forged-user"}, "invalid_task"},
+            {%{"automatic_task_place" => true}, "invalid_task"}
           ] do
         assert %{"error" => %{"code" => ^code}} = create.(extra, 422)
       end

@@ -99,7 +99,7 @@ defmodule CommaCoreTest do
         "conversation_id" => conversation_id,
         "group_id" => workspace["default_group_id"],
         "kind" => "user_chat",
-        "title" => "Bridge chat",
+        "title" => "Comma",
         "status" => "active",
         "message_count" => 0,
         "created_at" => now,
@@ -477,6 +477,23 @@ defmodule CommaCoreTest do
     end
 
     @impl true
+    def switch_task_run(_workspace, conversation_id, run, user_id) do
+      notify({:switch_task_run, conversation_id, run, user_id})
+
+      case {get({:conversation, conversation_id}), run["runs_on"]} do
+        {%{"kind" => "agent_task"}, %{"kind" => "station", "device_id" => "dev-offline"}} ->
+          {:error, {:task_run_refused, :device_offline, "that station is not connected now"}}
+
+        {%{"kind" => "agent_task"} = conversation, runs_on} ->
+          put({:conversation, conversation_id}, Map.put(conversation, "runs_on", runs_on))
+          {:ok, conversation}
+
+        _other ->
+          {:error, :not_found}
+      end
+    end
+
+    @impl true
     def set_task_status(_workspace, conversation_id, status, version, user_id) do
       notify({:set_task_status, conversation_id, status, version, user_id})
 
@@ -529,6 +546,18 @@ defmodule CommaCoreTest do
 
     def put_task_loops(workspace, loops),
       do: put({:task_loops, workspace["default_group_id"]}, loops)
+
+    # The pull requests of the Group's coding Tasks, as `put_task_pull_requests/2` set them; `:raise` fails the read.
+    @impl true
+    def task_pull_requests(workspace, conversation_ids) when length(conversation_ids) <= 50 do
+      case get({:task_pull_requests, workspace["default_group_id"]}, %{}) do
+        :raise -> raise "connection not available"
+        pull_requests -> {:ok, Map.take(pull_requests, conversation_ids)}
+      end
+    end
+
+    def put_task_pull_requests(workspace, pull_requests),
+      do: put({:task_pull_requests, workspace["default_group_id"]}, pull_requests)
 
     def put_conversation(workspace, attrs \\ %{}) do
       conversation_id = attrs["conversation_id"] || SalixStore.Ids.new_conversation_id()
@@ -622,6 +651,16 @@ defmodule CommaCoreTest do
     def participants(conversation_id), do: get({:participants, conversation_id}, [])
     def messages(conversation_id), do: get({:messages, conversation_id}, [])
     def last_snapshot_opts(conversation_id), do: get({:last_snapshot_opts, conversation_id})
+
+    def put_task_run(conversation_id, run), do: put({:task_run, conversation_id}, run)
+
+    @impl true
+    def task_run(_workspace, conversation_id) do
+      case get({:task_run, conversation_id}) do
+        nil -> {:error, :not_found}
+        run -> {:ok, run}
+      end
+    end
 
     def participant_list_count(conversation_id),
       do: get({:participant_list_count, conversation_id}, 0)
@@ -743,10 +782,6 @@ defmodule CommaCoreTest do
   setup do
     Process.put(:test_pid, SystemsRuntime.Proc.self())
     RuntimeFake.reset!()
-
-    unless SystemsRuntime.Proc.whereis(BillingCore.Repo) do
-      start_supervised!(BillingCore.Repo)
-    end
 
     billing_owner = Ecto.Adapters.SQL.Sandbox.start_owner!(BillingCore.Repo, shared: true)
     comma_owner = Ecto.Adapters.SQL.Sandbox.start_owner!(Comma.Repo, shared: true)
@@ -1251,6 +1286,83 @@ defmodule CommaCoreTest do
              })
   end
 
+  test "a Task's run switch forwards the place, model and user to Salix, and says why one is refused" do
+    {user, workspace, session} = setup_user_workspace("task-run@example.com")
+    group_id = workspace["default_group_id"]
+    task = RuntimeFake.put_conversation(workspace, %{"status" => "active"})
+    task_id = task["conversation_id"]
+    model = %{"kind" => "catalog", "model" => "claude-opus-5-5", "allow_paid" => true}
+
+    for attrs <- [
+          %{},
+          %{"model" => model},
+          %{"runs_on" => "salix"},
+          %{"runs_on" => %{"kind" => "salix"}, "model" => "claude-opus-5-5"},
+          %{"runs_on" => %{"kind" => "salix"}, "other" => true}
+        ] do
+      assert {:error, {:bad_request, "runs_on is required"}} =
+               Comma.Conversations.set_task_run(user, session, group_id, task_id, attrs)
+    end
+
+    refute_received {:switch_task_run, _, _, _}
+
+    assert {:ok, switched} =
+             Comma.Conversations.set_task_run(user, session, group_id, task_id, %{
+               "runs_on" => %{"kind" => "salix"},
+               "model" => model
+             })
+
+    user_id = user["id"]
+
+    settle_receive(
+      {:switch_task_run, ^task_id, %{"runs_on" => %{"kind" => "salix"}, "model" => ^model},
+       ^user_id}
+    )
+
+    assert switched["id"] == task_id
+
+    assert {:error, {:task_run_refused, :device_offline, _message}} =
+             Comma.Conversations.set_task_run(user, session, group_id, task_id, %{
+               "runs_on" => %{"kind" => "station", "device_id" => "dev-offline"},
+               "model" => nil
+             })
+  end
+
+  test "a coding Task's detail carries its run; another Task's carries none" do
+    {user, workspace, session} = setup_user_workspace("coding@example.com")
+    group_id = workspace["default_group_id"]
+
+    coding =
+      RuntimeFake.put_conversation(workspace, %{
+        "title" => "Coding Task",
+        "runs_on" => %{"kind" => "sandbox"}
+      })
+
+    run = %{
+      "place" => %{
+        "kind" => "sandbox",
+        "repo" => %{"owner" => "acme", "name" => "api", "branch" => "comma/abc"},
+        "state" => "ready"
+      },
+      "model" => %{"kind" => "runtime", "provider" => "claude", "name" => "claude-opus-4-5"}
+    }
+
+    RuntimeFake.put_task_run(coding["conversation_id"], run)
+
+    assert {:ok, detail} =
+             Comma.Conversations.get(user, session, group_id, coding["conversation_id"])
+
+    assert detail["run"] == run
+
+    plain = RuntimeFake.put_conversation(workspace, %{"title" => "Plain Task"})
+    RuntimeFake.put_task_run(plain["conversation_id"], run)
+
+    assert {:ok, plain_detail} =
+             Comma.Conversations.get(user, session, group_id, plain["conversation_id"])
+
+    refute Map.has_key?(plain_detail, "run")
+  end
+
   test "canonical Task long transcript, follow-up, and list stay Salix-owned" do
     {user, workspace, session} = setup_user_workspace("task@example.com")
     {:ok, chat} = converge_assistant_chat(user, session, workspace["default_group_id"])
@@ -1528,6 +1640,38 @@ defmodule CommaCoreTest do
 
     assert {:ok, read} = Comma.Conversations.get(user, session, group_id, scheduled)
     refute Map.has_key?(read, "review_version")
+  end
+
+  test "a coding Task reaches clients with its pull request, and a failed read leaves the list without" do
+    {user, workspace, session} = setup_user_workspace("task-pull-requests@example.com")
+    group_id = workspace["default_group_id"]
+    put = &RuntimeFake.put_conversation(workspace, &1)["conversation_id"]
+    coding = put.(%{"status" => "active"})
+    plain = put.(%{"status" => "active"})
+    url = "https://github.com/acme/api/pull/12"
+    pull_request = %{"number" => 12, "state" => "merged", "url" => url}
+    RuntimeFake.put_task_pull_requests(workspace, %{coding => pull_request})
+
+    pull_requests = fn tasks ->
+      for %{"id" => id} = task <- tasks,
+          id in [coding, plain],
+          into: %{},
+          do: {id, task["pull_request"]}
+    end
+
+    assert {:ok, listed} = Comma.Conversations.list(user, session, group_id)
+    assert pull_requests.(listed) == %{coding => pull_request, plain => nil}
+    refute Map.has_key?(Enum.find(listed, &(&1["id"] == plain)), "pull_request")
+
+    RuntimeFake.put_task_pull_requests(workspace, :raise)
+
+    {result, log} =
+      ExUnit.CaptureLog.with_log(fn -> Comma.Conversations.list(user, session, group_id) end)
+
+    assert {:ok, listed} = result
+    assert log =~ "task pull requests not read"
+
+    assert pull_requests.(listed) == %{coding => nil, plain => nil}
   end
 
   test "a Task reaches clients with when its latest run started, when Salix keeps it" do

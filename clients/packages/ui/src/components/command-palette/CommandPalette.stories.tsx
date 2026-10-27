@@ -7,8 +7,13 @@ import {
   CircleCheckIcon,
   CommandPalette,
   CommandPaletteHighlight,
+  CommandPaletteKeycaps,
+  HomeIcon,
+  InboxIcon,
   MarkdownStream,
+  PanelLeftIcon,
   ScrollArea,
+  SettingsIcon,
   type CommandPaletteGroup,
   type CommandPaletteItem,
 } from "../index";
@@ -70,6 +75,40 @@ const searchGroups: readonly CommandPaletteGroup[] = [
         ),
         icon: <CircleCheckIcon className="text-fg-success-primary" />,
         meta: "Aug 28",
+      },
+    ],
+  },
+];
+
+const actionGroups: readonly CommandPaletteGroup[] = [
+  ...taskGroups.map((group) => ({ ...group, items: group.items.slice(0, 3) })),
+  {
+    id: "actions",
+    heading: "Actions",
+    items: [
+      {
+        value: "action-home",
+        title: "Go to Comma assistant",
+        icon: <HomeIcon />,
+        meta: <CommandPaletteKeycaps keys={["G", "C"]} />,
+      },
+      {
+        value: "action-inbox",
+        title: "Go to Inbox",
+        icon: <InboxIcon />,
+        meta: <CommandPaletteKeycaps keys={["G", "I"]} />,
+      },
+      {
+        value: "action-settings",
+        title: "Go to Settings",
+        icon: <SettingsIcon />,
+        meta: <CommandPaletteKeycaps keys={["⌘", ","]} />,
+      },
+      {
+        value: "action-left-sidebar",
+        title: "Toggle left sidebar",
+        icon: <PanelLeftIcon />,
+        meta: <CommandPaletteKeycaps keys={["⌘", "B"]} />,
       },
     ],
   },
@@ -319,6 +358,7 @@ const expectStateFillsContent = async (document: Document, slot: string) => {
 };
 
 export const TaskHistory: Story = {
+  globals: { motionPreference: "full" },
   render: ({ onSelect }) => (
     <CommandPaletteStory groups={taskGroups} onSelect={onSelect} />
   ),
@@ -416,6 +456,12 @@ export const SearchActive: Story = {
   ),
 };
 
+export const ActionsAfterTasks: Story = {
+  render: ({ onSelect }) => (
+    <CommandPaletteStory groups={actionGroups} onSelect={onSelect} />
+  ),
+};
+
 export const DarkTaskHistory: Story = {
   globals: {
     theme: "dark",
@@ -496,6 +542,7 @@ export const PreviewLoading: Story = {
 };
 
 export const LoadingResults: Story = {
+  globals: { motionPreference: "full" },
   render: ({ onSelect }) => (
     <CommandPaletteStory groups={[]} loading onSelect={onSelect} preview={false} />
   ),

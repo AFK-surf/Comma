@@ -116,6 +116,13 @@ export const AdminWorkspaceSignalNumber = Schema.Struct({
   effective: nullish(AdminSignalAccount),
 });
 
+export const AdminWorkspaceSandboxLimit = Schema.Struct({
+  workspace_id: Schema.optional(Schema.String),
+  override: nullish(Schema.Int),
+  default: nullish(Schema.Int),
+  effective: nullish(Schema.Int),
+});
+
 export const AdminWorkspaceBilling = Schema.Struct({
   workspace: Schema.NullOr(
     Schema.Struct({

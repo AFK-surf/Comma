@@ -20,6 +20,7 @@ import { log } from "../ops/log.ts";
 import { AdbShares, ControlPlane, Events, Key, Paths, Readers, Store } from "../services.ts";
 import { Notifier } from "../cloud/notify.ts";
 import { adbTools } from "../tools/adb.ts";
+import { appTools } from "../tools/apps.ts";
 import { archiveTools } from "../tools/archive.ts";
 import { feedbackTools, tellFixed } from "../tools/feedback.ts";
 import { signedPost } from "../cloud/signed.ts";
@@ -31,6 +32,7 @@ import { McpEndpoint, UNBOUND_REFUSAL } from "../tools/mcp.ts";
 import { remoteTools } from "../tools/remote.ts";
 import { UsageCounter } from "../usage/counter.ts";
 import { type Accounts, checkConfig, makeAccounts } from "../accounts/index.ts";
+import { AccountSources } from "../accounts/sources.ts";
 import { Sharing } from "../share/index.ts";
 import { overview } from "../api/overview.ts";
 import { type SlackParts, makeConnections } from "../slack/index.ts";
@@ -40,6 +42,7 @@ import { type Updates, makeUpdates } from "../updates/updates.ts";
 import { hubConfig } from "./config.ts";
 import { ColdRooms } from "./cold.ts";
 import { Hub } from "./hub.ts";
+import { Coding } from "../tasks/coding.ts";
 import { InternalChat } from "./internal.ts";
 import { autoArchive } from "./lifecycle.ts";
 import { fromPeer } from "./messages.ts";
@@ -110,7 +113,7 @@ async function previousGone(run: string) {
   if (alive(pid)) log.warn("hub", "the previous station process is still there; taking up its sessions all the same", { pid });
 }
 
-export const AgentsLive = (control: Control) =>
+export const AgentsLive = (control: Control, managed: boolean) =>
   Layer.effect(
     Agents,
     Effect.gen(function* () {
@@ -140,6 +143,8 @@ export const AgentsLive = (control: Control) =>
       };
 
       const settings = () => hubConfig(config.raw(), data);
+      // Which account each desktop Workspace's runtimes run on here (none until a person chooses).
+      const sources = new AccountSources({ config, data, managed });
       // What other stations of the workspace share with this one, and what it shares (made below, once the accounts are).
       let sharing: Sharing | null = null;
       const borrowed = (p: unknown) => sharing?.borrowedSubscription(p) === true;
@@ -148,7 +153,7 @@ export const AgentsLive = (control: Control) =>
         currentProfile: (id) => settings().profiles.find((p) => p.id === id),
         lent: { borrowed, write: (p) => sharing!.lendCodex(p) },
       });
-      const hub = new Hub({
+      const hub: Hub = new Hub({
         config: settings,
         store,
         // The connects' Slack (made below); the station's own chat is the hub's.
@@ -161,7 +166,11 @@ export const AgentsLive = (control: Control) =>
         internal: new InternalChat(),
         link: pageOf,
         cold: new ColdRooms(() => hub),
+        eligible: (profiles, runtime, host, lang) => sources.eligible(profiles, runtime, host, lang),
       });
+      // No turn until the agents' door is open: a runtime started before has no MCP endpoint, and Codex does not
+      // connect to it again for that thread.
+      hub.hold("starting");
       // Background jobs and web services: their agents told through the hub; a service's link is its session's page
       // with its port.
       const jobs = new Jobs({
@@ -189,6 +198,15 @@ export const AgentsLive = (control: Control) =>
       hub.setTasks(tasks);
       remote.setTasks((peer, request) => tasks.handle(peer, request));
       tasks.begin();
+      // In a coding sandbox (one L4ES gave a GitHub grant), coding Sessions work in checkouts of their repositories
+      // (tasks/coding.ts).
+      const coding = new Coding({ reposDir: hub.reposDir() });
+      if (coding.begin()) {
+        hub.coding = coding;
+        void coding
+          .identity(process.env.COMMA_GIT_USER_NAME, process.env.COMMA_GIT_USER_EMAIL)
+          .catch((error) => log.warn("coding", "the git identity was not set", { error: (error as Error).message }));
+      }
 
       const tools = [
         ...chatTools(hub),
@@ -199,6 +217,8 @@ export const AgentsLive = (control: Control) =>
           return s && plane.spec().pages ? `${s.origin}/w/${s.workspace}/s/${s.station}/adb` : null;
         }),
         ...jobTools(jobs, (key) => store.getSession(key)?.workspace ?? null),
+        // Only to coding Sessions of a Task that builds a Mini App.
+        ...appTools(tasks),
       ];
       // The station's and the runtimes' versions, read at start and every few hours; updated from the pages, or by
       // itself while nothing runs and nobody looks (auto update).
@@ -267,7 +287,7 @@ export const AgentsLive = (control: Control) =>
         return cloud.state?.peers.find((x) => x?.id === host)?.name ?? host ?? null;
       };
       const accounts: Accounts = makeAccounts({
-        data, store, config, hub, reviewUndecided: () => startReview(hub), codex: () => codex as any, following: () => events.inUse(), checkOnStart: true,
+        data, store, config, hub, sources, workspace: () => place()?.workspace ?? null, reviewUndecided: () => startReview(hub), codex: () => codex as any, following: () => events.inUse(), checkOnStart: true,
         shared: { status: (p) => sharing!.status(p), view: (p) => sharing?.profileView(p) ?? null, hostName },
       });
       accounts.start();
@@ -278,6 +298,7 @@ export const AgentsLive = (control: Control) =>
         env: process.env as Record<string, string | undefined>,
         claudeToken: (p) => accounts.claudeToken(p),
         codexRunning: (id) => codex.running(id),
+        machineAllowed: (runtime) => accounts.machineAllowed(runtime),
         status: (id) => { const h = accounts.health(id); return { check: h.check ?? null, quota: h.quota ?? null }; },
         changed: () => events.overviewChanged(),
         recheck: () => accounts.recheckBorrowed(),
@@ -373,6 +394,7 @@ export const AgentsLive = (control: Control) =>
         control.serving("mcp", door.port);
         log.info("station", "agents' door open", { url: door.url });
         taken = true;
+        hub.release("starting");
         if (inWorkspace) {
           // In one since it was held above, say: what waited goes on.
           hub.release("unbound");

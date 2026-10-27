@@ -229,6 +229,7 @@ defmodule SalixAgent.Tools do
       SalixAgent.Tools.AgentManagement.defs() ++
       SalixAgent.Tools.Calendar.defs() ++
       SalixAgent.Tools.MeetingPreparation.defs() ++
+      SalixAgent.Tools.DailyBrief.defs() ++
       SalixAgent.Tools.ImRouter.defs() ++
       SalixAgent.Tools.MCP.defs() ++
       SalixAgent.Tools.Schedules.defs() ++
@@ -615,7 +616,7 @@ defmodule SalixAgent.Tools do
   # while model rounds hold the Tenant's slots: a report or a status that
   # waited for a slot would reach the person as "admission is saturated". It
   # is tracked without a slot, as a Loop's own writes are (`DependencyJob`).
-  @unmetered_tools ~w(im_api.internal.send_message im_api.internal.update_conversation)
+  @unmetered_tools ~w(im_api.internal.send_message im_api.internal.update_conversation im_api.internal.update_conversation_titles)
 
   defp dependency_kind(name) do
     if to_string(name || "") in @unmetered_tools, do: :loop_control, else: :tool
@@ -1968,9 +1969,15 @@ defmodule SalixAgent.Tools do
   end
 
   @doc false
-  def help_examples(tool, schema) do
-    params = example_params_for_schema(schema)
+  # A placeholder html example would teach hand-built markup, so ui.create
+  # shows a complete card call.
+  def help_examples("ui.create" = tool, _schema),
+    do: call_examples(tool, SalixAgent.Tools.DynamicUI.example_params())
 
+  def help_examples(tool, schema), do: call_examples(tool, example_params_for_schema(schema))
+
+  # The example calls for `params`: the internal call and a script.run program.
+  defp call_examples(tool, params) do
     %{
       "internal_llm" => %{
         "tool" => "call",
@@ -3289,19 +3296,8 @@ defmodule SalixAgent.Tools do
     query = arg(args, "query")
     if query == "", do: raise("web.search: missing query")
 
-    api_key =
-      SystemsRuntime.get_env(:salix_agent, :exa_api_key) ||
-        raise "web.search: no Exa API key configured (:salix_agent, :exa_api_key)"
-
-    body = %{query: query, numResults: 5, contents: %{text: %{maxCharacters: 1500}}}
-
-    case Req.post("https://api.exa.ai/search",
-           json: body,
-           headers: [{"x-api-key", api_key}],
-           receive_timeout: 30_000,
-           retry: :transient
-         ) do
-      {:ok, %{status: 200, body: %{"results" => results}}} ->
+    case SalixAgent.Tools.Web.search(query) do
+      {:ok, results} ->
         results
         |> Enum.map(fn r ->
           text = r["text"] || ""
@@ -3309,11 +3305,17 @@ defmodule SalixAgent.Tools do
         end)
         |> Enum.join("\n\n")
 
-      {:ok, %{status: status}} ->
+      {:error, :not_configured} ->
+        raise "web.search: no Exa API key configured (:salix_agent, :exa_api_key)"
+
+      {:error, {:http, status}} ->
         raise "web.search: Exa returned #{status}"
 
-      {:error, reason} ->
+      {:error, {:transport, reason}} ->
         raise "web.search: transport error #{inspect(reason)}"
+
+      {:error, reason} ->
+        raise "web.search: #{reason}"
     end
   end
 

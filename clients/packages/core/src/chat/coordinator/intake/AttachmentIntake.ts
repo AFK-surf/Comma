@@ -3,6 +3,7 @@ import type {
   ChatLeasedAcknowledgeIntakeFailuresInput,
   ChatLeasedTarget,
 } from "@comma/chat-contract";
+import type { CommaConversation } from "../../api";
 import { claimDraftOwner, requireDraftOwner } from "../DraftEditor";
 import type { ChatEntries } from "../entries/ChatEntries";
 import type { ChatPublisher } from "../entries/ChatPublisher";
@@ -26,9 +27,12 @@ export class AttachmentIntake {
   }
 
   /** Resolve only a live conversation retained by this native window. */
-  incomingTarget(
-    surfaceId: string
-  ): (ChatLeasedTarget & { surfaceId: string; title: string }) | undefined {
+  incomingTarget(surfaceId: string):
+    | (ChatLeasedTarget & {
+        surfaceId: string;
+        conversation: Pick<CommaConversation, "kind" | "title"> | undefined;
+      })
+    | undefined {
     const candidates = [...this.#entries.values()].filter(
       (entry) =>
         entry.boundary.isCurrent() &&
@@ -44,7 +48,7 @@ export class AttachmentIntake {
       subscriberId,
       leaseId: entry.subscribers.get(subscriberId)!,
       surfaceId,
-      title: entry.channel.getSnapshot().conversation?.title || "Comma",
+      conversation: entry.channel.getSnapshot().conversation,
     };
   }
 

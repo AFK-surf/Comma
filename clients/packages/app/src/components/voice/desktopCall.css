@@ -1,0 +1,165 @@
+/* The desktop's call to the Router (DesktopCall.tsx): the phone button at the top right of Home's chat, and the call
+   card over the chat from the same corner. */
+.comma-call-anchor {
+  position: relative;
+  z-index: 20;
+  display: inline-flex;
+  width: 40px;
+  height: 40px;
+}
+
+.comma-call-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--color-border-secondary);
+  background: var(--color-bg-primary);
+  color: var(--color-fg-secondary);
+  box-shadow: var(--shadow-xs);
+  cursor: pointer;
+  outline: none;
+}
+
+.comma-call-button[data-hovered] {
+  background: var(--color-bg-secondary-hover);
+  color: var(--color-fg-primary);
+}
+
+.comma-call-button[data-focus-visible] {
+  box-shadow: var(--shadow-focus-gray);
+}
+
+/* Over everything in the window, at the phone button's corner. */
+.comma-call-float {
+  position: fixed;
+  z-index: 60;
+}
+
+.comma-call-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-lg);
+  width: 300px;
+  padding: var(--spacing-lg);
+  border-radius: var(--radius-2xl);
+  border: 1px solid var(--color-border-secondary);
+  background: var(--color-bg-popup-primary);
+  box-shadow: var(--shadow-xl);
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.comma-call-card:active {
+  cursor: grabbing;
+}
+
+.comma-call-card-who {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-md);
+}
+
+.comma-call-card-avatar {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  overflow: hidden;
+  border-radius: var(--radius-full);
+  background: var(--color-avatar-bg);
+}
+
+.comma-call-card-avatar > * {
+  width: 22px;
+  height: 22px;
+}
+
+.comma-call-card-name {
+  overflow: hidden;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.comma-call-card-status {
+  color: var(--color-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.comma-call-card-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--spacing-md);
+}
+
+.comma-call-card-mute,
+.comma-call-card-end {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 40px;
+  border-radius: var(--radius-full);
+  border: none;
+  cursor: pointer;
+  outline: none;
+}
+
+.comma-call-card-mute {
+  background: var(--color-bg-tertiary);
+  color: var(--color-fg-primary);
+}
+
+.comma-call-card-mute[data-hovered] {
+  background: var(--color-bg-quaternary-hover);
+}
+
+.comma-call-card-mute-on {
+  background: var(--color-bg-primary-solid, var(--color-fg-primary));
+  color: var(--color-bg-primary);
+}
+
+.comma-call-card-end {
+  background: var(--color-bg-error-solid);
+  color: var(--color-fg-white);
+}
+
+.comma-call-card-end[data-hovered] {
+  background: var(--color-button-primary-error-bg-hover);
+}
+
+.comma-call-card-mute[data-focus-visible],
+.comma-call-card-end[data-focus-visible] {
+  box-shadow: var(--shadow-focus-gray);
+}
+
+/* The receiver turned on its side: the phones' hang-up glyph. */
+.comma-call-hang-up-icon {
+  transform: rotate(135deg);
+}
+
+/* Home's rail icon while a call is up. */
+.comma-sidebar-call-badge {
+  position: absolute;
+  right: -4px;
+  bottom: -4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border-radius: var(--radius-full);
+  background: var(--color-bg-success-solid);
+  color: var(--color-fg-white);
+}
+
+.comma-sidebar-call-badge > svg {
+  width: 9px;
+  height: 9px;
+}

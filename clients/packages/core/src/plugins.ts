@@ -59,7 +59,8 @@ const CATALOG_RETRY_MS = 10_000;
 /** The integrations most people reach for first; the rest follow in catalog order. */
 const PREFERRED_ORDER = ["google", "github", "notion", "slack", "linear", "feishu"];
 /** Plugins the Plugins page does not list. */
-const UNLISTED = new Set(["feishu", "lark"]);
+// Comma on a Mac lists the Mac apps plugin itself; nowhere else lists it.
+const UNLISTED = new Set(["feishu", "lark", "mac-apps"]);
 
 const catalogDoc = (workspace: string) => `plugins:${workspace}`;
 const sourcesDoc = (workspace: string, plugin: string) =>
@@ -102,6 +103,14 @@ const params = {
     if (!parsed.success || Object.keys(parsed.data).length !== 1)
       throw CoreError.invalid("one plugin credential is required");
     return parsed.data;
+  },
+  /** The Comma desktop app's own device, for a plugin that runs on it (the Mac apps). */
+  deviceId(raw: unknown): string | undefined {
+    const value = (raw as { deviceId?: unknown } | null)?.deviceId;
+    if (value === undefined) return undefined;
+    if (typeof value !== "string" || !value.trim() || value.length > 256)
+      throw CoreError.invalid("deviceId must be a device id");
+    return value.trim();
   },
   target(raw: unknown): Target {
     const p = raw as Record<string, unknown> | null;
@@ -261,7 +270,8 @@ export class Plugins {
             "install",
             origin,
             undefined,
-            params.configValues(p)
+            params.configValues(p),
+            params.deviceId(p)
           );
         },
       },
@@ -606,7 +616,8 @@ export class Plugins {
     operation: Operation,
     origin: PluginInstallOrigin,
     connection?: string,
-    configValues?: Record<string, string>
+    configValues?: Record<string, string>,
+    deviceId?: string
   ): Effect.Effect<PluginInstallAnswer, CoreError> {
     const key = targetKey(target.workspace, target.plugin);
     // The same install asked again (a second press) is the one under way.
@@ -629,7 +640,8 @@ export class Plugins {
           connection,
           null,
           REQUEST_TIMEOUT_MS,
-          configValues
+          configValues,
+          deviceId
         ).pipe(
           Effect.ensuring(
             Effect.sync(() => {
@@ -720,7 +732,8 @@ export class Plugins {
     connection: string | undefined,
     state: string | null,
     timeoutMs: number,
-    configValues?: Record<string, string>
+    configValues?: Record<string, string>,
+    deviceId?: string
   ): Effect.Effect<InstallAnswer, CoreError> {
     const { api } = this.#ctx;
     const path = route`/v1/comma/workspaces/${target.workspace}/plugins/${target.plugin}`;
@@ -744,6 +757,7 @@ export class Plugins {
           contract: "unified_v1",
           ...verify,
           ...(configValues ? { config_values: configValues } : {}),
+          ...(deviceId ? { device_id: deviceId } : {}),
         },
         timeoutMs
       )

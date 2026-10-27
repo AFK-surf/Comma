@@ -47,10 +47,14 @@ test(
     expect(outcome.webClipboardError).toBe("NotAllowedError");
     expect(outcome.bridge).toEqual({ status: "copied" });
 
-    const copied = await app.evaluate(({ clipboard }) => {
-      const image = clipboard.readImage();
-      return { empty: image.isEmpty(), size: image.getSize() };
+    const copied = await app.evaluate(async ({ clipboard, nativeImage }) => {
+      const [item] = await clipboard.read();
+      const png = await item?.getType("image/png");
+      if (!png) return null;
+      return nativeImage
+        .createFromBuffer(Buffer.from(await png.arrayBuffer()))
+        .getSize();
     });
-    expect(copied).toEqual({ empty: false, size: { height: 4, width: 4 } });
+    expect(copied).toEqual({ height: 4, width: 4 });
   }
 );

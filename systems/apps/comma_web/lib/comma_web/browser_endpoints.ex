@@ -79,9 +79,17 @@ defmodule CommaWeb.BrowserEndpoints do
            SalixAgent.Browser.execute(owner, op, args, principal(user, session, viewer)) do
       json(conn, 200, value)
     else
-      {:error, reason} when is_atom(reason) -> json(conn, 409, %{error: Atom.to_string(reason)})
-      {:error, reason} when is_binary(reason) -> json(conn, 409, %{error: reason})
-      _ -> json(conn, 403, %{error: "browser_forbidden"})
+      {:error, reason} when is_atom(reason) ->
+        json(conn, 409, %{error: Atom.to_string(reason)})
+
+      {:error, reason} when is_binary(reason) ->
+        json(conn, 409, %{error: reason})
+
+      {:error, reason, details} when is_binary(reason) ->
+        json(conn, 409, Map.put(details, "error", reason))
+
+      _ ->
+        json(conn, 403, %{error: "browser_forbidden"})
     end
   end
 

@@ -9,17 +9,33 @@
 
 #include <chrono>
 #include <condition_variable>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <functional>
 #include <map>
 #include <mutex>
 #include <unordered_map>
+#include <unordered_set>
 
 #include <hermes/hermes.h>
 #include <jsi/jsi.h>
 
 namespace jsi = facebook::jsi;
+
+#if defined(COMMA_MESH)
+// The phones' iroh (clients/packages/mesh/native, linked in where the app's build defines COMMA_MESH): the core's
+// `mesh.*` operations go to it, not to the app, and its answers come back as the app's do.
+extern "C" {
+typedef void (*comma_mesh_complete)(void*, uint64_t, const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*, size_t,
+                                    uint8_t);
+void* comma_mesh_start(comma_mesh_complete complete, void* ctx);
+void comma_mesh_call(const void* mesh, uint64_t id, const char* op, const uint8_t* json, size_t json_len,
+                     const uint8_t* bytes, size_t bytes_len, uint8_t has_bytes);
+void comma_mesh_abort(const void* mesh, uint64_t id);
+void comma_mesh_stop(void* mesh);
+}
+#endif
 
 namespace comma {
 
@@ -81,6 +97,76 @@ struct Engine::State {
   bool stopping = false;
   bool dead = false;
 
+#if defined(COMMA_MESH)
+  /// What the mesh's threads answer through: it outlives this core (an answer coming as the core goes finds none).
+  struct MeshLink {
+    std::mutex mutex;
+    State* state;
+  };
+  MeshLink* meshLink = nullptr;
+  void* mesh = nullptr;
+  /// The operations the mesh has under way: an `abort` of one of these goes to it.
+  std::unordered_set<uint64_t> meshCalls;
+
+  static void meshAnswered(void* ctx, uint64_t id, const uint8_t* json, size_t jsonLen, const uint8_t* error,
+                           size_t errorLen, const uint8_t* bytes, size_t bytesLen, uint8_t hasBytes) {
+    auto* link = static_cast<MeshLink*>(ctx);
+    std::lock_guard<std::mutex> lock(link->mutex);
+    if (!link->state) return;
+    State& s = *link->state;
+    {
+      std::lock_guard<std::mutex> calls(s.mutex);
+      s.meshCalls.erase(id);
+    }
+    std::optional<std::string> j, e, b;
+    if (errorLen > 0) e = std::string(reinterpret_cast<const char*>(error), errorLen);
+    else j = std::string(reinterpret_cast<const char*>(json), jsonLen);
+    if (hasBytes) b = std::string(reinterpret_cast<const char*>(bytes), bytesLen);
+    s.answer(id, std::move(j), std::move(e), std::move(b));
+  }
+
+  void meshCall(uint64_t id, const std::string& op, const std::string& json, const std::string* bytes) {
+    if (!mesh) {
+      meshLink = new MeshLink{{}, this};
+      mesh = comma_mesh_start(&State::meshAnswered, meshLink);
+    }
+    if (!mesh) {
+      answer(id, std::nullopt, std::string("the mesh did not start"), std::nullopt);
+      return;
+    }
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      meshCalls.insert(id);
+    }
+    comma_mesh_call(mesh, id, op.c_str(), reinterpret_cast<const uint8_t*>(json.data()), json.size(),
+                    bytes ? reinterpret_cast<const uint8_t*>(bytes->data()) : nullptr, bytes ? bytes->size() : 0,
+                    bytes ? 1 : 0);
+  }
+
+  /// `abort {"id": n}`: whether n was the mesh's (and it was told).
+  bool meshAbort(const std::string& json) {
+    size_t at = json.find("\"id\":");
+    if (at == std::string::npos || !mesh) return false;
+    uint64_t id = std::strtoull(json.c_str() + at + 5, nullptr, 10);
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      if (meshCalls.erase(id) == 0) return false;
+    }
+    comma_mesh_abort(mesh, id);
+    return true;
+  }
+
+  void stopMesh() {
+    if (!mesh) return;
+    {
+      std::lock_guard<std::mutex> lock(meshLink->mutex);
+      meshLink->state = nullptr;
+    }
+    comma_mesh_stop(mesh);
+    mesh = nullptr;
+  }
+#endif
+
   static jsi::Object core(jsi::Runtime& rt) { return rt.global().getPropertyAsObject(rt, "commaCore"); }
 
   static jsi::Object arrayBuffer(jsi::Runtime& rt, const void* data, size_t size) {
@@ -95,6 +181,17 @@ struct Engine::State {
       tasks.push_back(std::move(task));
     }
     wake.notify_one();
+  }
+
+  /// The answer to operation `id`, given to the script on its thread.
+  void answer(uint64_t id, std::optional<std::string> json, std::optional<std::string> error,
+              std::optional<std::string> bytes) {
+    post([id, json = std::move(json), error = std::move(error), bytes = std::move(bytes)](jsi::Runtime& rt) {
+      jsi::Value j = json && !error ? jsi::Value(jsi::String::createFromUtf8(rt, *json)) : jsi::Value::null();
+      jsi::Value e = error ? jsi::Value(jsi::String::createFromUtf8(rt, *error)) : jsi::Value::null();
+      jsi::Value b = bytes ? jsi::Value(arrayBuffer(rt, bytes->data(), bytes->size())) : jsi::Value::undefined();
+      core(rt).getPropertyAsFunction(rt, "complete").callWithThis(rt, core(rt), jsi::Value(double(id)), j, e, b);
+    });
   }
 
   void fatal(const std::string& reason) {
@@ -113,13 +210,19 @@ struct Engine::State {
       uint64_t id = uint64_t(a[0].asNumber());
       std::string op = a[1].asString(rt).utf8(rt);
       std::string json = a[2].asString(rt).utf8(rt);
+      std::optional<std::string> bytes;
       if (n > 3 && a[3].isObject() && a[3].asObject(rt).isArrayBuffer(rt)) {
         jsi::ArrayBuffer b = a[3].asObject(rt).getArrayBuffer(rt);
-        std::string bytes(reinterpret_cast<const char*>(b.data(rt)), b.size(rt));
-        host.call(id, op, json, &bytes);
-      } else {
-        host.call(id, op, json, nullptr);
+        bytes.emplace(reinterpret_cast<const char*>(b.data(rt)), b.size(rt));
       }
+#if defined(COMMA_MESH)
+      if (op.rfind("mesh.", 0) == 0) {
+        meshCall(id, op, json, bytes ? &*bytes : nullptr);
+        return jsi::Value::undefined();
+      }
+      if (op == "abort" && meshAbort(json)) return jsi::Value::undefined();
+#endif
+      host.call(id, op, json, bytes ? &*bytes : nullptr);
       return jsi::Value::undefined();
     });
     fn("callSync", 2, [this](jsi::Runtime& rt, const jsi::Value&, const jsi::Value* a, size_t) -> jsi::Value {
@@ -159,6 +262,9 @@ struct Engine::State {
       host.log(int(a[0].asNumber()), a[1].asString(rt).utf8(rt));
       return jsi::Value::undefined();
     });
+#if defined(COMMA_MESH)
+    native.setProperty(rt, "mesh", true);
+#endif
     rt.global().setProperty(rt, "commaNative", native);
   }
 };
@@ -166,7 +272,11 @@ struct Engine::State {
 Engine::Engine(EngineHost& host, std::string script, std::string url, std::string config)
     : state_(std::make_unique<State>(host, std::move(script), std::move(url), std::move(config))) {}
 
-Engine::~Engine() = default;
+Engine::~Engine() {
+#if defined(COMMA_MESH)
+  state_->stopMesh();
+#endif
+}
 
 void Engine::receive(std::string json) {
   state_->post([json = std::move(json)](jsi::Runtime& rt) {
@@ -182,12 +292,7 @@ void Engine::rejected(std::string lease, int status) {
 
 void Engine::complete(uint64_t id, std::optional<std::string> json, std::optional<std::string> error,
                       std::optional<std::string> bytes) {
-  state_->post([id, json = std::move(json), error = std::move(error), bytes = std::move(bytes)](jsi::Runtime& rt) {
-    jsi::Value j = json && !error ? jsi::Value(jsi::String::createFromUtf8(rt, *json)) : jsi::Value::null();
-    jsi::Value e = error ? jsi::Value(jsi::String::createFromUtf8(rt, *error)) : jsi::Value::null();
-    jsi::Value b = bytes ? jsi::Value(State::arrayBuffer(rt, bytes->data(), bytes->size())) : jsi::Value::undefined();
-    State::core(rt).getPropertyAsFunction(rt, "complete").callWithThis(rt, State::core(rt), jsi::Value(double(id)), j, e, b);
-  });
+  state_->answer(id, std::move(json), std::move(error), std::move(bytes));
 }
 
 void Engine::stop() {

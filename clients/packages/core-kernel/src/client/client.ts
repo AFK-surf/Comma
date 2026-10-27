@@ -43,11 +43,21 @@ export interface Channel {
   close(): void;
 }
 
+/// Why a channel to the core failed: its worker's script never ran, its worker threw and did not catch, its process
+/// went, the core gave up (`fatal`), or the channel could not be opened. `channel` when the opener does not say.
+export type CoreFailure =
+  | "worker_load"
+  | "worker_exception"
+  | "process_exit"
+  | "core_fatal"
+  | "channel_open"
+  | "channel";
+
 /// Opens a channel; messages from the core go to `onMessage`, and `onFail` when it is gone or broken (the client then
 /// opens a new one).
 export type Opener = (
   onMessage: (data: unknown) => void,
-  onFail: (reason: string) => void
+  onFail: (reason: string, failure?: CoreFailure) => void
 ) => Channel;
 
 export interface ClientOptions {
@@ -203,8 +213,8 @@ export class CoreClient {
         (data) => {
           if (current()) this.#receive(data);
         },
-        (reason) => {
-          if (current()) this.#restart(reason);
+        (reason, failure) => {
+          if (current()) this.#restart(reason, failure);
         }
       );
     } catch (error) {
@@ -226,8 +236,8 @@ export class CoreClient {
     for (const message of queued) this.#post(message);
   }
 
-  #restart(reason: string): void {
-    this.#onFault(Object.assign(new Error(reason), { name: "CoreFailed" }));
+  #restart(reason: string, failure: CoreFailure = "channel"): void {
+    this.#onFault(Object.assign(new Error(reason), { name: "CoreFailed", failure }));
     this.#channel?.close();
     this.#channel = null;
     // Whether they ran is unknown: the caller decides whether to try again.
@@ -289,7 +299,7 @@ export class CoreClient {
       return;
     }
     if (message.fatal !== undefined) {
-      this.#restart(message.fatal);
+      this.#restart(message.fatal, "core_fatal");
       return;
     }
     if (message.fault) {

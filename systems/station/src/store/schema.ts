@@ -256,8 +256,8 @@ CREATE TABLE IF NOT EXISTS usage (
 );
 CREATE INDEX IF NOT EXISTS usage_at ON usage (at);
 -- The runtime sessions a session has run in, the first first, each with the profile it last ran on. The latest is
--- sessions.runtime_session_id; one before it was left for a new one (its account changed), and its history goes on
--- from theirs.
+-- sessions.runtime_session_id; one before it was left for a new one (its account or its runtime changed), and its
+-- history goes on from theirs.
 CREATE TABLE IF NOT EXISTS runtime_sessions (
   session_key TEXT NOT NULL,
   id TEXT NOT NULL,
@@ -295,6 +295,13 @@ CREATE TABLE IF NOT EXISTS task_posts (
   n INTEGER NOT NULL,
   PRIMARY KEY (thread, station, session, key)
 );
+-- A Task here that runs on another Station (tasks.ts moveTo): the Station whose Session runs it. Meanwhile the chat's own
+-- sessions are handed nothing of it, and what they post in it is refused.
+CREATE TABLE IF NOT EXISTS task_runs (
+  thread INTEGER PRIMARY KEY,
+  station TEXT NOT NULL,
+  at INTEGER NOT NULL
+);
 -- A Task on another Station that Sessions here take part in: its thread here, and the entry through which the host gave it
 -- for them (what people have read is kept where the Task is, per person). answered: the seq its host says the
 -- Sessions of this Station answered the Task through (the most it said, with an invite or a put); what is given
@@ -306,6 +313,14 @@ CREATE TABLE IF NOT EXISTS tasks_elsewhere (
   fetched INTEGER NOT NULL DEFAULT 0,
   answered INTEGER NOT NULL DEFAULT 0,
   UNIQUE (station, task)
+);
+-- A Message of a Task on another Station given here and not written into its thread yet: its files are being fetched
+-- from the host, or an earlier Message's are (they are written in the Task's order). message: as task.put gave it.
+CREATE TABLE IF NOT EXISTS task_arrivals (
+  thread INTEGER NOT NULL,
+  seq INTEGER NOT NULL,
+  message TEXT NOT NULL,
+  PRIMARY KEY (thread, seq)
 );
 -- The station's own facts by name: task_index_epoch (made once, on the first open that has the Task index) and
 -- task_index_rev (the Task index's last rev).
@@ -438,4 +453,16 @@ export function addWatchColumn(db: DatabaseSync): void {
 /// ids). Tasks from before it have none.
 export function addTaskLabelsColumn(db: DatabaseSync): void {
   if (!has(db, "task_index", "labels")) db.exec("ALTER TABLE task_index ADD COLUMN labels TEXT");
+}
+
+/// add_runtime_session_runtime_column: the column a session's runtime changing came with (runtime_sessions.runtime: the
+/// runtime it ran). NULL is the session's own runtime: one that never changed it, as all from before it.
+export function addRuntimeSessionRuntimeColumn(db: DatabaseSync): void {
+  if (!has(db, "runtime_sessions", "runtime")) db.exec("ALTER TABLE runtime_sessions ADD COLUMN runtime TEXT");
+}
+
+/// add_milestones_column: the column milestones came with (entries.milestones, a JSON array of an agent's titles, kept
+/// on its post; a post with nothing else is a "milestone" entry). Entries from before it have none.
+export function addMilestonesColumn(db: DatabaseSync): void {
+  if (!has(db, "entries", "milestones")) db.exec("ALTER TABLE entries ADD COLUMN milestones TEXT");
 }

@@ -110,6 +110,8 @@ Android input changes on `main` publish a staging pre-release after the Android 
 Shared client core, localization, dependency and Android build-tool changes count as Android inputs.
 Documentation-only and unrelated platform changes do not publish a staging build.
 Production uses the manual **Android Release** workflow on `main`, with public release notes.
+It also submits that commit's internal Play version for production review.
+Run it after that commit's mainline Client Checks run succeeds.
 Staging publishes APKs only to the private source repository and does not sync public source.
 Production publishes APKs to [public releases](https://github.com/AFK-surf/Comma/releases).
 Staging tags select the original source commit and do not change Latest.
@@ -123,6 +125,35 @@ Keep these complete signing bundles outside Git. GitHub cannot return the saved 
 
 Local internal packaging below uses the file's version code and its configured local key.
 To update a CI-installed staging app, use a newer CI build with the same staging signing key.
+
+## Google Play
+
+Client Checks also builds a production AAB for each mainline staging release.
+Android Release signs it with the production upload key and uploads it to Play internal testing.
+It uses `surf.comma.android` and the production backend. The staging APK keeps its existing package and backend.
+The Play AAB uses `1000000 + Client Checks run_number` as its version code.
+`version.properties` still owns the version name and the production APK version code.
+Use the same Play version code for internal testing and production review. A production submission promotes the existing internal bundle.
+
+The publisher uses Google's Python SDK and Application Default Credentials.
+Install `.github/scripts/android-play-requirements.txt` before use.
+`android_play.py upload-internal --artifacts android-artifacts` uploads the production AAB to the internal track.
+`android_play.py submit-production --version-code CODE --version-name NAME` submits that internal version for production review.
+Set `ANDROID_RELEASE_NOTES` for production submission. Google Play controls review, approval and availability.
+Managed publishing, when enabled in Play Console, controls when approved changes become public.
+The publisher does not change that setting or save a rejected submission as an unsent draft.
+
+CI publishing requires these account settings:
+
+1. Enable the Google Play Android Developer API in the selected Google Cloud project.
+2. Create a dedicated Play publisher service account.
+3. Restrict GitHub OIDC to `AFK-surf/Cue`, `refs/heads/main`, and the `android-production` Environment.
+4. Grant that account app-scoped access to `surf.comma.android` in Play Console.
+5. Grant testing release and production release permissions for that app.
+6. Set `PLAY_WORKLOAD_IDENTITY_PROVIDER` and `PLAY_SERVICE_ACCOUNT` in GitHub's `android-production` Environment.
+
+Use the existing production upload signing bundle in that Environment. Do not export a service account private key.
+Complete Play's store listing, policy declarations and production access requirements before the first production submission.
 
 ## Internal builds
 

@@ -13,6 +13,7 @@ export interface RendererWindowIdentityOptions {
 }
 
 export function createMainWindowOptions({
+  bounds,
   darkMode = false,
   iconPath,
   platform = process.platform,
@@ -21,6 +22,8 @@ export function createMainWindowOptions({
   windowId,
   windowRole,
 }: {
+  /** Where a window that takes over part of another opens (a Mini App's panel); the default size otherwise. */
+  bounds?: { x: number; y: number; width: number; height: number } | undefined;
   darkMode?: boolean;
   iconPath?: string;
   platform?: NodeJS.Platform;
@@ -32,6 +35,14 @@ export function createMainWindowOptions({
     height: 1024,
     minWidth: 500,
     minHeight: 640,
+    // A window opened in a panel's place is as small as that panel: its minimum allows it.
+    ...(bounds
+      ? {
+          ...bounds,
+          minWidth: Math.min(500, bounds.width),
+          minHeight: Math.min(640, bounds.height),
+        }
+      : {}),
     disableAutoHideCursor: true,
     show: false,
     title: productName,

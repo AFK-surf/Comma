@@ -1,0 +1,20 @@
+{
+  "name": "@comma/miniapp-sdk",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./mock": "./src/mock.ts",
+    "./frame": "./src/frame.ts"
+  },
+  "scripts": {
+    "sync:template": "node ./scripts/sync-template.mjs"
+  },
+  "devDependencies": {
+    "typescript": "^6.0.3"
+  }
+}

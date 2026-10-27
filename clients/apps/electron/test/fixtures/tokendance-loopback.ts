@@ -34,6 +34,12 @@ export function startTokenDance(returnUrl: string) {
     returnToApp: Effect.sync(() => void (returns += 1)),
     pickAttachments: () => Effect.fail(new HostError("No file dialog in this test.")),
     saveDownload: () => Effect.fail(new HostError("No Downloads folder in this test.")),
+    saveOpen: () => Effect.fail(new HostError("No Downloads folder in this test.")),
+    saveWrite: () => Effect.fail(new HostError("No Downloads folder in this test.")),
+    saveClose: () => Effect.fail(new HostError("No Downloads folder in this test.")),
+    openStream: () => Effect.fail(new HostError("No media streams in this test.")),
+    closeStream: () => Effect.void,
+    saveStream: () => Effect.fail(new HostError("No Downloads folder in this test.")),
     listen: (input) =>
       listenLoopback({
         port: input.port,

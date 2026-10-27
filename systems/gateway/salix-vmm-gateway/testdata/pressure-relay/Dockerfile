@@ -1,4 +1,4 @@
-ARG NODE_IMAGE=node:24.19.0-bookworm-slim
+ARG NODE_IMAGE=node:24.22.1-bookworm-slim
 FROM ${NODE_IMAGE}
 ARG PI_TARBALL
 ARG PI_INTEGRITY

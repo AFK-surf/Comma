@@ -1,4 +1,4 @@
-import { expect, test, type Page, useFixture } from "./support/page";
+import { expect, test, type Locator, type Page, useFixture } from "./support/page";
 import { fixtureMount } from "./support/fixture";
 import { stepUntilSettled, testClock } from "./support/virtual-time";
 import { gradientShimmerMotion } from "../../packages/ui/src/components/ai-activity/useGradientShimmer";
@@ -8,13 +8,14 @@ useFixture(
 );
 const fixtureUrl = "http://fixture.test/";
 
-/** The shimmer's background sweep. */
+/** The shimmer's sweep: its band layer (`::after`) moving by transform. */
 function findSweep(element: Element) {
-  return element.getAnimations().find((candidate) => {
+  return element.getAnimations({ subtree: true }).find((candidate) => {
     const effect = candidate.effect;
     return (
       effect instanceof KeyframeEffect &&
-      effect.getKeyframes().some((frame) => Object.hasOwn(frame, "backgroundPosition"))
+      effect.pseudoElement === "::after" &&
+      effect.getKeyframes().some((frame) => Object.hasOwn(frame, "transform"))
     );
   });
 }
@@ -29,11 +30,17 @@ async function readShimmerFallback(page: Page) {
   return shimmer.evaluate((element) => {
     const style = getComputedStyle(element);
     const transparent = new Set(["transparent", "rgba(0, 0, 0, 0)"]);
-    const textFillIsTransparent = transparent.has(style.webkitTextFillColor);
+    // The glyphs paint their fill or, masked to themselves, the box's colour.
+    const glyphsAreTransparent = transparent.has(style.webkitTextFillColor)
+      ? (style.webkitMaskClip || style.maskClip) !== "text" ||
+        transparent.has(style.backgroundColor)
+      : false;
     const foregroundIsTransparent = transparent.has(style.color);
-    const animations = element.getAnimations();
+    const animations = element.getAnimations({ subtree: true });
+    const band = getComputedStyle(element, "::after");
     return {
       animationCount: animations.length,
+      bandShown: band.content !== "none" && band.display !== "none",
       animationDetails: animations.map((animation) => {
         const effect = animation.effect;
         return {
@@ -58,7 +65,7 @@ async function readShimmerFallback(page: Page) {
       readable:
         style.visibility === "visible" &&
         Number.parseFloat(style.opacity) > 0 &&
-        (!textFillIsTransparent || style.backgroundImage !== "none") &&
+        !glyphsAreTransparent &&
         !foregroundIsTransparent,
       rootReducedMotion: document.documentElement.getAttribute(
         "data-comma-reduced-motion"
@@ -88,7 +95,7 @@ test("AI activity keeps keyboard focus visible and collapsed details inert", asy
   await expect(shimmer).toHaveText("Thinking");
   const initialShimmerTime = await shimmer.evaluate((element) => {
     const animation = element
-      .getAnimations()
+      .getAnimations({ subtree: true })
       .find((candidate) => candidate.effect instanceof KeyframeEffect);
     return {
       currentTime: Number(animation?.currentTime ?? 0),
@@ -102,7 +109,7 @@ test("AI activity keeps keyboard focus visible and collapsed details inert", asy
       shimmer.evaluate((element) =>
         Number(
           element
-            .getAnimations()
+            .getAnimations({ subtree: true })
             .find((candidate) => candidate.effect instanceof KeyframeEffect)
             ?.currentTime ?? 0
         )
@@ -744,13 +751,12 @@ test("AI activity shimmer uses the bounded gentle multi-stop band", async ({
   await expect
     .poll(() =>
       shimmer.evaluate((element) =>
-        element.getAnimations().some((animation) => {
+        element.getAnimations({ subtree: true }).some((animation) => {
           const effect = animation.effect;
           return (
             effect instanceof KeyframeEffect &&
-            effect
-              .getKeyframes()
-              .some((frame) => Object.hasOwn(frame, "backgroundPosition"))
+            effect.pseudoElement === "::after" &&
+            effect.getKeyframes().some((frame) => Object.hasOwn(frame, "transform"))
           );
         })
       )
@@ -758,13 +764,12 @@ test("AI activity shimmer uses the bounded gentle multi-stop band", async ({
     .toBe(true);
 
   const sample = await shimmer.evaluate((element) => {
-    const animation = element.getAnimations().find((candidate) => {
+    const animation = element.getAnimations({ subtree: true }).find((candidate) => {
       const effect = candidate.effect;
       return (
         effect instanceof KeyframeEffect &&
-        effect
-          .getKeyframes()
-          .some((frame) => Object.hasOwn(frame, "backgroundPosition"))
+        effect.pseudoElement === "::after" &&
+        effect.getKeyframes().some((frame) => Object.hasOwn(frame, "transform"))
       );
     });
     if (!animation || !(animation.effect instanceof KeyframeEffect)) {
@@ -772,6 +777,7 @@ test("AI activity shimmer uses the bounded gentle multi-stop band", async ({
     }
 
     const style = getComputedStyle(element);
+    const band = getComputedStyle(element, "::after");
     const effect = animation.effect;
     const timing = effect.getTiming();
     const keyframes = effect.getKeyframes();
@@ -801,26 +807,22 @@ test("AI activity shimmer uses the bounded gentle multi-stop band", async ({
 
     return {
       animationConstructor: animation.constructor.name,
-      backgroundImage: style.backgroundImage,
-      backgroundRepeat: style.backgroundRepeat,
-      clip: style.backgroundClip,
+      backgroundColor: style.backgroundColor,
+      bandImage: band.backgroundImage,
       color: style.color,
       duration: Number(timing.duration),
       easing: timing.easing,
       expectedSpread,
       fill: timing.fill,
       keyframePositions: keyframes.map((frame) =>
-        String(
-          (frame as ComputedKeyframe & { backgroundPosition?: string })
-            .backgroundPosition ?? ""
-        )
+        String((frame as ComputedKeyframe & { transform?: string }).transform ?? "")
       ),
+      maskClip: style.webkitMaskClip || style.maskClip,
       iterationCount: timing.iterations,
       playState: animation.playState,
       quaternaryColor,
       spread,
       spreadMid,
-      textFillColor: style.webkitTextFillColor,
       tokenColors,
       tokenRawValues: tokenSteps.map((step) =>
         getComputedStyle(document.documentElement)
@@ -836,14 +838,16 @@ test("AI activity shimmer uses the bounded gentle multi-stop band", async ({
   expect(sample.fill).toBe("forwards");
   expect(sample.iterationCount).toBe(1);
   expect(sample.playState).toBe("running");
-  expect(sample.backgroundImage).toContain("linear-gradient(105deg");
-  expect(sample.backgroundRepeat).toBe("no-repeat");
-  expect(sample.clip).toBe("text");
+  // The band is a layer over the box's base colour, masked to its glyphs. Its
+  // ends are transparent, so the base colour shows outside the band.
+  expect(sample.bandImage).toContain("linear-gradient(105deg");
+  expect(sample.bandImage).toContain("rgba(0, 0, 0, 0)");
+  expect(sample.maskClip).toBe("text");
   expect(sample.color).toBe(sample.quaternaryColor);
-  expect(sample.textFillColor).toBe("rgba(0, 0, 0, 0)");
+  expect(sample.backgroundColor).toBe(sample.quaternaryColor);
   expect(sample.tokenRawValues.every(Boolean)).toBe(true);
   const colorPositions = sample.tokenColors.map((color) =>
-    sample.backgroundImage.indexOf(color)
+    sample.bandImage.indexOf(color)
   );
   expect(colorPositions.every((position) => position >= 0)).toBe(true);
   expect(colorPositions).toEqual(colorPositions.toSorted((a, b) => a - b));
@@ -857,13 +861,14 @@ test("AI activity shimmer uses the bounded gentle multi-stop band", async ({
   const time = testClock();
   const initial = await shimmer.evaluate((element) => {
     const sweep = element
-      .getAnimations()
+      .getAnimations({ subtree: true })
       .find(
         (candidate) =>
           candidate.effect instanceof KeyframeEffect &&
+          candidate.effect.pseudoElement === "::after" &&
           candidate.effect
             .getKeyframes()
-            .some((frame) => Object.hasOwn(frame, "backgroundPosition"))
+            .some((frame) => Object.hasOwn(frame, "transform"))
       );
     if (!sweep) throw new Error("The initial shimmer sweep is unavailable.");
     sweep.finish();
@@ -877,20 +882,21 @@ test("AI activity shimmer uses the bounded gentle multi-stop band", async ({
   await time.advance(1);
   const cycle = await shimmer.evaluate((element) => {
     const replacement = element
-      .getAnimations()
+      .getAnimations({ subtree: true })
       .find(
         (candidate) =>
           candidate.effect instanceof KeyframeEffect &&
+          candidate.effect.pseudoElement === "::after" &&
           candidate.effect
             .getKeyframes()
-            .some((frame) => Object.hasOwn(frame, "backgroundPosition"))
+            .some((frame) => Object.hasOwn(frame, "transform"))
       );
     const style = getComputedStyle(element);
     const spread = Number.parseFloat(
       style.getPropertyValue("--ai-activity-shimmer-spread")
     );
     return {
-      backgroundWidth: Number.parseFloat(style.backgroundSize),
+      bandWidth: Number.parseFloat(getComputedStyle(element, "::after").width),
       expectedLayerWidth: element.getBoundingClientRect().width + spread * 2,
       replacement,
       replacementDuration:
@@ -901,7 +907,7 @@ test("AI activity shimmer uses the bounded gentle multi-stop band", async ({
   });
   expect(cycle.replacement).not.toBe(initial);
   expect(cycle.replacement?.playState).toBe("running");
-  expect(cycle.backgroundWidth).toBeCloseTo(cycle.expectedLayerWidth, 0);
+  expect(cycle.bandWidth).toBeCloseTo(cycle.expectedLayerWidth, 0);
   expect(cycle.replacementDuration).toBe(gradientShimmerMotion.sweepDurationMs);
 
   const boundedShimmer = page
@@ -919,6 +925,83 @@ test("AI activity shimmer uses the bounded gentle multi-stop band", async ({
   });
   expect(bounded.naiveSpread).toBeGreaterThan(bounded.cap);
   expect(bounded.spread).toBeCloseTo(bounded.cap, 1);
+});
+
+/**
+ * How much the glyphs of a line darken its box: each pixel's distance from the
+ * box's background, summed over a screenshot, so it measures what the window
+ * draws.
+ */
+async function readGlyphInk(page: Page, line: Locator) {
+  const box = await line.boundingBox();
+  if (!box) throw new Error("The line has no box.");
+  // The margin keeps the clip's corner on the background.
+  const image = await page.screenshot({
+    clip: { x: box.x - 2, y: box.y - 2, width: box.width + 4, height: box.height + 4 },
+  });
+  return page.evaluate(async (dataURL) => {
+    const picture = new Image();
+    picture.src = dataURL;
+    await picture.decode();
+    const canvas = document.createElement("canvas");
+    canvas.width = picture.width;
+    canvas.height = picture.height;
+    const context = canvas.getContext("2d")!;
+    context.drawImage(picture, 0, 0);
+    const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+    let ink = 0;
+    for (let i = 0; i < pixels.length; i += 4) {
+      for (let c = 0; c < 3; c++) ink += Math.abs(pixels[i + c]! - pixels[c]!);
+    }
+    return ink;
+  }, `data:image/png;base64,${image.toString()}`);
+}
+
+test("a shining line draws its strokes as heavy as the line at rest", async ({
+  page,
+}) => {
+  await page.goto(fixtureUrl);
+  await page.waitForFunction(() => Boolean(window.aiActivityFixture));
+
+  const activity = page
+    .getByTestId("ai-activity-fixture")
+    .locator('[data-slot="ai-activity"]')
+    .first();
+  const summary = activity.locator('[data-shimmer="true"]');
+  await expect(summary).toHaveAttribute("data-shimmer-ready", "true");
+  await activity.getByRole("button", { name: "Thinking" }).click();
+  const workerCopy = activity.locator(".comma-ai-worker-activity-copy");
+  await expect(workerCopy).toHaveClass(/\bcomma-shine\b/);
+  // The details finish opening.
+  await testClock().advance(1_000);
+
+  // Without its band, the shine leaves the text masked to its glyphs. One dark
+  // colour for both states compares stroke weight alone: a light text colour
+  // draws a little lighter through a glyph mask than as text.
+  await page.evaluate(() =>
+    document.documentElement.setAttribute("data-comma-reduced-motion", "true")
+  );
+  const lines = [
+    [
+      summary,
+      (element: HTMLElement) => {
+        delete element.dataset.shimmerReady;
+      },
+    ],
+    [workerCopy, (element: HTMLElement) => element.classList.remove("comma-shine")],
+  ] as const;
+  for (const [line, rest] of lines) {
+    await line.evaluate((element) => {
+      element.style.color = "rgb(0, 0, 0)";
+    });
+    const shining = await readGlyphInk(page, line);
+    await line.evaluate(rest);
+    const atRest = await readGlyphInk(page, line);
+    // Glyphs painted in colour and masked to the same glyphs took their
+    // anti-aliasing twice and drew about a tenth lighter.
+    expect(shining).toBeGreaterThan(atRest * 0.97);
+    expect(shining).toBeLessThan(atRest * 1.03);
+  }
 });
 
 test("exact Participant active status uses the WAAPI shimmer", async ({ page }) => {
@@ -947,13 +1030,14 @@ test("exact Participant active status uses the WAAPI shimmer", async ({ page }) 
     await expect
       .poll(() =>
         visibleSummary.evaluate((element) =>
-          element.getAnimations().some((animation) => {
+          element.getAnimations({ subtree: true }).some((animation) => {
             const effect = animation.effect;
             return (
               effect instanceof KeyframeEffect &&
+              effect.pseudoElement === "::after" &&
               effect
                 .getKeyframes()
-                .some((frame) => Object.hasOwn(frame, "backgroundPosition")) &&
+                .some((frame) => Object.hasOwn(frame, "transform")) &&
               animation.playState === "running"
             );
           })
@@ -962,13 +1046,12 @@ test("exact Participant active status uses the WAAPI shimmer", async ({ page }) 
       .toBe(true);
 
     const sample = await visibleSummary.evaluate((element) => {
-      const animation = element.getAnimations().find((candidate) => {
+      const animation = element.getAnimations({ subtree: true }).find((candidate) => {
         const effect = candidate.effect;
         return (
           effect instanceof KeyframeEffect &&
-          effect
-            .getKeyframes()
-            .some((frame) => Object.hasOwn(frame, "backgroundPosition"))
+          effect.pseudoElement === "::after" &&
+          effect.getKeyframes().some((frame) => Object.hasOwn(frame, "transform"))
         );
       });
       if (!animation || !(animation.effect instanceof KeyframeEffect)) {
@@ -976,7 +1059,7 @@ test("exact Participant active status uses the WAAPI shimmer", async ({ page }) 
       }
       const timing = animation.effect.getTiming();
       return {
-        backgroundImage: getComputedStyle(element).backgroundImage,
+        backgroundImage: getComputedStyle(element, "::after").backgroundImage,
         duration: Number(timing.duration),
         easing: timing.easing,
         fill: timing.fill,
@@ -1033,18 +1116,23 @@ test("projected main-process shimmer becomes static readable text with reduced m
     await expect(visibleSummary).toHaveAttribute("data-shimmer", "true");
     const fallback = await visibleSummary.evaluate((element) => {
       const style = getComputedStyle(element);
+      const masked = (style.webkitMaskClip || style.maskClip) === "text";
       return {
-        animationCount: element.getAnimations().length,
+        animationCount: element.getAnimations({ subtree: true }).length,
         backgroundImage: style.backgroundImage,
+        // The glyphs paint their fill or, masked to themselves, the box's colour.
+        glyphColor:
+          style.webkitTextFillColor === "rgba(0, 0, 0, 0)" && masked
+            ? style.backgroundColor
+            : style.webkitTextFillColor,
         opacity: Number.parseFloat(style.opacity),
-        textFillColor: style.webkitTextFillColor,
         visibility: style.visibility,
       };
     });
     expect(fallback.animationCount).toBe(0);
     expect(fallback.backgroundImage).toBe("none");
     expect(fallback.opacity).toBe(1);
-    expect(fallback.textFillColor).not.toBe("rgba(0, 0, 0, 0)");
+    expect(fallback.glyphColor).not.toBe("rgba(0, 0, 0, 0)");
     expect(fallback.visibility).toBe("visible");
   }
 
@@ -1066,13 +1154,17 @@ test("AI activity shimmer pauses during scroll and while offscreen", async ({
   const readPlayState = () =>
     shimmer.evaluate(
       (element) =>
-        element.getAnimations().find((animation) => animation.effect)?.playState
+        element.getAnimations({ subtree: true }).find((animation) => animation.effect)
+          ?.playState
     );
   await expect.poll(readPlayState).toBe("running");
 
   const readCurrentTime = () =>
     shimmer.evaluate((element) =>
-      Number(element.getAnimations().find((animation) => animation.effect)?.currentTime)
+      Number(
+        element.getAnimations({ subtree: true }).find((animation) => animation.effect)
+          ?.currentTime
+      )
     );
 
   const time = testClock();
@@ -1127,6 +1219,7 @@ test("AI activity shimmer stays readable without motion or authored colors", asy
   await page.waitForFunction(() => Boolean(window.aiActivityFixture));
   const osReduced = await readShimmerFallback(page);
   expect(osReduced.animationCount).toBe(0);
+  expect(osReduced.bandShown).toBe(false);
   expect(osReduced.readable).toBe(true);
 
   // A fresh page without the OS preference.
@@ -1137,6 +1230,7 @@ test("AI activity shimmer stays readable without motion or authored colors", asy
   const manualReduced = await readShimmerFallback(manualPage);
   expect(manualReduced.rootReducedMotion).toBe("true");
   expect(manualReduced.animationCount).toBe(0);
+  expect(manualReduced.bandShown).toBe(false);
   expect(manualReduced.readable).toBe(true);
 
   const forcedColorsPage = page;
@@ -1146,6 +1240,7 @@ test("AI activity shimmer stays readable without motion or authored colors", asy
   const forcedColors = await readShimmerFallback(forcedColorsPage);
   expect(forcedColors.forcedColors).toBe(true);
   expect(forcedColors.animationCount).toBe(0);
+  expect(forcedColors.bandShown).toBe(false);
   expect(forcedColors.backgroundImage).toBe("none");
   expect(forcedColors.textFillColor).not.toBe("rgba(0, 0, 0, 0)");
   expect(forcedColors.visibility).toBe("visible");

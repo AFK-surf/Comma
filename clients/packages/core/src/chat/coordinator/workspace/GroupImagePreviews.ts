@@ -48,6 +48,9 @@ export class GroupImagePreviews {
       let image: Blob;
       let mediaType: string;
       let fileName: string;
+      // A message's image is read by the core's chat, where its conversation keeps it (chat/index.ts).
+      if (validated.source === "attachment")
+        return yield* new ChatError("A message's image is not a workspace image.");
       if (validated.source === "draft-upload") {
         const held = this.#heldUpload(validated.groupId, validated.attachmentId);
         const heldType = held && imageMediaTypeOfName(held.name);
@@ -99,7 +102,7 @@ export class GroupImagePreviews {
 }
 
 /** The previewable image type a file's name says it is; none for any other (HEIC is uploaded as its JPEG). */
-function imageMediaTypeOfName(name: string) {
+export function imageMediaTypeOfName(name: string) {
   const extension = name.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1];
   if (extension === "png") return "image/png";
   if (extension === "jpg" || extension === "jpeg") return "image/jpeg";

@@ -6,14 +6,19 @@ import type { Clock } from "effect";
 import { log } from "../ops/log.ts";
 import { tr, type Lang, stationLang } from "../ops/i18n.ts";
 import type { Store } from "../store/store.ts";
-import { type HubConfig, type Profile, runs, runtimeNamed, runtimeTitle, sameModel, spelling } from "./config.ts";
+import { type HubConfig, type Profile, type Runtime, runs, runtimeNamed, runtimeTitle, sameModel, spelling } from "./config.ts";
 import { availableEfforts, commonEfforts, type ProfileHealth, pickProfile, serves, usable } from "./pool.ts";
+
+const isObject = (v: unknown): v is Record<string, any> => v !== null && typeof v === "object" && !Array.isArray(v);
 
 /// How long a profile a turn ran into the allowance of is passed over when its allowance is not read again.
 const SPENT_FOR_MS = 60 * 60 * 1000;
 
 /// How a session runs from its next turn on. A field left out: unchanged; null: back to the default.
-export type SessionChange = { profile?: string | null; model?: string | null; effort?: string | null; fast?: boolean | null };
+export type SessionChange = { runtime?: string; profile?: string | null; model?: string | null; effort?: string | null; fast?: boolean | null };
+
+/// A session moved to another runtime (Accounts.rerun): what it runs on from its next start.
+export type Rerun = { runtime: Runtime; profile: string; pinned: boolean; model: string | null; effort: string | null; fast: boolean | null };
 
 /// A profile as a session's runtime starts on it, with its spelling of the session's model.
 export type RunOn = Profile & { spelling(model: string): string | null };
@@ -25,6 +30,11 @@ export type AccountsDeps = {
   running(): string[];
   /// Its time.
   clock: Clock.Clock;
+  /// Of a runtime's profiles, those a session from `host` may run on (accounts/sources.ts); throws the reason when its
+  /// Workspace's source allows none. All of them when not given.
+  eligible?: (profiles: Profile[], runtime: Runtime, host: string | null, lang: Lang) => Profile[];
+  /// The host a session takes part in a Task of (null: none), whose source it keeps to.
+  hostOf?: (key: string) => string | null;
 };
 
 export class Accounts {
@@ -56,6 +66,26 @@ export class Accounts {
     return health;
   }
 
+  /// The profiles of a runtime a session from `host` may run on: only those of its Workspace's account source.
+  candidates(runtime: Runtime, host: string | null, lang: Lang = stationLang()): Profile[] {
+    const all = this.deps.config().profiles.filter((p) => p.runtimes.includes(runtime));
+    return this.deps.eligible ? this.deps.eligible(all, runtime, host, lang) : all;
+  }
+
+  /// The profiles a session already made may run on now. When its Workspace allows none any more, the one it is on
+  /// stays where it still may be used (not the machine's login once that is not in use); else it has none.
+  private sessionCandidates(key: string, runtime: Runtime, current: string): Profile[] {
+    const host = this.deps.hostOf?.(key) ?? null;
+    try {
+      return this.candidates(runtime, host);
+    } catch (e) {
+      const kept = this.deps.config().profiles.find((p) => p.id === current && p.runtimes.includes(runtime));
+      const lentHere = isObject(kept?.share) && kept.share.borrowed === true && kept.share.host === host;
+      if (kept && (lentHere || this.candidates(runtime, null).some((p) => p.id === kept.id))) return [kept];
+      throw e;
+    }
+  }
+
   /// Chooses the profile a session runs on (pool.ts).
   pick(candidates: Profile[], model: string | null | undefined, strict: boolean): Profile {
     const running = this.deps.running();
@@ -72,7 +102,7 @@ export class Accounts {
     if (!row) throw new Error(`unknown session ${key}`);
     const runtime = runtimeNamed(row.runtime);
     if (!runtime) throw new Error(`session ${key} runs an unknown runtime ${row.runtime}`);
-    const candidates = this.deps.config().profiles.filter((p) => p.runtimes.includes(runtime));
+    const candidates = this.sessionCandidates(key, runtime, row.profile);
     const withSpelling = (p: Profile): RunOn => ({ ...p, spelling: (model: string) => spelling(p, model) });
     // Kept to it by hand: that one, whatever it says. Otherwise its own while it can run it: usable, and with its model
     // enabled.
@@ -101,7 +131,12 @@ export class Accounts {
     const config = this.deps.config();
     // As the pool: those with its model enabled, or, when none has (a connect's binding from before models were
     // enabled), all of its runtime's.
-    const all = config.profiles.filter((p) => p.runtimes.includes(runtime));
+    let all: Profile[];
+    try {
+      all = this.sessionCandidates(key, runtime, row.profile);
+    } catch {
+      return null;
+    }
     const strict = all.some((p) => serves(p, row.model));
     const candidates = all.filter((p) => p.id !== row.profile && (!strict || serves(p, row.model)) && usable(this.healthOf(p.id), this.deps.clock.currentTimeMillisUnsafe()));
     if (candidates.length === 0) return null;
@@ -128,6 +163,41 @@ export class Accounts {
 
   /// Checks a change (configure) and works out what it makes of the session: its profile (and whether kept to it), its
   /// model and effort. Throws what is wrong with it, in `lang`.
+  /// Checks moving a session to another runtime (configure): null when `change` names none, or the one it runs. Its
+  /// model, effort and fast are as given, else the new runtime's defaults (the old ones are another runtime's); its
+  /// profile the one given (kept to it), else the pool's pick among those it may run on with the model enabled.
+  rerun(key: string, change: SessionChange, lang: Lang = stationLang()): Rerun | null {
+    const row = this.deps.store.getSession(key);
+    if (!row) throw new Error(`unknown session ${key}`);
+    if (change.runtime === undefined || change.runtime === row.runtime) return null;
+    const t = (k: string, args?: Record<string, unknown>) => tr(lang, k, args);
+    const runtime = runtimeNamed(change.runtime);
+    if (!runtime) throw new Error(`unknown runtime ${change.runtime}`);
+    const name = runtimeTitle(runtime);
+    const nonEmpty = (v: string | null | undefined) => (v === undefined || v === null || v === "" ? null : v);
+    const model = nonEmpty(change.model);
+    const wanted = nonEmpty(change.profile);
+    const effort = nonEmpty(change.effort);
+    if (change.fast !== undefined && change.fast !== null && runtime !== "codex") throw new Error(t("station.session.fastOpenAiOnly"));
+    const candidates = this.candidates(runtime, this.deps.hostOf?.(key) ?? null, lang);
+    if (candidates.length === 0) throw new Error(t("station.session.noProfile", { runtime: name }));
+    let profile: Profile;
+    if (wanted !== null) {
+      const next = candidates.find((p) => p.id === wanted);
+      if (!next) throw new Error(t("station.source.profileOutside", { profile: wanted }));
+      if (model !== null && !runs(next, model)) throw new Error(t("station.session.modelOff", { profile: next.name, model }));
+      profile = next;
+    } else {
+      if (model !== null && !candidates.some((p) => runs(p, model))) throw new Error(t("station.session.noProfileForModel", { model, runtime: name }));
+      profile = this.pick(candidates, model, true);
+    }
+    if (effort !== null) {
+      const allowed = this.modelEfforts(runtime, model, wanted);
+      if (!allowed.includes(effort)) throw new Error(t("station.profile.efforts", { runtime: name, efforts: allowed.join(t("station.list.separator")) }));
+    }
+    return { runtime, profile: profile.id, pinned: wanted !== null, model: model ?? profile.model ?? null, effort, fast: runtime === "codex" ? (change.fast ?? null) : null };
+  }
+
   change(key: string, change: SessionChange, lang: Lang = stationLang()) {
     const { store } = this.deps;
     const t = (k: string, args?: Record<string, unknown>) => tr(lang, k, args);
@@ -147,6 +217,7 @@ export class Accounts {
       const next = config.profiles.find((p) => p.id === wantedProfile);
       if (!next) throw new Error(`unknown profile ${wantedProfile}`);
       if (!next.runtimes.includes(runtime)) throw new Error(t("station.profile.cannotRun", { profile: next.name, runtime: name }));
+      if (!this.candidates(runtime, this.deps.hostOf?.(key) ?? null, lang).some((p) => p.id === next.id)) throw new Error(t("station.source.profileOutside", { profile: next.name }));
       const model = newModel !== undefined ? newModel : row.model;
       if (model !== null && !runs(next, model)) throw new Error(t("station.session.modelOff", { profile: next.name, model }));
     }

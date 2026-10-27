@@ -6,7 +6,9 @@ defmodule Salix.Control.PluginSetup do
   alias SalixMCP.{Gateway, Store}
 
   @setup_type "integration"
-  @connection_kinds ~w(native_mcp_oauth managed_oauth composio im_connect mcp_api_key)
+  # device_client: the MCP runs in the Comma desktop app on one member's Mac; that
+  # Mac, not an OAuth grant, is what connects it (connect_device/5).
+  @connection_kinds ~w(native_mcp_oauth managed_oauth composio im_connect mcp_api_key device_client)
 
   def credential_setup(definition, connection_id \\ nil) do
     with {:ok, setup} <- contract(definition),
@@ -163,6 +165,7 @@ defmodule Salix.Control.PluginSetup do
     with {:ok, setup} <- contract(definition),
          {:ok, _group} <- Groups.get(group_id, tenant_id),
          {:ok, connection} <- select_connection(setup, connection_id),
+         :ok <- not_device_client(connection),
          {:ok, connection} <- selected_oauth_connection(connection, group_id),
          {:ok, bindings} <- ensure_dependent_bindings(tenant_id, group_id, setup, connection) do
       {:ok, %{"connection" => connection, "bindings" => bindings}}
@@ -171,6 +174,45 @@ defmodule Salix.Control.PluginSetup do
 
   def prepare(_tenant_id, _group_id, _definition, _connection_id),
     do: {:error, {:bad_request, "plugin setup is limited to system plugins"}}
+
+  defp not_device_client(%{"kind" => "device_client"}),
+    do:
+      {:error,
+       {:bad_request, "Connect this plugin from the Comma desktop app on the Mac it runs on."}}
+
+  defp not_device_client(_connection), do: :ok
+
+  @doc """
+  Binds a device_client plugin's MCPs to one member's device runtime, owned by that
+  member: creates the binding, or moves an existing one to this device and owner.
+  """
+  def connect_device(
+        tenant_id,
+        group_id,
+        %{"owner_scope" => "system"} = definition,
+        device_runtime_id,
+        owner_user_id
+      )
+      when is_binary(device_runtime_id) and device_runtime_id != "" and
+             is_binary(owner_user_id) and owner_user_id != "" do
+    with {:ok, setup} <- contract(definition),
+         {:ok, _group} <- Groups.get(group_id, tenant_id),
+         %{} = connection <- Enum.find(setup.connections, &(&1["kind"] == "device_client")),
+         connection =
+           Map.merge(connection, %{
+             "device_runtime_id" => device_runtime_id,
+             "owner_user_id" => owner_user_id
+           }),
+         {:ok, bindings} <- ensure_dependent_bindings(tenant_id, group_id, setup, connection) do
+      {:ok, %{"connection" => connection, "bindings" => bindings}}
+    else
+      nil -> {:error, {:bad_request, "plugin has no device connection"}}
+      {:error, _} = error -> error
+    end
+  end
+
+  def connect_device(_tenant_id, _group_id, _definition, _device_runtime_id, _owner_user_id),
+    do: {:error, {:bad_request, "a device and its owner are required"}}
 
   defp selected_oauth_connection(%{"id" => "x-managed"} = connection, group_id) do
     case OAuthBindings.select_provider_record(group_id, "x", "x") do
@@ -275,6 +317,17 @@ defmodule Salix.Control.PluginSetup do
     |> Map.put("oauth_binding_refs", %{})
   end
 
+  defp binding_attrs(mcp, %{"kind" => "device_client"} = connection) do
+    mcp
+    |> Map.take(~w(mcp_id alias target_ref placement))
+    |> Map.merge(%{
+      "device_runtime_id" => connection["device_runtime_id"],
+      "owner_user_id" => connection["owner_user_id"],
+      "oauth_binding_refs" => %{},
+      "enabled" => true
+    })
+  end
+
   defp managed?(binding, mcp, connection) when is_map(binding) do
     binding["mcp_id"] == mcp["mcp_id"] and binding["target_ref"] == mcp["target_ref"] and
       binding["placement"] == mcp["placement"] and auth_matches?(binding, mcp, connection)
@@ -302,6 +355,11 @@ defmodule Salix.Control.PluginSetup do
     do:
       binding["oauth_binding_refs"] in [nil, %{}] and
         not present?(binding["remote_oauth_binding_id"])
+
+  defp auth_matches?(binding, _mcp, %{"kind" => "device_client"} = connection),
+    do:
+      binding["device_runtime_id"] == connection["device_runtime_id"] and
+        binding["owner_user_id"] == connection["owner_user_id"] and binding["enabled"] != false
 
   defp same_mcp?(binding, mcp) when is_map(binding) do
     binding["mcp_id"] == mcp["mcp_id"] and binding["target_ref"] == mcp["target_ref"] and
@@ -426,6 +484,17 @@ defmodule Salix.Control.PluginSetup do
     end
   end
 
+  defp connection_state(%{"id" => id, "kind" => "device_client"}, mcps, _oauth, bindings, _) do
+    mcp = Enum.find(mcps, &(id in mcp_auth_refs(&1)))
+    binding = mcp && Enum.find(bindings, &same_mcp?(&1, mcp))
+
+    cond do
+      is_nil(binding) or not present?(binding["device_runtime_id"]) -> "not_connected"
+      binding["enabled"] == false -> "disabled"
+      true -> "connected"
+    end
+  end
+
   defp connection_state(
          %{"kind" => "im_connect", "provider" => provider},
          _mcps,
@@ -485,6 +554,9 @@ defmodule Salix.Control.PluginSetup do
 
         %{"kind" => "mcp_api_key"} ->
           binding["config_configured"] == true
+
+        %{"kind" => "device_client"} ->
+          present?(binding["device_runtime_id"])
 
         _connection ->
           false
@@ -557,6 +629,8 @@ defmodule Salix.Control.PluginSetup do
   defp connection_fields_valid?(%{"kind" => "mcp_api_key"} = c),
     do: present?(c["config_key"]) and present?(c["credential_label"]) and present?(c["help_url"])
 
+  defp connection_fields_valid?(%{"kind" => "device_client"}), do: true
+
   defp validate_mcps([], _connections), do: :ok
 
   defp validate_mcps(mcps, connections) when is_list(mcps) and mcps != [] do
@@ -580,6 +654,9 @@ defmodule Salix.Control.PluginSetup do
 
                 %{"kind" => "managed_oauth"} = connection ->
                   present?(connection["credential_env_var"])
+
+                %{"kind" => "device_client"} ->
+                  mcp["placement"] == "device" and length(auth_refs) == 1
 
                 _connection ->
                   false

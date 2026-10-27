@@ -184,6 +184,7 @@ defmodule SalixAgent.ActivityEvent do
           summary: action,
           summary_class: @summary_class_public,
           goal: goal,
+          target: call_target(name, call),
           status: "running",
           tool_name: name,
           tool_call_id: call_id(call),
@@ -276,6 +277,7 @@ defmodule SalixAgent.ActivityEvent do
         "summary" => attrs[:summary],
         "summary_class" => normalize_summary_class(attrs[:summary_class]),
         "goal" => attrs[:goal],
+        "target" => attrs[:target],
         "tool_name" => tool_name,
         "tool_call_id" => present(attrs[:tool_call_id]),
         "display_strength" => normalize_strength(attrs[:display_strength]),
@@ -299,7 +301,7 @@ defmodule SalixAgent.ActivityEvent do
   defp emit(_agent_id, _session_id, _attrs, _activation_scope), do: :ok
 
   defp bound_public_activity_attrs(%{summary_class: @summary_class_public} = attrs) do
-    Enum.reduce([:action, :summary, :goal, :tool_name], attrs, fn field, bounded ->
+    Enum.reduce([:action, :summary, :goal, :target, :tool_name], attrs, fn field, bounded ->
       case Map.fetch(bounded, field) do
         {:ok, value} when is_binary(value) ->
           Map.put(bounded, field, bound_public_activity_prose(value))
@@ -375,6 +377,37 @@ defmodule SalixAgent.ActivityEvent do
   end
 
   defp call_goal(_name, _call), do: nil
+
+  # What a call works on, for clients to word: the search query, the site of
+  # the first page read, or the name of the file read. Runtime files stay out.
+  @target_max_chars 60
+  defp call_target("web.search", call), do: bounded_target(call_args(call)["query"])
+
+  defp call_target("web.read_pages", call) do
+    with [url | _] when is_binary(url) <- call_args(call)["urls"],
+         %URI{host: host} when is_binary(host) and host != "" <- URI.parse(String.trim(url)) do
+      host |> String.replace_prefix("www.", "") |> bounded_target()
+    else
+      _other -> nil
+    end
+  end
+
+  defp call_target("fs.read_file", call) do
+    case present(call_args(call)["path"]) do
+      "/.runtime" <> _runtime -> nil
+      nil -> nil
+      path -> path |> String.trim_trailing("/") |> Path.basename() |> bounded_target()
+    end
+  end
+
+  defp call_target(_name, _call), do: nil
+
+  defp bounded_target(value) do
+    case present(value) do
+      nil -> nil
+      text -> text |> String.replace(~r/\s+/u, " ") |> String.slice(0, @target_max_chars)
+    end
+  end
 
   # A "call" envelope nests the target tool's arguments under "params".
   defp call_args(call) do

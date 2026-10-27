@@ -256,8 +256,9 @@ for target, profile_name, bundle in [("Comma", "app", "surf.comma.ios"),
 targets["Comma"]["entitlements"] = {"path": str(work / "Comma.entitlements")}
 spec = {
     "include": [{"path": str(source / "project.yml"), "relativePaths": True}],
-    # The generated project is outside the source: Hermes is fetched into the source, and the build finds it there.
-    "options": {"preGenCommand": f'bash "{source / "scripts/fetch-hermes.sh"}"'},
+    # The generated project is outside the source: Hermes and the engine's iroh are fetched into the source, and the
+    # build finds them there.
+    "options": {"preGenCommand": f'bash "{source / "scripts/fetch-hermes.sh"}" && bash "{source / "scripts/fetch-mesh.sh"}"'},
     "settings": {"base": {
         "COMMA_APPLE_DIR": str(source),
         "MARKETING_VERSION": os.environ["MARKETING_VERSION"],

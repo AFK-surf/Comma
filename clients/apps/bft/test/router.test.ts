@@ -122,7 +122,7 @@ describe("BFT router", () => {
     });
   });
 
-  it("serves Members, Runners (the old Fin address), Agent Swarms, Plugins, Meetings and Data policy", () => {
+  it("serves Members, Runners (the old Fin address), Agent Swarms, Plugins, Meetings, Daily brief and Data policy", () => {
     expect(matchRoute("/orgs/acme/projects/")).toEqual({
       name: "org-swarms",
       org: "acme",
@@ -154,6 +154,12 @@ describe("BFT router", () => {
       view: "past",
     });
     expect(matchRoute("/orgs/acme/meetings/history")).toEqual({ name: "unknown" });
+    expect(matchRoute("/orgs/acme/daily-brief/")).toEqual({
+      name: "org-daily-brief",
+      org: "acme",
+    });
+    // Members' Slack authorization pages are served by Phoenix.
+    expect(matchRoute("/orgs/acme/daily-brief/missed")).toEqual({ name: "unknown" });
     expect(matchRoute("/orgs/acme/triage")).toEqual({
       name: "org-triage",
       org: "acme",

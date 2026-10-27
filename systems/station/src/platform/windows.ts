@@ -449,5 +449,6 @@ export const windows: Platform = {
   hasQuickLook: false,
   hasFolderPermissions: false,
   hasComputerUse: false,
+  hasWindowsComputerUse: true,
   hasHomebrew: false,
 };

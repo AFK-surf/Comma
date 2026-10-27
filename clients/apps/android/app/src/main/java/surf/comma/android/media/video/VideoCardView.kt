@@ -65,7 +65,7 @@ class VideoCardView(context: Context) : FrameLayout(context) {
     init {
         background = GradientDrawable().apply {
             setColor(context.getColor(R.color.token_bg_tertiary))
-            cornerRadius = resources.getDimension(R.dimen.radius_xl)
+            cornerRadius = resources.getDimension(R.dimen.radius_4xl)
         }
         clipToOutline = true
         addView(cover, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))

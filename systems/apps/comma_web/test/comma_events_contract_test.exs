@@ -867,6 +867,86 @@ defmodule CommaWeb.CommaEventsContractTest do
     refute response.body =~ "after_event_id"
   end
 
+  test "an Agent's requests in a Conversation: its readers see and decline them, nobody else" do
+    %{workspace: workspace, session: session, conversation: conversation} =
+      create_fixture("requests@example.com")
+
+    %{session: outsider} = create_fixture("requests-outsider@example.com")
+    group = workspace["default_group_id"]
+    {:ok, %{"salix_tenant_id" => tenant}} = Comma.Workspaces.get_by_group(group)
+
+    agent =
+      SalixAgent.TestSupport.create_control_agent_in_group!(tenant, group, %{
+        "role" => "router",
+        "runtime_config" => %{"kind" => "internal"}
+      })
+
+    request! = fn conversation_id, call ->
+      {:ok, request} =
+        SalixAgent.CapabilityRequests.create_capability_request(%{
+          "source_agent_id" => agent["agent_id"],
+          "source_session_id" => SalixStore.Ids.new_session_id(),
+          "tool_call_id" => call,
+          "request_type" => "oauth_authorization",
+          "group_id" => group,
+          "tenant_id" => tenant,
+          "surface_kind" => "conversation",
+          "surface_ref" => %{"conversation_id" => conversation_id, "message_id" => "msg-1"},
+          "request_payload" => %{
+            "oauth_authorization" => %{
+              "provider" => "github",
+              "alias" => "github",
+              "state" => "state-" <> call,
+              "reason" => "An app keeps its code in GitHub.",
+              "scopes" => ["repo"],
+              "authorization_url" => "https://github.com/login/oauth/authorize?state=" <> call
+            }
+          }
+        })
+
+      request
+    end
+
+    shown = request!.(conversation["id"], "call-1")
+    _elsewhere = request!.("cnv1_elsewhere", "call-2")
+    path = "/v1/comma/groups/#{group}/conversations/#{conversation["id"]}/requests"
+
+    # Only this Conversation's requests, projected without where they came from.
+    assert %{"data" => [listed]} = user_req(session["token"], :get, path) |> expect_status(200)
+
+    assert %{
+             "id" => id,
+             "type" => "oauth_authorization",
+             "status" => "pending",
+             "source_message_id" => "msg-1",
+             "oauth" => %{
+               "provider" => "github",
+               "scopes" => ["repo"],
+               "authorization_url" => "https://github.com/login/oauth/authorize?state=call-1"
+             }
+           } = listed
+
+    assert id == shown["request_id"]
+
+    for key <- ~w(tenant_id source_agent_id source_session_id tool_call_id),
+        do: refute(Map.has_key?(listed, key))
+
+    refute Map.has_key?(listed["oauth"], "state")
+
+    # A member who cannot read the Conversation sees nothing of it.
+    assert user_req(outsider["token"], :get, path).status == 404
+    assert user_req(outsider["token"], :post, "#{path}/#{id}/decline").status == 404
+
+    # The person declines: the stored ending is the answer, though no Agent session is live to hear it.
+    assert %{"status" => "completed", "outcome" => "declined", "oauth" => oauth} =
+             user_req(session["token"], :post, "#{path}/#{id}/decline") |> expect_status(200)
+
+    refute Map.has_key?(oauth, "authorization_url")
+
+    assert %{"data" => [%{"outcome" => "declined"}]} =
+             user_req(session["token"], :get, path) |> expect_status(200)
+  end
+
   test "user_chat SSE projects the subscribed participant activity snapshot" do
     %{workspace: workspace, session: session, conversation: conversation} =
       create_fixture("events-participant-activity@example.com")
@@ -957,6 +1037,74 @@ defmodule CommaWeb.CommaEventsContractTest do
 
     assert :binary.match(response.body, "event: participant_status") <
              :binary.match(response.body, "event: activity")
+  end
+
+  test "user_chat SSE names a running tool call, what it works on and when it began" do
+    %{workspace: workspace, session: session, conversation: conversation} =
+      create_fixture("events-tool-call@example.com")
+
+    conversation_id = conversation["id"]
+
+    source =
+      SalixClientFake.put_message(conversation_id, %{
+        "actor_type" => "user",
+        "content" => "search source"
+      })
+
+    participant_id = SalixClientFake.participant_id_for(conversation_id)
+
+    assert {:ok, source_identity} =
+             SalixIM.ConversationSourceIdentity.encode(
+               conversation_id,
+               source["message_id"],
+               participant_id
+             )
+
+    SalixClientFake.put_participant_status(
+      workspace,
+      conversation_id,
+      %{
+        "activity" => %{
+          "state" => "active",
+          "status" => "is waiting: async tool call still running: web.search",
+          "updated_at" => 1_780_000_000_123,
+          "wait_tool" => "web.search",
+          "wait_started_at" => 1_780_000_000_000
+        },
+        "presentation_activity" => %{
+          "phase" => "execution",
+          "status" => "running",
+          "action" => "Searching the web",
+          "summary" => "Searching the web",
+          "summary_class" => "public",
+          "target" => "北京天气",
+          "tool_name" => "web.search",
+          "producer_epoch" => "epoch-a",
+          "response_key" =>
+            "rsp_" <> Base.url_encode64(SystemsRuntime.Proc.random_bytes(18), padding: false),
+          "sequence" => 1,
+          "source_message_ids" => [source_identity]
+        }
+      },
+      notify: false
+    )
+
+    response =
+      user_req(
+        session["token"],
+        :get,
+        "/v1/comma/groups/#{workspace["default_group_id"]}/conversations/#{conversation_id}/events?wait=0"
+      )
+
+    assert response.status == 200
+    [participant_status] = sse_payloads(response.body, "participant_status")
+    [activity] = sse_payloads(response.body, "activity")
+
+    assert participant_status["wait_tool"] == "web.search"
+    assert participant_status["wait_started_at"] == 1_780_000_000_000
+    refute Map.has_key?(participant_status, "waiting")
+    assert activity["tool_name"] == "web.search"
+    assert activity["target"] == "北京天气"
   end
 
   test "participant draft snapshots stream revisions and clear through participant status" do

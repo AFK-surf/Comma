@@ -596,11 +596,14 @@ export function resolveStationDir() {
   return candidates.find((candidate) => existsSync(candidate)) ?? candidates[0]!;
 }
 
-/** The Computer Use helper the app carries beside its native parts. */
+/** The Computer Use helper the app carries beside its native parts: its own app on macOS, Cua Driver on Windows. */
 export function resolveComputerUseHelperApp() {
-  const name = `${getCommaReleaseConfig().productName} Computer Use.app`;
+  const helper =
+    process.platform === "win32"
+      ? join("windows", "cua-driver.exe")
+      : join("macos", `${getCommaReleaseConfig().productName} Computer Use.app`);
   const native = (root: string) =>
-    join(root, "native", process.platform, process.arch, "native", "macos", name);
+    join(root, "native", process.platform, process.arch, "native", helper);
   if (app.isPackaged) return native(process.resourcesPath);
   const candidates = [
     native(join(process.cwd(), "dist")),

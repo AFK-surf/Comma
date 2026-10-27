@@ -5317,7 +5317,8 @@
         "postgres.salix_store.migration-ledger/20261008200001=platform-model-copy-pass-complete"
       ],
       "repair": "retry_bounded_copy_pass_then_forward_repair_platform_models"
-    },
+    }
+,
     {
       "id": "salix-20261009010001",
       "owner": "salix_store",
@@ -5358,7 +5359,8 @@
         "postgres.salix_store.migration-ledger/20261009070001=platform-model-copy-pass-complete"
       ],
       "repair": "retry_bounded_copy_pass_then_forward_repair_platform_models"
-    },
+    }
+,
     {
       "id": "salix-20261009150001",
       "owner": "salix_store",
@@ -5774,6 +5776,40 @@
       ]
     },
     {
+      "id": "salix-20261021200101",
+      "owner": "salix_store",
+      "store": "postgres",
+      "version": 20261021200101,
+      "source": "systems/apps/salix_store/priv/repo/migrations/20261021200101_record_agent_vmm_revocation_reason.exs",
+      "checksum": "sha256:f931786b405aa6a7e15fcfaaa5ff268feee1e20755f4504ce2ce6dfca3e1cea8",
+      "postconditions": [
+        "salix_store.migration-ledger/20261021200101=applied-and-schema-ready"
+      ]
+    },
+    {
+      "id": "salix-20261022000101",
+      "owner": "salix_store",
+      "store": "postgres",
+      "version": 20261022000101,
+      "source": "systems/apps/salix_store/priv/repo/migrations/20261022000101_retry_import_slot_capacity_claims.exs",
+      "checksum": "sha256:365a6d641e8983bf62017d0c39a1120fb5a39069fc017625e01f6519a61e7b6f",
+      "postconditions": [
+        "salix_store.migration-ledger/20261022000101=import-slot-parked-claims-removed-and-storage-headroom-claims-kept"
+      ]
+    },
+    {
+      "id": "salix-20261022120001",
+      "owner": "salix_store",
+      "store": "postgres",
+      "version": 20261022120001,
+      "source": "systems/apps/salix_store/priv/repo/migrations/20261022120001_station_device_lookup.exs",
+      "checksum": "sha256:b9473227fadc07681ed6cc39369aae1386c4a3cb8b771a961628bd3bcd5dbd0f",
+      "postconditions": [
+        "postgres.table/station_device_lookup=present",
+        "postgres.index/station_device_lookup_group_owner_device_idx=valid"
+      ]
+    },
+    {
       "id": "bridge-20261013000101",
       "owner": "bridge_for_teams",
       "store": "postgres",
@@ -5959,6 +5995,206 @@
         "postgres.comma_core.migration-ledger/20261019230001=workspace-task-workers-recorded-as-group-task-agents"
       ],
       "repair": "retry_idempotent_group_task_agent_pass"
+    },
+    {
+      "id": "comma-20261022190000",
+      "owner": "comma_core",
+      "store": "postgres",
+      "version": 20261022190000,
+      "source": "systems/apps/comma_core/priv/repo/migrations/20261022190000_add_recommendation_dismissed_items.exs",
+      "checksum": "sha256:517604a3a5291c14d4d423c805788d29f5406069b24fbd8538e25b53e024e79a",
+      "postconditions": [
+        "comma_core.migration-ledger/20261022190000=applied-and-schema-ready"
+      ]
+    },
+    {
+      "id": "bridge-20261023000101",
+      "owner": "bridge_for_teams",
+      "store": "postgres",
+      "version": 20261023000101,
+      "source": "systems/apps/bridge_for_teams_core/priv/repo/migrations/20261023000101_create_daily_brief.exs",
+      "checksum": "sha256:f149937290b3a9a0692caaf249b45cef2f6422403cdde5729426cf2a4e4d8a59",
+      "postconditions": [
+        "bridge_for_teams.migration-ledger/20261023000101=applied-and-schema-ready"
+      ]
+    },
+    {
+      "id": "bridge-20261023000201",
+      "owner": "bridge_for_teams",
+      "store": "postgres",
+      "version": 20261023000201,
+      "source": "systems/apps/bridge_for_teams_core/priv/repo/migrations/20261023000201_add_daily_brief_dm_bundle.exs",
+      "checksum": "sha256:5952b140485fe9084a47e6aaf1f4dba9b5ef47b5e9a0fb1e0d34156f5b051a64",
+      "postconditions": [
+        "bridge_for_teams.migration-ledger/20261023000201=applied-and-schema-ready"
+      ]
+    },
+    {
+      "id": "bridge-20261023000301",
+      "owner": "bridge_for_teams",
+      "store": "postgres",
+      "version": 20261023000301,
+      "source": "systems/apps/bridge_for_teams_core/priv/repo/migrations/20261023000301_create_daily_brief_personal_sync.exs",
+      "checksum": "sha256:d3e88f7b8c47bed831d7ba68339632c8b419f280dc8d0df46626ffbc9fe58325",
+      "postconditions": [
+        "bridge_for_teams.migration-ledger/20261023000301=applied-and-schema-ready"
+      ]
+    },
+    {
+      "id": "bridge-20261023000401",
+      "owner": "bridge_for_teams",
+      "store": "postgres",
+      "version": 20261023000401,
+      "source": "systems/apps/bridge_for_teams_core/priv/repo/migrations/20261023000401_create_daily_brief_runs.exs",
+      "checksum": "sha256:12c71d410cc887e70b58548205b13c6e3682fea4da764539a545e920f17b35b6",
+      "postconditions": [
+        "bridge_for_teams.migration-ledger/20261023000401=applied-and-schema-ready"
+      ]
+    },
+    {
+      "id": "bridge-20261023000501",
+      "owner": "bridge_for_teams",
+      "store": "postgres",
+      "version": 20261023000501,
+      "source": "systems/apps/bridge_for_teams_core/priv/repo/migrations/20261023000501_add_daily_brief_delivery.exs",
+      "checksum": "sha256:3fd9b64657f38b0a412f6078ed73f7e22d3049e963defed9a9b3e52f9e7239e0",
+      "postconditions": [
+        "bridge_for_teams.migration-ledger/20261023000501=applied-and-schema-ready"
+      ]
+    },
+    {
+      "id": "bridge-20261023000601",
+      "owner": "bridge_for_teams",
+      "store": "postgres",
+      "version": 20261023000601,
+      "source": "systems/apps/bridge_for_teams_core/priv/repo/migrations/20261023000601_add_daily_brief_meeting_series.exs",
+      "checksum": "sha256:e293d9d6bd308a57be85aa81d1593efb30fe1074a8b6142ceb3e57a8995a8918",
+      "postconditions": [
+        "bridge_for_teams.migration-ledger/20261023000601=applied-and-schema-ready"
+      ]
+    },
+    {
+      "id": "bridge-20261023000701",
+      "owner": "bridge_for_teams",
+      "store": "postgres",
+      "version": 20261023000701,
+      "source": "systems/apps/bridge_for_teams_core/priv/repo/migrations/20261023000701_add_daily_brief_run_states.exs",
+      "checksum": "sha256:0b1d770a090c263750e5027ccd7d2c34ed663c0257b84d76d6caafe09e2fdd52",
+      "postconditions": [
+        "bridge_for_teams.migration-ledger/20261023000701=applied-and-schema-ready"
+      ]
+    },
+    {
+      "id": "bridge-20261023000801",
+      "owner": "bridge_for_teams",
+      "store": "postgres",
+      "version": 20261023000801,
+      "source": "systems/apps/bridge_for_teams_core/priv/repo/migrations/20261023000801_add_daily_brief_send_requests.exs",
+      "checksum": "sha256:499ba70a4d2620e44346117168880e1a8220f509c8beab33da8927b9ce26960a",
+      "postconditions": [
+        "bridge_for_teams.migration-ledger/20261023000801=applied-and-schema-ready"
+      ]
+    },
+    {
+      "id": "bridge-20261023000901",
+      "owner": "bridge_for_teams",
+      "store": "postgres",
+      "version": 20261023000901,
+      "source": "systems/apps/bridge_for_teams_core/priv/repo/migrations/20261023000901_create_daily_brief_mentions.exs",
+      "checksum": "sha256:6faaeb26461a53985796917e6fd6a85bb7af014c73583e3cab5063ed25b7e98f",
+      "postconditions": [
+        "bridge_for_teams.migration-ledger/20261023000901=applied-and-schema-ready"
+      ]
+    },
+    {
+      "id": "bridge-20261023001001",
+      "owner": "bridge_for_teams",
+      "store": "postgres",
+      "version": 20261023001001,
+      "source": "systems/apps/bridge_for_teams_core/priv/repo/migrations/20261023001001_daily_brief_actor_refs.exs",
+      "checksum": "sha256:777ec0e98baf87def0f496cfa728696727f2c14672730d6e410fedb2e8ebfeeb",
+      "postconditions": [
+        "bridge_for_teams.migration-ledger/20261023001001=applied-and-schema-ready"
+      ],
+      "compatibility": {
+        "oldRuntimeRead": false,
+        "oldRuntimeWrite": false
+      }
+    },
+    {
+      "id": "bridge-20261023001101",
+      "owner": "bridge_for_teams",
+      "store": "postgres",
+      "version": 20261023001101,
+      "source": "systems/apps/bridge_for_teams_core/priv/repo/migrations/20261023001101_daily_brief_member_snoozes.exs",
+      "checksum": "sha256:46910368424f7432c93b655a01971c0da56b253fd6a35d4ca7c80dd1dde34185",
+      "postconditions": [
+        "bridge_for_teams.migration-ledger/20261023001101=applied-and-schema-ready"
+      ],
+      "compatibility": {
+        "oldRuntimeRead": false,
+        "oldRuntimeWrite": false
+      }
+    },
+    {
+      "id": "bridge-20261024000101",
+      "owner": "bridge_for_teams",
+      "store": "postgres",
+      "version": 20261024000101,
+      "source": "systems/apps/bridge_for_teams_core/priv/repo/migrations/20261024000101_daily_brief_calendar.exs",
+      "checksum": "sha256:4f3821444d652aa098828dcdba9a33bbf4b77f0e2bc9e20d87651ed21b97f4a2",
+      "postconditions": [
+        "bridge_for_teams.migration-ledger/20261024000101=applied-and-schema-ready"
+      ]
+    },
+    {
+      "id": "bridge-20261024000201",
+      "owner": "bridge_for_teams",
+      "store": "postgres",
+      "version": 20261024000201,
+      "source": "systems/apps/bridge_for_teams_core/priv/repo/migrations/20261024000201_daily_brief_team_channel.exs",
+      "checksum": "sha256:89731a59668f51a29a3d2ebdeb2543aa98f088bfdc4ecc56d4750a2556bb55a3",
+      "postconditions": [
+        "bridge_for_teams.migration-ledger/20261024000201=applied-and-schema-ready"
+      ]
+    },
+    {
+      "id": "comma-20261024100000",
+      "owner": "comma_core",
+      "store": "postgres",
+      "version": 20261024100000,
+      "source": "systems/apps/comma_core/priv/repo/migrations/20261024100000_create_comma_mini_apps.exs",
+      "checksum": "sha256:517dfe9d0b157aab0d971870b9ed79e1cbaf511df5d7a1bfe88d01d323149814",
+      "postconditions": [
+        "comma_core.migration-ledger/20261024100000=applied-and-schema-ready"
+      ]
+    },
+    {
+      "id": "bridge-20261026000101",
+      "owner": "bridge_for_teams",
+      "store": "postgres",
+      "version": 20261026000101,
+      "source": "systems/apps/bridge_for_teams_core/priv/repo/migrations/20261026000101_slim_daily_brief.exs",
+      "checksum": "sha256:6b6beec7374b69517d0534986fa6eb5e9c37e9d0db98ebe0c8ce3d8f0b54b08d",
+      "postconditions": [
+        "bridge_for_teams.migration-ledger/20261026000101=applied-and-schema-ready"
+      ]
+    },
+    {
+      "id": "comma-20261026120000",
+      "owner": "comma_core",
+      "store": "postgres",
+      "version": 20261026120000,
+      "source": "systems/apps/comma_core/priv/repo/migrations/20261026120000_add_workspace_admin_actions.exs",
+      "checksum": "sha256:86c78f268f9683a6d3ef90950292bc5651a2124937222d79812df8059e4f8b67",
+      "execution": {
+        "transactional": false,
+        "idempotent": true
+      },
+      "postconditions": [
+        "postgres.constraint/comma_admin_audit_action_valid=workspace-sandbox-limit-and-signal-actions-present"
+      ],
+      "repair": "retry_exact_version_idempotently"
     }
   ],
   "orderingConstraints": [

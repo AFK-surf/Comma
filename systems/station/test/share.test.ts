@@ -279,3 +279,19 @@ test("a host outside the workspace (Salix): its profiles are placed whole, lent 
   assert.deepEqual(b.config.raw().profiles.map((p: any) => p.share.id), [keyId]);
   assert.throws(() => b.sharing.hostProfiles("salix", [{ id: "not-a-share" }]), /bad share id/);
 });
+
+test("each desktop connection's Salix lends its own Workspace's accounts, kept as borrowed from that connection", async () => {
+  const cloud = new FakeCloud();
+  const all = new Map<string, Station>();
+  const b = station(cloud, B, () => all);
+  all.set(B, b);
+  const [one, two] = ["sh-aaaaaaaaaa0123456789", "sh-bbbbbbbbbb0123456789"];
+  const lend = (id: string, name: string) => ({ id, version: 1, name, profile: { name, runtime: "claude", credential: "subscription", source: "claude" } });
+  b.sharing.hostProfiles("salix:inst-a", [lend(one, "A's Claude")]);
+  b.sharing.hostProfiles("salix:inst-b", [lend(two, "B's Claude")]);
+  const hosts = () => b.config.raw().profiles.map((p: any) => [p.name, p.share.host]);
+  assert.deepEqual(hosts(), [["A's Claude", "salix:inst-a"], ["B's Claude", "salix:inst-b"]]);
+  // A Workspace with no shared account sends an empty list: only its own copies go.
+  b.sharing.hostProfiles("salix:inst-a", []);
+  assert.deepEqual(hosts(), [["B's Claude", "salix:inst-b"]]);
+});

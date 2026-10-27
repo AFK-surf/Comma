@@ -11,7 +11,6 @@ import { TooltipBubble } from "@comma/ui/components/tooltip";
 import { uiClock, type CancelUiTimer } from "@comma/ui/clock";
 import { createPortal } from "react-dom";
 import { useCommaMessages } from "@comma/i18n/react";
-import { useOptionalChatSidebar } from "../chat-sidebar/ChatSidebarContext";
 import {
   commaHomeChatMinWidth,
   commaHomeGreetMaxWidth,
@@ -62,18 +61,17 @@ export function HomeRailCollapseHandle({
   const tooltipRef = useRef<HTMLDivElement | null>(null);
   const tooltipTimer = useRef<CancelUiTimer | null>(null);
   const pointerPosition = useRef({ x: 0, y: 0 });
-  const pendingTrailingWidth = useOptionalChatSidebar()?.pendingTrailingWidth;
   // The chat column keeps its floor beside the other rail as it is at rest.
-  // Greeting's bound is derived from settled values: a Tasks fold or the Chat
-  // Sidebar may still be moving when the seam is grabbed, and the chat
-  // column's box at that frame would bound the whole drag.
+  // Greeting's bound is derived from settled values: a Tasks fold may still be
+  // moving when the seam is grabbed, and the chat column's box at that frame
+  // would bound the whole drag.
   const maxWidthOf = (rail: HTMLElement) => {
     const route = rail.closest<HTMLElement>(".comma-chat-route");
     const layout = rail.closest<HTMLElement>(".comma-home-layout");
     const width = rail.getBoundingClientRect().width;
     if (name === "greet" && route && layout) {
       return commaHomeGreetMaxWidth({
-        routeWidth: route.clientWidth - (pendingTrailingWidth?.(route) ?? 0),
+        routeWidth: route.clientWidth,
         greetWidth: width,
         tasks: {
           shut: shut.tasks,

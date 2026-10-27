@@ -8,6 +8,7 @@ defmodule SalixWeb.StationLLMTest do
   a connection that is not the device's own any more opens nothing.
   """
   use SystemsClock.Case, async: false
+  use SalixAgent.TestSupport.Settle, scope: ["Elixir.SalixWeb", "Elixir.SalixEnv"]
 
   import Plug.Conn
   import Plug.Test
@@ -42,6 +43,59 @@ defmodule SalixWeb.StationLLMTest do
 
       conn
     end
+  end
+
+  defmodule Socket do
+    use WebSockex
+
+    def start(token, owner) do
+      url = String.replace(SalixWeb.Application.base_url(), "http://", "ws://")
+
+      WebSockex.start(url <> "/v1/connect?name=Coding", __MODULE__, owner,
+        extra_headers: [
+          {"authorization", "Bearer " <> token},
+          {"x-salix-credential-kind", "workload"}
+        ]
+      )
+    end
+
+    def handle_frame({:text, raw}, owner) do
+      frame = Jason.decode!(raw)
+
+      case frame do
+        %{"type" => "heartbeat"} ->
+          {:reply, {:text, Jason.encode!(%{"type" => "heartbeat"})}, owner}
+
+        %{"type" => "request", "id" => id, "method" => "station_profiles", "params" => params} ->
+          send(owner, {:coding_profiles, params["profiles"]})
+
+          {:reply,
+           {:text,
+            Jason.encode!(%{"type" => "response", "id" => id, "result" => %{"received" => true}})},
+           owner}
+
+        %{"type" => "request", "id" => id, "method" => method} ->
+          send(owner, {:coding_command, method})
+
+          {:reply,
+           {:text,
+            Jason.encode!(%{"type" => "response", "id" => id, "result" => %{"received" => true}})},
+           owner}
+
+        %{"type" => type, "id" => id} when type in ["response", "error"] ->
+          send(owner, {:coding_answer, id, frame})
+          {:ok, owner}
+
+        _ ->
+          {:ok, owner}
+      end
+    end
+
+    def handle_info({:send, frame}, owner), do: {:reply, {:text, Jason.encode!(frame)}, owner}
+  end
+
+  defmodule GitHub do
+    def token(_, _), do: {:ok, %{token: "ghu-managed-test", expires_at: nil}}
   end
 
   defmodule Meter do
@@ -194,7 +248,7 @@ defmodule SalixWeb.StationLLMTest do
     end
   end
 
-  test "a Task on the Cloud VM that names no model runs the platform model with Codex; Claude is refused",
+  test "a managed Station uses the platform default for Codex and its cloud profile default for Claude",
        %{
          connection: connection
        } do
@@ -209,14 +263,296 @@ defmodule SalixWeb.StationLLMTest do
     assert_received {:invited, %{"runtime" => "codex", "model" => "gpt-6-sol"}}
 
     claude = put_in(invitation, [:start, "runtime"], "claude")
-    assert {:error, {:station_refused, why}} = SalixWeb.StationTasks.invite(claude)
-    assert why =~ "Codex only"
-    refute_received {:invited, _}
+    assert {:ok, "ember:c-1"} = SalixWeb.StationTasks.invite(claude)
+    assert_received {:invited, %{"runtime" => "claude"} = start}
+    refute Map.has_key?(start, "model")
 
     # A model it names is the station's to run.
     named = put_in(invitation, [:start, "model"], "gpt-5.5")
     assert {:ok, _} = SalixWeb.StationTasks.invite(named)
     assert_received {:invited, %{"model" => "gpt-5.5"}}
+  end
+
+  test "a coding sandbox's Task that names no model runs its runtime's default, not the platform model",
+       %{connection: connection} do
+    SystemsRuntime.put_env(:salix_web, :station_tasks, connector: Station)
+    on_exit(fn -> SystemsRuntime.delete_env(:salix_web, :station_tasks) end)
+
+    # Use the real Workload credential and its selected account before inviting it.
+    {workload, _socket, _profiles} = coding_connection(connection)
+    device = workload.spec["device_id"]
+
+    invitation = %{
+      tenant_id: connection.tenant_id,
+      group_id: connection.group_id,
+      device_id: device,
+      conversation_id: workload.spec["conversation_id"],
+      start: %{"requester" => "agt@agents.salix", "runtime" => "codex"}
+    }
+
+    assert {:ok, "ember:c-1"} = SalixWeb.StationTasks.invite(invitation)
+    assert_received {:invited, start}
+    assert start["runtime"] == "codex"
+    refute Map.has_key?(start, "model")
+  end
+
+  test "an old sandbox connection cannot use the next generation's account or platform token", %{
+    connection: connection
+  } do
+    {workload, socket, profiles} = coding_connection(connection)
+    platform = Enum.find(profiles, &(&1["profile"]["runtime"] == "codex"))
+    assert ask(platform["profile"]["key"], %{"input" => []}).status == 200
+    assert_received {:provider, _, _, _}
+    {account, share} = account(connection.tenant_id, "next")
+
+    assert {:ok, _} =
+             SalixStore.CodingSandboxes.update(workload.id, fn w ->
+               {:ok, Map.put(w.spec, "state", "stopped")}
+             end)
+
+    assert {:ok, _} = SalixStore.CodingSandboxes.advance(workload.id, %{"account_id" => account})
+
+    assert %{"type" => "error"} =
+             socket_request(socket, "new-account", "share.get", %{"id" => share})
+
+    assert ask(platform["profile"]["key"], %{"input" => []}).status == 401
+
+    {:ok, device} =
+      Registry.get_device(connection.tenant_id, connection.group_id, workload.spec["device_id"])
+
+    assert {:error, _} =
+             SalixEnv.Connector.Live.request(device["connector_run_id"], "exec", %{
+               "command" => "echo blocked"
+             })
+
+    refute_received {:coding_command, "exec"}
+    refute_received {:provider, _, _, _}
+    current = SalixStore.Repo.get!(SalixStore.Compute.Workload, workload.id)
+
+    {:ok, token} =
+      SalixStore.Compute.WorkloadCredential.issue_connect(current.id, current.generation)
+
+    {:ok, next_socket} = Socket.start(token, self())
+    on_exit(fn -> if Process.alive?(next_socket), do: Process.exit(next_socket, :kill) end)
+    settle_receive({:coding_profiles, next_profiles})
+    assert Enum.any?(next_profiles, &(&1["id"] == share))
+
+    assert %{"type" => "response", "result" => %{"profile" => %{"key" => "sk-next"}}} =
+             socket_request(next_socket, "new-generation", "share.get", %{"id" => share})
+  end
+
+  test "a profile request keeps the account restriction admitted before a concurrent replacement",
+       %{
+         connection: connection
+       } do
+    {workload, socket, _profiles} = coding_connection(connection)
+    {next_account, next_share} = account(connection.tenant_id, "racing")
+    handler = "station-account-snapshot-" <> SystemsRuntime.Proc.uuid()
+
+    :ok =
+      :telemetry.attach(
+        handler,
+        [:salix_store, :repo, :query],
+        &__MODULE__.account_read_barrier/4,
+        {self(), connection.tenant_id}
+      )
+
+    on_exit(fn -> :telemetry.detach(handler) end)
+
+    send(
+      socket,
+      {:send,
+       %{
+         "type" => "request",
+         "id" => "racing-account",
+         "method" => "share.get",
+         "params" => %{"id" => next_share}
+       }}
+    )
+
+    settle_receive({:station_accounts_read, worker})
+
+    assert {:ok, _} =
+             SalixStore.CodingSandboxes.update(
+               workload.id,
+               fn w -> {:ok, Map.put(w.spec, "state", "stopped")} end
+             )
+
+    assert {:ok, _} =
+             SalixStore.CodingSandboxes.advance(workload.id, %{"account_id" => next_account})
+
+    send(worker, :continue_station_accounts)
+    settle_receive({:coding_answer, "racing-account", answer})
+    assert answer["type"] == "error"
+  end
+
+  def account_read_barrier(_event, _measurements, metadata, {parent, tenant}) do
+    if metadata.params == [tenant] and
+         String.contains?(metadata.query, "FROM subscription_accounts") and
+         String.contains?(metadata.query, "LIMIT 50") and
+         Process.get(:station_accounts_barrier) != true do
+      Process.put(:station_accounts_barrier, true)
+      send(parent, {:station_accounts_read, self()})
+
+      receive do
+        :continue_station_accounts -> :ok
+      end
+    end
+  end
+
+  test "terminal sandbox connections receive no platform calls", %{
+    connection: connection
+  } do
+    {workload, socket, profiles} = coding_connection(connection)
+    platform = Enum.find(profiles, &(&1["profile"]["runtime"] == "codex"))
+
+    assert {:ok, _} =
+             SalixStore.CodingSandboxes.update(workload.id, fn w ->
+               {:ok, Map.put(w.spec, "state", "ended")}
+             end)
+
+    assert %{"type" => "error"} = socket_request(socket, "stale-hello", "task.hello", %{})
+    assert ask(platform["profile"]["key"], %{"input" => []}).status == 401
+    refute_received {:provider, _, _, _}
+  end
+
+  test "a sandbox whose Workload disappeared never falls back to all workspace accounts", %{
+    connection: connection
+  } do
+    {workload, socket, _} = coding_connection(connection)
+    {_other_account, share} = account(connection.tenant_id, "unselected")
+    allocation = SalixStore.Repo.get!(SalixStore.Compute.Allocation, workload.allocation_id)
+    SalixStore.Repo.delete!(workload)
+    SalixStore.Repo.delete!(allocation)
+
+    SalixStore.Repo.delete!(
+      SalixStore.Repo.get!(SalixStore.Compute.ProviderBinding, allocation.provider_binding_id)
+    )
+
+    SalixStore.Repo.delete!(SalixStore.CodingSandboxes.environment_of(workload))
+
+    assert %{"type" => "error"} =
+             socket_request(socket, "unselected", "share.get", %{"id" => share})
+  end
+
+  test "a proved Cloudflare connection cannot become unmanaged when its owner disappears", %{
+    connection: connection
+  } do
+    {:ok, record, :created} =
+      SalixStore.Compute.ensure_group_workload(%{
+        "tenant_id" => connection.tenant_id,
+        "group_id" => connection.group_id,
+        "provider" => "cloudflare",
+        "provider_resource_name" => "cf-llm-owner",
+        "env_id" => SalixStore.RuntimeIds.cloud_vm_env_id(connection.group_id),
+        "connector_id" => SalixStore.RuntimeIds.cloud_vm_connector_id(connection.group_id),
+        "provider_spec" => %{"profile_key" => "station.default"},
+        "device_id" => connection.device_id,
+        "status" => "ready"
+      })
+
+    workload = SalixStore.Repo.get!(SalixStore.Compute.Workload, record["workload_id"])
+    on_exit(fn -> delete_workload(workload) end)
+
+    {:ok, token} =
+      SalixStore.Compute.WorkloadCredential.issue_connect(workload.id, workload.generation)
+
+    {:ok, socket} = Socket.start(token, self())
+    on_exit(fn -> if Process.alive?(socket), do: Process.exit(socket, :kill) end)
+    settle_receive({:coding_profiles, [_platform]})
+    {_id, share} = account(connection.tenant_id, "after-owner-deletion")
+    delete_workload(workload)
+
+    assert %{"type" => "error"} =
+             socket_request(socket, "deleted-cf-owner", "share.get", %{"id" => share})
+  end
+
+  defp coding_connection(connection) do
+    {selected, _share} = account(connection.tenant_id, "selected")
+    conversation = "coding-" <> SystemsRuntime.Proc.uuid()
+
+    {:ok, workload} =
+      SalixStore.CodingSandboxes.create(%{
+        tenant_id: connection.tenant_id,
+        group_id: connection.group_id,
+        conversation_id: conversation,
+        workspace: "comma:" <> connection.group_id,
+        repo: %{"owner" => "acme", "name" => "api"},
+        account_id: selected
+      })
+
+    {:ok, workload} =
+      SalixStore.CodingSandboxes.update(workload.id, fn w ->
+        {:ok, Map.merge(w.spec, %{"state" => "ready", "invited" => true})}
+      end)
+
+    on_exit(fn -> delete_workload(workload) end)
+
+    previous = SystemsRuntime.get_env(:salix_web, :coding_github)
+    SystemsRuntime.put_env(:salix_web, :coding_github, GitHub)
+
+    on_exit(fn ->
+      if previous,
+        do: SystemsRuntime.put_env(:salix_web, :coding_github, previous),
+        else: SystemsRuntime.delete_env(:salix_web, :coding_github)
+    end)
+
+    {:ok, token} =
+      SalixStore.Compute.WorkloadCredential.issue_connect(workload.id, workload.generation)
+
+    {:ok, socket} = Socket.start(token, self())
+    on_exit(fn -> if Process.alive?(socket), do: Process.exit(socket, :kill) end)
+    settle_receive({:coding_profiles, profiles})
+    assert Enum.count(profiles, &(&1["profile"]["runtime"] == "claude")) == 1
+    {workload, socket, profiles}
+  end
+
+  defp delete_workload(workload) do
+    repo = SalixStore.Repo
+    repo.query!("DELETE FROM compute_workloads WHERE id=$1", [workload.id])
+
+    repo.query!("DELETE FROM compute_allocations WHERE environment_id=$1", [
+      workload.environment_id
+    ])
+
+    repo.query!("DELETE FROM compute_provider_bindings WHERE environment_id=$1", [
+      workload.environment_id
+    ])
+
+    repo.query!("DELETE FROM compute_environments WHERE id=$1", [workload.environment_id])
+  end
+
+  defp socket_request(socket, id, method, params) do
+    send(
+      socket,
+      {:send, %{"type" => "request", "id" => id, "method" => method, "params" => params}}
+    )
+
+    settle_receive({:coding_answer, ^id, answer})
+    answer
+  end
+
+  defp account(tenant, name) do
+    id = "managed-" <> name <> "-" <> Store.id()
+    {:ok, sealed} = Store.seal(tenant, id, %{"api_key" => "sk-" <> name})
+
+    {:ok, _} =
+      Store.create(tenant, %{
+        "id" => id,
+        "name" => name,
+        "credential" => "api_key",
+        "source" => "anthropic",
+        "disabled" => false,
+        "credentials" => sealed,
+        "endpoint" => "https://api.anthropic.com",
+        "protocol" => "anthropic",
+        "auth" => "api_key"
+      })
+
+    digest =
+      :crypto.hash(:sha256, tenant <> ":" <> id) |> Base.encode32(case: :lower, padding: false)
+
+    {id, "sh-" <> binary_part(digest, 0, 24)}
   end
 
   defp ask(key, body) do

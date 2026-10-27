@@ -129,11 +129,11 @@ test(
   }
 );
 
-// Real AppKit clipboard + original attachment transport + composer uploads.
+// Real AppKit clipboard + original attachment transport + composer attachments by reference.
 // The old menus had no video actions; the assertion compares the copied frame
 // with the paused picture and with a different later picture, not only its MIME.
 test(
-  "media menus upload originals, copy images and video files, freeze frames, and save originals",
+  "media menus attach originals, copy images and video files, freeze frames, and save originals",
   { tag: "@mac" },
   async ({ browserName: _browserName }, testInfo) => {
     test.skip(process.platform !== "darwin", "File clipboard integration uses AppKit.");
@@ -266,10 +266,49 @@ test(
         location.hash = hash;
       }, `/inbox/${chatSmokeWorkspace.id}/${chatSmokeWorkspace.group_id}/${chatSmokeTaskConversation.id}`);
       const menu = page.getByRole("menu");
+      // A Toast stays five seconds of real time, and on a busy runner the checks
+      // after an action can outlast it. Watched from before the action, the
+      // Toast is seen as it appears, or as a Toast of the same id changes.
+      const watchToast = async (testId: string) => {
+        await page.evaluate((id) => {
+          const shown = new Promise<void>((done) => {
+            const selector = `[data-slot="toast-host"] [data-testid="${id}"]`;
+            const observer = new MutationObserver((records) => {
+              const seen = records.some((record) => {
+                const target =
+                  record.target instanceof Element
+                    ? record.target
+                    : record.target.parentElement;
+                if (target?.closest(selector)) return true;
+                return [...record.addedNodes].some(
+                  (node) =>
+                    node instanceof Element &&
+                    (node.matches(selector) || node.querySelector(selector) !== null)
+                );
+              });
+              if (!seen) return;
+              observer.disconnect();
+              done();
+            });
+            observer.observe(document.body, {
+              attributes: true,
+              characterData: true,
+              childList: true,
+              subtree: true,
+            });
+          });
+          Object.assign(window, { commaToastShown: shown });
+        }, testId);
+        return () =>
+          page.evaluate(
+            () =>
+              (window as unknown as { commaToastShown: Promise<void> }).commaToastShown
+          );
+      };
       const waitForCopiedImage = async () => {
         await expect
-          .poll(() => app.evaluate(({ clipboard }) => clipboard.readImage().isEmpty()))
-          .toBe(false);
+          .poll(() => app.evaluate(({ clipboard }) => clipboard.has("image/png")))
+          .toBe(true);
       };
       const act = async (media: Locator, action: string) => {
         if (action === "Copy" || action === "Copy image") {
@@ -283,24 +322,21 @@ test(
         if (action === "Copy image") await waitForCopiedImage();
         if (action === "Copy") {
           await expect
-            .poll(() =>
-              app.evaluate(
-                ({ clipboard }) => clipboard.readBuffer("public.file-url").length
-              )
-            )
-            .toBeGreaterThan(0);
+            .poll(() => app.evaluate(({ clipboard }) => clipboard.has("text/uri-list")))
+            .toBe(true);
         }
         await hold();
       };
+      // The server stored the message's image by reference; the composer shows the stored file, the original.
       const assertAttachment = async (index: number) => {
         const name = `image-${index}.png`;
-        await expect
-          .poll(() => stub.uploads.find((f) => f.filename === name)?.bytes)
-          .toEqual(images[index]);
         const thumbnail = page
           .getByTestId("image-attachment")
           .getByRole("img", { name, exact: true });
         await expect(thumbnail).toHaveAttribute("src", /^blob:/);
+        expect(stub.storedAttachments).toContainEqual(
+          expect.objectContaining({ messageId: "msg_images", index })
+        );
         const matchesOriginal = await thumbnail.evaluate(async (element, base64) => {
           const actual = element as HTMLImageElement;
           const original = new Image();
@@ -336,26 +372,22 @@ test(
         .getByRole("img", { name: "image-0.png" })
         .evaluate((image) => (image as HTMLImageElement).decode());
       await act(group.getByRole("img", { name: "image-0.png" }), "Add to Context");
-      await expect
-        .poll(() => stub.uploads.map((f) => f.filename))
-        .toContain("image-0.png");
       await assertAttachment(0);
       await act(group.getByRole("img", { name: "image-1.png" }), "Add to Context");
       await assertAttachment(1);
+      const imageCopied = await watchToast("image-copy");
       await act(group.getByRole("img", { name: "image-1.png" }), "Copy image");
-      await expect(page.getByTestId("image-copy")).toBeVisible();
-      expect(
-        await app.evaluate(({ clipboard }) => clipboard.readImage().isEmpty())
-      ).toBe(false);
+      await imageCopied();
+      expect(await app.evaluate(({ clipboard }) => clipboard.has("image/png"))).toBe(
+        true
+      );
       await group.getByRole("img", { name: "image-2.png" }).click();
       const dialog = page.getByRole("dialog");
       await act(dialog.getByRole("img", { name: "image-2.png" }), "Add to Context");
-      await expect
-        .poll(() => stub.uploads.map((f) => f.filename))
-        .toContain("image-2.png");
+      // The full window closes once the file it added shows in the composer, as a reader would.
+      await assertAttachment(2);
       await page.keyboard.press("Escape");
       await expect(dialog).toBeHidden();
-      await assertAttachment(2);
       await act(group.getByRole("img", { name: "image-3.png" }), "Save image");
       // The save makes the file, then writes it: until then there is no
       // file, or a part of one.
@@ -363,7 +395,7 @@ test(
         .poll(() => readFile(join(downloads, "image-3.png")).catch(() => null))
         .toEqual(images[3]);
 
-      for (const file of files) {
+      for (const [position, file] of files.entries()) {
         const isVideo = file.contentType.startsWith("video/");
         const inline =
           file.contentType === "video/mp4" || file.contentType === "video/webm";
@@ -425,17 +457,23 @@ test(
         await expect(menu.getByRole("separator")).toHaveCount(1);
         await hold();
         await menu.getByRole("menuitem", { name: "Add to Context" }).click();
-        await expect
-          .poll(() => stub.uploads.map((f) => f.filename))
-          .toContain(file.name);
         await expect(menu).toBeHidden();
-        expect(
-          stub.uploads.find((upload) => upload.filename === file.name)?.bytes
-        ).toEqual(file.bytes);
+        // The message's file goes by reference: the server stores the same blob, and nothing is uploaded. The
+        // composer's row leaves Uploading once the server answered.
+        const row = page
+          .locator('[data-slot="file-attachment"]')
+          .filter({ hasText: file.name });
+        await expect(row).toBeVisible();
+        await expect(row).not.toContainText(/Uploading|Upload failed/);
+        expect(stub.storedAttachments).toContainEqual(
+          expect.objectContaining({ messageId: `msg_media_${position}`, index: 0 })
+        );
+        expect(stub.uploads).toEqual([]);
         if (isVideo) {
+          // A streamed player (`preload="metadata"`) has its metadata; the rest may wait until it plays.
           await expect
             .poll(() => media.evaluate((v) => (v as HTMLVideoElement).readyState))
-            .toBeGreaterThanOrEqual(2);
+            .toBeGreaterThan(0);
           await panel.getByRole("button", { name: "Play video", exact: true }).click();
           await expect
             .poll(() => media.evaluate((v) => (v as HTMLVideoElement).currentTime))
@@ -455,14 +493,17 @@ test(
           expect(await media.evaluate(picture)).not.toBe(paused);
           // A previous Toast can still be visible. Observe this clipboard write.
           await app.evaluate(({ clipboard }) => clipboard.clear());
+          const frameCopied = await watchToast("video-frame-copy");
           await menu
             .getByRole("menuitem", { name: "Copy Current Frame", exact: true })
             .click();
           await waitForCopiedImage();
-          await expect(page.getByTestId("video-frame-copy")).toBeVisible();
-          const copied = await app.evaluate(({ clipboard }) =>
-            clipboard.readImage().toDataURL()
-          );
+          await frameCopied();
+          const copied = await app.evaluate(async ({ clipboard }) => {
+            const [item] = await clipboard.read();
+            const image = await item!.getType("image/png");
+            return `data:image/png;base64,${Buffer.from(await image.arrayBuffer()).toString("base64")}`;
+          });
           const samePixels = await page.evaluate(
             async ([a, b]) => {
               // oxlint-disable-next-line unicorn/consistent-function-scoping -- Runs inside the browser evaluation context.
@@ -486,22 +527,34 @@ test(
           expect(samePixels).toBe(true);
           await expect(menu).toBeHidden();
           await hold();
+          const fileCopied = await watchToast("video-file-copy");
           await act(media, "Copy");
-          await expect(page.getByTestId("video-file-copy")).toBeVisible();
-          const fileURL = await app.evaluate(({ clipboard }) =>
-            clipboard.readBuffer("public.file-url").toString()
-          );
+          await fileCopied();
+          const fileURL = await app.evaluate(async ({ clipboard }) => {
+            const [item] = await clipboard.read();
+            // An RFC 2483 list: one file URL here.
+            const list = await item!.getType("text/uri-list");
+            return (await list.text()).trim();
+          });
           expect(await readFile(fileURLToPath(fileURL))).toEqual(file.bytes);
         } else {
+          const copiedImage = await watchToast("image-copy");
           await act(media, "Copy image");
-          await expect(page.getByTestId("image-copy")).toBeVisible();
+          await copiedImage();
           expect(
-            await app.evaluate(({ clipboard }) => clipboard.readImage().getSize())
+            await app.evaluate(async ({ clipboard, nativeImage }) => {
+              const [item] = await clipboard.read();
+              const image = await item!.getType("image/png");
+              return nativeImage
+                .createFromBuffer(Buffer.from(await image.arrayBuffer()))
+                .getSize();
+            })
           ).toEqual({ width: 320, height: 180 });
         }
         const before = await readdir(downloads);
+        const downloaded = await watchToast("file-download");
         await act(media, isVideo ? "Save" : "Save image");
-        await expect(page.getByTestId("file-download")).toBeVisible();
+        await downloaded();
         // The one new file, once it has its whole content.
         await expect
           .poll(async () => {

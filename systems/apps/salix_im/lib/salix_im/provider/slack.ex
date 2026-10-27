@@ -7,12 +7,14 @@ defmodule SalixIM.Provider.Slack do
     Diagnostics,
     MessageRenderer,
     ProviderConnects,
+    QuestionCard,
     SlackRouterStatus,
     SlackTaskCard
   }
 
   alias SalixIM.MessageRenderer.{Input, Surface}
   alias SalixIM.Provider.Slack.{API, ConversationIngress, MessageRead}
+  alias SalixIM.Provider.Slack.QuestionCard, as: SlackQuestionCard
   alias SalixIM.Provider.Slack.MessageRenderer, as: SlackMessageRenderer
   alias SalixStore.SlackRouterThreadParticipations
 
@@ -233,6 +235,7 @@ defmodule SalixIM.Provider.Slack do
              params["blocks"],
              block_policy
            ),
+         {:ok, rendered} <- with_question(rendered, action, params["question"]),
          {:ok, token} <- slack_token(tenant, connect),
          method = if(action == :post, do: "chat.postMessage", else: "chat.update"),
          body = %{
@@ -267,6 +270,30 @@ defmodule SalixIM.Provider.Slack do
     end
   end
 
+  # A question (`SalixIM.QuestionCard`) adds the runtime's own interactive
+  # blocks under the message's blocks, after they passed the block policy.
+  defp with_question(rendered, _action, nil), do: {:ok, rendered}
+
+  defp with_question(rendered, :post, question) do
+    with {:ok, question} <- QuestionCard.normalize(question) do
+      blocks =
+        case rendered.blocks do
+          blocks when is_list(blocks) -> blocks
+          _none -> [%{"type" => "markdown", "text" => rendered.text}]
+        end
+
+      blocks = blocks ++ SlackQuestionCard.blocks(question)
+
+      case SlackMessageRenderer.validate_block_limit(blocks) do
+        :ok -> {:ok, %{rendered | blocks: blocks}}
+        {:error, _reason} -> {:error, "Slack messages cannot contain more than 50 blocks"}
+      end
+    end
+  end
+
+  defp with_question(_rendered, :update, _question),
+    do: {:error, "question is taken only when a message is posted"}
+
   @doc """
   Post one runtime-owned interactive message into a person's own direct
   conversation with the bot.
@@ -296,6 +323,24 @@ defmodule SalixIM.Provider.Slack do
   end
 
   @doc """
+  Post a runtime-owned product message into one channel. Like
+  `post_direct_surface/5`, it takes rendered blocks, not model calls: the
+  daily brief posts the team brief this way, to a channel its caller checked.
+  """
+  @spec post_channel_surface(term(), map(), String.t(), String.t(), [map()]) ::
+          {:ok, map()} | {:error, term()}
+  def post_channel_surface(tenant, connect, channel_id, text, blocks)
+      when is_binary(channel_id) and is_binary(text) and is_list(blocks) do
+    write_slack_message(
+      tenant,
+      connect,
+      :post,
+      %{"channel" => channel_id, "text" => text, "blocks" => blocks, "render_mode" => "blocks"},
+      block_policy: :trusted_product
+    )
+  end
+
+  @doc """
   Replace a runtime-owned interactive message with its settled form, so a
   decision cannot be taken twice from a card left sitting in a conversation.
   """
@@ -316,6 +361,23 @@ defmodule SalixIM.Provider.Slack do
       },
       block_policy: :trusted_product
     )
+  end
+
+  @doc """
+  Tell one person something only they see, under a runtime-owned message:
+  why their press of a question card was not taken.
+  """
+  @spec post_ephemeral(term(), map(), String.t(), String.t(), String.t(), String.t()) ::
+          {:ok, map()} | {:error, term()}
+  def post_ephemeral(tenant, connect, channel, user_id, thread_ts, text) do
+    with {:ok, token} <- slack_token(tenant, connect) do
+      slack_request(token, "chat.postEphemeral", %{
+        "channel" => channel,
+        "user" => user_id,
+        "thread_ts" => presence(thread_ts),
+        "text" => text
+      })
+    end
   end
 
   @doc false

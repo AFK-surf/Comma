@@ -26,6 +26,11 @@ function card(name: string) {
   return cards[0]!;
 }
 
+/** The state its agent row shows on the card of `name`. */
+function agentStatus(name: string) {
+  return card(name).querySelector(".comma-device__agent-status");
+}
+
 /** The one button in `scope` whose text is `label`. */
 function buttonIn(scope: HTMLElement, label: string) {
   const buttons = [...scope.querySelectorAll("button")].filter(
@@ -115,9 +120,10 @@ it("checks expired devices once per visit, two at a time, and retries on request
   await t.open("Devices");
   expect(t.visits).toEqual(["1"]);
 
-  expect(buttonIn(card("Expired A"), "Checking…")).toBeDisabled();
-  expect(buttonIn(card("Offline"), "Check again")).toBeDisabled();
-  expect(buttonIn(card("Read only"), "Check again")).toBeDisabled();
+  // A running check shows itself; a computer with nothing to check offers no check.
+  expect(card("Expired A")).toHaveTextContent("Checking…");
+  expect(card("Offline").querySelector("button")?.textContent).not.toBe("Check again");
+  expect(card("Read only")).not.toHaveTextContent("Check again");
 
   // B and C pass, A fails.
   const passed = (index: number) =>
@@ -135,7 +141,7 @@ it("checks expired devices once per visit, two at a time, and retries on request
   expect(within(card("Expired A")).getByRole("alert")).toHaveTextContent(
     "Could not check agents"
   );
-  expect(card("Expired A").querySelector("summary")).toHaveTextContent("Check expired");
+  expect(agentStatus("Expired A")).toHaveTextContent("Check expired");
 
   // Coming back to the window asks the core to read again; the page checks nothing itself.
   act(() => window.dispatchEvent(new Event("focus")));
@@ -149,7 +155,8 @@ it("checks expired devices once per visit, two at a time, and retries on request
   t.say({ checks: { dev_probe_0: "pending" } });
   t.say({ devices: passed(0), checks: {} });
   await flush();
-  expect(card("Expired A").querySelector("summary")).toHaveTextContent("Check passed");
+  // A passed check leaves nothing to say about the agent.
+  expect(agentStatus("Expired A")).toBeNull();
   expect(within(card("Expired A")).queryByRole("alert")).toBeNull();
 
   // Its readiness runs out: the core shows it stale again.
@@ -161,7 +168,7 @@ it("checks expired devices once per visit, two at a time, and retries on request
       ),
   });
   await flush();
-  expect(card("Expired A").querySelector("summary")).toHaveTextContent("Check expired");
+  expect(agentStatus("Expired A")).toHaveTextContent("Check expired");
   expect(t.core.sentTo("devices.check")).toHaveLength(1);
 
   // A new visit: the page asks the core for it, and the core checks again.
@@ -171,7 +178,7 @@ it("checks expired devices once per visit, two at a time, and retries on request
   t.say({ checks: { dev_probe_0: "pending" } });
   t.say({ devices: passed(0), checks: {} });
   await flush();
-  expect(card("Expired A").querySelector("summary")).toHaveTextContent("Check passed");
+  expect(agentStatus("Expired A")).toBeNull();
 });
 
 it("lands a page asked for while a runtime check runs, without undoing the check", async () => {
@@ -190,7 +197,7 @@ it("lands a page asked for while a runtime check runs, without undoing the check
       checks: { dev_probe_0: "pending" },
     });
     await t.open("Devices");
-    expect(buttonIn(card("Checking computer"), "Checking…")).toBeDisabled();
+    expect(card("Checking computer")).toHaveTextContent("Checking…");
     // Settings opens in a dialog portal, outside the render container.
     const end = document.querySelector('[data-slot="scroll-area-load-more"]');
     expect(end).not.toBeNull();
@@ -202,9 +209,7 @@ it("lands a page asked for while a runtime check runs, without undoing the check
     act(() => intersections.hide(end!));
     t.say({ devices: [computer(0, "Checking computer", true), ...filler], checks: {} });
     await flush();
-    expect(card("Checking computer").querySelector("summary")).toHaveTextContent(
-      "Check passed"
-    );
+    expect(agentStatus("Checking computer")).toBeNull();
     t.say({
       devices: [
         ...t.value().devices,
@@ -216,9 +221,7 @@ it("lands a page asked for while a runtime check runs, without undoing the check
     expect(card("Next page computer").querySelector("h3")).toHaveTextContent(
       "Next page computer"
     );
-    expect(card("Checking computer").querySelector("summary")).toHaveTextContent(
-      "Check passed"
-    );
+    expect(agentStatus("Checking computer")).toBeNull();
     // The next page carries other computers only: the check stands, and the reader never scrolled again.
     expect(t.core.sentTo("devices.more")).toEqual([{}]);
   } finally {
@@ -249,7 +252,23 @@ it("names a runtime's sign-in when the station reports no login mode", async () 
     ],
   });
   await t.open("Devices");
-  const runtimes = card("Signed in computer").querySelectorAll("details");
-  expect(runtimes[0]).toHaveTextContent("Authentication: Signed in");
-  expect(runtimes[1]).toHaveTextContent("Authentication: ChatGPT");
+  // Sign-in details are in the computer's details, opened from its menu.
+  fireEvent.click(
+    card("Signed in computer").querySelector(
+      'button[aria-label="More actions for Signed in computer"]'
+    )!
+  );
+  await flush();
+  const details = [...document.querySelectorAll('[role="menuitem"]')].find(
+    (entry) => entry.textContent === "Details"
+  );
+  fireEvent.click(details!);
+  await flush();
+  const groups = [...document.querySelectorAll(".comma-device-details__group")];
+  const group = (name: string) =>
+    groups.find((entry) =>
+      entry.querySelector(".comma-device-details__head")?.textContent?.startsWith(name)
+    );
+  expect(group("Claude Code")).toHaveTextContent("AuthenticationSigned in");
+  expect(group("Codex")).toHaveTextContent("AuthenticationChatGPT");
 });

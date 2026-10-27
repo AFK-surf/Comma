@@ -1,16 +1,14 @@
-import { Fragment, useContext, useEffect, useRef, useState } from "react";
+import { useContext, useEffect, useRef, useState } from "react";
 import { getNativeBridge, type ComputeRecoveryCandidates } from "@comma/native-bridge";
 import { useCommaMessages } from "@comma/i18n/react";
 import { CommaAuthContext } from "./auth-context";
 import { computeOperationMessage } from "./useComputeNode";
-import { Dialog } from "@comma/ui/components/dialog";
 
 /** Manual bounded recovery discovery. A candidate key is valid only in Main's current Session. */
 export function useComputeRecoverySection(
   workspaceId: string | undefined,
   confirmationId: string | undefined,
-  onRecovered: () => void,
-  workspaceName?: string
+  onRecovered: () => void
 ) {
   const m = useCommaMessages(),
     bridge = getNativeBridge();
@@ -47,81 +45,41 @@ export function useComputeRecoverySection(
       if (epoch.current === current) setPending(false);
     }
   };
-  const overlay =
-    selection && page ? (
-      <Dialog
-        isOpen
-        isDismissable
-        title={m.compute_recovery_title()}
-        description={m.compute_recovery_explanation()}
-        onOpenChange={(open) => {
-          if (!open) setSelection(undefined);
-        }}
-        actions={[
-          {
-            label: m.settings_profile_cancel(),
-            hierarchy: "secondary-gray",
-            onPress: () => setSelection(undefined),
-          },
-          {
-            label: m.compute_recovery_title(),
-            hierarchy: "primary",
-            disabled: pending,
-            onPress: () => {
-              const current = epoch.current,
-                key = selection,
-                token = page.confirmationId;
-              setSelection(undefined);
-              setPending(true);
-              setError(undefined);
-              void bridge.computeNode
-                .recover({ key, confirmationId: token })
-                .then(() => {
-                  if (epoch.current === current) {
-                    setPage(undefined);
-                    onRecovered();
-                  }
-                })
-                .catch((reason: unknown) => {
-                  if (epoch.current === current)
-                    setError(computeOperationMessage(reason, m));
-                })
-                .finally(() => {
-                  if (epoch.current === current) setPending(false);
-                });
-            },
-          },
-        ]}
-      >
-        <dl className="compute-recovery-facts">
-          <div>
-            <dt>{m.compute_ui_account()}</dt>
-            <dd>{auth?.userEmail ?? m.compute_ui_account_unknown()}</dd>
-          </div>
-          {page.candidates
-            .filter((row) => row.key === selection)
-            .map((row) => (
-              <Fragment key={row.key}>
-                <div>
-                  <dt>{m.compute_ui_device()}</dt>
-                  <dd>{row.machine ?? row.label}</dd>
-                </div>
-                <div>
-                  <dt>{m.compute_ui_workspace()}</dt>
-                  <dd>
-                    {row.workspaceId === workspaceId
-                      ? (workspaceName ?? row.workspaceId)
-                      : row.workspaceId}
-                  </dd>
-                </div>
-                <div>
-                  <dt>{m.compute_ui_service()}</dt>
-                  <dd>{row.endpoint ?? m.compute_activity_unknown()}</dd>
-                </div>
-              </Fragment>
-            ))}
-        </dl>
-      </Dialog>
-    ) : undefined;
-  return { page, pending, error, select: setSelection, overlay, discover };
+  const selected = selection
+    ? page?.candidates.find((row) => row.key === selection)
+    : undefined;
+  /** Recovers the selected candidate. The page shows its facts first, so the press is the confirmation. */
+  const confirm = () => {
+    if (!selected || !page || pending) return;
+    const current = epoch.current,
+      token = page.confirmationId;
+    setSelection(undefined);
+    setPending(true);
+    setError(undefined);
+    void bridge.computeNode
+      .recover({ key: selected.key, confirmationId: token })
+      .then(() => {
+        if (epoch.current === current) {
+          setPage(undefined);
+          onRecovered();
+        }
+      })
+      .catch((reason: unknown) => {
+        if (epoch.current === current) setError(computeOperationMessage(reason, m));
+      })
+      .finally(() => {
+        if (epoch.current === current) setPending(false);
+      });
+  };
+  return {
+    page,
+    pending,
+    error,
+    account: auth?.userEmail,
+    selected,
+    select: setSelection,
+    cancel: () => setSelection(undefined),
+    confirm,
+    discover,
+  };
 }

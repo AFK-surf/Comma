@@ -262,28 +262,74 @@ export const aiInputVoiceRecordingControl =
   "inline-flex size-[30px] shrink-0 items-center justify-center rounded-full bg-transparent text-ai-input-panel-icon-primary outline-none transition-colors hover:bg-quaternary focus-visible:shadow-focus-gray";
 
 /**
- * Quote reference chip — Figma 8024:3735. Same 48px footprint as an image
- * attachment so a mixed row keeps one baseline, and the same fill and glyph
- * tone as the file attachment's icon surface, since both stand in for content
- * rather than showing it.
+ * Every staged tile — image, quote, file and snippet — stands 80px tall so a
+ * mixed row keeps one baseline. The content tiles share the file chip's
+ * popup fill and inset hairline (an inset ring rather than a border, which
+ * would take layout and push the inset close control off the tile edge).
  */
-export const aiInputQuoteAttachment =
-  "flex size-12 items-center justify-center overflow-clip rounded-xl bg-panel-bg-file text-ai-input-header-text-secondary outline-none focus-visible:shadow-focus-gray";
+const aiInputAttachmentCard =
+  "h-20 rounded-xl bg-popup-primary shadow-[inset_0_0_0_var(--border-width-0-5)_var(--color-border-primary)]";
 
 /**
- * A block of text staged for the next message, such as a Routine row. It is the
- * file chip's footprint widened for a title and the "Show in text field"
- * control, so a mixed row keeps one 48px height.
+ * Text on a tile's first line clears the inset close control: its 16px box
+ * plus the 2px inset, and spacing-xxs before the text.
  */
-export const aiInputSnippetAttachment =
-  "flex w-60 items-start gap-sm rounded-xl bg-popup-primary p-sm shadow-[inset_0_0_0_var(--border-width-0-5)_var(--color-border-primary)]";
+const aiInputAttachmentCloseClearance =
+  "pr-[calc(var(--spacing-xl)+var(--spacing-xs))]";
+
+const aiInputQuoteCard =
+  "flex rounded-xl bg-popup-primary text-left shadow-[inset_0_0_0_var(--border-width-0-5)_var(--color-border-primary)] outline-none focus-visible:shadow-focus-gray";
+
+/**
+ * A quoted passage staged for the next message. It shows the start of the
+ * passage behind a quote bar, as Claude and ChatGPT do, so the reader sees
+ * what they picked without hovering; the hover card carries the whole passage.
+ */
+export const aiInputQuoteAttachment = `${aiInputQuoteCard} h-20 w-40 items-start py-lg pl-lg ${aiInputAttachmentCloseClearance}`;
+
+/**
+ * The same passage on the sent message. It has no close control and no row to
+ * line up with, so it takes even padding and only the height its text needs.
+ */
+export const aiInputMessageQuote = `${aiInputQuoteCard} max-w-60 p-lg`;
+
+/**
+ * Up to three lines behind a bar as tall as the text; pre-wrap keeps the
+ * selection's line breaks.
+ */
+export const aiInputQuoteExcerpt =
+  "m-0 line-clamp-3 min-w-0 flex-1 whitespace-pre-wrap border-l-2 border-primary pl-md text-xs leading-[18px] text-ai-input-panel-text-attachment-secondary [overflow-wrap:anywhere]";
+
+/**
+ * A staged file: its name across the top, wrapping to two lines, and the type
+ * glyph with its meta (the extension) along the bottom.
+ */
+export const aiInputFileAttachment = `${aiInputAttachmentCard} flex w-40 flex-col justify-between p-md`;
+
+export const aiInputFileName = `line-clamp-2 ${aiInputAttachmentCloseClearance} text-xs leading-[18px] text-ai-input-panel-text-attachment-primary [overflow-wrap:anywhere]`;
+
+export const aiInputFileFooter = "flex min-w-0 items-center gap-sm";
+
+export const aiInputFileIconSurface =
+  "flex size-6 shrink-0 items-center justify-center rounded-sm bg-panel-bg-file text-ai-input-header-text-secondary [&>img]:size-4 [&>svg]:size-4";
+
+export const aiInputFileMeta =
+  "truncate text-xs leading-[18px] text-ai-input-panel-text-attachment-secondary";
+
+/**
+ * A block of text staged for the next message in place of the prompt, such as
+ * a Routine row: the file chip's layout widened for a title and the "Show in
+ * text field" control.
+ */
+export const aiInputSnippetAttachment = `${aiInputAttachmentCard} flex w-60 flex-col justify-between p-md`;
 
 /** The file chip's icon surface; a brand mark sits on it at glyph size. */
-export const aiInputSnippetIconSurface =
-  "flex w-9 shrink-0 items-center justify-center self-stretch rounded-sm bg-panel-bg-file text-ai-input-header-text-secondary [&>img]:size-5 [&>svg]:size-5";
+export const aiInputSnippetIconSurface = aiInputFileIconSurface;
+
+export const aiInputSnippetTitle = aiInputFileName;
 
 export const aiInputSnippetExpand =
-  "inline-flex max-w-full items-center gap-xxs self-start rounded-xs text-ai-input-panel-text-attachment-secondary outline-none hover:text-ai-input-panel-text-attachment-primary focus-visible:shadow-focus-gray";
+  "inline-flex min-w-0 items-center gap-xxs rounded-xs text-xs leading-[18px] text-ai-input-panel-text-attachment-secondary outline-none hover:text-ai-input-panel-text-attachment-primary focus-visible:shadow-focus-gray";
 
 /** Quote hover detail — the routine-item hover card's tighter padding. */
 export const aiInputQuoteHoverCard = "px-md py-sm";
@@ -299,11 +345,11 @@ export const aiInputQuotePreviewText =
 
 /**
  * Image attachment states — Figma 8031:2385 (loading) and 8031:2391 (error).
- * Both share the 48px footprint of a ready thumbnail so the row never reflows
+ * Both share the 80px footprint of a ready thumbnail so the row never reflows
  * as an upload settles.
  */
 export const aiInputImageAttachmentTile =
-  "flex size-12 items-center justify-center overflow-clip rounded-xl";
+  "flex size-20 items-center justify-center overflow-clip rounded-xl";
 
 /** A settled thumbnail keeps the attachment fill and hairline it always had. */
 export const aiInputImageAttachmentReady = `${aiInputImageAttachmentTile} border-[0.5px] border-primary bg-ai-input-panel-bg-attachment`;

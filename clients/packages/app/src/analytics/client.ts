@@ -4,6 +4,7 @@ import { uiClock } from "@comma/ui/clock";
 import { getActiveCommaConfig } from "@comma/config";
 import type { SessionLifecycleSnapshot } from "@comma/session-contract";
 import type { NativeInfo } from "@comma/native-bridge";
+import type { CoreFailure } from "@comma/core-client";
 import type { SessionLifecycleProjectionSource } from "../session/react";
 
 declare const COMMA_DEFINED_APP_VERSION: string | undefined;
@@ -79,6 +80,7 @@ const propertyNames = new Set([
   "build_sha",
   "state",
   "error_kind",
+  "error_detail",
   "severity",
   "login_error_code",
   "source_message_id",
@@ -97,6 +99,7 @@ export function sanitizeCommaAnalyticsEvent(event: CaptureResult | null) {
   }
   if (!loginFailureCodes.has(properties.login_error_code))
     delete properties.login_error_code;
+  if (!errorDetails.has(properties.error_detail)) delete properties.error_detail;
   if (event.event === "$pageview") {
     // A stable product route, never a filesystem URL or a URL with OAuth handles.
     properties.$current_url = `comma://client${properties.route}`;
@@ -124,6 +127,8 @@ export function sanitizeCommaAnalyticsEvent(event: CaptureResult | null) {
       ...(properties.error_kind === "login_unavailable"
         ? [properties.login_error_code]
         : []),
+      // Errors without a stack of their own (non-Error values, a failed core channel) group by what failed.
+      ...(properties.error_detail ? [properties.error_detail] : []),
     ]);
   }
   // Only canonical opaque Message IDs may correlate visible replies with server facts.
@@ -342,7 +347,7 @@ export function startCommaAnalytics({
   updateSession(lifecycle.getSnapshotSync());
   window.addEventListener("hashchange", capturePage);
   const onError = (event: ErrorEvent) =>
-    reportCommaClientError(event.error, "unhandled_error");
+    reportCommaClientError(event.error, "unhandled_error", errorEventDetail(event));
   const onRejection = (event: PromiseRejectionEvent) =>
     reportCommaClientError(event.reason, "unhandled_rejection");
   window.addEventListener("error", onError);
@@ -396,7 +401,11 @@ function safely(action: () => unknown) {
 
 let uiCommitted = false;
 let reportedErrors = new WeakMap<Error, ClientErrorKind>();
-let errorReportCounts: Partial<Record<ClientErrorKind, number>> = {};
+// ResizeObserver loop errors are harmless and can repeat every frame: they get a budget of their own, so a page that
+// keeps raising them still leaves room to report the real unhandled errors.
+let errorReportCounts: Partial<
+  Record<ClientErrorKind | "resize_observer_loop", number>
+> = {};
 
 export function markCommaClientReady() {
   uiCommitted = true;
@@ -432,6 +441,51 @@ type ClientErrorKind =
   | "login_unavailable"
   /** The client core reported an error in its own work, or its channel failed. */
   | "core_fault";
+
+// What is known about an error without its text: the type of a non-Error value that was thrown or rejected, what the
+// browser said about an error event that carries no error, or why the core's channel failed (a CoreFailed error).
+const nonErrorDetails = [
+  "resize_observer_loop",
+  "cross_origin_script",
+  "non_error_undefined",
+  "non_error_null",
+  "non_error_string",
+  "non_error_number",
+  "non_error_boolean",
+  "non_error_event",
+  "non_error_object",
+  "non_error_other",
+] as const;
+const coreFailures = [
+  "worker_load",
+  "worker_exception",
+  "process_exit",
+  "core_fatal",
+  "channel_open",
+  "channel",
+] as const satisfies readonly CoreFailure[];
+type ErrorDetail = (typeof nonErrorDetails)[number];
+const errorDetails = new Set<unknown>([...nonErrorDetails, ...coreFailures]);
+
+/** Classifies an error event that carries no Error by what the browser says of it; the text itself is never sent. */
+function errorEventDetail(event: ErrorEvent): ErrorDetail | undefined {
+  if (event.error instanceof Error) return undefined;
+  if (event.message.startsWith("ResizeObserver loop ")) return "resize_observer_loop";
+  // The browser hides all of an error from a script of another origin loaded without CORS.
+  if (/^Script error\.?$/.test(event.message)) return "cross_origin_script";
+  return undefined;
+}
+
+function nonErrorDetail(value: unknown): ErrorDetail {
+  if (value === undefined) return "non_error_undefined";
+  if (value === null) return "non_error_null";
+  if (typeof value === "string") return "non_error_string";
+  if (typeof value === "number") return "non_error_number";
+  if (typeof value === "boolean") return "non_error_boolean";
+  if (value instanceof Event) return "non_error_event";
+  if (typeof value === "object") return "non_error_object";
+  return "non_error_other";
+}
 
 const loginFailureCodes = new Set([
   "network_unavailable",
@@ -501,13 +555,14 @@ function sanitizeExceptionList(value: unknown): SanitizedException[] {
       )
         .slice(-30)
         .map((frame: Record<string, unknown>) => {
-          // Preserve generated bundle coordinates, never filesystem paths, URL queries or function text.
-          const basename =
+          // Preserve generated bundle coordinates, never filesystem paths, URL queries or function text. Every
+          // bundle, its chunks and the core's worker are served from an `assets/` directory, on the web and in Electron.
+          const [directory, basename] =
             typeof frame?.filename === "string"
-              ? frame.filename.split(/[?#]/, 1)[0]?.split("/").at(-1)
-              : undefined;
+              ? (frame.filename.split(/[?#]/, 1)[0]?.split("/").slice(-2) ?? [])
+              : [];
           const filename =
-            basename && /^(?:index|main|renderer)[A-Za-z0-9_-]*\.js$/.test(basename)
+            directory === "assets" && basename && /^[A-Za-z0-9_.-]+\.js$/.test(basename)
               ? `comma://assets/${basename}`
               : "redacted";
           return {
@@ -532,20 +587,37 @@ function boundedCoordinate(value: unknown) {
     : undefined;
 }
 
-export function reportCommaClientError(error: unknown, kind: ClientErrorKind) {
+export function reportCommaClientError(
+  error: unknown,
+  kind: ClientErrorKind,
+  detail?: ErrorDetail
+) {
   const analytics = active;
-  if (!analytics || (errorReportCounts[kind] ?? 0) >= 20) return;
+  const budget = detail === "resize_observer_loop" ? detail : kind;
+  if (!analytics || (errorReportCounts[budget] ?? 0) >= 20) return;
   safely(() => {
     if (error instanceof DOMException && error.name === "AbortError") return;
-    const exception = error instanceof Error ? error : new Error("Non-Error rejection");
+    // A stand-in for a non-Error value has no stack: its own would locate this reporter, not the failure.
+    const exception =
+      error instanceof Error
+        ? error
+        : Object.assign(new Error("Non-Error value"), { stack: "" });
+    const errorDetail =
+      detail ??
+      (error instanceof Error
+        ? error.name === "CoreFailed"
+          ? (error as { failure?: unknown }).failure
+          : undefined
+        : nonErrorDetail(error));
     const previousKind = reportedErrors.get(exception);
     if (previousKind && (kind !== "react_uncaught" || previousKind === kind)) return;
     reportedErrors.set(exception, kind);
-    errorReportCounts[kind] = (errorReportCounts[kind] ?? 0) + 1;
+    errorReportCounts[budget] = (errorReportCounts[budget] ?? 0) + 1;
     analytics.prepareError();
     analytics.client.captureException(exception, {
       error_kind: kind,
       severity: kind === "react_uncaught" ? "critical" : "error",
+      ...(errorDetails.has(errorDetail) ? { error_detail: errorDetail } : {}),
     });
   });
 }

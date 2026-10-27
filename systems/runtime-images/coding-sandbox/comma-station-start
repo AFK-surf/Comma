@@ -1,0 +1,17 @@
+#!/bin/sh
+# Starts the station of a coding sandbox as the login user (comma). L4ES put the
+# sandbox's secrets in /run/sbx/secrets (a tmpfs, this user's alone) and its
+# variables in /etc/sbx/env: SALIX_SERVER and the git identity. The station
+# connects out to Salix with the Workload connect credential; git and gh use
+# the sandbox's L4ES GitHub proxy token (systems/station/src/tasks/coding.ts).
+# Salix places it in no workspace: SALIX_CONNECTOR_JOIN=1 puts it in its
+# Task's workspace while its connection runs, so its Session takes turns.
+set -eu
+secrets=/run/sbx/secrets
+data="$HOME/.comma/station"
+mkdir -p "$data" "$HOME/.tmp"
+SALIX_WORKLOAD_CREDENTIAL=$(cat "$secrets/SALIX_WORKLOAD_CREDENTIAL")
+export SALIX_WORKLOAD_CREDENTIAL TMPDIR="$HOME/.tmp"
+exec env SALIX_CONNECTOR_ROOT="$HOME" SALIX_CONNECTOR_NAME="Coding sandbox" SALIX_CONNECTOR_JOIN=1 \
+  /opt/comma-station/mesh/target/release/stillfail-station run \
+  --app /opt/comma-station --data "$data"

@@ -1,12 +1,12 @@
 import { test } from "vitest";
 import assert from "node:assert/strict";
-import { CoreClient, type Opener } from "../src/client/client.ts";
+import { CoreClient, type CoreFailure, type Opener } from "../src/client/client.ts";
 
 /** A channel the test speaks for the core on: what the client sends, and a way to answer it or fail it. */
 function channel() {
   const sent: unknown[] = [];
   let deliver: ((data: unknown) => void) | undefined;
-  let fail: ((reason: string) => void) | undefined;
+  let fail: ((reason: string, failure?: CoreFailure) => void) | undefined;
   let opened = 0;
   const open: Opener = (onMessage, onFail) => {
     opened++;
@@ -21,10 +21,36 @@ function channel() {
     open,
     sent,
     deliver: (data: unknown) => deliver?.(data),
-    fail: (reason: string) => fail?.(reason),
+    fail: (reason: string, failure?: CoreFailure) => fail?.(reason, failure),
     opened: () => opened,
   };
 }
+
+test("a UI hears why the channel to its core failed", () => {
+  const c = channel();
+  const pending: (() => void)[] = [];
+  const faults: Error[] = [];
+  const client = new CoreClient(c.open, {
+    schedule: (_ms, run) => void pending.push(run),
+    onFault: (error) => void faults.push(error),
+  });
+
+  c.fail("The core's worker did not load.", "worker_load");
+  pending.splice(0).forEach((run) => run());
+  c.deliver({ fatal: "the store is corrupt" });
+  pending.splice(0).forEach((run) => run());
+  c.fail("gone");
+
+  assert.deepEqual(
+    faults.map((fault) => [fault.name, (fault as { failure?: unknown }).failure]),
+    [
+      ["CoreFailed", "worker_load"],
+      ["CoreFailed", "core_fatal"],
+      ["CoreFailed", "channel"],
+    ]
+  );
+  client.close();
+});
 
 test("a UI hears when the core forgot it: another tab runs it now, or it started again", () => {
   const c = channel();

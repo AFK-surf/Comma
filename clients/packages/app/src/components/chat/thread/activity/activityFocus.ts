@@ -46,6 +46,8 @@ export type ActivityFocusWorker = {
   participantId: string;
   /** Working now. A waiting or stopped Worker is not active. */
   active: boolean;
+  /** Stopped with an error: the Router still waits, but nobody works on the Task. */
+  failed?: boolean | undefined;
   /** The maker of the model it runs (`comma` for Comma's own), whose mark stands for it. */
   vendor?: string | undefined;
 };

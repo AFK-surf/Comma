@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import type { ChatImagePreviewRef, LocalFilePreview } from "@comma/core/chat";
 
 const LOCAL_FILE_REF_PATTERN = /^lfi1_[A-Za-z0-9_-]{43}$/;
@@ -41,6 +42,11 @@ type LiveAcquisition = {
  * Request lists change incrementally: a key that stays requested keeps its
  * lease and its state, so dropping one key (a preview that settled without an
  * image) never sends its siblings back through loading.
+ *
+ * Arrivals are committed synchronously, in the microtask that batches them:
+ * a preview the loader already holds (a message mounting over the Composer's
+ * thumbnail it was sent with) then paints in the same frame as its request,
+ * and no placeholder frame shows between the two.
  */
 export function useLocalFilePreviews(
   requests: readonly LocalFilePreviewRequest[],
@@ -90,12 +96,14 @@ export function useLocalFilePreviews(
       const batch = pendingRef.current;
       if (batch.size === 0) return;
       pendingRef.current = new Map();
-      setStates((current) => {
-        const next = new Map(current);
-        for (const [key, state] of batch) {
-          if (live.has(key)) next.set(key, state);
-        }
-        return next;
+      flushSync(() => {
+        setStates((current) => {
+          const next = new Map(current);
+          for (const [key, state] of batch) {
+            if (live.has(key)) next.set(key, state);
+          }
+          return next;
+        });
       });
     };
     const scheduleState = (key: string, state: LocalFilePreviewState) => {

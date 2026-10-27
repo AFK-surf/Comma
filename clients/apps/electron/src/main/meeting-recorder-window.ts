@@ -4,6 +4,7 @@ import type {
   MeetingRecorderWindowLayout,
   MeetingRecorderWindowDrag,
 } from "@comma/native-bridge";
+import { realMainClock, type MainClock } from "./clock";
 import { configureManagedWindow } from "./managed-window";
 import { createMeetingRecorderWindowOptions } from "./window-options";
 import type { NativeSurfaceService } from "./modules/surfaces";
@@ -13,11 +14,12 @@ import { recorderWindowBounds, type RecorderCenter } from "./recorder-window-geo
 
 /** One native accessory bounded to the recorder and its currently open menu. */
 export class MeetingRecorderWindow {
+  readonly #clock: MainClock;
   #window: BrowserWindow | undefined;
   #size: MeetingRecorderWindowLayout = { width: 418, height: 112 };
   #center: RecorderCenter | undefined;
   #drag: { point: RecorderCenter; center: RecorderCenter } | undefined;
-  #rebound: ReturnType<typeof setTimeout> | undefined;
+  #cancelRebound: (() => void) | undefined;
   #loading: Promise<void> | undefined;
   #state: MeetingRecorderState | undefined;
   #ready = false;
@@ -26,6 +28,8 @@ export class MeetingRecorderWindow {
   #loadFailure: Error | undefined;
   constructor(
     private readonly options: {
+      /** Main's clock: the drag rebound's frames. */
+      clock?: MainClock;
       preloadPath: string;
       url: string;
       surfaces: NativeSurfaceService;
@@ -34,6 +38,7 @@ export class MeetingRecorderWindow {
       logger: { error(message: string): void; warn(message: string): void };
     }
   ) {
+    this.#clock = options.clock ?? realMainClock;
     screen.on("display-metrics-changed", this.#reposition);
     screen.on("display-removed", this.#reposition);
   }
@@ -161,7 +166,7 @@ export class MeetingRecorderWindow {
       width: Math.ceil(size.width),
       height: Math.ceil(size.height),
     };
-    this.#apply(!this.#drag && !this.#rebound);
+    this.#apply(!this.#drag && !this.#cancelRebound);
     this.#present();
   }
   drag(input: MeetingRecorderWindowDrag) {
@@ -206,16 +211,16 @@ export class MeetingRecorderWindow {
       return;
     }
     // One bounded 180ms return per released drag, no idle polling.
-    const started = performance.now();
+    const started = this.#clock.now();
     const step = () => {
-      const progress = Math.min(1, (performance.now() - started) / 180);
+      const progress = Math.min(1, (this.#clock.now() - started) / 180);
       const eased = 1 - Math.pow(1 - progress, 3);
       this.#center = {
         x: from.x + (to.x - from.x) * eased,
         y: from.y + (to.y - from.y) * eased,
       };
       this.#apply(progress === 1);
-      this.#rebound = progress < 1 ? setTimeout(step, 16) : undefined;
+      this.#cancelRebound = progress < 1 ? this.#clock.setTimer(16, step) : undefined;
     };
     step();
   }
@@ -244,8 +249,8 @@ export class MeetingRecorderWindow {
     }
   }
   #stopRebound() {
-    if (this.#rebound) clearTimeout(this.#rebound);
-    this.#rebound = undefined;
+    this.#cancelRebound?.();
+    this.#cancelRebound = undefined;
   }
   #reposition = () => {
     this.#stopRebound();

@@ -215,9 +215,9 @@ test.describe("drive over the node", () => {
         await expect(page.getByTestId("comma-drive-preview-copy")).toContainText(
           "Image copied"
         );
-        expect(
-          await app.evaluate(({ clipboard }) => clipboard.readImage().isEmpty())
-        ).toBe(false);
+        expect(await app.evaluate(({ clipboard }) => clipboard.has("image/png"))).toBe(
+          true
+        );
 
         // Uploads use real disk-backed selections so Electron can resolve a
         // preload-vetted source path; synthetic in-memory Files have no path.

@@ -48,12 +48,12 @@ test("sent plain URLs open through chat navigation", async ({ page }, testInfo) 
     await expect(
       browser.getByRole("link", { name: "Open in browser" })
     ).toHaveAttribute("href", "https://example.com/docs?q=1&b=2");
-    // The page itself stays quiet; only the reader's own press offers the Mac app.
-    const prompt = page.getByRole("dialog", { name: "Get Comma for Mac" });
+    // The page itself stays quiet; only the reader's own press offers the desktop app.
+    const prompt = page.getByRole("dialog", { name: "Get the Comma desktop app" });
     await expect(prompt).toHaveCount(0);
-    await browser.getByRole("button", { name: "Download for Mac" }).click();
+    await browser.getByRole("button", { name: "Download the desktop app" }).click();
     await expect(prompt).toContainText(
-      "The built-in browser needs the Comma app for Mac."
+      "The built-in browser needs the Comma desktop app."
     );
     await prompt.getByRole("button", { name: "Cancel" }).click();
     await expect(prompt).not.toBeVisible();

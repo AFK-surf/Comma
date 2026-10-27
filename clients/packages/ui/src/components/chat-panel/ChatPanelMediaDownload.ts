@@ -29,6 +29,9 @@ export type ChatPanelMediaDownloadErrorCode =
 
 export type ChatPanelMediaDownloadResult =
   | {
+      status: "started";
+    }
+  | {
       status: "success";
     }
   | {

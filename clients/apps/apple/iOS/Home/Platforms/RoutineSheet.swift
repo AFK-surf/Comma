@@ -2,10 +2,10 @@ import SwiftUI
 import CommaCore
 
 /// The whole briefing in one sheet, opened from Home's greeting. The member comes to read the day, then act on
-/// one suggestion, so the sheet reads in that order: the summary as plain prose on the page, then each platform
-/// with something to do under its mark and name, its pre-tasks on one rounded surface (`PreTaskGroup`) in the
-/// carousel's order. Platforms with nothing fold into one quiet line at the end instead of a section each.
-/// Choosing a row hands it to `choose`, which closes the sheet.
+/// one suggestion, so the sheet reads in that order: the summary as plain prose on the page, then every pre-task as
+/// a card of its own (`PreTaskGroup`) that names its platform under its words, in the carousel's order, as the
+/// desktop's Routines do. Platforms with nothing fold into one quiet line at the end instead of a section each.
+/// Choosing a card hands it to `choose`, which closes the sheet.
 struct RoutineSheet: View {
     let store: CommaStore
     let choose: (RecommendationItem, RecommendationSource?) -> Void
@@ -34,7 +34,7 @@ struct RoutineSheet: View {
         .commaSheet()
     }
 
-    /// Groups sit 24pt apart, three times the 8pt between a caption and its rows, so each platform reads as one.
+    /// The summary, the cards and the quiet line sit 24pt apart, three times the 8pt between two cards.
     private func briefing(_ feed: RecommendationFeed) -> some View {
         let platforms = feed.platforms
         let quiet = platforms.filter { !store.hasPreTasks($0) }
@@ -46,10 +46,11 @@ struct RoutineSheet: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 4)
             }
-            ForEach(platforms.filter { store.hasPreTasks($0) }) { platform in
-                VStack(alignment: .leading, spacing: 8) {
-                    PlatformCaption(platform: platform)
-                    PreTaskGroup(platform: platform, items: store.preTasks(of: platform), feed: feed, choose: choose)
+            VStack(spacing: GroupedSurface.groupSpacing) {
+                ForEach(platforms.filter { store.hasPreTasks($0) }) { platform in
+                    PreTaskGroup(platform: platform, items: store.preTasks(of: platform), feed: feed, showsOrigin: true,
+                                 dismiss: { item in Task { await store.routines.dismiss(item, store: store) } },
+                                 choose: choose)
                 }
             }
             if !quiet.isEmpty { QuietPlatforms(platforms: quiet) }

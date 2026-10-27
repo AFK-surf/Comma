@@ -1,3 +1,4 @@
+import { MarkdownStreamDarkContext } from "@comma/ui/components/markdown-stream";
 import { createContext, useContext, type ReactNode } from "react";
 
 export type CommaUiThemeName = "Light mode" | "Dark mode";
@@ -13,7 +14,9 @@ export function CommaUiThemeProvider({
 }) {
   return (
     <CommaUiThemeContext.Provider value={theme}>
-      {children}
+      <MarkdownStreamDarkContext.Provider value={theme === "Dark mode"}>
+        {children}
+      </MarkdownStreamDarkContext.Provider>
     </CommaUiThemeContext.Provider>
   );
 }

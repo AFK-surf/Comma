@@ -10,6 +10,7 @@ defmodule CommaWeb.RecommendationRuntime do
 
   def read(ctx), do: read(%{}, ctx)
   def read(args, ctx), do: CommaWeb.ProactiveRoutine.read(args, ctx)
+  def dismiss(args, ctx), do: CommaWeb.ProactiveRoutine.dismiss(args, ctx)
 
   def ensure(user, session, workspace, timezone \\ nil, opts \\ []) do
     with {:ok, envelope} <-
@@ -127,10 +128,12 @@ defmodule CommaWeb.RecommendationRuntime do
            :ok <- usable_sources(collection),
            {:ok, run} <-
              Recommendations.record_source_evidence(run_id, collection.facts, collection.failures),
+           # A dismissed item is no reference, so the model cannot select it.
+           evidence = undismissed(profile, run.source_evidence),
            context =
              if(member?(run),
-               do: MemberSourceIngest.context(collection, run.source_evidence),
-               else: RecommendationDraft.prepare(collection.facts, run.source_evidence)
+               do: MemberSourceIngest.context(collection, evidence),
+               else: RecommendationDraft.prepare(collection.facts, evidence)
              ),
            remaining = RecommendationGenerate.remaining_ms(run),
            true <- remaining > 0,
@@ -224,6 +227,12 @@ defmodule CommaWeb.RecommendationRuntime do
       )
 
   defp member?(run), do: run.relevance_mode == "member"
+
+  defp undismissed(profile, evidence),
+    do:
+      Map.new(evidence || %{}, fn {source_id, urls} ->
+        {source_id, Enum.reject(urls, &Recommendations.dismissed?(profile, source_id, &1))}
+      end)
 
   # All public envelope paths call this through the existing runtime boundary.
   # No provider request runs here: the live consent/binding records fence reads.

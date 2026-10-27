@@ -114,6 +114,12 @@ export function useImagePreviews({
         const preview = shownPreview(previewImage.key, position);
         if (preview?.status !== "ready") return [];
         const key = previewImage?.key ?? `${messageId}:${position}`;
+        // The whole image, not its preview: what copying and the menu hand over.
+        const read = (signal?: AbortSignal) =>
+          readAttachmentImage(
+            { attachment, call, messageId, previewUrl: preview.url, sourceContext },
+            signal
+          );
         return [
           {
             image: {
@@ -125,23 +131,29 @@ export function useImagePreviews({
                     onContextMenu: (event) =>
                       openImageMenu(event, {
                         fileName: attachmentLabel(attachment, messagesApi),
-                        resolve: (signal) =>
-                          readAttachmentImage(
-                            {
-                              attachment,
-                              call,
-                              messageId,
-                              previewUrl: preview.url,
-                              sourceContext,
-                            },
-                            signal
-                          ),
+                        // An agent's attachment is added to context by reference to its message.
+                        ...(sourceContext && attachment.attachmentIndex !== undefined
+                          ? {
+                              attachment: {
+                                groupId: sourceContext.groupId,
+                                conversationId: sourceContext.conversationId,
+                                messageId,
+                                attachmentIndex: attachment.attachmentIndex,
+                                fileName: attachmentLabel(attachment, messagesApi),
+                                ...(attachment.size !== undefined
+                                  ? { size: attachment.size }
+                                  : {}),
+                              },
+                            }
+                          : {}),
+                        resolve: read,
                       }),
                   }
                 : {}),
             } satisfies ChatPanelImageGroupImage,
             key,
             position,
+            read,
           },
         ];
       }),

@@ -175,6 +175,28 @@ defmodule SalixIM.WeChatFilesTest do
     settle_refute_receive({:download, _, _}, 10)
   end
 
+  test "a voice message asks for our transcription of its audio, WeChat's text only a hint" do
+    voice = fn fields -> %{"item_list" => [%{"type" => 3, "voice_item" => fields}]} end
+    media = %{"encrypt_query_param" => "voice"}
+
+    assert SalixIM.WeChatMessages.text_body(voice.(%{"media" => media, "text" => "今天天气"})) ==
+             "[WeChat voice message: transcribe the attached audio with audio.transcribe. " <>
+               "WeChat's own recognition, often wrong for languages other than Chinese: 今天天气]"
+
+    assert SalixIM.WeChatMessages.text_body(voice.(%{"media" => media})) ==
+             "[WeChat voice message: transcribe the attached audio with audio.transcribe]"
+
+    assert SalixIM.WeChatMessages.text_body(voice.(%{"text" => "今天天气"})) =~
+             ~r/as recognized by WeChat.*\n今天天气$/
+
+    assert [%{"file_name" => "voice.silk"}] =
+             WeChatFiles.attachments(
+               %{"connect_id" => "connect"},
+               voice.(%{"media" => media, "text" => "今天天气", "encode_type" => 6})
+               |> Map.put("message_id", "message")
+             )
+  end
+
   defp item(type, media) do
     field = if type == 2, do: "image_item", else: "file_item"
     %{"type" => type, field => %{"media" => media, "file_name" => "report.pdf"}}

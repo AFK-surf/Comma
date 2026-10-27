@@ -26,11 +26,11 @@ describe("Electron e2e hooks", () => {
       isPackaged: false,
     });
 
-    applyElectronE2eStartHooks(hooks, { COMMA_ELECTRON_E2E_CORE_TEST_CLOCK: "1" });
+    applyElectronE2eStartHooks(hooks, { COMMA_ELECTRON_E2E_TEST_CLOCK: "1" });
 
     expect(hooks).toMatchObject({
       apiBaseUrl: "https://api.e2e.test",
-      coreTestClock: true,
+      testClock: true,
     });
     expect(hooks.synchronicityMode).toBeUndefined();
     expect(() =>

@@ -109,8 +109,12 @@ defmodule BridgeForTeams.FeishuScopes do
     docx:document:readonly
     docx:document:create
     docx:document:write_only
+    wiki:wiki
+    wiki:wiki:readonly
     wiki:node:read
     wiki:space:read
+    wiki:space:retrieve
+    wiki:node:retrieve
     docs:document.comment:read
     docs:document.comment:create
     docs:document.comment:write_only
@@ -121,12 +125,23 @@ defmodule BridgeForTeams.FeishuScopes do
     docs:permission.member:delete
     docs:permission.setting:read
     drive:drive
+    drive:drive:readonly
+    drive:drive:version
+    drive:drive:version:readonly
+    drive:drive.metadata:readonly
+    drive:drive.search:readonly
     space:document:delete
+    space:document:retrieve
     minutes:minutes.basic:read
     minutes:minutes.artifacts:read
     minutes:minutes.media:export
     minutes:minutes.search:read
+    minutes:minutes:readonly
     minutes:permission:apply
+    search:docs:read
+    vc:meeting.search:read
+    vc:note:read
+    vc:record:readonly
   )
 
   @bot_tenant_scopes @bot_messaging_scopes ++ @bot_document_scopes

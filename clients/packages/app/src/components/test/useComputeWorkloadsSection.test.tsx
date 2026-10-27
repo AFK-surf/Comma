@@ -2,7 +2,10 @@ import { createScriptedCore, resolvedWorkspace } from "@comma/test-utils/scripte
 import { act, renderHook, waitFor } from "@comma/test-utils/render";
 import type { ReactNode } from "react";
 import { afterEach, expect, it, vi } from "vitest";
-import type { ComputeProjection as CommaComputeProjection } from "@comma/core/contract";
+import type {
+  ComputeProjection as CommaComputeProjection,
+  ComputeWorkload,
+} from "@comma/core/contract";
 import { useComputeWorkloadsSection } from "../useComputeWorkloadsSection";
 
 afterEach(() => {
@@ -119,4 +122,78 @@ it("creates a Shell in the environment that can take one, and reports a refusal 
       { workspace: "wsp_compute", environment: "env_compute", name: "Build box" },
     ],
   ]);
+});
+
+it("keeps recoverable and deleting workloads while omitting terminal accepted receipts", async () => {
+  const t = scripted();
+  const { result } = renderHook(() => useComputeWorkloadsSection(true, true), {
+    wrapper: t.wrapper,
+  });
+  await waitFor(() => expect(result.current.rows).toHaveLength(1));
+  const accepted = (patch: Partial<ComputeWorkload>) => ({
+    ...projection.workloads[0]!,
+    id: "accepted",
+    ...patch,
+  });
+  const emit = async (row: ComputeWorkload) => {
+    await act(async () => {
+      t.core.emit("compute", {
+        workspace: "wsp_compute",
+        projection,
+        error: false,
+        creation: null,
+        accepted: row,
+      });
+    });
+  };
+  await emit(accepted({ phase: "action_required" }));
+  expect(result.current.rows.map((w) => w.id)).toEqual([
+    "accepted",
+    "workload_pending",
+  ]);
+  await emit(
+    accepted({
+      deletion: {
+        request_id: "delete-request",
+        phase: "cleaning",
+        error: "original_device_offline",
+      },
+    })
+  );
+  expect(result.current.rows[0]?.deletion?.error).toBe("original_device_offline");
+  await emit(
+    accepted({
+      phase: "deleted",
+      deletion: { request_id: "delete-request", phase: "complete" },
+    })
+  );
+  expect(result.current.rows.map((w) => w.id)).toEqual(["workload_pending"]);
+  await emit(
+    accepted({
+      phase: "cloud_retired",
+      deletion: { request_id: "delete-request", phase: "cloud_retired" },
+    })
+  );
+  expect(result.current.rows.map((w) => w.id)).toEqual(["workload_pending"]);
+});
+
+it("names an Agent VMM workload's device: this device, a listed device, or an own device", async () => {
+  const t = scripted();
+  const { result } = renderHook(
+    () =>
+      useComputeWorkloadsSection(true, true, undefined, {
+        names: new Map([["dev_studio", "Studio Mac"]]),
+        localId: "dev_here",
+      }),
+    { wrapper: t.wrapper }
+  );
+  const at = (device_id?: string) =>
+    result.current.location({
+      ...projection.workloads[0]!,
+      location: { provider: "agent_vmm", ...(device_id ? { device_id } : {}) },
+    });
+  expect(at("dev_here")).toBe("This device");
+  expect(at("dev_studio")).toBe("Studio Mac");
+  expect(at("dev_gone")).toBe("Own device");
+  expect(at()).toBe("Own device");
 });

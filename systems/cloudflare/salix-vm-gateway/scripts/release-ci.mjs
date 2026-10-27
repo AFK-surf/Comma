@@ -525,15 +525,17 @@ async function drainRunningContainers(maintenanceId, applicationId, profileKey, 
       process.env.SALIX_VM_GATEWAY_BASE_URL, profileKey);
     const instances = businessContainerInstances(inventory, allWorkloads);
     const running = runningContainerOwners(instances, workloads);
-    const archiving = workloads.filter((record) =>
-      record.provider === "cloudflare" && record.status === "archiving");
-    if (running.length === 0 && archiving.length === 0) {
+    // A stopped Container can still have an unfinished wake. Let its owner
+    // recover it before checking that every Gateway start has settled.
+    const recovering = workloads.filter((record) =>
+      record.provider === "cloudflare" && ["archiving", "waking"].includes(record.status));
+    if (running.length === 0 && recovering.length === 0) {
       checkImageReleasePage({ data: workloads, next_cursor: null });
       requireInactiveContainerInstances(instances, workloads);
       return;
     }
     const seen = new Set();
-    for (const owner of [...running, ...archiving]) {
+    for (const owner of [...running, ...recovering]) {
       if (seen.has(owner.group_id)) continue;
       seen.add(owner.group_id);
       try {

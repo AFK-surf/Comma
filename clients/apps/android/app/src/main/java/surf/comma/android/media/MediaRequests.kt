@@ -17,11 +17,12 @@ sealed interface MediaSource {
     data class AgentResource(val agentId: String, val ref: MediaBlobRef) : MediaSource {
         init { require(agentId.isNotBlank()) }
     }
+    /** A message's file by its place in it; [ref], when the server names its blob, is what its download is checked against. */
     data class MessageAttachment(
         val conversationId: String,
         val messageId: String,
         val index: Int,
-        val ref: MediaBlobRef,
+        val ref: MediaBlobRef?,
     ) : MediaSource {
         init { require(conversationId.isNotBlank() && messageId.isNotBlank() && index >= 0) }
     }
@@ -52,7 +53,7 @@ internal fun mediaDigest(vararg parts: String): String {
 fun mediaCacheKey(session: AuthorizedSession, source: MediaSource): String {
     val identity = when (source) {
         is MediaSource.AgentResource -> mediaDigest("blob", source.ref.hash)
-        is MediaSource.MessageAttachment -> mediaDigest("attachment", source.conversationId, source.messageId, source.index.toString(), source.ref.hash)
+        is MediaSource.MessageAttachment -> mediaDigest("attachment", source.conversationId, source.messageId, source.index.toString(), source.ref?.hash ?: "")
         is MediaSource.UploadedFile -> mediaDigest("file", source.path)
     }
     return mediaDigest(session.baseUrl.toString(), session.id.accountId, session.id.generation, session.id.groupId, identity)

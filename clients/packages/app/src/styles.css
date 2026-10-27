@@ -1,4 +1,5 @@
 @import "./components/chat/session-history/sessionHistory.css";
+@import "./components/chat/suggestions/suggestionAcceptance.css";
 @import "@comma/ui/styles.css";
 @import "./auth/styles.css";
 @import "./components/commaAppearance.css";
@@ -64,17 +65,6 @@ body,
 html,
 body {
   overflow: hidden;
-}
-
-/* A window drag drives the Chat Sidebar's width through the route minimum, the
-   same way its own drag handle does — so it tracks 1:1 for the duration and its
-   width transition stands down. Left on, every frame of the drag restarts a
-   150ms transition: the sidebar (and the native browser view pinned to its box)
-   trails the window edge, and the chat column beside it re-wraps on every frame
-   of the chase. `useWindowResizingFlag` clears the mark before the settle runs,
-   so the settle itself still animates. */
-body.comma-window-is-resizing .comma-chat-sidebar {
-  transition: none;
 }
 
 #root {
@@ -200,11 +190,13 @@ body.comma-window-is-resizing .comma-chat-sidebar {
   flex-direction: column;
 }
 
+/* What shows under the native view before it paints: the sidebar's own
+   surface, the same as every other tab's. */
 .comma-chat-sidebar-browser-viewport {
   position: relative;
   min-height: 0;
   flex: 1;
-  background: var(--color-bg-secondary);
+  background: var(--color-bg-primary);
 }
 
 /* Frame-accurate stand-in for the native browser view while a full-window DOM
@@ -565,32 +557,6 @@ body[data-comma-window-role="browser-inspection-composer"] #root {
   syntax: "<number>";
   inherits: false;
   initial-value: 0;
-}
-
-/* A fold the route width forces keeps the shell's CSS transition, so it runs
-   frame for frame beside the transition that moved the route. The fold spring
-   arms these only for that move; a reader's toggle writes each frame itself. */
-.comma-home-layout[data-greet-fold-transition] {
-  transition: --comma-home-greet-fold var(--comma-shell-transition-duration)
-    cubic-bezier(0.23, 1, 0.32, 1);
-}
-
-.comma-home-layout[data-tasks-fold-transition] {
-  transition: --comma-home-tasks-fold var(--comma-shell-transition-duration)
-    cubic-bezier(0.23, 1, 0.32, 1);
-}
-
-.comma-home-layout[data-greet-fold-transition][data-tasks-fold-transition] {
-  transition:
-    --comma-home-greet-fold var(--comma-shell-transition-duration)
-      cubic-bezier(0.23, 1, 0.32, 1),
-    --comma-home-tasks-fold var(--comma-shell-transition-duration)
-      cubic-bezier(0.23, 1, 0.32, 1);
-}
-
-.comma-home-rail[data-fold-moving="transition"] > .comma-home-rail-surface {
-  transition: --comma-home-rail-fold-progress var(--comma-shell-transition-duration)
-    cubic-bezier(0.23, 1, 0.32, 1);
 }
 
 /* The rail surface's own fold progress. Not inherited: the spring writes it
@@ -1288,21 +1254,19 @@ html[data-comma-routine-dragging="true"] * {
   margin-top: var(--spacing-md);
 }
 
+/* A source card only groups its rows: each row is a card of its own in the
+   rail's column, at the column's own gap. */
 .comma-recommendation-card {
-  overflow: hidden;
-  border: var(--border-width-0-5) solid var(--color-border-primary);
-  border-radius: var(--radius-xl);
-  background: var(--color-bg-popup-secondary);
-  box-shadow: var(--shadow-xs);
-  padding: var(--spacing-lg) var(--spacing-xs) var(--spacing-xs);
-}
-
-.comma-recommendation-card-heading {
   display: flex;
   min-width: 0;
-  align-items: center;
-  gap: var(--spacing-md);
-  margin: 0 var(--spacing-md) var(--spacing-md);
+  flex-direction: column;
+  gap: var(--spacing-lg);
+}
+
+/* A source whose rows all left, such as rows for Tasks that ended, takes no
+   place in the column. */
+.comma-recommendation-card:empty {
+  display: none;
 }
 
 .comma-recommendation-card-logo {
@@ -1326,45 +1290,54 @@ html[data-comma-routine-dragging="true"] * {
   -webkit-user-drag: none;
 }
 
-.comma-recommendation-card h3 {
-  overflow: hidden;
-  min-width: 0;
-  margin: 0;
-  color: var(--color-text-quaternary);
-  font-size: var(--text-sm);
-  font-weight: var(--font-weight-medium);
-  letter-spacing: var(--text-sm--letter-spacing);
-  line-height: var(--text-sm--line-height);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.comma-recommendation-items {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-}
-
-.comma-recommendation-text-item {
+/* A Routine row as a card: the task, the quoted source words as its
+   evidence, then the source. The whole card stages the row. */
+.comma-recommendation-task-card {
   position: relative;
   display: flex;
-  min-height: var(--spacing-4xl);
   min-width: 0;
-  align-items: center;
+  flex-direction: column;
   gap: var(--spacing-md);
-  border-radius: var(--radius-md);
-  background: transparent;
+  border: var(--border-width-0-5) solid var(--color-border-primary);
+  border-radius: var(--radius-xl);
+  background: var(--color-bg-popup-secondary);
+  box-shadow: var(--shadow-xs);
   color: var(--color-text-primary);
-  padding: var(--spacing-sm) var(--spacing-md);
+  padding: var(--spacing-lg);
+  font: inherit;
   font-size: var(--text-sm);
   line-height: var(--text-sm--line-height);
-  transition: background-color var(--motion-duration-feedback-out)
-    var(--motion-easing-smooth-out);
+  text-align: left;
 }
 
+button.comma-recommendation-task-card,
+.comma-recommendation-text-item-action {
+  cursor: pointer;
+}
+
+button.comma-recommendation-task-card:hover,
+button.comma-recommendation-task-card:focus-visible,
 .comma-recommendation-text-item:hover,
-.comma-recommendation-text-item:focus-within {
-  background: var(--color-bg-quaternary);
+.comma-recommendation-text-item:has(
+  > .comma-recommendation-text-item-action:focus-visible
+) {
+  background: var(--color-bg-secondary-hover);
+}
+
+/* The full-bleed button under a text card's words carries its press, so the
+   card presses the way a button does. */
+.comma-recommendation-text-item {
+  scale: 1;
+  transition:
+    background-color var(--button-state-duration) var(--button-state-easing),
+    scale var(--button-press-out-duration) var(--button-press-easing);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .comma-recommendation-text-item:has(> .comma-recommendation-text-item-action:active) {
+    scale: var(--button-press-scale);
+    transition-duration: var(--button-state-duration), var(--button-press-in-duration);
+  }
 }
 
 .comma-recommendation-text-item-action {
@@ -1374,46 +1347,23 @@ html[data-comma-routine-dragging="true"] * {
   border: 0;
   border-radius: inherit;
   background: transparent;
-  cursor: pointer;
 }
 
-.comma-recommendation-text-item-content {
+/* The card's words let a press through to the card; its links, chips and
+   dismiss control take their own. */
+.comma-recommendation-text-item
+  > :not(.comma-recommendation-text-item-action, .comma-recommendation-row-dismiss) {
   position: relative;
   z-index: 1;
-  display: flex;
-  flex: 1 1 auto;
-  height: var(--spacing-2xl);
-  min-width: 0;
-  align-items: center;
-  column-gap: var(--spacing-xs);
-  overflow: hidden;
-  white-space: nowrap;
   pointer-events: none;
 }
 
-.comma-recommendation-prompt-preview {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: var(--spacing-xxs);
-  color: var(--color-text-primary);
-  font-size: var(--text-sm);
-  line-height: var(--text-sm--line-height);
+.comma-recommendation-text-item :is(a, button, [data-slot="task-archive-menu"]) {
+  pointer-events: auto;
 }
 
 .comma-hover-card.comma-recommendation-prompt-hover-card {
   padding: var(--spacing-sm) var(--spacing-md);
-}
-
-.comma-recommendation-prompt-preview strong {
-  font-weight: var(--font-weight-medium);
-}
-
-.comma-recommendation-prompt-preview p {
-  overflow-wrap: anywhere;
-  margin: 0;
-  color: var(--color-text-secondary);
-  white-space: pre-wrap;
 }
 
 /* Inline-link preview: source thumbnail tile + label + destination. */
@@ -1637,12 +1587,13 @@ html[data-comma-routine-dragging="true"] * {
 
 /* Loading placeholder for a rich link card (Figma 1305-12956): the card's own
    rows with a bar where each line of copy will land. The bars ride the app's
-   one "still working" sweep — the same 40/50/60% ramp, 400% travel and
-   duration token as .comma-shiny-text — but on their own two colours. A crest
-   tinted from the copy colour carries thin glyphs and washes out on a solid
-   block, so the bar names its own ends instead: fg-senary crests over the
-   resting quaternary fill, lifting in dark and shading in light because both
-   ends are theme tokens. Every bar shines on one beat. */
+   one "still working" sweep — the same 40/50/60% ramp, 400% travel, duration
+   token and keyframes as .comma-shiny-text, moved on the compositor — but on
+   their own two colours. A crest tinted from the copy colour carries thin
+   glyphs and washes out on a solid block, so the bar names its own ends
+   instead: fg-senary crests over the resting quaternary fill, lifting in dark
+   and shading in light because both ends are theme tokens. Every bar shines on
+   one beat. Paint containment clips the crest layer to the bar. */
 .comma-recommendation-link-card-bar {
   --comma-link-card-bar-fill: var(--color-bg-quaternary);
   --comma-link-card-bar-crest: var(--color-fg-senary);
@@ -1650,18 +1601,23 @@ html[data-comma-routine-dragging="true"] * {
   height: var(--spacing-xl);
   flex: 0 0 auto;
   border-radius: var(--radius-xs);
+  background-color: var(--comma-link-card-bar-fill);
+  contain: paint;
+}
+
+.comma-recommendation-link-card-bar::after {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 400%;
   background-image: linear-gradient(
     90deg,
-    var(--comma-link-card-bar-fill) 0%,
-    var(--comma-link-card-bar-fill) 40%,
+    transparent 40%,
     var(--comma-link-card-bar-crest) 50%,
-    var(--comma-link-card-bar-fill) 60%,
-    var(--comma-link-card-bar-fill) 100%
+    transparent 60%
   );
-  background-repeat: no-repeat;
-  background-size: 400% 100%;
-  animation: comma-recommendation-link-card-shine var(--motion-duration-loading-shine)
-    linear infinite;
+  content: "";
+  animation: comma-shiny-text-shine var(--motion-duration-loading-shine)
+    steps(var(--comma-loading-shine-steps)) infinite;
 }
 
 /* Bar widths are Figma 1305-12956's bars over the card's --container-xs
@@ -1686,16 +1642,6 @@ html[data-comma-routine-dragging="true"] * {
 .comma-recommendation-link-card-bar[data-bar="time"],
 .comma-recommendation-link-card-bar[data-bar="chip"] {
   margin-inline-start: auto;
-}
-
-@keyframes comma-recommendation-link-card-shine {
-  from {
-    background-position: 100% 0;
-  }
-
-  to {
-    background-position: 0% 0;
-  }
 }
 
 /* The loaded card resolves over the skeleton it replaces: a short blur-fade
@@ -1799,128 +1745,44 @@ html[data-comma-routine-dragging="true"] * {
   color: var(--color-text-error-primary);
 }
 
-.comma-recommendation-text-item-content * {
-  white-space: nowrap !important;
-}
-
-.comma-recommendation-text-item-content .markdown-stream,
-.comma-recommendation-text-item-content .markdown-renderer,
-.comma-recommendation-text-item-content .node-slot,
-.comma-recommendation-text-item-content .node-content,
-.comma-recommendation-text-item-content p {
-  display: contents;
-}
-
-/* .markdown-stream carries the shared 21px base leading; this row is display:
-   contents all the way down, so pin it back to the agent body ramp. */
+/* A row's prose wraps like the card's title it is; its chips stay inline. */
 .comma-recommendation-text-item-content .markdown-stream {
   line-height: var(--text-sm--line-height);
 }
 
-/* Prose yields long before a chip does: flex distributes a row's deficit by
-   shrink factor, so the text collapses to its ellipsis first and only then do
-   the chips start giving up width. */
-.comma-recommendation-text-item-content p > span:not([data-slot="task-archive-menu"]) {
-  min-width: 0;
-  flex-shrink: 1000;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* A row is a Task title with its entity chip inside, so it truncates the way
-   a title does: from the end. Flex only weighs shrink factors against basis
-   widths, so the three tiers sit orders of magnitude apart: prose after the
-   chip at 1000, the prose that opens the row at 1, chips at 0.01. "Reply to
-   [lin.chen] on the handoff" loses "on the handoff" first, then "Reply to",
-   and the chip label only when nothing else is left. */
-.comma-recommendation-text-item-content
-  p
-  > span:not([data-slot="task-archive-menu"]):first-child {
-  flex-shrink: 1;
-}
-
-.comma-recommendation-text-item-content
-  .markdown-stream-copy
-  + .markdown-stream-copy::before {
-  content: " ";
-}
-
-/* The stable inline archive wrapper is a chip, not prose. Preserve its
-   shrink priority inside recommendation rows only. */
-.comma-recommendation-text-item-content [data-slot="task-archive-menu"] {
-  display: inline-flex;
-  flex: 0 0.01 auto;
-  min-width: 0;
-  max-width: 100%;
-}
-
-/* A chip keeps its full label while any prose beside it can still yield
-   (the shrink-factor gap above), but a chip that alone exceeds the row
-   truncates through its own label span rather than hard-clipping at the
-   row's overflow edge. */
-.comma-recommendation-text-item-content .comma-recommendation-inline {
-  flex: 0 0.01 auto;
-  min-width: 0;
-  max-width: 100%;
-  pointer-events: auto;
-}
-
-.comma-recommendation-text-item p {
+.comma-recommendation-text-item-content p {
   margin: 0;
 }
 
-.comma-recommendation-media-item small {
-  display: block;
-  overflow: hidden;
-  color: var(--color-text-tertiary);
-  font-size: var(--text-sm);
-  line-height: var(--text-sm--line-height);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.comma-recommendation-media-item {
-  display: grid;
-  min-height: calc(var(--spacing-5xl) + var(--spacing-sm));
+.comma-recommendation-media-item-body {
+  display: flex;
   min-width: 0;
-  grid-template-columns: var(--spacing-4xl) minmax(0, 1fr) var(--spacing-2xl);
-  gap: var(--spacing-md);
   align-items: center;
-  border: 0;
-  border-radius: var(--radius-md);
-  background: transparent;
-  color: var(--color-text-primary);
-  padding: var(--spacing-xs) var(--spacing-md);
-  text-align: left;
-  cursor: pointer;
-  transition: background-color var(--motion-duration-feedback-out)
-    var(--motion-easing-smooth-out);
+  gap: var(--spacing-md);
 }
 
-.comma-recommendation-media-item:hover,
-.comma-recommendation-media-item:focus-visible {
-  background: var(--color-bg-quaternary);
-}
-
-.comma-recommendation-media-item[data-has-image="false"] {
-  grid-template-columns: minmax(0, 1fr) var(--spacing-2xl);
+.comma-recommendation-media-item-body > span {
+  min-width: 0;
 }
 
 .comma-recommendation-media-item img {
   width: var(--spacing-4xl);
   height: var(--spacing-4xl);
+  flex: 0 0 auto;
   border-radius: var(--radius-md);
   object-fit: cover;
 }
 
 .comma-recommendation-media-item strong {
   display: block;
-  overflow: hidden;
-  font-size: var(--text-sm);
   font-weight: var(--font-weight-medium);
+}
+
+.comma-recommendation-media-item small {
+  display: block;
+  color: var(--color-text-tertiary);
+  font-size: var(--text-sm);
   line-height: var(--text-sm--line-height);
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .comma-recommendation-inline {
@@ -2057,61 +1919,60 @@ html[data-comma-routine-dragging="true"] * {
   padding: var(--spacing-xxs);
 }
 
-.comma-recommendation-footer-action {
+/* The dismiss control sits in the card's top-trailing corner, over the card's
+   own press target; the title leaves it room. */
+.comma-recommendation-row-dismiss {
+  position: absolute;
+  z-index: 2;
+  top: var(--spacing-sm);
+  right: var(--spacing-sm);
   display: flex;
-  width: 100%;
+  width: var(--spacing-3xl);
+  height: var(--spacing-3xl);
   align-items: center;
-  justify-content: space-between;
-  min-height: var(--spacing-4xl);
-  margin-top: var(--spacing-none);
+  justify-content: center;
   border: 0;
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-sm);
   background: transparent;
-  color: var(--color-text-primary);
-  padding: var(--spacing-sm) var(--spacing-md);
-  font-size: var(--text-sm);
-  line-height: var(--text-sm--line-height);
-  text-align: left;
+  color: var(--color-text-quaternary);
   cursor: pointer;
-  transition: background-color var(--motion-duration-feedback-out)
-    var(--motion-easing-smooth-out);
 }
 
-.comma-recommendation-footer-action:hover,
-.comma-recommendation-footer-action:focus-visible {
+.comma-recommendation-row-dismiss svg {
+  width: var(--spacing-xl);
+  height: var(--spacing-xl);
+}
+
+.comma-recommendation-row-dismiss:hover,
+.comma-recommendation-row-dismiss:focus-visible {
   background: var(--color-bg-quaternary);
+  color: var(--color-text-primary);
 }
 
-.comma-recommendation-footer-action span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+/* Where a pointer can hover, the control shows only while it is over the card
+   or focus is inside it; a touch screen keeps it in view. */
+@media (hover: hover) {
+  .comma-recommendation-row-dismiss {
+    opacity: 0;
+    transition: opacity var(--motion-duration-icon-swap) var(--motion-easing-smooth-out);
+  }
+
+  .comma-recommendation-text-item:hover .comma-recommendation-row-dismiss,
+  .comma-recommendation-text-item:focus-within .comma-recommendation-row-dismiss {
+    opacity: 1;
+  }
 }
 
-.comma-recommendation-row-icon {
-  width: var(--spacing-2xl);
-  height: var(--spacing-2xl);
-  flex: 0 0 auto;
-  color: var(--color-sidebar-icon-primary);
-  filter: blur(var(--motion-blur-menu-enter));
-  opacity: 0;
-  pointer-events: none;
-  transform: scale(var(--motion-scale-menu-enter));
-  transition:
-    opacity var(--motion-duration-icon-swap) var(--motion-easing-smooth-out),
-    filter var(--motion-duration-icon-swap) var(--motion-easing-smooth-out),
-    transform var(--motion-duration-icon-swap) var(--motion-easing-smooth-out);
+.comma-recommendation-text-item:has(> .comma-recommendation-row-dismiss)
+  .comma-recommendation-task-objective {
+  padding-inline-end: var(--spacing-2xl);
 }
 
-.comma-recommendation-text-item:hover .comma-recommendation-row-icon,
-.comma-recommendation-text-item:focus-within .comma-recommendation-row-icon,
-.comma-recommendation-media-item:hover .comma-recommendation-row-icon,
-.comma-recommendation-media-item:focus-visible .comma-recommendation-row-icon,
-.comma-recommendation-footer-action:hover .comma-recommendation-row-icon,
-.comma-recommendation-footer-action:focus-visible .comma-recommendation-row-icon {
-  filter: blur(0);
-  opacity: 1;
-  transform: scale(1);
+.comma-recommendations-stale {
+  margin: 0;
+  color: var(--color-text-tertiary);
+  font-size: var(--text-xs);
+  line-height: var(--text-xs--line-height);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -2329,25 +2190,30 @@ html[data-comma-routine-dragging="true"] * {
     );
   justify-content: center;
   column-gap: calc(var(--spacing-4xl) - var(--spacing-lg));
-  /* A toggled surface: it opens on the panel clock with a strong ease-out and
-     closes sooner than it opened, so the fold gets out of the way. */
-  transition:
-    grid-template-columns var(--motion-duration-panel-enter)
-      var(--motion-easing-surface-smooth-out),
-    column-gap var(--motion-duration-panel-enter)
-      var(--motion-easing-surface-smooth-out);
 }
 
+/* The fold follows the width (a window drag, the Chat Sidebar's one-step
+   width), so the track changes in one step and the thread lays out once;
+   only the column's content reveals on the compositor. */
 .comma-chat-body[data-panel-open="false"] {
   grid-template-columns: minmax(0, var(--comma-chat-content-max)) 0px;
   column-gap: 0px;
-  transition-duration: var(--motion-duration-panel-exit);
 }
 
 .comma-chat-main {
   display: flex;
   min-width: 0;
   min-height: 0;
+  flex-direction: column;
+}
+
+/* The conversation under its header: thread and composer, one drop target for
+   files. */
+.comma-chat-drop-zone {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
   flex-direction: column;
 }
 
@@ -2362,7 +2228,9 @@ html[data-comma-routine-dragging="true"] * {
   width: var(--container-xxs);
   height: 100%;
   flex-direction: column;
-  gap: var(--spacing-xl);
+  /* Sections stand a row's pitch apart (Linear's issue sidebar): the rows
+     inside keep their 8px gap, so the eye groups by the larger space. */
+  gap: var(--spacing-4xl);
   /* Top inset matches the thread's, so "Properties" sits on the first row's
      baseline; no left inset — the column gap already separates the two. */
   padding: var(--spacing-3xl) var(--spacing-lg) var(--spacing-xl) 0;
@@ -2399,11 +2267,9 @@ html[data-comma-routine-dragging="true"] * {
     filter 0s linear var(--motion-duration-panel-exit);
 }
 
-/* A window drag moves the breakpoint under the pointer, and the layout tracks
-   the edge 1:1 (see the Chat Sidebar's rule near the top): the fold lands in
-   the frame the window crosses it, with no track transition chasing the edge
-   and no reveal. A Chat Sidebar toggle still plays the fold. */
-body.comma-window-is-resizing .comma-chat-body,
+/* A window drag moves the breakpoint under the pointer: the fold lands in the
+   frame the window crosses it, with no reveal. A Chat Sidebar toggle still
+   plays the reveal. */
 body.comma-window-is-resizing .comma-chat-body .comma-task-panel-inner {
   transition: none;
 }
@@ -3019,6 +2885,7 @@ button.comma-task-panel-pill:focus-visible {
   color: var(--color-text-tertiary);
   font-size: var(--text-sm);
   line-height: var(--text-sm--line-height);
+  text-wrap: pretty;
 }
 
 .comma-task-panel-empty {
@@ -3214,6 +3081,1490 @@ button.comma-task-activity-row:focus-visible {
   color: var(--color-fg-warning-primary);
 }
 
+/* ---- Coding Task ------------------------------------------------------
+   A Task on a cloud sandbox: its sandbox state, repository and branch are
+   Environment rows; its changes and execution record are sections in the
+   Activity timeline's language. */
+
+/* The sandbox's state trails its row: a dot in the state's colour and a word. */
+.comma-task-coding-state {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: var(--spacing-sm);
+  margin-inline-start: auto;
+  color: var(--color-text-tertiary);
+  font-size: var(--text-xs);
+  line-height: var(--text-xs--line-height);
+  white-space: nowrap;
+}
+
+.comma-task-coding-state svg {
+  width: var(--spacing-xl);
+  height: var(--spacing-xl);
+  color: var(--color-fg-quaternary);
+}
+
+.comma-task-coding-dot {
+  width: var(--spacing-sm);
+  height: var(--spacing-sm);
+  border-radius: var(--radius-full);
+  background: var(--color-fg-quaternary);
+}
+
+.comma-task-coding-state[data-state="lost"] .comma-task-coding-dot {
+  background: var(--color-fg-warning-primary);
+}
+
+.comma-task-coding-state[data-state="failed"] .comma-task-coding-dot {
+  background: var(--color-fg-error-primary);
+}
+
+/* What trails a row at the column's edge, in the heading's weight. */
+.comma-task-coding-trailing {
+  flex-shrink: 0;
+  margin-inline-start: auto;
+  color: var(--color-text-quaternary);
+  font-size: var(--text-xs);
+  line-height: var(--text-xs--line-height);
+  white-space: nowrap;
+}
+
+/* A row that leaves the app shows where it goes once the pointer is on it. */
+.comma-task-coding-affordance {
+  width: var(--spacing-xl);
+  height: var(--spacing-xl);
+  flex-shrink: 0;
+  color: var(--color-fg-quaternary);
+  opacity: 0;
+  transition: opacity var(--motion-duration-state-change) var(--motion-easing-calm-out);
+}
+
+button.comma-task-panel-pill:hover .comma-task-coding-affordance,
+button.comma-task-panel-pill:focus-visible .comma-task-coding-affordance {
+  opacity: 1;
+}
+
+.comma-task-coding-counts {
+  display: inline-flex;
+  flex-shrink: 0;
+  gap: var(--spacing-xs);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.comma-task-coding-add {
+  color: var(--color-text-success-primary);
+}
+
+.comma-task-coding-del {
+  color: var(--color-text-error-primary);
+}
+
+.comma-task-coding-file {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  align-items: baseline;
+  gap: var(--spacing-xs);
+}
+
+.comma-task-coding-file-name {
+  flex-shrink: 0;
+  color: var(--color-text-primary);
+}
+
+.comma-task-coding-file-dir {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-text-quaternary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.comma-task-coding-status {
+  flex-shrink: 0;
+  color: var(--color-text-quaternary);
+}
+
+/* The note that ends an Environment row's menu, below a hairline: its text
+   starts where the items' labels do. */
+.comma-task-coding-menu-note {
+  margin: 0;
+  padding: var(--spacing-xs) calc(var(--spacing-sm) + var(--spacing-md))
+    var(--spacing-xxs);
+  color: var(--color-text-tertiary);
+  font-size: var(--text-xs);
+  line-height: var(--text-xs--line-height);
+  text-wrap: pretty;
+}
+
+/* What a row opens: the diff, command or output, on the section's surface. */
+.comma-task-coding-detail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xs);
+  margin: var(--spacing-xs) 0 var(--spacing-sm);
+  padding: var(--spacing-xs) 0;
+  overflow: hidden;
+  border-radius: var(--radius-md);
+  background: var(--color-bg-secondary);
+}
+
+.comma-task-coding-detail-label {
+  padding-inline: var(--spacing-lg);
+  color: var(--color-text-tertiary);
+  font-size: var(--text-xs);
+  line-height: var(--text-xs--line-height);
+  overflow-wrap: anywhere;
+}
+
+.comma-task-coding-thinking {
+  margin: 0;
+  padding-inline: var(--spacing-lg);
+  color: var(--color-text-tertiary);
+  font-size: var(--text-xs);
+  line-height: var(--text-xs--line-height);
+  white-space: pre-wrap;
+}
+
+/* The changes in one line: their lines over every file, a pill that opens
+   the Changes tab, and at the column's edge the pull request to make of
+   them, or the one made. */
+.comma-task-coding-summary {
+  gap: var(--spacing-md);
+}
+
+.comma-task-coding-summary-end {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: var(--spacing-sm);
+  margin-inline-start: auto;
+}
+
+/* An action in a row: a label chip's outline and height (24px), so it sits
+   level with the pills beside it instead of the Button's 32px step, on the
+   Inbox toolbar buttons' raised surface (their white and shadow-xs). Its
+   target reaches 32px up and down, not sideways into what sits beside it. */
+.comma-task-coding-action {
+  position: relative;
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  padding: var(--spacing-xxs) var(--spacing-lg);
+  border: var(--border-width-default) solid var(--color-border-primary);
+  border-radius: var(--radius-full);
+  background: var(--color-fg-button);
+  box-shadow: var(--shadow-xs);
+  color: var(--color-text-primary);
+  font-family: inherit;
+  font-size: var(--text-sm);
+  font-weight: var(--font-weight-medium);
+  line-height: var(--text-sm--line-height);
+  white-space: nowrap;
+  cursor: pointer;
+  outline: none;
+}
+
+.comma-task-coding-action:hover {
+  background: var(--color-bg-quaternary-hover);
+  color: var(--color-text-primary);
+}
+
+.comma-task-coding-action:focus-visible {
+  box-shadow: var(--shadow-focus-gray-shadow-xs);
+}
+
+.comma-task-coding-action::after {
+  position: absolute;
+  inset: calc(-1 * var(--spacing-xs)) 0;
+  content: "";
+}
+
+.comma-task-coding-action:disabled,
+.comma-task-coding-action[aria-disabled="true"] {
+  cursor: default;
+  opacity: var(--opacity-disabled);
+}
+
+.comma-task-coding-action[aria-disabled="true"]:hover {
+  background: var(--color-fg-button);
+  color: var(--color-text-primary);
+}
+
+.comma-task-coding-pr-link {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing-xxs);
+  padding: var(--spacing-xxs) var(--spacing-xs);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--color-text-secondary);
+  font-family: inherit;
+  font-size: var(--text-xs);
+  font-weight: var(--font-weight-medium);
+  line-height: var(--text-xs--line-height);
+  cursor: pointer;
+  outline: none;
+}
+
+.comma-task-coding-pr-link::after {
+  position: absolute;
+  inset: calc(-1 * var(--spacing-sm)) 0;
+  content: "";
+}
+
+.comma-task-coding-pr-link:hover {
+  background: var(--color-bg-quaternary-hover);
+  color: var(--color-text-primary);
+}
+
+.comma-task-coding-pr-link:focus-visible {
+  box-shadow: var(--shadow-focus-gray);
+}
+
+.comma-task-coding-pr-link svg {
+  width: var(--spacing-xl);
+  height: var(--spacing-xl);
+}
+
+/* The glyph takes the pull request's colour, GitHub's: green open, gray draft,
+   purple merged, red closed; amber where an open one has conflicts. */
+.comma-task-coding-pr-glyph {
+  display: flex;
+  flex-shrink: 0;
+}
+
+.comma-task-coding-pr-glyph[data-state="open"] {
+  color: var(--color-fg-success-primary);
+}
+
+.comma-task-coding-pr-glyph[data-state="draft"] {
+  color: var(--color-fg-quaternary);
+}
+
+.comma-task-coding-pr-glyph[data-state="merged"] {
+  color: var(--color-utility-purple-700);
+}
+
+.comma-task-coding-pr-glyph[data-state="closed"] {
+  color: var(--color-fg-error-primary);
+}
+
+.comma-task-coding-pr-glyph[data-conflicting="true"] {
+  color: var(--color-fg-warning-primary);
+}
+
+.comma-task-coding-pr-checks {
+  color: var(--color-text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* With a pull request, the Changes line is its card, in the rows' own
+   language: the title line, a pill that opens it on GitHub, with the menu at
+   its end; under it, in the glyph's column, a dot that says how its checks
+   stand, then the number and the lines changed (the pill that opens the
+   Changes tab). */
+.comma-task-coding-pr {
+  display: flex;
+  flex-direction: column;
+}
+
+.comma-task-coding-pr-head,
+.comma-task-coding-pr-meta {
+  display: flex;
+  min-height: var(--spacing-3xl);
+  align-items: center;
+  gap: var(--spacing-xs);
+}
+
+.comma-task-coding-pr-title {
+  min-width: 0;
+  flex: 1 1 auto;
+  justify-content: flex-start;
+}
+
+.comma-task-coding-pr-title .comma-task-coding-pr-glyph svg {
+  width: var(--spacing-2xl);
+  height: var(--spacing-2xl);
+}
+
+.comma-task-coding-pr-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.comma-task-coding-pr-number {
+  flex-shrink: 0;
+  color: var(--color-text-tertiary);
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+  line-height: var(--text-sm--line-height);
+}
+
+/* The lines follow the number on the same baseline: the pill hangs nothing
+   outside the column here. */
+.comma-task-coding-pr-meta .comma-task-panel-pill {
+  margin-inline-start: 0;
+  padding-inline: var(--spacing-xs);
+}
+
+/* The checks chip ends the card's second line: a 6px dot in how the checks
+   stand and how many passed of all, or how many failed, on a quiet fill, a
+   32px target. It centres in a line rather than sitting on a baseline, since
+   the dot chip and the text-only one have different baselines. While the
+   checks run, the count carries the shared shine (.comma-shiny-text, the
+   Routines "Generating…" line): a compositor sweep over a few glyphs, still
+   under reduced motion and gone once the checks settle. */
+.comma-task-coding-pr-checks-chip {
+  position: relative;
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  vertical-align: middle;
+  gap: var(--spacing-sm);
+  padding: var(--spacing-xxs) var(--spacing-md);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-secondary);
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+  line-height: var(--text-sm--line-height);
+  outline: none;
+}
+
+/* The count alone shines, not the chip: the chip's hit area reaches past its
+   box. */
+.comma-task-coding-pr-checks-count {
+  --comma-shiny-text-base: var(--color-text-tertiary);
+  --comma-shiny-text-highlight: var(--color-text-primary);
+}
+
+.comma-task-coding-pr-checks-chip::after {
+  position: absolute;
+  inset: calc(-1 * var(--spacing-xs)) 0;
+  content: "";
+}
+
+.comma-task-coding-pr-checks-chip:hover {
+  background: var(--color-bg-quaternary-hover);
+  color: var(--color-text-secondary);
+}
+
+.comma-task-coding-pr-checks-chip:focus-visible {
+  box-shadow: var(--shadow-focus-gray);
+}
+
+.comma-task-coding-pr-checks-dot {
+  width: var(--spacing-sm);
+  height: var(--spacing-sm);
+  flex-shrink: 0;
+  border-radius: var(--radius-full);
+  background: var(--color-fg-quaternary);
+}
+
+[data-checks="passed"] > .comma-task-coding-pr-checks-dot {
+  background: var(--color-fg-success-primary);
+}
+
+/* With failures the chip says how many, in red, as Claude's "1 failing". */
+.comma-task-coding-pr-checks-chip[data-checks="failed"] {
+  color: var(--color-text-error-primary);
+}
+
+/* ---- Checks panel --------------------------------------------------------
+   What hovering the chip shows, after Claude's "CI monitoring": a heading
+   with a link to the checks on GitHub, then a row per outcome that has any. */
+.comma-task-coding-checks-panel {
+  width: calc(var(--container-xxs) - var(--spacing-6xl));
+  padding: var(--spacing-md) var(--spacing-lg) var(--spacing-lg);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm--line-height);
+}
+
+.comma-task-coding-checks-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-md);
+  margin-bottom: var(--spacing-xs);
+}
+
+.comma-task-coding-checks-title {
+  color: var(--color-text-tertiary);
+}
+
+.comma-task-coding-checks-open {
+  position: relative;
+  display: inline-flex;
+  width: var(--spacing-3xl);
+  height: var(--spacing-3xl);
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  margin-inline-end: calc(-1 * var(--spacing-xs));
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-fg-quaternary);
+  cursor: pointer;
+  outline: none;
+}
+
+.comma-task-coding-checks-open svg {
+  width: var(--spacing-xl);
+  height: var(--spacing-xl);
+}
+
+/* A 24px control reaches 32px. */
+.comma-task-coding-checks-open::after {
+  position: absolute;
+  inset: calc(-1 * var(--spacing-xs));
+  content: "";
+}
+
+.comma-task-coding-checks-open:hover {
+  background: var(--color-bg-quaternary-hover);
+  color: var(--color-fg-secondary);
+}
+
+.comma-task-coding-checks-open:focus-visible {
+  box-shadow: var(--shadow-focus-gray);
+}
+
+.comma-task-coding-checks-rows {
+  display: grid;
+  gap: var(--spacing-xs);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.comma-task-coding-checks-row {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-md);
+  color: var(--color-text-primary);
+}
+
+.comma-task-coding-checks-mark {
+  display: flex;
+  width: var(--spacing-xl);
+  height: var(--spacing-xl);
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+}
+
+.comma-task-coding-checks-mark svg {
+  width: var(--spacing-xl);
+  height: var(--spacing-xl);
+}
+
+.comma-task-coding-checks-mark[data-outcome="failed"] {
+  color: var(--color-fg-error-primary);
+}
+
+.comma-task-coding-checks-mark[data-outcome="passed"] {
+  color: var(--color-fg-success-primary);
+}
+
+/* Still running: a filled dot; skipped: a ring, as GitHub draws them. */
+.comma-task-coding-checks-mark[data-outcome="pending"]::before,
+.comma-task-coding-checks-mark[data-outcome="skipped"]::before {
+  width: var(--spacing-sm);
+  height: var(--spacing-sm);
+  box-sizing: border-box;
+  border-radius: var(--radius-full);
+  content: "";
+}
+
+.comma-task-coding-checks-mark[data-outcome="pending"]::before {
+  background: var(--color-fg-quaternary);
+}
+
+.comma-task-coding-checks-mark[data-outcome="skipped"]::before {
+  border: 1px solid var(--color-fg-quaternary);
+}
+
+.comma-task-coding-checks-label {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.comma-task-coding-checks-count {
+  flex-shrink: 0;
+  color: var(--color-text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- Pull request dialog -------------------------------------------------
+   Edits the open pull request as Linear edits an issue: its number leads the
+   title row; the title, then the description, borderless on the dialog's
+   surface; the actions at the foot. */
+.comma-coding-pr-dialog-ref {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+  line-height: var(--text-sm--line-height);
+}
+
+.comma-coding-pr-dialog-ref svg {
+  width: var(--spacing-xl);
+  height: var(--spacing-xl);
+  color: var(--color-fg-success-primary);
+}
+
+.comma-coding-pr-dialog-ref[data-state="draft"] svg {
+  color: var(--color-fg-quaternary);
+}
+
+.comma-coding-pr-dialog {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-md);
+}
+
+.comma-coding-pr-dialog-title,
+.comma-coding-pr-dialog-body {
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-primary);
+  font-family: inherit;
+  outline: none;
+}
+
+.comma-coding-pr-dialog-title {
+  font-size: var(--text-lg);
+  font-weight: var(--font-weight-semibold);
+  line-height: var(--text-lg--line-height);
+}
+
+.comma-coding-pr-dialog-body {
+  min-height: calc(var(--text-sm--line-height) * 8);
+  resize: none;
+  font-size: var(--text-sm);
+  line-height: var(--text-sm--line-height);
+}
+
+.comma-coding-pr-dialog-title::placeholder,
+.comma-coding-pr-dialog-body::placeholder {
+  color: var(--color-text-placeholder);
+}
+
+.comma-coding-pr-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--spacing-md);
+}
+
+/* ---- Pull request prompt -------------------------------------------------
+   Above the input, once a coding Task is in review with its branch pushed and
+   no pull request yet: the one decision left as a split chip (the pull
+   request, or the draft its menu switches it to) and a close. It arrives on
+   its own, so it may fade in; closing it is instant. */
+.comma-chat-pr-prompt {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-md);
+  margin-bottom: var(--spacing-md);
+  padding: var(--spacing-sm) var(--spacing-sm) var(--spacing-sm) var(--spacing-lg);
+  border: var(--border-width-default) solid var(--color-border-secondary);
+  border-radius: var(--radius-xl);
+  background: var(--color-bg-primary);
+  box-shadow: var(--shadow-sm);
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm--line-height);
+  translate: 0 0;
+  transition:
+    opacity var(--motion-duration-feedback-out) var(--motion-easing-calm-out),
+    translate var(--motion-duration-feedback-out) var(--motion-easing-calm-out);
+
+  @starting-style {
+    opacity: 0;
+    translate: 0 var(--spacing-xs);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .comma-chat-pr-prompt {
+    transition: none;
+  }
+}
+
+.comma-chat-pr-prompt-glyph {
+  width: var(--spacing-xl);
+  height: var(--spacing-xl);
+  flex-shrink: 0;
+  color: var(--color-fg-success-primary);
+}
+
+.comma-chat-pr-prompt-text {
+  min-width: 0;
+  flex: 1 1 auto;
+  color: var(--color-text-primary);
+}
+
+.comma-chat-pr-prompt-actions {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: var(--spacing-sm);
+}
+
+/* The split chip is one chip: one outline and pill shape around two
+   borderless parts, the action and, past a hairline, the chevron that opens
+   the menu switching it between the pull request and a draft. Each part fills
+   on hover inside its own end of the pill; the chevron's stays filled while
+   the menu is open. The whole chip presses as one, so the parts opt out of
+   the button press rule and the chip takes it. */
+.comma-chat-pr-prompt-split {
+  --button-press-current-duration: var(--button-press-out-duration);
+
+  display: inline-flex;
+  align-items: stretch;
+  border: var(--border-width-default) solid var(--color-border-primary);
+  border-radius: var(--radius-full);
+  background: var(--color-fg-button);
+  box-shadow: var(--shadow-xs);
+  scale: 1;
+  transition: scale var(--button-press-current-duration) var(--button-press-easing);
+}
+
+.comma-chat-pr-prompt-split:has(> button:active:not([aria-disabled="true"])) {
+  --button-press-current-duration: var(--button-press-in-duration);
+
+  scale: var(--button-press-scale);
+}
+
+.comma-chat-pr-prompt-split:has(> button:focus-visible) {
+  box-shadow: var(--shadow-focus-gray-shadow-xs);
+}
+
+/* The parts carry no surface of their own: the chip around them does. */
+.comma-chat-pr-prompt-split > .comma-task-coding-action {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.comma-chat-pr-prompt-split > .comma-task-coding-action:hover {
+  background: var(--color-bg-quaternary-hover);
+}
+
+.comma-chat-pr-prompt-split > .comma-task-coding-action[aria-disabled="true"]:hover {
+  background: transparent;
+}
+
+.comma-chat-pr-prompt-split > .comma-task-coding-action:focus-visible {
+  box-shadow: none;
+}
+
+/* Scoped to the split, so the segments' own edges win over the reset above. */
+.comma-chat-pr-prompt-split > .comma-chat-pr-prompt-main {
+  padding-inline: var(--spacing-lg) var(--spacing-md);
+  border-start-start-radius: var(--radius-full);
+  border-end-start-radius: var(--radius-full);
+}
+
+.comma-chat-pr-prompt-split > .comma-chat-pr-prompt-caret {
+  padding-inline: var(--spacing-xs);
+  border-inline-start: var(--border-width-default) solid var(--color-border-primary);
+  border-start-end-radius: var(--radius-full);
+  border-end-end-radius: var(--radius-full);
+}
+
+.comma-chat-pr-prompt-caret svg {
+  width: var(--spacing-xl);
+  height: var(--spacing-xl);
+  color: var(--color-fg-quaternary);
+}
+
+.comma-chat-pr-prompt-split > .comma-chat-pr-prompt-caret[aria-expanded="true"] {
+  background: var(--color-bg-quaternary-hover);
+}
+
+.comma-chat-pr-prompt-close {
+  position: relative;
+  display: inline-flex;
+  width: var(--spacing-3xl);
+  height: var(--spacing-3xl);
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-quaternary);
+  cursor: pointer;
+  outline: none;
+}
+
+.comma-chat-pr-prompt-close::after {
+  position: absolute;
+  inset: calc(-1 * var(--spacing-xs));
+  content: "";
+}
+
+.comma-chat-pr-prompt-close svg {
+  width: var(--spacing-xl);
+  height: var(--spacing-xl);
+}
+
+.comma-chat-pr-prompt-close:hover {
+  background: var(--color-bg-quaternary-hover);
+  color: var(--color-text-secondary);
+}
+
+.comma-chat-pr-prompt-close:focus-visible {
+  box-shadow: var(--shadow-focus-gray);
+}
+
+/* The row's menu trigger, as a Task card's (TaskArchiveMenu): a 16px glyph
+   in a 24px frame (the row's height) with the design system's small radius,
+   filled under the pointer and while its menu is open; a 32px target. */
+.comma-task-coding-more {
+  position: relative;
+  display: inline-flex;
+  width: var(--spacing-3xl);
+  height: var(--spacing-3xl);
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-quaternary);
+  cursor: pointer;
+  outline: none;
+}
+
+.comma-task-coding-more::after {
+  position: absolute;
+  inset: calc(-1 * var(--spacing-xs));
+  content: "";
+}
+
+.comma-task-coding-more svg {
+  width: var(--spacing-xl);
+  height: var(--spacing-xl);
+}
+
+.comma-task-coding-more:hover,
+.comma-task-coding-more[aria-expanded="true"] {
+  background: var(--color-bg-quaternary-hover);
+  color: var(--color-text-secondary);
+}
+
+/* In the Changes line and card the dots wait for the pointer or focus to
+   reach the row, and stay while their menu is open. */
+.comma-task-coding-summary .comma-task-coding-more,
+.comma-task-coding-pr .comma-task-coding-more {
+  opacity: 0;
+  transition: opacity var(--motion-duration-state-change) var(--motion-easing-calm-out);
+}
+
+.comma-task-coding-summary:hover .comma-task-coding-more,
+.comma-task-coding-summary:focus-within .comma-task-coding-more,
+.comma-task-coding-pr:hover .comma-task-coding-more,
+.comma-task-coding-pr:focus-within .comma-task-coding-more,
+.comma-task-coding-more[aria-expanded="true"] {
+  opacity: 1;
+}
+
+.comma-task-coding-more:focus-visible {
+  box-shadow: var(--shadow-focus-gray);
+}
+
+/* Usage: the tokens the model calls used, as one bar of cached, fresh and
+   written tokens, with a legend row per part. */
+.comma-task-coding-usage {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-sm);
+}
+
+.comma-task-coding-usage-line {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--spacing-md);
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+  line-height: var(--text-xs--line-height);
+}
+
+.comma-task-coding-usage-model {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-text-quaternary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.comma-task-coding-usage-bar {
+  display: flex;
+  height: var(--spacing-xs);
+  gap: var(--spacing-xxs);
+  overflow: hidden;
+  border-radius: var(--radius-full);
+}
+
+.comma-task-coding-usage-bar > span {
+  display: block;
+  min-width: var(--spacing-xs);
+  height: 100%;
+  border-radius: var(--radius-full);
+}
+
+.comma-task-coding-usage-legend {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xxs);
+  margin: 0;
+  padding: 0;
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+  line-height: var(--text-xs--line-height);
+  list-style: none;
+}
+
+.comma-task-coding-usage-legend li {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+}
+
+.comma-task-coding-swatch {
+  width: var(--spacing-md);
+  height: var(--spacing-md);
+  flex-shrink: 0;
+  border-radius: var(--radius-xxs);
+}
+
+[data-part="cached"] > .comma-task-coding-swatch,
+.comma-task-coding-usage-bar > [data-part="cached"] {
+  background: var(--color-utility-blue-300);
+}
+
+[data-part="input"] > .comma-task-coding-swatch,
+.comma-task-coding-usage-bar > [data-part="input"] {
+  background: var(--color-utility-gray-300);
+}
+
+[data-part="output"] > .comma-task-coding-swatch,
+.comma-task-coding-usage-bar > [data-part="output"] {
+  background: var(--color-utility-success-300);
+}
+
+.comma-task-coding-usage-n {
+  margin-inline-start: auto;
+  color: var(--color-text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+.comma-task-coding-usage-pct {
+  width: var(--spacing-5xl);
+  color: var(--color-text-primary);
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--font-weight-medium);
+  text-align: end;
+}
+
+/* A step row: the tool, what it worked on (kept to the line) and how it ended. */
+.comma-task-coding-step-text {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: var(--spacing-xs);
+}
+
+.comma-task-coding-step-tool {
+  flex-shrink: 0;
+  color: var(--color-text-primary);
+}
+
+.comma-task-coding-step-hint {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-text-tertiary);
+  font-family: var(--font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.comma-task-activity-icon[data-failed="true"] {
+  color: var(--color-fg-error-primary);
+}
+
+.comma-task-activity-time[data-tone="error"] {
+  color: var(--color-text-error-primary);
+}
+
+/* ---- Coding changes tab -----------------------------------------------
+   The session branch's diff as a sidebar tab: a bar that names the base and
+   the branch and holds the actions, then how much changed and each file under
+   a header that stays while it scrolls. Beside the diffs, a rail lists the
+   files and the branch's commits. */
+.comma-coding-changes {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+}
+
+/* The diffs with the files and commits: beside them in a wide tab, above them in a
+   narrow one. Each part scrolls on its own; until dragged, the files and the
+   commits take a share of the tab's height (`cqh`, of this box). */
+.comma-coding-changes-main {
+  display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  container: comma-coding-changes-main / size;
+}
+
+.comma-coding-changes-main[data-wide="true"] {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) min(36%, var(--container-xxs));
+  grid-template-rows: minmax(0, 1fr);
+}
+
+.comma-coding-changes-diffs {
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+}
+
+.comma-coding-changes-rail {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 0 0 auto;
+  flex-direction: column;
+}
+
+.comma-coding-changes-rail[data-wide="true"] {
+  border-left: var(--border-width-default) solid var(--color-border-secondary);
+}
+
+.comma-coding-changes-rail-files {
+  display: flex;
+  min-height: 0;
+  flex: 0 0 auto;
+  flex-direction: column;
+  max-height: 30cqh;
+}
+
+.comma-coding-changes-rail[data-wide="true"] .comma-coding-changes-rail-files {
+  max-height: none;
+  flex: 1 1 auto;
+}
+
+.comma-coding-changes-rail-files .comma-coding-changes-index {
+  padding: var(--spacing-sm);
+}
+
+.comma-coding-changes-commits {
+  display: flex;
+  min-height: 0;
+  flex: 0 0 auto;
+  flex-direction: column;
+}
+
+.comma-coding-changes-commits[data-open="true"] {
+  max-height: 30cqh;
+}
+
+.comma-coding-changes-rail[data-wide="true"]
+  .comma-coding-changes-commits[data-open="true"] {
+  max-height: 50cqh;
+}
+
+/* A handle between two parts: a hairline that thickens while held or hovered,
+   with a taller hit area than it shows. */
+.comma-coding-changes-splitter {
+  position: relative;
+  z-index: 2;
+  height: var(--border-width-default);
+  flex-shrink: 0;
+  padding: 0;
+  border: 0;
+  background: var(--color-border-secondary);
+  cursor: row-resize;
+  outline: none;
+  touch-action: none;
+}
+
+.comma-coding-changes-splitter::after {
+  position: absolute;
+  z-index: 1;
+  inset: calc(-1 * var(--spacing-xs)) 0;
+  content: "";
+}
+
+.comma-coding-changes-splitter:hover,
+.comma-coding-changes-splitter:active {
+  box-shadow: 0 0 0 var(--border-width-default) var(--color-border-primary);
+  background: var(--color-border-primary);
+}
+
+.comma-coding-changes-splitter:focus-visible {
+  box-shadow: var(--shadow-focus-gray);
+}
+
+/* The heading: a chevron that folds the commits, their name, and their count, which ends where the rows' text does. */
+.comma-coding-changes-commits-head {
+  display: flex;
+  width: 100%;
+  flex-shrink: 0;
+  align-items: center;
+  gap: var(--spacing-xs);
+  padding: var(--spacing-sm) calc(var(--spacing-sm) + var(--spacing-md))
+    var(--spacing-sm) var(--spacing-md);
+  border: 0;
+  background: none;
+  color: var(--color-text-secondary);
+  font-family: inherit;
+  font-size: var(--text-xs);
+  line-height: var(--text-xs--line-height);
+  cursor: pointer;
+  outline: none;
+}
+
+.comma-coding-changes-commits-head:hover {
+  color: var(--color-text-primary);
+}
+
+.comma-coding-changes-commits-head:focus-visible {
+  box-shadow: var(--shadow-focus-gray);
+}
+
+.comma-coding-changes-commits-chevron {
+  width: var(--spacing-xl);
+  height: var(--spacing-xl);
+  flex-shrink: 0;
+  color: var(--color-fg-quaternary);
+}
+
+.comma-coding-changes-commits[data-open="false"] .comma-coding-changes-commits-chevron {
+  rotate: -90deg;
+}
+
+.comma-coding-changes-commits-label {
+  flex: 1 1 auto;
+  font-weight: var(--font-weight-medium);
+  text-align: start;
+}
+
+.comma-coding-changes-commits-count {
+  color: var(--color-text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+.comma-coding-changes-commits-scroll {
+  min-height: 0;
+  flex: 0 1 auto;
+}
+
+.comma-coding-changes-commits-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xxs);
+  margin: 0;
+  padding: 0 var(--spacing-sm) var(--spacing-sm);
+  list-style: none;
+}
+
+/* A commit: its first line, then its short sha, author and age; the one shown is filled. */
+.comma-coding-changes-commit {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  flex-direction: column;
+  gap: var(--spacing-xxs);
+  padding: var(--spacing-xs) var(--spacing-md);
+  border: 0;
+  border-radius: var(--radius-md);
+  background: none;
+  font-family: inherit;
+  text-align: start;
+  cursor: pointer;
+  outline: none;
+}
+
+.comma-coding-changes-commit:hover {
+  background: var(--color-bg-secondary-hover);
+}
+
+.comma-coding-changes-commit[aria-current="true"] {
+  background: var(--color-bg-quaternary);
+}
+
+.comma-coding-changes-commit:focus-visible {
+  box-shadow: var(--shadow-focus-gray);
+}
+
+.comma-coding-changes-commit-title,
+.comma-coding-changes-commit-meta {
+  min-width: 0;
+  overflow: hidden;
+  font-size: var(--text-xs);
+  line-height: var(--text-xs--line-height);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.comma-coding-changes-commit-title {
+  color: var(--color-text-secondary);
+}
+
+.comma-coding-changes-commit[aria-current="true"] .comma-coding-changes-commit-title {
+  color: var(--color-text-primary);
+  font-weight: var(--font-weight-medium);
+}
+
+.comma-coding-changes-commit-meta {
+  color: var(--color-text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The rail switch reads as held down while the rail shows. */
+.comma-coding-changes-rail-toggle[aria-pressed="true"] {
+  background: var(--color-bg-quaternary-hover);
+  color: var(--color-text-secondary);
+}
+
+/* The summary names the commit, or what is not committed, when the diffs show only that. */
+.comma-coding-changes-scope {
+  color: var(--color-text-secondary);
+  font-weight: var(--font-weight-medium);
+}
+
+.comma-coding-changes-bar {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: var(--spacing-md);
+  padding: var(--spacing-sm) var(--spacing-lg) var(--spacing-sm) var(--spacing-xl);
+  border-bottom: var(--border-width-default) solid var(--color-border-secondary);
+}
+
+/* What is compared: the base, dim, then the branch; the branch gives way first. */
+.comma-coding-changes-ref {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: var(--spacing-xs);
+  color: var(--color-text-primary);
+  font-size: var(--text-sm);
+  font-weight: var(--font-weight-medium);
+  line-height: var(--text-sm--line-height);
+}
+
+.comma-coding-changes-ref-icon {
+  width: var(--spacing-xl);
+  height: var(--spacing-xl);
+  flex-shrink: 0;
+  color: var(--color-fg-quaternary);
+}
+
+.comma-coding-changes-base {
+  flex-shrink: 0;
+  color: var(--color-text-tertiary);
+  font-weight: var(--font-weight-regular);
+}
+
+.comma-coding-changes-arrow {
+  width: var(--spacing-xl);
+  height: var(--spacing-xl);
+  flex-shrink: 0;
+  color: var(--color-fg-quaternary);
+}
+
+.comma-coding-changes-branch {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.comma-coding-changes-bar-end {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: var(--spacing-sm);
+}
+
+.comma-coding-changes-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-md);
+  padding: var(--spacing-md) var(--spacing-lg) var(--spacing-3xl) var(--spacing-xl);
+}
+
+.comma-coding-changes-summary {
+  display: flex;
+  align-items: baseline;
+  gap: var(--spacing-sm);
+  margin: 0;
+  padding-inline: var(--spacing-xs);
+  color: var(--color-text-tertiary);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  line-height: var(--text-xs--line-height);
+}
+
+.comma-coding-changes-note {
+  color: var(--color-text-tertiary);
+}
+
+.comma-coding-changes-index {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* An index row is an Activity row's shape at full width: pressed, its file's diff comes into view. */
+.comma-coding-changes-index-row {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: var(--spacing-md);
+  padding: var(--spacing-xs) var(--spacing-md);
+  border: 0;
+  border-radius: var(--radius-md);
+  background: none;
+  color: var(--color-text-secondary);
+  font-family: inherit;
+  font-size: var(--text-xs);
+  line-height: var(--text-xs--line-height);
+  text-align: start;
+  cursor: pointer;
+  outline: none;
+}
+
+.comma-coding-changes-index-row:hover,
+.comma-coding-changes-index-row:active {
+  background: var(--color-bg-quaternary-hover);
+}
+
+.comma-coding-changes-index-row:focus-visible {
+  box-shadow: var(--shadow-focus-gray);
+}
+
+/* A file: its header on the section's surface, its diff below, in one
+   outlined frame whose radius the header inherits by clipping. */
+.comma-coding-changes-file {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: var(--border-width-default) solid var(--color-border-secondary);
+  border-radius: var(--radius-md);
+}
+
+.comma-coding-changes-file-head {
+  position: sticky;
+  z-index: 1;
+  top: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  padding: var(--spacing-xs) var(--spacing-sm) var(--spacing-xs) var(--spacing-xs);
+  background: var(--color-bg-secondary);
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+  font-weight: var(--font-weight-medium);
+  line-height: var(--text-xs--line-height);
+}
+
+.comma-coding-changes-file[data-open="true"] .comma-coding-changes-file-head {
+  border-bottom: var(--border-width-default) solid var(--color-border-secondary);
+}
+
+.comma-coding-changes-file .comma-task-coding-file {
+  flex: 1 1 auto;
+}
+
+/* The fold and the GitHub link are 24px frames around 16px glyphs, with
+   32px targets, rounded concentric with the file's frame (its 8px less the
+   header's 4px); the chevron turns to point the way the diff folds. The link
+   shows once the pointer is on the header. */
+.comma-coding-changes-fold,
+.comma-coding-changes-file-open {
+  position: relative;
+  display: inline-flex;
+  width: var(--spacing-3xl);
+  height: var(--spacing-3xl);
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--color-fg-quaternary);
+  cursor: pointer;
+  outline: none;
+}
+
+.comma-coding-changes-fold::after,
+.comma-coding-changes-file-open::after {
+  position: absolute;
+  inset: calc(-1 * var(--spacing-xs));
+  content: "";
+}
+
+.comma-coding-changes-fold svg,
+.comma-coding-changes-file-open svg {
+  width: var(--spacing-xl);
+  height: var(--spacing-xl);
+}
+
+.comma-coding-changes-fold svg {
+  rotate: 0deg;
+  transition: rotate var(--motion-duration-disclosure-turn)
+    var(--motion-easing-smooth-out);
+}
+
+.comma-coding-changes-fold[aria-expanded="false"] svg {
+  rotate: -90deg;
+}
+
+.comma-coding-changes-fold:hover,
+.comma-coding-changes-file-open:hover {
+  background: var(--color-bg-quaternary-hover);
+  color: var(--color-text-secondary);
+}
+
+.comma-coding-changes-fold:focus-visible,
+.comma-coding-changes-file-open:focus-visible {
+  box-shadow: var(--shadow-focus-gray);
+}
+
+.comma-coding-changes-file-open {
+  opacity: 0;
+  transition: opacity var(--motion-duration-state-change) var(--motion-easing-calm-out);
+}
+
+.comma-coding-changes-file-head:hover .comma-coding-changes-file-open,
+.comma-coding-changes-file-open:focus-visible {
+  opacity: 1;
+}
+
+.comma-coding-changes-omitted {
+  margin: 0;
+  padding: var(--spacing-md) var(--spacing-lg);
+  color: var(--color-text-tertiary);
+  font-size: var(--text-xs);
+  line-height: var(--text-xs--line-height);
+}
+
+.comma-coding-changes-loading {
+  display: flex;
+  justify-content: center;
+  padding: var(--spacing-3xl) 0;
+}
+
+/* ---- Diff ---------------------------------------------------------------
+   A unified diff as the Changes tab and a step's edit show it: each line a
+   row that keeps its colour across the width, a gutter with its number
+   where the hunks give one, wrapped to the width or scrolled; never folded. */
+.comma-diff {
+  display: flex;
+  flex-direction: column;
+  padding: var(--spacing-sm) 0;
+  overflow-x: auto;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-variant-ligatures: none;
+  line-height: var(--text-xs--line-height);
+  tab-size: 4;
+}
+
+.comma-diff[data-wrap="true"] {
+  overflow-x: hidden;
+}
+
+.comma-diff-line {
+  display: flex;
+  box-sizing: border-box;
+  width: max-content;
+  min-width: 100%;
+  color: var(--color-text-secondary);
+}
+
+.comma-diff[data-wrap="true"] .comma-diff-line {
+  width: auto;
+}
+
+.comma-diff-gutter {
+  width: calc(var(--spacing-4xl) + var(--spacing-md));
+  flex-shrink: 0;
+  padding-inline: var(--spacing-sm) var(--spacing-xs);
+  color: var(--color-text-quaternary);
+  font-variant-numeric: tabular-nums;
+  text-align: end;
+  user-select: none;
+}
+
+.comma-diff-code {
+  min-width: 0;
+  flex: 1 1 auto;
+  padding-inline: var(--spacing-lg);
+  white-space: pre;
+}
+
+.comma-diff[data-numbered="true"] .comma-diff-code {
+  padding-inline-start: var(--spacing-sm);
+}
+
+.comma-diff[data-wrap="true"] .comma-diff-code {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.comma-diff-line[data-kind="add"] {
+  background: var(--color-utility-success-50);
+  color: var(--color-utility-success-700);
+}
+
+.comma-diff-line[data-kind="del"] {
+  background: var(--color-utility-error-50);
+  color: var(--color-utility-error-700);
+}
+
+.comma-diff-line[data-kind="hunk"] {
+  background: var(--color-utility-blue-50);
+  color: var(--color-utility-blue-700);
+}
+
+.comma-diff-line[data-kind="meta"] {
+  color: var(--color-text-tertiary);
+}
+
 /* Figma "Label" chip: a 1px pill with an 8px colour mark, the text set
    medium; the mark sits 8px in, the text ends 12px before the edge. */
 .comma-task-label-chip {
@@ -3302,12 +4653,12 @@ button.comma-task-activity-row:focus-visible {
     background: var(--color-bg-primary);
   }
 
-  /* "Status unknown" is the least telling word in a squeezed row: it yields
-     to the chips, the date stays, and a stale warning is never dropped. */
-  [data-slot="task-list-item"][data-freshness="unknown"]
-    [data-slot="task-list-item-tail"]
-    > span:first-child {
-    display: none;
+  /* The pull request chip stays whole: its number is all it says. */
+  [data-slot="task-list-item"]
+    [data-slot="task-list-item-badges"]
+    .comma-task-pull-request-chip {
+    flex-shrink: 0;
+    max-width: none;
   }
 
   [data-slot="task-list-item"]
@@ -3372,6 +4723,33 @@ button.comma-task-label-chip:focus-visible {
 .comma-task-platform-chip svg {
   width: var(--spacing-xl);
   height: var(--spacing-xl);
+}
+
+/* The pull request chip: its state mark (the pull request icons, 16px) sits where the colour mark does, tinted by
+   state as the Task panel's pull request card is. */
+.comma-task-pull-request-chip {
+  padding-inline-start: var(--spacing-sm);
+}
+
+.comma-task-pull-request-chip svg {
+  width: var(--spacing-xl);
+  height: var(--spacing-xl);
+}
+
+.comma-task-pull-request-chip [data-state="open"] {
+  color: var(--color-fg-success-primary);
+}
+
+.comma-task-pull-request-chip [data-state="merged"] {
+  color: var(--color-purple-500);
+}
+
+.comma-task-pull-request-chip [data-state="closed"] {
+  color: var(--color-fg-error-primary);
+}
+
+.comma-task-pull-request-chip [data-state="draft"] {
+  color: var(--color-text-tertiary);
 }
 
 /* A Loop type uses the label chip with its trigger icon where the colour mark
@@ -3843,6 +5221,13 @@ button.comma-task-label-chip:focus-visible {
   padding: 24px 24px 0;
 }
 
+/* A send's glide (outgoingBubbleMotion) draws the column lower than its
+   layout while it eases back. What it pushes past the thread's end is below
+   the viewport; clipping it keeps the offset out of the scroll range. */
+.comma-chat-thread[data-outgoing-glide="true"] {
+  overflow-y: clip;
+}
+
 /* The scroll content's height is auto, so a percentage min-height on this
    thread never resolves and the empty mark stays at the top. The viewport is
    a size container, so the empty thread can take its block size and center. */
@@ -4069,8 +5454,8 @@ button.comma-task-label-chip:focus-visible {
 }
 
 /* A quoted passage the sender picked out of the thread. The tile itself is
-   the composer's staged-quote chip (icon only, text on hover); this wrapper
-   just seats it in the turn's evenly spaced stack. */
+   the composer's staged-quote chip (opening lines, full text on hover); this
+   wrapper just seats it in the turn's evenly spaced stack. */
 .comma-chat-message-quote {
   display: flex;
   /* Matches the leading-extras gap so images, quote, pills, and bubble read
@@ -4272,6 +5657,15 @@ button.comma-task-label-chip:focus-visible {
   content: "";
 }
 
+/* A collapsed bubble's fade spans the flight's material plane, so the wider
+   source shape never shows its side edge. */
+.comma-chat-user-bubble[data-outgoing-presentation="flying"][popover]
+  .comma-chat-user-bubble-fade {
+  inset-inline: auto;
+  right: 0;
+  width: var(--comma-chat-flight-width);
+}
+
 .comma-chat-outgoing-composer-chrome {
   position: absolute;
   right: 0;
@@ -4280,9 +5674,13 @@ button.comma-task-label-chip:focus-visible {
 }
 
 /* A start-aligned flight (outgoingBubbleMotion.ts) is anchored on its start
-   edge: its material plane and the composer's chrome hang from there. */
+   edge: its material plane, its fade and the composer's chrome hang from
+   there. */
 [data-outgoing-align="start"]
   .comma-chat-user-bubble[data-outgoing-presentation="flying"][popover]::before,
+[data-outgoing-align="start"]
+  .comma-chat-user-bubble[data-outgoing-presentation="flying"][popover]
+  .comma-chat-user-bubble-fade,
 [data-outgoing-align="start"] .comma-chat-outgoing-composer-chrome {
   right: auto;
   left: 0;
@@ -4667,7 +6065,8 @@ button.comma-chat-user-bubble-toggle:focus-visible {
 }
 
 /* All agent marks share a 16px visual size in a 24px column. */
-.comma-chat-assistant-source-avatar.comma-chat-assistant-router-mark > svg {
+.comma-chat-assistant-source-avatar.comma-chat-assistant-router-mark
+  > :is(svg, .comma-logo-animation) {
   width: 16px;
   height: 16px;
 }
@@ -4716,7 +6115,12 @@ button.comma-chat-user-bubble-toggle:focus-visible {
   box-shadow: var(--shadow-focus-gray);
 }
 
+/* The cap follows the column through the user row's container query units:
+   a one-line pill (a Routine item) is as wide as its whole title at
+   min-content, so the fixed cap alone pushed it past the column's left edge
+   in a narrow chat. */
 .comma-chat-message-user .comma-chat-block-extras {
+  max-width: min(480px, 100cqi);
   align-items: flex-end;
 }
 
@@ -4842,12 +6246,12 @@ button.comma-chat-user-bubble-toggle:focus-visible {
   );
   --chat-panel-video-inline-max-inline-size: var(--container-sm);
   --chat-panel-video-inline-max-block-size: var(--container-xs);
-  border: 0.5px solid var(--color-border-primary);
-  border-radius: var(--radius-xxs);
+  border: var(--border-width-0-5) solid var(--color-border-primary);
+  border-radius: var(--radius-md);
 }
 
 .comma-chat-inline-video .chat-panel-video-stage {
-  border-radius: var(--radius-xxs);
+  border-radius: calc(var(--radius-md) - var(--border-width-0-5));
 }
 
 /* An image an agent produced keeps the ratio it was produced at: the frame
@@ -4866,8 +6270,8 @@ button.comma-chat-user-bubble-toggle:focus-visible {
   max-inline-size: 100%;
   block-size: auto;
   aspect-ratio: auto;
-  border: 0.5px solid var(--color-border-primary);
-  border-radius: var(--radius-xxs);
+  border: var(--border-width-0-5) solid var(--color-border-primary);
+  border-radius: var(--radius-md);
   background: var(--color-bg-quaternary);
 }
 
@@ -4875,7 +6279,7 @@ button.comma-chat-user-bubble-toggle:focus-visible {
   inline-size: auto;
   max-inline-size: 100%;
   block-size: auto;
-  border-radius: var(--radius-xxs);
+  border-radius: calc(var(--radius-md) - var(--border-width-0-5));
 }
 
 /* Both caps must be able to lose to the column: an absolute 30rem alone left a
@@ -5949,7 +7353,8 @@ button.comma-chat-user-bubble-toggle:focus-visible {
 
 .comma-chat-thinking-bubble::before {
   transform: scaleX(-1);
-  animation: comma-chat-thinking-breathe 3.6s var(--motion-easing-spatial-move) infinite;
+  animation: comma-chat-thinking-breathe 3.6s var(--motion-loop-thinking-breathe)
+    infinite;
 }
 
 .comma-chat-thinking-logo {
@@ -5966,10 +7371,12 @@ button.comma-chat-user-bubble-toggle:focus-visible {
 
 /* Worker avatars sit beside the Router mark inside the bubble, as the channel
    capsule does, so the bubble keeps the reply column's edge. A ring in the
-   bubble colour separates each disc from the one before it. */
+   bubble colour separates each disc from the one before it. A white disc reads
+   smaller than the solid Comma mark beside it, so it is drawn 2px larger to
+   look the same size. */
 .comma-chat-thinking-worker {
-  width: 16px;
-  height: 16px;
+  width: 18px;
+  height: 18px;
   flex: none;
   outline: 1.5px solid var(--comma-chat-tail-background);
 }
@@ -6439,9 +7846,11 @@ button.comma-chat-user-bubble-toggle:focus-visible {
   color: var(--color-text-primary);
 }
 
+/* The logo fills the disc as far as its corners allow, so it reads at the
+   size of the Comma mark beside it. */
 .comma-worker-model-mark > :is(svg, img) {
-  width: 70%;
-  height: 70%;
+  width: 85%;
+  height: 85%;
 }
 
 .comma-chat-activity-card-meta,
@@ -6497,27 +7906,45 @@ button.comma-chat-user-bubble-toggle:focus-visible {
   color: var(--color-text-tertiary);
 }
 
-/* The Worker's step while it works: the same quiet sweep as a running
-   Worker's activity line. It covers only the words, inline, so it crosses
-   them at one pace however wide the line is, and across a wrapped step it
-   runs along the text from line to line. */
+/* The Worker's step while it works: the shared loading shine
+   (`.comma-shine`) from quaternary to secondary. It covers only the words,
+   in a box that hugs them, so it crosses them at one pace however wide the
+   line is. The box truncates the words itself: on the card's one line, after
+   the time, and in the log at two lines. */
 .comma-chat-activity-step-words > [data-shimmer="true"] {
-  background-image: linear-gradient(
-    90deg,
-    var(--color-text-quaternary) 0%,
-    var(--color-text-quaternary) 40%,
-    var(--color-text-secondary) 50%,
-    var(--color-text-quaternary) 60%,
-    var(--color-text-quaternary) 100%
-  );
-  background-repeat: no-repeat;
-  background-size: 400% 100%;
-  background-clip: text;
-  color: transparent;
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  animation: comma-ai-activity-shimmer var(--motion-duration-loading-shine) linear
-    infinite;
+  --comma-shiny-text-base: var(--color-text-quaternary);
+  --comma-shiny-text-highlight: var(--color-text-secondary);
+
+  max-width: 100%;
+  overflow: hidden;
+}
+
+.comma-chat-activity-step-text[data-step="true"] {
+  display: flex;
+  align-items: baseline;
+}
+
+.comma-chat-activity-step-text[data-step="true"] > time {
+  flex: none;
+}
+
+.comma-chat-activity-step-text[data-step="true"] > .comma-chat-activity-step-words {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.comma-chat-activity-step-text .comma-chat-activity-step-words > [data-shimmer="true"] {
+  display: inline-block;
+  text-overflow: ellipsis;
+  vertical-align: top;
+}
+
+.comma-chat-activity-log-steps .comma-chat-activity-step-words > [data-shimmer="true"] {
+  display: -webkit-box;
+  width: fit-content;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 /* A row's log opens beside the card while the row is hovered or focused,
@@ -6649,10 +8076,6 @@ button.comma-chat-user-bubble-toggle:focus-visible {
 /* Without motion, heights and steps change at once, the log only fades,
    and the step in progress holds still. */
 @media (prefers-reduced-motion: reduce) {
-  .comma-chat-activity-step-words > [data-shimmer="true"] {
-    animation: none;
-  }
-
   .comma-chat-activity-card,
   .comma-chat-activity-log-frame,
   .comma-chat-activity-log-steps > li {
@@ -6670,12 +8093,6 @@ button.comma-chat-user-bubble-toggle:focus-visible {
         var(--motion-easing-surface-smooth-out),
       visibility 0s;
   }
-}
-
-:root[data-comma-reduced-motion="true"]
-  .comma-chat-activity-step-words
-  > [data-shimmer="true"] {
-  animation: none;
 }
 
 :root[data-comma-reduced-motion="true"] .comma-chat-activity-card,
@@ -6698,15 +8115,6 @@ button.comma-chat-user-bubble-toggle:focus-visible {
     opacity var(--motion-duration-hover-card-enter)
       var(--motion-easing-surface-smooth-out),
     visibility 0s;
-}
-
-@media (forced-colors: active) {
-  .comma-chat-activity-step-words > [data-shimmer="true"] {
-    background-image: none;
-    color: CanvasText;
-    animation: none;
-    -webkit-text-fill-color: currentcolor;
-  }
 }
 
 .comma-chat-activity-card-more {
@@ -6767,32 +8175,17 @@ button.comma-chat-user-bubble-toggle:focus-visible {
 }
 
 /* Figma: a 16px diagonal band with a 3px blur. Reuse the shared sweep and
-   its offscreen, visibility and reduced-motion handling. */
+   its offscreen, visibility and reduced-motion handling; only the band's
+   layer changes colour. */
 .comma-chat-thinking-bubble[data-working-provider]
-  .comma-ai-activity-text-summary[data-shimmer="true"][data-shimmer-ready="true"] {
+  .comma-ai-activity-text-summary[data-shimmer="true"][data-shimmer-ready="true"]::after {
   background-image: linear-gradient(
     140deg,
-    currentcolor calc(50% - 14px),
+    transparent calc(50% - 14px),
     var(--comma-channel-shimmer-color) calc(50% - 5px),
     var(--comma-channel-shimmer-color) calc(50% + 5px),
-    currentcolor calc(50% + 14px)
+    transparent calc(50% + 14px)
   );
-}
-
-:root[data-comma-reduced-motion="true"]
-  .comma-chat-thinking-bubble[data-working-provider]
-  .comma-ai-activity-text-summary[data-shimmer="true"],
-:root[data-comma-reduced-motion="true"]
-  .comma-chat-thinking-bubble[data-working-provider]
-  .comma-ai-activity-text-summary[data-shimmer-ready="true"] {
-  background-image: none;
-}
-
-@media (prefers-reduced-motion: reduce), (forced-colors: active) {
-  .comma-chat-thinking-bubble[data-working-provider]
-    .comma-ai-activity-text-summary[data-shimmer="true"][data-shimmer-ready="true"] {
-    background-image: none;
-  }
 }
 
 @keyframes comma-chat-thinking-breathe {
@@ -8047,50 +9440,6 @@ body[data-comma-window-role="meeting-recorder"]
   opacity: 1;
 }
 
-/* Source-only suggestions stay on one line. Only overflowing active labels scroll. */
-.comma-recommendation-text-item[data-source-only="true"]
-  .comma-recommendation-inline-source {
-  background: transparent;
-  color: var(--color-text-primary);
-  padding: 0;
-}
-.comma-recommendation-text-item[data-source-only="true"]
-  .comma-recommendation-inline-source
-  > span {
-  min-width: 0;
-  padding-inline-end: var(--spacing-xxs);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  text-align: left;
-}
-/* A scrolling label has no ellipsis. It fades out at an edge instead, by as
-   much as it still hides there, up to the fade width. */
-.comma-recommendation-text-item[data-scrolling="true"]
-  .comma-recommendation-inline-source
-  > span {
-  --comma-label-fade-start: min(var(--comma-scrolled, 0px), var(--spacing-xl));
-  --comma-label-fade-end: min(
-    var(--comma-unscrolled, var(--spacing-xl)),
-    var(--spacing-xl)
-  );
-  text-overflow: clip;
-  -webkit-mask-image: linear-gradient(
-    to right,
-    transparent,
-    black var(--comma-label-fade-start),
-    black calc(100% - var(--comma-label-fade-end)),
-    transparent
-  );
-  mask-image: linear-gradient(
-    to right,
-    transparent,
-    black var(--comma-label-fade-start),
-    black calc(100% - var(--comma-label-fade-end)),
-    transparent
-  );
-}
-
 /* The source context card: the task the row starts, then the quoted source
    words as its evidence under a quote rule, then the source they come from. */
 .comma-hover-card.comma-recommendation-source-detail-card {
@@ -8165,6 +9514,11 @@ body[data-comma-window-role="meeting-recorder"]
   background: none;
   text-decoration-color: currentColor;
 }
+/* A mentioned person stands out from the quoted words, as Slack sets them. */
+.comma-recommendation-source-detail .comma-recommendation-context-link[data-mention] {
+  color: var(--color-text-primary);
+  font-weight: var(--font-weight-medium);
+}
 .comma-recommendation-source-origin {
   display: flex;
   min-width: 0;
@@ -8209,10 +9563,106 @@ body[data-comma-window-role="meeting-recorder"]
 }
 
 /* The fix for a funding stop, under the status line that names it. */
+/* A Task's model that cannot start, as one card in its chat
+   (TaskRunBlockedCard): why, then the model to switch to and the switch on
+   one line, the picker taking what the button leaves. */
+.comma-task-run-blocked-row {
+  margin: var(--spacing-md) 0;
+}
+
+/* Copy over controls: the icon stays with the title line, not the middle. */
+.comma-task-run-blocked {
+  align-items: flex-start;
+}
+
+.comma-task-run-blocked-choice {
+  display: flex;
+  width: 100%;
+  flex-direction: column;
+  gap: var(--spacing-sm);
+  margin-top: var(--spacing-sm);
+}
+
+.comma-task-run-blocked-controls {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: var(--spacing-md);
+}
+
 .comma-chat-funding-actions {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: var(--spacing-md);
   margin-top: var(--spacing-sm);
+}
+
+.comma-chat-suggestions {
+  min-width: 0;
+}
+
+.comma-chat-suggestion {
+  flex: none;
+  max-width: 450px;
+  border: 0;
+  border-radius: var(--radius-full);
+  background: var(--color-markdown-bg-message);
+  padding: var(--spacing-xs) var(--spacing-lg);
+  color: var(--color-markdown-text-primary);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm--line-height);
+  text-align: start;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  overflow: hidden;
+  cursor: pointer;
+  /* Each capsule reveals just after the one before it, so the row reads left
+     to right instead of appearing as one block. */
+  animation: comma-chat-suggestion-reveal var(--motion-duration-reveal-item)
+    var(--motion-easing-smooth-out) backwards;
+  animation-delay: calc(
+    var(--comma-chat-suggestion-index, 0) * var(--motion-duration-reveal-stagger)
+  );
+  transition:
+    background-color var(--motion-duration-feedback-out) var(--motion-easing-smooth-out),
+    color var(--motion-duration-feedback-out) var(--motion-easing-smooth-out),
+    scale var(--motion-duration-feedback-out) var(--motion-easing-smooth-out);
+}
+
+/* The token set has no hover step for markdown/bg-message, and borrowing one
+   from another background family inverts between light and dark. Layer the
+   markdown surface's own hover veil over the capsule fill instead — it is
+   already defined as a darkening in light mode and a lightening in dark. */
+.comma-chat-suggestion:hover {
+  background-image: linear-gradient(
+    var(--color-markdown-image-hover),
+    var(--color-markdown-image-hover)
+  );
+}
+
+.comma-chat-suggestion[data-pressed] {
+  scale: var(--motion-scale-tactile-pressed);
+  transition-duration: var(--motion-duration-feedback-in);
+}
+
+.comma-chat-suggestion[data-focus-visible] {
+  outline: none;
+  box-shadow: var(--shadow-focus-gray);
+}
+
+@keyframes comma-chat-suggestion-reveal {
+  from {
+    opacity: 0;
+    scale: var(--motion-scale-reveal-item);
+    translate: var(--spacing-md) 0;
+  }
+}
+
+/* A suggestion never makes the empty compact editor wrap. Drafts still wrap. */
+.comma-chat-composer .ai-input-rich-editor:empty::before {
+  display: block;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }

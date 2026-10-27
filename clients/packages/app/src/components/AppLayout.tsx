@@ -33,13 +33,17 @@ import { DesktopAppPromptHost, needsDesktopApp } from "./DesktopAppPrompt";
 import { AppSettingsRoute } from "./AppSettingsRoute";
 import { CommaAuthGate, useCommaAuth } from "./AuthGate";
 import { WindowBar } from "./WindowBar";
+import { MiniAppFrameKeeper } from "./apps/MiniAppFrame";
 import { ChatConsumerBoundary, ChatSessionProvider } from "./chat/ChatProvider";
 import { RouterIdentityProvider } from "./router-identity/RouterIdentityProvider";
 import { HomeConversationTargetBootstrap } from "./chat/HomeConversationTargetBootstrap";
 import { HomeRoute } from "./RouteScreens";
 import { RecommendationMockDebugSettingsRoute } from "../devtools/recommendation-mock/RecommendationMockDebugSettingsRoute";
 import { ChatSidebar } from "./chat-sidebar/ChatSidebar";
-import { ChatSidebarProvider, useChatSidebar } from "./chat-sidebar/ChatSidebarContext";
+import {
+  ChatSidebarProvider,
+  useChatSidebarOpen,
+} from "./chat-sidebar/ChatSidebarContext";
 import { CommaSidebarPanel } from "./sidebar/SidebarPanel";
 import { CommaSidebarProvider, useCommaSidebar } from "./sidebar/SidebarContext";
 import {
@@ -74,8 +78,10 @@ import {
 } from "./sidebar/CommaCenterStatusContext";
 import { AppProductShortcutListener } from "./shortcuts/useAppShortcutListener";
 import { MeetingRecorderHost } from "./MeetingRecorderHost";
+import { DesktopCallAudio } from "./voice/DesktopCall";
 import { NotchTaskSync } from "./tasks/NotchTaskSync";
 import { TaskStepsProvider } from "./tasks/taskSteps";
+import { InboxFiltersProvider } from "./inbox/filters/InboxFiltersState";
 import { MessageNotificationSync } from "./notifications/MessageNotificationSync";
 import { AirDropToasts } from "./airdrop/AirDropToasts";
 import { CommaConnectorRuntimeOwner } from "./useCommaConnectorScope";
@@ -175,21 +181,20 @@ function CommaAuthenticatedSession() {
     <ChatSessionProvider productLease={productLease} sessionSignal={sessionSignal}>
       <RouterIdentityProvider>
         <LegacyActiveWorkspace />
-        <PluginNotices />
         <CommandPaletteProvider>
-          {/* A guest Session has only its Router chat: no Connector, Tasks,
-                or AirDrop owners. */}
-          {isGuest ? null : <CommaConnectorRuntimeOwner />}
           <CommaCenterStatusProvider>
             <TaskStepsProvider>
-              <ChatConsumerBoundary>
-                {isGuest ? null : <NotchTaskSync />}
-                <MessageNotificationSync />
-                {isGuest ? null : <AirDropToasts />}
-                <HomeConversationTargetBootstrap />
-                <CommaCenterStatusOwner />
-              </ChatConsumerBoundary>
-              <Outlet />
+              <InboxFiltersProvider>
+                {/* A guest Session has only its Router chat: no AirDrop owner.
+                    AirDrop toasts are the window's own: each shows the
+                    transfers sent to it. */}
+                {isGuest ? null : (
+                  <ChatConsumerBoundary>
+                    <AirDropToasts />
+                  </ChatConsumerBoundary>
+                )}
+                <Outlet />
+              </InboxFiltersProvider>
             </TaskStepsProvider>
           </CommaCenterStatusProvider>
         </CommandPaletteProvider>
@@ -198,17 +203,46 @@ function CommaAuthenticatedSession() {
   );
 }
 
+/**
+ * The session's owners: one set, in the window that shows the product. A
+ * window that shows one app (`AppWindowRoute`) runs none of them: each would
+ * follow the running Tasks' Workers again, drive the Notch and the Connector
+ * a second time, and hide the Notch when it closes.
+ */
+function CommaProductSessionOwners() {
+  const { isGuest = false } = useCommaAuth();
+
+  return (
+    <>
+      <PluginNotices />
+      {/* A guest Session has only its Router chat: no Connector or Tasks
+          owners. */}
+      {isGuest ? null : <CommaConnectorRuntimeOwner />}
+      <ChatConsumerBoundary>
+        {isGuest ? null : <NotchTaskSync />}
+        <MessageNotificationSync />
+        <HomeConversationTargetBootstrap />
+        <CommaCenterStatusOwner />
+      </ChatConsumerBoundary>
+    </>
+  );
+}
+
+const productSessionOwners = <CommaProductSessionOwners />;
 const productSessionLayout = <CommaProductSessionLayout />;
 
 // Product session host: the window bar, the icon rail and the content panel.
 // Every product location — Settings included — is a surface inside that
-// panel. Once Home has been mounted it stays in one React slot and in layout
-// (`visibility: hidden`, not `display: none`) while another location shows, so
-// its container queries and scroll do not collapse; the paused marker tells
-// chat image observers not to drop preview leases. Hidden Home stays live: an
-// arrival animation in flight still finishes there, so Home is not hidden
-// with `content-visibility`, which freezes the animations it skips. Product
-// portals render into the host below, outside every chat-consumer boundary.
+// panel. Once Home has been mounted it stays in one React slot while another
+// location shows, hidden with `content-visibility: hidden`: the browser keeps
+// its layout, scroll and container sizes but skips its style, layout and
+// paint, so another page's frames do not pay for it, and showing it again
+// restyles only what changed. `visibility` and `inert` are inherited, so
+// toggling them restyled every Home element on each page switch. Skipped
+// content takes no focus or pointer; the paused marker tells chat image
+// observers not to drop preview leases. An animation in flight there waits
+// until Home shows again. Product portals render into the host below,
+// outside every chat-consumer boundary.
 export function CommaProductLayout() {
   // State, not a ref: an overlay mounted in the host's own commit, such as
   // Settings opened by a `/#/settings` link, finds no host on its first render
@@ -225,32 +259,39 @@ export function CommaProductLayout() {
   const { isGuest = false, userId } = useCommaAuth();
 
   return (
-    <OverlayPortalProvider getContainer={getProductPortalHost}>
-      <div className="h-screen min-h-0 w-full">
-        <div data-comma-product-portal-host="" ref={setProductPortalHost} />
-        {productSessionLayout}
-        {/* First-launch introduction: route-independent, beside the shell and
-            outside its content containment, one per signed-in account. The
-            desktop app shows the onboarding; the web shows a small card
-            instead. A guest Session has only its Router chat, so it has none. */}
-        {userId && !isGuest ? (
-          needsDesktopApp() ? (
-            <WebIntroCard key={userId} userId={userId} />
-          ) : (
-            <OnboardingHost key={userId} userId={userId} />
-          )
-        ) : null}
-      </div>
-    </OverlayPortalProvider>
+    <>
+      {productSessionOwners}
+      <OverlayPortalProvider getContainer={getProductPortalHost}>
+        <div className="h-screen min-h-0 w-full">
+          <div data-comma-product-portal-host="" ref={setProductPortalHost} />
+          {productSessionLayout}
+          {/* First-launch introduction: route-independent, beside the shell and
+              outside its content containment, one per signed-in account. The
+              desktop app shows the onboarding; the web shows a small card
+              instead. A guest Session has only its Router chat, so it has none. */}
+          {userId && !isGuest ? (
+            needsDesktopApp() ? (
+              <WebIntroCard key={userId} userId={userId} />
+            ) : (
+              <OnboardingHost key={userId} userId={userId} />
+            )
+          ) : null}
+        </div>
+      </OverlayPortalProvider>
+    </>
   );
 }
 
 function CommaProductSessionLayout() {
   const nativeInfo = useContext(NativeInfoContext);
+  const accountKey = useProductAccountKey();
 
   return (
     <ChatSidebarProvider>
-      <CommaProductLayoutFrame nativeInfo={nativeInfo} />
+      {/* Apps that chat cards run stay running across page switches, for this session. */}
+      <MiniAppFrameKeeper account={accountKey}>
+        <CommaProductLayoutFrame nativeInfo={nativeInfo} />
+      </MiniAppFrameKeeper>
     </ChatSidebarProvider>
   );
 }
@@ -304,7 +345,7 @@ function CommaRailFitProvider({
   children: ReactNode;
   shellElement: HTMLElement | null;
 }) {
-  const { isOpen: chatSidebarOpen } = useChatSidebar();
+  const chatSidebarOpen = useChatSidebarOpen();
   const primaryContentMinWidth = usePrimaryContentMinWidth();
   const railFits = useRailFits({
     chatSidebarOpen,
@@ -405,8 +446,9 @@ function CommaContent({ frameElement }: { frameElement: HTMLElement | null }) {
   const homeVisible = isHomePath(pathname);
   const { open: settingsOpen } = useCommaSettingsOverlay();
   const { isGuest = false } = useCommaAuth();
-  // A guest Session has only Home's Router chat; other product routes return there.
-  const guestRouteBlocked = isGuest && showsProductRouteOutlet(pathname);
+  // A guest Session has only Home's Router chat and the app links it opens; other product routes return there.
+  const guestRouteBlocked =
+    isGuest && showsProductRouteOutlet(pathname) && !pathname.startsWith("/apps/link/");
   const showProductRoute = showsProductRouteOutlet(pathname) && !guestRouteBlocked;
   useEffect(() => {
     if (guestRouteBlocked) void navigate({ replace: true, to: "/" });
@@ -474,13 +516,8 @@ function CommaContent({ frameElement }: { frameElement: HTMLElement | null }) {
                 aria-hidden={homeVisible ? undefined : true}
                 className="absolute inset-0 flex min-h-0 min-w-0"
                 data-comma-surface-paused={homeVisible ? undefined : "true"}
-                inert={homeVisible ? undefined : true}
                 ref={homeSurfaceRef}
-                style={
-                  homeVisible
-                    ? undefined
-                    : { pointerEvents: "none", visibility: "hidden" }
-                }
+                style={homeVisible ? undefined : { contentVisibility: "hidden" }}
               >
                 <ChatPanelVideoSurfaceProvider
                   reveal={revealHome}
@@ -516,6 +553,7 @@ function CommaContent({ frameElement }: { frameElement: HTMLElement | null }) {
         {/* Native browser views paint above DOM. Keep client controls in the route
           area; Main still owns capture across projection remounts. */}
         {isGuest ? null : <MeetingRecorderHost containment={recorderArea} />}
+        {isGuest ? null : <DesktopCallAudio />}
         <ChatConsumerBoundary>
           <ChatSidebarSlot
             appSidebarFloor={collapsed ? 0 : commaSidebarRailWidth}

@@ -314,7 +314,10 @@ export function DrivePreviewPanel({
               icon={<EditBigIcon className="comma-input-icon" />}
               isDisabled={!blob}
               onPress={() => {
-                const hash = file.system?.kind === "vfs" ? file.system.hash : undefined;
+                const hash =
+                  file.system && file.system.kind !== "skill"
+                    ? file.system.hash
+                    : undefined;
                 void blob
                   ?.text()
                   .then((text) => setEditing({ fileId: file.id, hash, text }));

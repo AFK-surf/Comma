@@ -13,7 +13,8 @@ Mac with `env.exec`.
 ## Download and details
 
 - `yt-dlp` supports bilibili.com:
-  `yt-dlp -o "%(title)s.%(ext)s" https://www.bilibili.com/video/<BV id>`.
+  `yt-dlp -S "vcodec:h264,res,acodec:m4a" --merge-output-format mp4 -o "%(title)s.%(ext)s" https://www.bilibili.com/video/<BV id>`
+  (H.264 and AAC, so it plays on any device: Bilibili also serves HEVC and AV1).
   Add `--cookies-from-browser chrome` for 1080p and member content.
 - Metadata only: `yt-dlp -J <url>`. Subtitles:
   `yt-dlp --skip-download --write-subs --sub-langs all <url>`.

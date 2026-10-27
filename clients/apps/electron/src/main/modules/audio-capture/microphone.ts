@@ -5,6 +5,7 @@ import {
   audioCaptureMicrophonesSchema,
   type AudioCaptureMicrophones,
 } from "@comma/native-bridge";
+import { realMainClock, type MainClock } from "../../clock";
 
 /**
  * Microphone intake for Main.
@@ -60,19 +61,24 @@ export class MicrophoneDeniedError extends Error {
 }
 
 export class HelperMicrophoneCapture implements MicrophoneCapture {
+  readonly #clock: MainClock;
   readonly #executablePath: string;
   readonly #spawn: SpawnMicrophoneHost;
   readonly #readyTimeoutMs: number;
 
   constructor({
+    clock = realMainClock,
     executablePath,
     readyTimeoutMs = READY_TIMEOUT_MS,
     spawn: spawnImpl = defaultSpawnMicrophoneHost,
   }: {
+    /** Main's clock: the ready, enumeration and stop deadlines. */
+    clock?: MainClock;
     executablePath: string;
     readyTimeoutMs?: number;
     spawn?: SpawnMicrophoneHost;
   }) {
+    this.#clock = clock;
     this.#executablePath = executablePath;
     this.#readyTimeoutMs = readyTimeoutMs;
     this.#spawn = spawnImpl;
@@ -87,24 +93,24 @@ export class HelperMicrophoneCapture implements MicrophoneCapture {
     const child = this.#spawn(this.#executablePath, ["--list-devices"]);
     return new Promise((resolve, reject) => {
       let bytes = Buffer.alloc(0);
-      const timeout = setTimeout(() => {
+      const cancelTimeout = this.#clock.setTimer(this.#readyTimeoutMs, () => {
         child.kill("SIGKILL");
         reject(new Error("Microphone enumeration timed out."));
-      }, this.#readyTimeoutMs);
+      });
       child.stdout?.on("data", (chunk: Buffer) => {
         bytes = Buffer.concat([bytes, chunk]);
         if (bytes.length > 128 * 2048) {
-          clearTimeout(timeout);
+          cancelTimeout();
           child.kill("SIGKILL");
           reject(new Error("Microphone list exceeded its size limit."));
         }
       });
       child.on("error", (error) => {
-        clearTimeout(timeout);
+        cancelTimeout();
         reject(error);
       });
       child.on("exit", (code) => {
-        clearTimeout(timeout);
+        cancelTimeout();
         try {
           if (code !== 0) throw new Error("Microphone enumeration failed.");
           resolve(
@@ -130,11 +136,11 @@ export class HelperMicrophoneCapture implements MicrophoneCapture {
     let stopTask: Promise<void> | undefined;
 
     return new Promise<MicrophoneSession>((resolve, reject) => {
-      const timeout = setTimeout(() => {
+      const cancelTimeout = this.#clock.setTimer(this.#readyTimeoutMs, () => {
         if (ready) return;
         void stop();
         reject(new Error("The microphone helper did not become ready in time."));
-      }, this.#readyTimeoutMs);
+      });
 
       let stderrBuffer = "";
       child.stderr?.on("data", (chunk: Buffer | string) => {
@@ -149,7 +155,7 @@ export class HelperMicrophoneCapture implements MicrophoneCapture {
           if (!event) continue;
           if (event.event === "ready" && !ready) {
             ready = true;
-            clearTimeout(timeout);
+            cancelTimeout();
             resolve({ stop: () => stop() });
           } else if (event.event === "error") {
             const error =
@@ -157,7 +163,7 @@ export class HelperMicrophoneCapture implements MicrophoneCapture {
                 ? new MicrophoneDeniedError()
                 : new Error(event.message || "The microphone helper failed.");
             if (!ready) {
-              clearTimeout(timeout);
+              cancelTimeout();
               void stop();
               reject(error);
             } else if (!stopping) {
@@ -173,14 +179,14 @@ export class HelperMicrophoneCapture implements MicrophoneCapture {
       });
 
       child.on("error", (error) => {
-        clearTimeout(timeout);
+        cancelTimeout();
         if (!ready) reject(error);
         else if (!stopping) input.onError(error);
       });
 
       child.on("exit", (code) => {
         exited = true;
-        clearTimeout(timeout);
+        cancelTimeout();
         if (!ready) {
           reject(
             code === EXIT_MICROPHONE_DENIED
@@ -203,12 +209,13 @@ export class HelperMicrophoneCapture implements MicrophoneCapture {
             done();
             return;
           }
-          const force = setTimeout(() => {
+          // A helper that ignores its stop must still die while a test clock stands still.
+          const cancelForce = realMainClock.setTimer(STOP_GRACE_MS, () => {
             // A sent signal is not an observed exit.
             if (!exited) child.kill("SIGKILL");
-          }, STOP_GRACE_MS);
+          });
           child.once("exit", () => {
-            clearTimeout(force);
+            cancelForce();
             done();
           });
           // EOF on stdin is the helper's stop signal; SIGTERM is the backstop.

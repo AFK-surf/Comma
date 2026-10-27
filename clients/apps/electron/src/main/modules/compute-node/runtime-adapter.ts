@@ -1,4 +1,4 @@
-import { assertMaintenanceCapable } from "./host-maintenance-protocol";
+import type { MaintenanceCapabilityProbe } from "./host-maintenance-protocol";
 import type { ComputeNodeState } from "@comma/native-bridge";
 import { runCommand } from "./command";
 
@@ -17,6 +17,11 @@ export interface ComputeNodeRuntimeObservation {
     code: string;
     retryable: boolean;
   };
+  /** The installed Host stopped because it cannot open this Mac's local data. */
+  hostStartFailure?: {
+    code: "data_newer_than_host" | "data_requires_conversion";
+    dataSchema?: number;
+  };
   reason?:
     | "operator_unavailable"
     | "registration_unreadable"
@@ -32,6 +37,8 @@ export interface ComputeNodeRuntimeAdapter {
   remove(requestId?: string, registrationId?: string): Promise<void>;
   resume(operationId: string, requestId?: string): Promise<void>;
   repair(requestId?: string): Promise<void>;
+  /** Starts one user action or continuation step: its first gated mutation probes the Host once. */
+  beginAction?(): void;
 }
 
 export const absentObservation: ComputeNodeRuntimeObservation = {
@@ -50,8 +57,12 @@ export class AgentVMMCommandAdapter implements ComputeNodeRuntimeAdapter {
   constructor(
     private readonly lifecyclePath: string,
     private readonly run = runCommand,
-    private readonly requireMaintenanceContract = false
+    private readonly probe?: MaintenanceCapabilityProbe
   ) {}
+
+  beginAction() {
+    this.probe?.beginAction();
+  }
 
   async observe(registrationId?: string): Promise<ComputeNodeRuntimeObservation> {
     try {
@@ -84,6 +95,7 @@ export class AgentVMMCommandAdapter implements ComputeNodeRuntimeAdapter {
           : undefined;
       const observed: ComputeNodeRuntimeObservation = {
         ...readInstallationFailure(value.operation),
+        ...readHostStartFailure(value.hostStartFailure),
         ...(registration ? { registration } : {}),
         ...(registrationId && registrationState ? { registrationState } : {}),
         ...(registrationId && !value.registrationRead
@@ -126,14 +138,19 @@ export class AgentVMMCommandAdapter implements ComputeNodeRuntimeAdapter {
   }
 
   async repair(requestId?: string) {
-    await this.mutate(lifecycleArgs("repair", requestId));
+    await this.mutate(lifecycleArgs("repair", requestId), undefined, undefined, true);
   }
 
   async enable(requestId?: string, registrationId?: string) {
     if (!registrationId) {
       throw new Error("Compute node registration identity is unavailable.");
     }
-    await this.mutate(registrationStateArgs("enabled", registrationId, requestId));
+    await this.mutate(
+      registrationStateArgs("enabled", registrationId, requestId),
+      undefined,
+      undefined,
+      true
+    );
   }
 
   async install(requestId?: string, descriptor?: string) {
@@ -143,14 +160,16 @@ export class AgentVMMCommandAdapter implements ComputeNodeRuntimeAdapter {
         ...(descriptor ? ["--operation-stdin"] : []),
       ],
       descriptor,
-      180_000
+      180_000,
+      true
     );
   }
   async resume(operationId: string, _requestId?: string) {
     await this.mutate(
       [...lifecycleArgs("install", operationId), "--resume-operation", operationId],
       undefined,
-      180_000
+      180_000,
+      true
     );
   }
   async drain(requestId?: string, registrationId?: string) {
@@ -175,13 +194,15 @@ export class AgentVMMCommandAdapter implements ComputeNodeRuntimeAdapter {
       150_000
     );
   }
-  private async mutate(args: string[], stdin?: string, timeoutMs?: number) {
-    if (this.requireMaintenanceContract)
-      await assertMaintenanceCapable(
-        this.lifecyclePath,
-        this.run,
-        COMMA_AGENT_VMM_SERVICE_ARGS
-      );
+  /** `gated`: the operation can conflict with Host maintenance, so it needs the maintenance protocol. */
+  private async mutate(
+    args: string[],
+    stdin?: string,
+    timeoutMs?: number,
+    gated = false
+  ) {
+    if (gated)
+      await this.probe?.assert(this.lifecyclePath, COMMA_AGENT_VMM_SERVICE_ARGS);
     return stdin === undefined && timeoutMs === undefined
       ? this.run(this.lifecyclePath, args)
       : this.run(this.lifecyclePath, args, stdin, timeoutMs);
@@ -211,6 +232,26 @@ function readInstallationFailure(
       code: operation.failureCode,
       // Native omits false when it serializes this receipt.
       retryable: operation.retryable === true,
+    },
+  };
+}
+
+function readHostStartFailure(
+  value: unknown
+): Pick<ComputeNodeRuntimeObservation, "hostStartFailure"> {
+  if (!value || typeof value !== "object") return {};
+  const failure = value as Record<string, unknown>;
+  if (
+    failure.code !== "data_newer_than_host" &&
+    failure.code !== "data_requires_conversion"
+  )
+    return {};
+  return {
+    hostStartFailure: {
+      code: failure.code,
+      ...(Number.isSafeInteger(failure.dataSchema)
+        ? { dataSchema: failure.dataSchema as number }
+        : {}),
     },
   };
 }

@@ -300,15 +300,21 @@ defmodule CommaSSH.TransportTest do
     )
   end
 
+  # A screen waits for the bytes it needs, under the suite's shared limit for a
+  # message that never comes (config/test.exs), not a shorter clock of its own.
+  defp wait_limit, do: ExUnit.configuration()[:assert_receive_timeout]
+
   defp read_port(port, text, acc \\ "") do
     if String.contains?(acc, text) do
       acc
     else
+      limit = wait_limit()
+
       SystemsRuntime.Proc.receive do
         {^port, {:data, bytes}} -> read_port(port, text, acc <> bytes)
         {^port, {:exit_status, status}} -> flunk("OpenSSH exited #{status}: #{acc}")
       after
-        5_000 -> flunk("OpenSSH did not display #{text}: #{acc}")
+        limit -> flunk("OpenSSH did not display #{text}: #{acc}")
       end
     end
   end
@@ -349,6 +355,8 @@ defmodule CommaSSH.TransportTest do
     if String.contains?(acc, text) do
       acc
     else
+      limit = wait_limit()
+
       SystemsRuntime.Proc.receive do
         {:ssh_cm, ^ssh, {:data, ^channel, _, bytes}} ->
           read_until(ssh, channel, text, acc <> bytes)
@@ -356,17 +364,19 @@ defmodule CommaSSH.TransportTest do
         {:ssh_cm, ^ssh, {:closed, ^channel}} ->
           flunk("channel closed before expected screen")
       after
-        5_000 -> flunk("missing screen text #{inspect(text)}: #{inspect(acc)}")
+        limit -> flunk("missing screen text #{inspect(text)}: #{inspect(acc)}")
       end
     end
   end
 
   defp assert_closed(ssh, channel) do
+    limit = wait_limit()
+
     SystemsRuntime.Proc.receive do
       {:ssh_cm, ^ssh, {:closed, ^channel}} -> :ok
       {:ssh_cm, ^ssh, _} -> assert_closed(ssh, channel)
     after
-      5_000 -> flunk("revoked channel remained open")
+      limit -> flunk("revoked channel remained open")
     end
   end
 end

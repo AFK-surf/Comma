@@ -152,7 +152,13 @@ defmodule SalixAgent.AgentModelChoiceTest do
     }
 
     assert stored(agent) == Map.put(before, "model", choice)
-    assert {:error, _} = LlmResolver.resolve_runtime(agent["agent_id"])
+    # The choice still resolves; no Profile serves it, so dispatch stops the
+    # input as `model_unavailable`.
+    assert {:ok, llm} = LlmResolver.resolve_runtime(agent["agent_id"])
+
+    assert {:error, %{"reason" => "model_unavailable"}} =
+             AccountPool.dispatch(llm, fn _ -> flunk("no Profile serves the model") end)
+
     assert {:ok, %{migrated: 0}} = AgentModelChoices.run()
   end
 

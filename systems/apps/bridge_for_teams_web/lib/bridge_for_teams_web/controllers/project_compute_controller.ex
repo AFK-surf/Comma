@@ -102,6 +102,70 @@ defmodule BridgeForTeamsWeb.ProjectComputeController do
     )
   end
 
+  def agent_vmm_install_command(conn, params) do
+    conn = put_resp_header(conn, "cache-control", "no-store")
+    request_id = conn |> get_req_header("idempotency-key") |> List.first()
+    user = ProjectScope.current_user(conn)
+
+    with {:ok, org} <- ProjectScope.require_org(params["org"]),
+         :ok <- ProjectScope.authorize_org_for_conn(conn, org, "member"),
+         {:ok, project} <- ProjectScope.require_project_for_conn(conn, org, params["project"]),
+         :ok <- ProjectScope.authorize_project_for_conn(conn, project, :write),
+         {:ok, base_url} <-
+           SalixStore.AgentVMMInstallations.Headless.delivery(
+             SystemsRuntime.get_env(:salix_web, :public_base_url)
+           ),
+         {:ok, descriptor} <-
+           Compute.request_agent_vmm_headless_install(
+             org,
+             project,
+             user,
+             %{"request_id" => request_id},
+             fn ->
+               with :ok <- ProjectScope.authorize_org_for_conn(conn, org, "member"),
+                    :ok <- ProjectScope.authorize_project_for_conn(conn, project, :write),
+                    do: :ok
+             end
+           ),
+         {:ok, command} <-
+           SalixStore.AgentVMMInstallations.Headless.command(
+             descriptor,
+             base_url
+           ) do
+      send_ok(conn, command)
+    else
+      {:error, :install_delivery_unavailable} ->
+        send_error(
+          conn,
+          503,
+          "install_delivery_unavailable",
+          "The install delivery URL is unavailable.",
+          %{}
+        )
+
+      {:error, {:operation_exists, _}} ->
+        send_error(
+          conn,
+          409,
+          "operation_not_retryable",
+          "Check the existing install operation.",
+          %{}
+        )
+
+      {:error, :scope_host_bound} ->
+        send_error(
+          conn,
+          409,
+          "scope_host_bound",
+          "This project already has an authorized Compute Host.",
+          %{}
+        )
+
+      error ->
+        send_project_error(conn, error, "Could not create the Linux install command.")
+    end
+  end
+
   def request_agent_vmm_install(conn, params) do
     conn = put_resp_header(conn, "cache-control", "no-store")
     request_id = conn |> get_req_header("idempotency-key") |> List.first()

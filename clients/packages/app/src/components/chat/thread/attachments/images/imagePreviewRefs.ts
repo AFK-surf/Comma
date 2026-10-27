@@ -27,6 +27,19 @@ export function agentBlobImagePreviewRef(
   };
 }
 
+/** A message's image by its place in it, when that is all there is to read it by. */
+export function messageImagePreviewRef(
+  attachment: ChatAttachment,
+  messageId: string
+): ChatImagePreviewRef | undefined {
+  if (attachment.blockType !== "image" || attachment.attachmentIndex === undefined)
+    return undefined;
+  const fileName = attachment.fileName ?? attachment.title;
+  if (!fileName || !imagePreviewMediaType(attachment.mimeType, fileName))
+    return undefined;
+  return { fileName, index: attachment.attachmentIndex, kind: "attachment", messageId };
+}
+
 function imagePreviewMediaType(
   value: string | undefined,
   fileName: string | undefined
@@ -50,5 +63,6 @@ function imagePreviewMediaType(
 
 export function imagePreviewRefKey(ref: ChatImagePreviewRef) {
   if (typeof ref === "string") return ref;
+  if (ref.kind === "attachment") return `${ref.messageId}#${ref.index}`;
   return `${ref.agentId}:${ref.blobRef.uuid}:${ref.blobRef.hash}:${ref.blobRef.size}`;
 }

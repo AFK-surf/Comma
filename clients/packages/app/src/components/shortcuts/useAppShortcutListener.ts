@@ -16,21 +16,21 @@ import {
 import { useNavigate, useRouter } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import { useChatSidebar } from "../chat-sidebar/ChatSidebarContext";
-import { useCommandPalette } from "../search/CommandPaletteContext";
+import {
+  useCommandPalette,
+  useProvideCommandPaletteShortcutRunner,
+} from "../search/CommandPaletteContext";
 import { isOnboardingOpen } from "../onboarding/onboardingPresence";
 import { useCommaSettingsOverlay } from "../settingsOverlay";
 import { useCommaSidebar } from "../sidebar/SidebarContext";
 import type { AppShortcutId } from "./appShortcutRegistry";
+import { typeSelectPopoverSelector } from "./typeSelectPopover";
 import { useCommaAppShortcuts } from "./commaAppShortcuts";
 
 type SequenceCandidate = {
   id: AppShortcutId;
   codes: readonly AppKeyCode[];
 };
-
-// Open menus and select lists take typed keys as type-to-select.
-const typeSelectPopoverSelector =
-  '[data-slot="dropdown-popover"], [data-slot="menu-popover"]';
 
 type SequenceState = {
   candidates: readonly SequenceCandidate[];
@@ -299,6 +299,7 @@ export function useAppProductShortcutListener() {
     },
     [runNavigationShortcut, runShellShortcut]
   );
+  useProvideCommandPaletteShortcutRunner(runShortcut);
 
   const { bindings } = useCommaAppShortcuts();
   const guest = useIsGuestSession();

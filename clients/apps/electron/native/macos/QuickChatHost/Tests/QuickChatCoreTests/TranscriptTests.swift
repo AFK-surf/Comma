@@ -98,72 +98,6 @@ struct SpeechPauseTests {
     }
 }
 
-struct ExactSpeechTests {
-    private func segment(_ text: String, _ start: Double, _ end: Double, _ confidence: Double) -> ExactSpeech.Segment {
-        .init(start: start, end: end, text: text, confidences: [confidence, confidence])
-    }
-
-    @Test func eachSentenceIsInTheLanguageItWasSpokenIn() {
-        // zh-CN, then en-US.
-        var speech = ExactSpeech(writesCJK: [true, false])
-        #expect(speech.text == nil)
-        speech.add(segment("Driver reply saying I will revew the proposal tonight。", 0, 3.8, 0.86), from: 0)
-        speech.add(segment("... Draft a reply saying I will review the proposal tonight.", 0, 3.8, 0.81), from: 1)
-        speech.pause(at: 4)
-        speech.add(segment("查一下最近三天有哪些任务还没有完成。", 4, 8.9, 0.98), from: 0)
-        speech.add(segment("Cha yi xia zui jin san tian.", 4, 8.9, 0.14), from: 1)
-        speech.pause(at: 9)
-        speech.add(segment("把 Figma里的 onboarding设计稿 review一下。", 9, 12.6, 0.9), from: 0)
-        speech.add(segment(", , ...", 9, 12.6, 0.5), from: 1)
-        #expect(speech.text(through: 4) == "Draft a reply saying I will review the proposal tonight.")
-        #expect(speech.text == "Draft a reply saying I will review the proposal tonight. 查一下最近三天有哪些任务还没有完成。把 Figma 里的 onboarding 设计稿 review 一下。")
-    }
-
-    @Test func theServersWordsStandForTheirClip() {
-        var speech = ExactSpeech(writesCJK: [true])
-        speech.add(segment("帮我看一下明天的日程。", 0, 3, 0.9), from: 0)
-        speech.pause(at: 3.1)
-        speech.add(segment("然后。", 3.1, 4.5, 0.6), from: 0)
-        speech.pause(at: 4.6)
-        speech.add(segment("看一下下午的机票。", 4.6, 9, 0.9), from: 0)
-        speech.hearFromServer("帮我看一下明天的日程，然后，呃，", for: 0..<4.6)
-        #expect(speech.text == "帮我看一下明天的日程，然后，看一下下午的机票。")
-        speech.pause(at: 9.2)
-        speech.hearFromServer("看一下下午的机票。", for: 4.6..<9.2)
-        #expect(speech.text == "帮我看一下明天的日程，然后，看一下下午的机票。")
-        // An answer without words changes nothing.
-        speech.hearFromServer(" ", for: 4.6..<9.2)
-        #expect(speech.text == "帮我看一下明天的日程，然后，看一下下午的机票。")
-    }
-
-    @Test func aLongClipPrefersACompletedBoundarySharedByBothLanguages() {
-        var speech = ExactSpeech(writesCJK: [false, true])
-        speech.add(segment("last words", 48, 55, 0.9), from: 0)
-        speech.add(segment("末尾", 48, 55, 0.9), from: 1)
-        #expect(speech.checkpoint(after: 0, through: 60) == 55)
-        // A second language's already-final sentence can span the other's end.
-        speech.add(segment("下一句话", 55, 62, 0.9), from: 1)
-        speech.add(segment("next", 55, 58, 0.9), from: 0)
-        #expect(speech.checkpoint(after: 0, through: 60) == 55)
-        #expect(speech.checkpoint(after: 55, through: 115) == 115)
-    }
-
-    @Test func aLaterClipsWordsKeepTheEarlierOnes() {
-        var speech = ExactSpeech(writesCJK: [false])
-        speech.add(segment("Draft a reply.", 0, 3, 0.8), from: 0)
-        speech.pause(at: 3.1)
-        speech.add(segment("Then book the room.", 3.1, 6, 0.8), from: 0)
-        speech.pause(at: 6.1)
-        speech.add(segment("and send it", 6.1, 9, 0.8), from: 0)
-        // Two clips are out at once; the second answers first and replaces only its own stretch.
-        speech.hearFromServer("Then book the room, please.", for: 3.1..<6.1)
-        #expect(speech.text == "Draft a reply. Then book the room, please. and send it")
-        speech.hearFromServer("Draft a reply to Pat.", for: 0..<3.1)
-        #expect(speech.text == "Draft a reply to Pat. Then book the room, please. and send it")
-        #expect(speech.text(through: 3.1) == "Draft a reply to Pat.")
-    }
-}
-
 struct TranscriptFitTests {
     /// Text whose height is `lines(size)` lines of `size × 1.3`.
     private func fit(height: CGFloat, lines: @escaping (CGFloat) -> CGFloat) -> TranscriptFit.Result {
@@ -230,36 +164,12 @@ struct TranscriptScrollTests {
     }
 }
 
-struct ShownSpeechTests {
-    @Test func exactWordsReplaceWhatWasSaidBeforeThePause() {
-        var speech = ShownSpeech()
-        speech.hear("Butget hop上那个评论总结一下", from: 0, isFinal: false)
-        // Live finalized its own phrase in the quiet.
-        speech.hear("Butget hop上那个评论总结一下。", from: 0, isFinal: true)
-        speech.hear("。", from: 4.5, isFinal: false)
-        speech.hearExactly("把 GitHub上那个评论总结一下。", through: 5.1)
-        #expect(speech.text == "把 GitHub 上那个评论总结一下。")
-        // Live results from before the pause, late: already in the exact words.
-        speech.hear("Butget hop上那个评论总结一下。", from: 4.5, isFinal: true)
-        #expect(speech.text == "把 GitHub 上那个评论总结一下。")
-    }
-
-    @Test func wordsAfterThePauseStayLive() {
-        var speech = ShownSpeech()
-        speech.hear("帮我订会议室", from: 0, isFinal: false)
-        // The person went on before the exact words came.
-        speech.hear("把 Ficma", from: 3.12, isFinal: false)
-        speech.hearExactly("帮我订会议室。", through: 3.1)
-        #expect(speech.text == "帮我订会议室。把 Ficma")
-        // A later result of the same pause revises its exact words.
-        speech.hearExactly("帮我定会议室。", through: 3.1)
-        #expect(speech.text == "帮我定会议室。把 Ficma")
-    }
-
-    @Test func aDraftStaysAsTyped() {
-        var speech = ShownSpeech(draft: "Book the  room")
-        speech.hear("for Friday", from: 0, isFinal: false)
-        #expect(speech.text == "Book the  room for Friday")
-        #expect(speech.spoken == "for Friday")
+struct DictationEventTests {
+    @Test func theSocketsWordsAndEnd() {
+        #expect(DictationEvent(message: #"{"type":"partial","segment":0,"text":"明日の"}"#) == .partial(segment: 0, text: "明日の"))
+        #expect(DictationEvent(message: #"{"type":"final","segment":2,"text":"明日の会議。"}"#) == .final(segment: 2, text: "明日の会議。"))
+        #expect(DictationEvent(message: #"{"type":"done"}"#) == .done)
+        #expect(DictationEvent(message: "pong") == nil)
+        #expect(DictationEvent(message: #"{"type":"final","segment":1}"#) == nil)
     }
 }

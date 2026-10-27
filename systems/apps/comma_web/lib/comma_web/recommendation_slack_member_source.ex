@@ -9,6 +9,8 @@ defmodule CommaWeb.RecommendationSlackMemberSource do
   @per_target 5
   @targets_total 10
   @target_bytes 600
+  @mention ~r/<@([UW][A-Z0-9]+)>/
+  @named_most 20
   # A channel message that asks someone for something.
   @asks ~r/[?？]|请|谁|帮忙|please|can you|could you|<!here|<!channel|<@/iu
 
@@ -67,7 +69,7 @@ defmodule CommaWeb.RecommendationSlackMemberSource do
       # The member's own threads already reach them through `threads`.
       joined = MapSet.new(threads, &{get_in(&1, ["channel", "id"]), slack_thread(&1)})
 
-      selected =
+      matches =
         (mentions ++
            direct ++
            threads ++
@@ -75,7 +77,11 @@ defmodule CommaWeb.RecommendationSlackMemberSource do
             |> targeted(user, joined)
             |> Enum.take(@targets_total)))
         |> Enum.uniq_by(& &1["permalink"])
-        |> Enum.map(fn item ->
+
+      names = mention_names(request, Enum.map(matches, & &1["text"]))
+
+      selected =
+        Enum.map(matches, fn item ->
           neighbors =
             Map.new(~w(previous_2 previous next next_2), fn key ->
               message = item[key]
@@ -94,7 +100,7 @@ defmodule CommaWeb.RecommendationSlackMemberSource do
           |> Map.put("context", context)
           |> CommaWeb.RecommendationSourceQuote.put(
             author: item["username"],
-            body: {:slack, item["text"]}
+            body: {:slack, named(item["text"], names)}
           )
         end)
 
@@ -213,6 +219,43 @@ defmodule CommaWeb.RecommendationSlackMemberSource do
         |> Map.update("text", "", &String.slice(&1, 0, @target_bytes))
         |> Map.put("memberRelation", "posted_where_your_work_is")
       end)
+    end)
+  end
+
+  # Slack writes a mention as the person's ID. The quote names them as
+  # `<@U…|name>`, at most #{@named_most} people per read; a person whose name
+  # cannot be read stays an ID.
+  defp mention_names(request, texts) do
+    texts
+    |> Enum.flat_map(&Regex.scan(@mention, &1, capture: :all_but_first))
+    |> List.flatten()
+    |> Enum.uniq()
+    |> Enum.take(@named_most)
+    |> RecommendationMemberRead.map(&{&1, user_name(request, &1)}, 3)
+    |> Map.new()
+  end
+
+  defp user_name(request, user) do
+    case request.("GET", SlackWebAPI.url("users.info", %{"user" => user}), max_bytes: 200_000) do
+      {:ok, %{"ok" => true, "user" => %{} = person}} ->
+        profile = if is_map(person["profile"]), do: person["profile"], else: %{}
+
+        [profile["display_name"], profile["real_name"], person["real_name"], person["name"]]
+        |> Enum.filter(&is_binary/1)
+        |> Enum.map(&(&1 |> String.replace(~r/[<>|\s]+/u, " ") |> String.trim()))
+        |> Enum.find(&(&1 != ""))
+
+      _ ->
+        nil
+    end
+  end
+
+  defp named(text, names) do
+    Regex.replace(@mention, text, fn mention, user ->
+      case names[user] do
+        name when is_binary(name) -> "<@#{user}|#{name}>"
+        _ -> mention
+      end
     end)
   end
 

@@ -1,7 +1,4 @@
-import { flush } from "@comma/test-utils/fake-clock";
 import { act, renderHook } from "@comma/test-utils/render";
-import { createScriptedCore } from "@comma/test-utils/scripted-core";
-import type { ReactNode } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { ComputeNodeState, HostMaintenanceState } from "@comma/native-bridge";
 
@@ -89,89 +86,19 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-it("starts the component update for missing capability without enabling a new connection", async () => {
-  mock.state = {
-    ...mock.state,
-    status: "action_required",
-    issue: "capability_missing",
-  };
-  // The native confirmation is still open.
+it("shows maintenance progress as preparing on the card without a step page", async () => {
   mock.maintain.mockReturnValue(new Promise(() => {}));
   const { result } = renderHook(() => useComputeSettingsController(true, true));
   await act(async () => {});
-  await act(async () => result.current.primary());
-  expect(result.current.detail).toBe("maintenance");
+  act(() => result.current.run("update_host"));
   expect(mock.maintain).toHaveBeenCalledWith({
     action: "update",
     dataPolicy: "preserve",
   });
   expect(mock.configure).not.toHaveBeenCalled();
-});
-it("returns from the steps page when every step it showed in progress is ready", async () => {
-  mock.state = { ...mock.state, status: "not_set", desiredEnabled: false };
-  const { result, rerender } = renderHook(() =>
-    useComputeSettingsController(true, true)
-  );
-  await act(async () => {});
-  act(() => result.current.setDetail("setup"));
-  mock.state = {
-    ...mock.state,
-    status: "processing",
-    setup: { components: "ready", connection: "connecting", shell: "not_initialized" },
-  };
-  rerender();
-  expect(result.current.detail).toBe("setup");
-  mock.state = {
-    ...mock.state,
-    status: "ready",
-    setup: { components: "ready", connection: "ready", shell: "ready" },
-  };
-  rerender();
   expect(result.current.detail).toBeUndefined();
-});
-it("reads the node on each tick while the visible steps page waits", async () => {
-  let tick = 0;
-  const core = createScriptedCore({
-    values: (topic) => (topic.topic === "computeTick" ? { tick } : undefined),
-  });
-  const wrapper = ({ children }: { children: ReactNode }) => core.wrap(children);
-  mock.state = {
-    ...mock.state,
-    status: "processing",
-    setup: { components: "ready", connection: "ready", shell: "preparing" },
-  };
-  const { result } = renderHook(() => useComputeSettingsController(true, true), {
-    wrapper,
-  });
-  await act(async () => {});
-  act(() => result.current.setDetail("setup"));
-  await act(async () => {});
-  const before = mock.refresh.mock.calls.length;
-  tick += 1;
-  core.changed("computeTick");
-  await act(() => flush());
-  // Without this read the finished Shell step shows only after a manual status check.
-  expect(mock.refresh.mock.calls.length).toBeGreaterThan(before);
-});
-it("shows a failed component setup's own error under the generic reason", async () => {
-  mock.state = {
-    ...mock.state,
-    status: "action_required",
-    issue: "preparation_failed",
-    preparation: {
-      source: "download",
-      location: "https://example.test/Host.zip",
-      instance: "shared",
-      phase: "failed",
-      error: "Host download failed (HTTP 404).",
-    },
-  };
-  const { result } = renderHook(() => useComputeSettingsController(true, true));
-  await act(async () => {});
-  expect(result.current.reason).toBe(
-    "The compute components are not ready. Continue setup."
-  );
-  expect(result.current.reasonDetail).toBe("Host download failed (HTTP 404).");
+  expect(result.current.card.kind).toBe("preparing");
+  expect(result.current.card.actions).toEqual([]);
 });
 it("invalidates connection confirmation during maintenance and confirms the workspace owner after completion", async () => {
   let finish!: (state: HostMaintenanceState) => void;

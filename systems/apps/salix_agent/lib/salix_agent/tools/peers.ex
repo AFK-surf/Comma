@@ -862,24 +862,34 @@ defmodule SalixAgent.Tools.Peers do
       payload["ok"] == false and present?(payload["error"]) ->
         raise String.trim(payload["error"])
 
+      # The action already ran on the device: a model without image input still
+      # gets a background state's accessibility tree, so it never retries it.
+      present?(payload["image_path"]) and present?(payload["text"]) and
+          !SalixAgent.MediaResolver.supports_images?(ctx.agent_id, ctx) ->
+        Jason.encode!(%{"result" => String.trim(payload["text"])})
+
       present?(payload["image_path"]) ->
         if !SalixAgent.MediaResolver.supports_images?(ctx.agent_id, ctx),
           do: raise("computer_use screenshot requires an image-capable model")
 
-        Jason.encode!([
-          %{
-            "type" => "image",
-            "file_ref" => %{
-              "device_id" => target.device_id,
-              "environment_id" => target.environment_id,
-              "path" => payload["image_path"]
-            },
-            "mime_type" => payload["image_content_type"],
-            "size_bytes" => payload["image_size_bytes"],
-            "width" => payload["image_width"],
-            "height" => payload["image_height"]
-          }
-        ])
+        image = %{
+          "type" => "image",
+          "file_ref" => %{
+            "device_id" => target.device_id,
+            "environment_id" => target.environment_id,
+            "path" => payload["image_path"]
+          },
+          "mime_type" => payload["image_content_type"],
+          "size_bytes" => payload["image_size_bytes"],
+          "width" => payload["image_width"],
+          "height" => payload["image_height"]
+        }
+
+        # A background-mode state carries the window's accessibility tree
+        # beside its screenshot.
+        if present?(payload["text"]),
+          do: Jason.encode!([%{"type" => "text", "text" => payload["text"]}, image]),
+          else: Jason.encode!([image])
 
       present?(payload["image_data_url"]) ->
         raise "computer_use connector requires an update for device screenshot references"
@@ -961,23 +971,20 @@ defmodule SalixAgent.Tools.Peers do
     String.trim("""
     env.computer_use modes
 
-    Two independent automation modes. The user picks one at session start; the
-    choice is enforced by the connector, and the user can cancel at any time.
-
-    background
-    - Accessibility-tree driven, per-window automation.
-    - User keeps using their computer; agent snapshots a window and drives it
-      by element reference (snapshot_id + element_index).
-    - Preferred when the target app has good accessibility coverage — resilient
-      to pixel shifts, doesn't take over the display.
+    background (default)
+    - Accessibility-tree driven, per-window automation. The user keeps their
+      screen, pointer and keyboard; other apps are not touched.
+    - get_app_state names one app and returns a snapshot_id, the window's
+      accessibility tree and its screenshot. Actions address elements by
+      snapshot_id + element_index, and each returns the window's new state.
 
     foreground
     - Direct manipulation with raw screenshot-space coordinates.
     - Non-target apps are hidden, a dim HUD and repositioned cursor indicate
       the agent is driving. The user can pause by moving the mouse or pressing
       a key; the agent resumes once they stop.
-    - Preferred for pixel-exact work, multi-window drag-drop, or UIs that lack
-      accessibility.
+    - Use it only when the app exposes no usable accessibility tree, or for
+      drag-and-drop across windows.
 
     Workflow
     1. Use device.list to discover devices, then device.get to select an environment
@@ -991,15 +998,15 @@ defmodule SalixAgent.Tools.Peers do
        starting. If any required permission is missing, call
        env.computer_use(device_id=..., environment=..., action="open-permission-flow") and wait for
        the user to grant it. These actions do not start a env.computer_use session.
-    4. env.computer_use(device_id=..., environment=..., action="start", args={apps?: [string]}).
-       The user picks the mode; do not include a mode hint — the decision is
-       theirs. Response includes {mode, help, message}; "help" is the
-       authoritative (action, args) reference for the chosen mode and your
+    4. env.computer_use(device_id=..., environment=..., action="start",
+       args={mode?: "background"|"foreground", apps?: [string]}). Mode defaults
+       to background. Response includes {mode, help, message}; "help" is the
+       authoritative (action, args) reference and rules for that mode, and your
        subsequent calls follow it verbatim.
     5. For each step: env.computer_use(device_id=..., environment=..., action=<name>,
        thinking="<short immediate next step>", args={...}). Pass thinking in the
        same tool call as the action so connector UIs can show progress before
-       running it. get_screenshot / screenshot actions return temporary device images for model input.
+       running it. Screenshots return as temporary device images for model input.
     6. env.computer_use(device_id=..., environment=..., action="end") when done to tear the session
        down and restore hidden apps / overlays.
 

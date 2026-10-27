@@ -62,10 +62,15 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# k3s's embedded cloud controller can start before the API server has granted
+# it the role that reads extension-apiserver-authentication; it then exits and
+# takes the whole server down a few seconds after /readyz passed (main
+# ee78b012e). This single-node cluster has no cloud to control.
 docker create --privileged --name "${container}" \
   --publish 127.0.0.1::6443 \
   rancher/k3s:v1.35.5-k3s1 server \
-  --disable=traefik --disable=servicelb --disable=metrics-server --tls-san=127.0.0.1 >/dev/null
+  --disable=traefik --disable=servicelb --disable=metrics-server \
+  --disable-cloud-controller --tls-san=127.0.0.1 >/dev/null
 # COMMA_K3S_IMAGES names images already in the Docker daemon that k3s imports
 # at start instead of pulling them: its system images and the tests' own.
 if [[ -n "${COMMA_K3S_IMAGES:-}" ]]; then

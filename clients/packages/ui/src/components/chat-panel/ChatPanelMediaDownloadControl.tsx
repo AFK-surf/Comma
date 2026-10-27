@@ -1,5 +1,6 @@
 import { type ReactNode, useEffect, useId, useRef, useState } from "react";
 import { Focusable } from "react-aria-components";
+import { useCommaMessages } from "@comma/i18n/react";
 import { uiClock, type CancelUiTimer } from "../../clock";
 import { motionDuration } from "../../tokens";
 import { Tooltip } from "../tooltip";
@@ -16,6 +17,7 @@ import { usePointerPressFeedback } from "./usePointerPressFeedback";
 export type ChatPanelMediaDownloadState =
   | { status: "idle" }
   | { status: "pending" }
+  | { status: "started" }
   | { status: "success" }
   | Extract<ChatPanelMediaDownloadResult, { status: "error" }>;
 
@@ -59,14 +61,21 @@ const mediaNoun: Record<ChatPanelMediaDownloadKind, string> = {
 
 const canExecuteDownload = (state: ChatPanelMediaDownloadState) =>
   state.status === "idle" ||
+  state.status === "started" ||
   state.status === "success" ||
   (state.status === "error" && state.retryable);
 
 const getDownloadCopy = (
   kind: ChatPanelMediaDownloadKind,
-  state: ChatPanelMediaDownloadState
+  state: ChatPanelMediaDownloadState,
+  messages: ReturnType<typeof useCommaMessages>
 ) => {
   switch (state.status) {
+    case "started":
+      return {
+        feedback: messages.ui_file_download_started_feedback(),
+        label: messages.file_download_started_title(),
+      };
     case "pending":
       return {
         feedback: `Downloading ${kind}…`,
@@ -183,9 +192,8 @@ export const useChatPanelMediaDownloadController = ({
       return;
     }
 
-    const successState: ChatPanelMediaDownloadState = { status: "success" };
-    stateRef.current = successState;
-    setState(successState);
+    stateRef.current = result;
+    setState(result);
     successTimerRef.current = uiClock.after(successFeedbackDuration, () => {
       if (requestGenerationRef.current === requestGeneration) {
         const idleState: ChatPanelMediaDownloadState = { status: "idle" };
@@ -213,9 +221,10 @@ export const ChatPanelMediaDownloadControl = ({
   icon,
   kind,
 }: ChatPanelMediaDownloadControlProps) => {
+  const messages = useCommaMessages();
   const feedbackId = useId();
   const buttonPressFeedback = usePointerPressFeedback<HTMLButtonElement>();
-  const copy = getDownloadCopy(kind, controller.state);
+  const copy = getDownloadCopy(kind, controller.state, messages);
   const hasFeedback = copy.feedback.length > 0;
   const isPending = controller.state.status === "pending";
   const isIdle = controller.state.status === "idle";

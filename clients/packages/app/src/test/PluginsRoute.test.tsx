@@ -7,7 +7,15 @@ import {
   within,
 } from "@comma/test-utils/render";
 import { advance, flush } from "@comma/test-utils/fake-clock";
-import { installNativeBridgeMock } from "@comma/test-utils/native-bridge";
+import {
+  createNativeStateBridgeMock,
+  installNativeBridgeMock,
+} from "@comma/test-utils/native-bridge";
+import {
+  macAppIds,
+  type MacAppState,
+  type MacAppsSnapshot,
+} from "@comma/native-bridge";
 import { createScriptedCore } from "@comma/test-utils/scripted-core";
 import type {
   Plugin as CommaPlugin,
@@ -46,7 +54,7 @@ vi.mock("../nativePlatformActions", async (importOriginal) => ({
 const WS = "wsp_1";
 
 /** Plugins the core keeps off the Plugins page's lists (core test: "keeps Feishu off the Plugins page's lists"). */
-const UNLISTED = new Set(["feishu", "lark"]);
+const UNLISTED = new Set(["feishu", "lark", "mac-apps"]);
 
 /**
  * What the core says the Plugins page shows: each plugin with what is under way
@@ -1257,5 +1265,208 @@ describe("PluginsRoute", () => {
     expect(
       screen.getByRole("button", { name: "将 Notion 添加到 Comma" })
     ).toBeVisible();
+  });
+});
+
+const macSnapshot = (
+  revision: number,
+  enabled: readonly string[],
+  requirements: Partial<Record<string, MacAppState["requirements"]>> = {}
+): MacAppsSnapshot => ({
+  revision,
+  status: "ready",
+  apps: macAppIds.map((id) => ({
+    id,
+    enabled: enabled.includes(id),
+    tools: [{ name: `${id}_tool`, title: "Tool", readOnly: true, destructive: false }],
+    requirements: requirements[id] ?? [],
+  })),
+  activity: [],
+});
+
+/** The workspace's Mac apps plugin as Salix lists it; the core keeps it off every list. */
+const macAppsPlugin: CommaPlugin = {
+  brand: null,
+  category: "Mac",
+  description: "Mac apps on your own Mac.",
+  id: "mac-apps",
+  installed: false,
+  locked: false,
+  mcps: [{ id: "mac", name: "Mac apps" }],
+  name: "Mac apps",
+  skills: [],
+  summary: "Mac apps on your own Mac.",
+};
+
+const CALENDAR_ICON = "data:image/png;base64,Y2FsZW5kYXI=";
+
+describe("PluginsRoute Mac apps", () => {
+  /** This Mac: its app switches as Main keeps them, connected to the workspace as `dev_mac`. */
+  function onMac(snapshot: MacAppsSnapshot, setEnabled: ReturnType<typeof vi.fn>) {
+    const openPrivacySettings = vi.fn(async () => ({ opened: true }));
+    installNativeBridgeMock({
+      os: "macos",
+      platform: "electron",
+      macApps: {
+        state: createNativeStateBridgeMock(() => snapshot),
+        setEnabled,
+        openPrivacySettings,
+        icons: async () => ({ calendar: CALENDAR_ICON }),
+      },
+      connectorRuntime: {
+        state: createNativeStateBridgeMock(() => ({
+          revision: 1,
+          scopes: [
+            {
+              workspaceId: WS,
+              available: true,
+              scope: "" as const,
+              deviceId: "dev_mac",
+            },
+          ],
+        })),
+      },
+    } as Parameters<typeof installNativeBridgeMock>[0]);
+    return { openPrivacySettings };
+  }
+
+  beforeEach(() => {
+    script = {
+      catalog: [notionPlugin, linearPlugin, macAppsPlugin],
+      activity: {},
+      notices: [],
+      skills: { status: "ready", skills },
+      session: signedIn("user-1"),
+    };
+    answers = { "plugin.install": () => ({}) };
+    core = scriptedCore();
+  });
+
+  it("lists the Mac apps as one plugin and installs it with this Mac", async () => {
+    const setEnabled = vi.fn();
+    onMac(macSnapshot(1, []), setEnabled);
+    render(<PluginsRoute />);
+    await flush();
+
+    expect(screen.getByRole("heading", { name: "Mac" })).toBeVisible();
+    expect(screen.queryByRole("switch")).toBeNull();
+    await press(screen.getByRole("button", { name: "View Mac apps plugin details" }));
+
+    // Before it is installed, the apps are listed without their switches.
+    expect(screen.getByRole("heading", { name: "Apps" })).toBeVisible();
+    expect(screen.getByText("Calendar")).toBeVisible();
+    expect(screen.queryByRole("switch")).toBeNull();
+
+    await press(screen.getByRole("button", { name: "Add to Comma Mac apps" }));
+    expect(core.sentTo("plugin.install")).toEqual([
+      { workspace: WS, plugin: "mac-apps", deviceId: "dev_mac" },
+    ]);
+    expect(setEnabled).not.toHaveBeenCalled();
+  });
+
+  it("turns apps on inside the installed plugin, and leaves them to this Mac when it is uninstalled", async () => {
+    say({ catalog: [notionPlugin, installed(macAppsPlugin)] });
+    const setEnabled = vi.fn(async ({ enabled }: { enabled: boolean }) => ({
+      enabled,
+      snapshot: macSnapshot(enabled ? 2 : 3, enabled ? ["calendar"] : []),
+    }));
+    onMac(macSnapshot(1, []), setEnabled);
+    const { container } = render(<PluginsRoute />);
+    await flush();
+
+    await press(screen.getByRole("button", { name: "View Mac apps plugin details" }));
+    // Each app shows the icon this Mac draws for it.
+    expect(container.querySelector(`image[href="${CALENDAR_ICON}"]`)).not.toBeNull();
+    const calendar = screen.getByRole("switch", { name: "Turn Calendar on or off" });
+    expect(calendar).not.toBeChecked();
+
+    await press(calendar);
+    expect(setEnabled).toHaveBeenCalledWith({ app: "calendar", enabled: true });
+    // Salix rediscovers the tools this Mac serves.
+    expect(core.sentTo("plugin.install")).toEqual([
+      { workspace: WS, plugin: "mac-apps", deviceId: "dev_mac" },
+    ]);
+    expect(
+      screen.getByRole("switch", { name: "Turn Calendar on or off" })
+    ).toBeChecked();
+
+    await press(screen.getByRole("button", { name: "Uninstall Mac apps" }));
+    expect(core.sentTo("plugin.uninstall")).toEqual([
+      { workspace: WS, plugin: "mac-apps" },
+    ]);
+    // Another workspace on this Mac may still use them.
+    expect(setEnabled).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps an app off that macOS denied, and opens System Settings for it", async () => {
+    say({ catalog: [notionPlugin, installed(macAppsPlugin)] });
+    const denied = macSnapshot(1, [], {
+      calendar: [
+        { requirement: "calendars", state: "denied", onEnable: true, tools: [] },
+      ],
+    });
+    const setEnabled = vi.fn(async () => ({ enabled: false, snapshot: denied }));
+    const { openPrivacySettings } = onMac(denied, setEnabled);
+    render(<PluginsRoute />);
+    await flush();
+    await press(screen.getByRole("button", { name: "View Mac apps plugin details" }));
+
+    await press(screen.getByRole("switch", { name: "Turn Calendar on or off" }));
+    expect(
+      screen.getByRole("switch", { name: "Turn Calendar on or off" })
+    ).not.toBeChecked();
+
+    expect(screen.getByText("Denied")).toBeVisible();
+    await press(screen.getByRole("button", { name: "Open System Settings" }));
+    expect(openPrivacySettings).toHaveBeenCalledWith({ requirement: "calendars" });
+  });
+
+  it("says so when macOS did not allow an app, also when it never prompted", async () => {
+    say({ catalog: [notionPlugin, installed(macAppsPlugin)] });
+    // macOS could not show its prompt: the permission is still undecided.
+    const undecided = macSnapshot(1, [], {
+      calendar: [
+        {
+          requirement: "calendars",
+          state: "not_determined",
+          onEnable: true,
+          tools: [],
+        },
+      ],
+    });
+    const setEnabled = vi.fn(async () => ({ enabled: false, snapshot: undecided }));
+    const { openPrivacySettings } = onMac(undecided, setEnabled);
+    render(
+      <>
+        <Toaster />
+        <PluginsRoute />
+      </>
+    );
+    await flush();
+    await press(screen.getByRole("button", { name: "View Mac apps plugin details" }));
+    expect(screen.queryByText("Denied")).toBeNull();
+
+    await press(screen.getByRole("switch", { name: "Turn Calendar on or off" }));
+    expect(
+      screen.getByRole("switch", { name: "Turn Calendar on or off" })
+    ).not.toBeChecked();
+    expect(
+      screen.getByText(
+        "macOS did not allow Calendar. Allow Comma in System Settings, then turn Calendar on again."
+      )
+    ).toBeVisible();
+    expect(screen.getByText("Denied")).toBeVisible();
+    await press(screen.getByRole("button", { name: "Open System Settings" }));
+    expect(openPrivacySettings).toHaveBeenCalledWith({ requirement: "calendars" });
+  });
+
+  it("lists no Mac apps outside the Mac app", async () => {
+    installNativeBridgeMock({ platform: "web" } as Parameters<
+      typeof installNativeBridgeMock
+    >[0]);
+    render(<PluginsRoute />);
+    await flush();
+    expect(screen.queryByRole("heading", { name: "Mac" })).toBeNull();
+    expect(screen.queryByText("Mac apps")).toBeNull();
   });
 });

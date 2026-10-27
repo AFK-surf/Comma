@@ -12,9 +12,7 @@ import { useCommaMessages } from "@comma/i18n/react";
 export type ComputePanelDetail =
   | "local"
   | "maintenance"
-  | "setup"
   | "settings"
-  | "diagnostics"
   | "erase"
   | "authorization";
 export function useLocalComputeCategory(

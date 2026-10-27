@@ -58,11 +58,12 @@
     <string name="routines_opens_task">打开任务</string>
     <string name="routines_adds_prompt">添加到发给 Comma 的消息中</string>
     <string name="routines_opens_link">打开链接</string>
+    <string name="routines_dismiss">不再提醒</string>
+    <string name="routines_dismiss_failed">无法移除这一条，请重试。</string>
     <string name="routines_platforms">平台</string>
     <string name="routines_card_position">第 %1$d 张，共 %2$d 张</string>
     <string name="task_status_switcher">任务状态</string>
     <string name="task_pinned">已置顶</string>
-    <string name="task_stale">内容已过期</string>
     <string name="task_now">刚刚</string>
     <string name="task_action_done">标记为完成</string>
     <string name="task_action_rename">重命名</string>
@@ -74,7 +75,6 @@
     <string name="task_rename_title">重命名任务</string>
     <string name="task_rename_hint">标题</string>
     <string name="task_archive_not_finished">请先结束任务再归档</string>
-    <string name="task_archive_scheduled">请先移除周期调度再归档</string>
     <string name="task_archived_toast">已归档</string>
     <string name="task_restore_busy">任务正在归档或恢复中，请稍后重试。</string>
     <string name="task_no_archived">没有已归档的任务</string>
@@ -90,6 +90,9 @@
     <string name="task_details_manage_labels">管理标签…</string>
     <string name="task_details_change_status">更改任务状态</string>
     <string name="task_details_worker_steps">显示 Worker 的执行步骤</string>
+    <string name="task_details_machine">运行在</string>
+    <string name="task_machine_fallback">电脑</string>
+    <string name="task_offline">%1$s · 离线</string>
     <string name="share_title">分享任务</string>
     <string name="share_footer">任何拿到链接的人都能阅读此任务在分享时为止的消息，但不能发送消息，也看不到你的工作区。</string>
     <string name="share_link">链接</string>

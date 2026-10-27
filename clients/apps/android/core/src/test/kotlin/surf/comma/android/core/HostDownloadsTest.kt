@@ -53,6 +53,26 @@ class HostDownloadsTest {
         assertEquals(listOf("clip.mp4"), file.parentFile!!.list()!!.toList())
     }
 
+    @Test fun partsTheCoreReadTakeTheirPlaceAsADownloadDoes() {
+        val bytes = ByteArray(70_000) { (it * 3).toByte() }
+        downloads.file("account/key/shot.png")!!.apply { parentFile!!.mkdirs(); writeText("old") }
+        val id = downloads.create("account/key/shot.png")
+        assertEquals(40_000L, downloads.append(id, bytes.copyOfRange(0, 40_000))["received"])
+        assertEquals(70_000L, downloads.append(id, bytes.copyOfRange(40_000, 70_000))["received"])
+        val saved = downloads.finish(id)
+        assertEquals(bytes.size.toLong(), saved["size"])
+        assertEquals(sha256(bytes), saved["sha256"])
+        val file = downloads.file("account/key/shot.png")!!
+        assertArrayEquals(bytes, file.readBytes())
+        assertEquals(listOf("shot.png"), file.parentFile!!.list()!!.toList())
+        assertThrows(IOException::class.java) { downloads.create("../outside.png") }
+        // Given up part way, nothing of it stays.
+        val givenUp = downloads.create("account/key/b.bin")
+        downloads.append(givenUp, bytes)
+        downloads.close(givenUp)
+        assertEquals(listOf("shot.png"), file.parentFile!!.list()!!.toList())
+    }
+
     @Test fun aGivenUpOrBrokenDownloadLeavesNothing() {
         val bytes = ByteArray(200_000) { it.toByte() }
         val id = downloads.begin(get(MockResponse().setBody(Buffer().write(bytes))), "account/key/a.bin")

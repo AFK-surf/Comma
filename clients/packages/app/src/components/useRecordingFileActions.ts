@@ -1,14 +1,12 @@
-import {
-  readCollapsedHomeRails,
-  toggleCollapsedHomeRail,
-} from "./home/homeRailCollapse";
 import { useCall } from "@comma/core-client";
 import { useCommaMessages } from "@comma/i18n/react";
+import type { MeetingTaskReference } from "@comma/core/contract";
 import { getNativeBridge, type AudioCaptureRecording } from "@comma/native-bridge";
 import { toast } from "@comma/ui/components/toast";
 import { useRouter } from "@tanstack/react-router";
 import { useCallback, useContext, useRef, useState } from "react";
 import { CommaAuthContext } from "./auth-context";
+import { openTaskTarget } from "./tasks/openTaskTarget";
 
 let revealSequence = 0;
 
@@ -91,25 +89,31 @@ export function useRecordingFileActions() {
         summary?: "pending" | "queued" | "error" | undefined;
         summaryError?: string | undefined;
         smartSummary?: boolean | undefined;
-        archive?: "done" | "error" | undefined;
-        task?: { groupId: string; taskId: string } | undefined;
+        archive?: "done" | "missing" | "pending" | "error" | undefined;
+        task?: MeetingTaskReference | undefined;
       }
     ) => {
       setError(undefined);
+      // Only a Task the server saved can be opened.
+      const task = meeting?.summary !== undefined ? meeting.task : undefined;
+      const archiveFailed =
+        meeting?.archive !== undefined && meeting.archive !== "done";
       const show =
-        meeting?.summary === "error" || meeting?.archive === "error"
-          ? toast.error
-          : toast.success;
+        meeting?.summary === "error" || archiveFailed ? toast.error : toast.success;
       const title =
         meeting?.archive === "error"
           ? messages.meeting_archive_failed()
-          : meeting?.archive === "done"
-            ? messages.meeting_archive_done()
-            : meeting?.summary === "pending" && meeting.smartSummary !== false
-              ? messages.recording_summary_preparing()
-              : meeting?.summary === "error"
-                ? messages.recording_summary_failed()
-                : messages.chat_voice_capture_saved({ name: recording.file.name });
+          : meeting?.archive === "missing"
+            ? messages.meeting_archive_missing()
+            : meeting?.archive === "pending"
+              ? messages.meeting_archive_pending()
+              : meeting?.archive === "done"
+                ? messages.meeting_archive_done()
+                : meeting?.summary === "pending" && meeting.smartSummary !== false
+                  ? messages.recording_summary_preparing()
+                  : meeting?.summary === "error"
+                    ? messages.recording_summary_failed()
+                    : messages.chat_voice_capture_saved({ name: recording.file.name });
       const message =
         meeting?.summary === "error" && meeting.summaryError
           ? `${title} ${meeting.summaryError}`
@@ -117,7 +121,7 @@ export function useRecordingFileActions() {
       show(message, {
         actions: meeting
           ? [
-              ...(meeting.summary !== undefined
+              ...(task
                 ? [
                     {
                       hierarchy: "secondary-gray" as const,
@@ -125,23 +129,18 @@ export function useRecordingFileActions() {
                         meeting.smartSummary === false
                           ? messages.recording_view_meeting()
                           : messages.recording_check_summary(),
-                      onPress: () => {
-                        if (readCollapsedHomeRails().tasks)
-                          toggleCollapsedHomeRail("tasks");
-                        void router?.navigate({
-                          to: "/",
-                          search: meeting.task
-                            ? {
-                                meetingTask: meeting.task.taskId,
-                                meetingGroup: meeting.task.groupId,
-                              }
-                            : {},
-                        });
-                      },
+                      onPress: () =>
+                        void router?.navigate(
+                          openTaskTarget({
+                            conversationId: task.taskId,
+                            groupId: task.groupId,
+                            workspaceId: task.workspaceId,
+                          })
+                        ),
                     },
                   ]
                 : []),
-              ...(meeting.summary === "error" || meeting.archive === "error"
+              ...(meeting.summary === "error" || archiveFailed
                 ? [
                     {
                       hierarchy: "tertiary-gray" as const,
@@ -155,8 +154,7 @@ export function useRecordingFileActions() {
                   ]
                 : []),
               {
-                hierarchy:
-                  meeting.summary !== undefined ? "tertiary-gray" : "secondary-gray",
+                hierarchy: task ? "tertiary-gray" : "secondary-gray",
                 label: messages.ui_meeting_recorder_show_in_drive(),
                 onPress: () => void reveal(recording),
               },

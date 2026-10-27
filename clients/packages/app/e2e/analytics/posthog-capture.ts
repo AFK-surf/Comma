@@ -16,6 +16,8 @@ export type Event = {
  */
 export const posthogHost = `http://127.0.0.1:${testPort("COMMA_ANALYTICS_POSTHOG_PORT")}`;
 export const apiBaseUrl = `http://127.0.0.1:${testPort("COMMA_ANALYTICS_API_PORT")}`;
+/** The website as built (./playwright.config.ts), on the app's host. */
+export const websiteOrigin = `http://127.0.0.1:${testPort("COMMA_ANALYTICS_WEBSITE_PORT")}`;
 
 // A free port, chosen once for the run: the config's process picks it, and
 // the test workers it starts read it from their environment.

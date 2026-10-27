@@ -2,7 +2,7 @@ defmodule SalixIM.Ports.FeishuUserAccounts do
   @moduledoc """
   Outbound port for the Feishu people who signed in for a Group: the Group's
   OAuth Bindings of provider `feishu` (`SalixStore.OAuth.Adapters.Feishu`). A
-  Feishu connect's bot reads as one of them what Feishu shows only to people
+  Feishu connect's bot finds and reads as one of them what that person may see
   (`SalixIM.Provider.Feishu.Meetings`).
   """
 

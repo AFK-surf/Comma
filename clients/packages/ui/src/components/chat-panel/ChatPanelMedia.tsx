@@ -63,6 +63,8 @@ export interface ChatPanelAudioProps {
   defaultPlaying?: boolean;
   download?: ChatPanelMediaDownloadAction;
   duration?: number;
+  /** The file `src` plays, when its URL can change (a renewed stream): a new URL of it keeps the position. */
+  sourceKey?: string;
   src: string;
 }
 
@@ -99,6 +101,8 @@ export interface ChatPanelVideoProps {
   duration?: number;
   poster: string;
   previewTitle?: string;
+  /** The file `src` plays, when its URL can change (a renewed stream): a new URL of it keeps the position. */
+  sourceKey?: string;
   src: string;
   /** `anonymous` for a CORS-enabled source whose frames must stay readable. */
   crossOrigin?: "anonymous" | undefined;
@@ -251,14 +255,16 @@ export const ChatPanelAudio = ({
   defaultCurrentTime,
   defaultPlaying,
   download,
-  duration = 19,
+  duration,
+  sourceKey,
   src,
 }: ChatPanelAudioProps) => {
   const controller = useMediaPlaybackController({
     defaultCurrentTime,
     defaultPlaying,
     duration,
-    sourceKey: src,
+    sourceKey: sourceKey ?? src,
+    src,
   });
   const downloadController = useChatPanelMediaDownloadController({
     action: download,
@@ -445,6 +451,9 @@ export const ChatPanelFile = ({
         <button
           aria-label={messages.ui_file_preview({ fileName })}
           className="chat-panel-file-preview-trigger"
+          // The trigger is the card's own surface, laid over it: the global
+          // press scale would shrink its pressed background inside the card.
+          data-no-press-feedback
           onClick={onPreview}
           type="button"
         />
@@ -478,9 +487,10 @@ export const ChatPanelVideo = ({
   defaultCurrentTime,
   defaultPlaying,
   download,
-  duration = 19,
+  duration,
   poster,
   previewTitle = "Generated video preview",
+  sourceKey,
   src,
   crossOrigin,
   onContextMenu,
@@ -500,7 +510,8 @@ export const ChatPanelVideo = ({
     defaultCurrentTime,
     defaultPlaying,
     duration,
-    sourceKey: src,
+    sourceKey: sourceKey ?? src,
+    src,
   });
   const downloadController = useChatPanelMediaDownloadController({
     action: download,

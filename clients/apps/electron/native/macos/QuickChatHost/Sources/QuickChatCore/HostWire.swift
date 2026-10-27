@@ -8,11 +8,13 @@ public enum HostCommand: Decodable, Equatable, Sendable {
     case result(requestId: String, ok: Bool, message: String?)
     /// The server's words for a `transcribe`; nil when it could not transcribe it.
     case transcript(clipId: String, text: String?)
+    /// The ticket for a `dictationTicket`; nil when there is no live dictation now.
+    case dictationTicket(requestId: String, ticket: DictationTicket?)
     /// The person clicked the menu-bar item: listen, as a double tap of ⌘ does.
     case listen
 
     private enum CodingKeys: String, CodingKey {
-        case type, strings, requestId, ok, message, clipId, text
+        case type, strings, requestId, ok, message, clipId, text, url, ticket
     }
 
     public init(from decoder: Decoder) throws {
@@ -33,11 +35,29 @@ public enum HostCommand: Decodable, Equatable, Sendable {
                 clipId: try container.decode(String.self, forKey: .clipId),
                 text: try container.decodeIfPresent(String.self, forKey: .text)
             )
+        case "dictationTicket":
+            let url = try container.decodeIfPresent(String.self, forKey: .url)
+            let ticket = try container.decodeIfPresent(String.self, forKey: .ticket)
+            self = .dictationTicket(
+                requestId: try container.decode(String.self, forKey: .requestId),
+                ticket: url.flatMap { url in ticket.map { DictationTicket(url: url, ticket: $0) } }
+            )
         case let type:
             throw DecodingError.dataCorruptedError(
                 forKey: .type, in: container, debugDescription: "Unknown command \(type)"
             )
         }
+    }
+}
+
+/// Where live dictation's socket is (`/v1/comma/dictation`), and the one-use ticket that opens it.
+public struct DictationTicket: Equatable, Sendable {
+    public var url: String
+    public var ticket: String
+
+    public init(url: String, ticket: String) {
+        self.url = url
+        self.ticket = ticket
     }
 }
 
@@ -95,6 +115,8 @@ public enum HostEvent: Encodable, Equatable, Sendable {
     case submit(requestId: String, text: String, draft: String, audio: Data?, prepared: Bool = false)
     /// One audio clip (M4A, base64). Send-time clips wait for transcription admission.
     case transcribe(clipId: String, audio: Data, waitForSlot: Bool = false)
+    /// A ticket for live dictation, answered by the command of the same name.
+    case dictationTicket(requestId: String)
 
     private enum CodingKeys: String, CodingKey {
         case type, requestId, text, draft, audio, clipId, prepared, update, waitForSlot
@@ -122,6 +144,9 @@ public enum HostEvent: Encodable, Equatable, Sendable {
             try container.encode(clipId, forKey: .clipId)
             try container.encode(audio, forKey: .audio)
             if waitForSlot { try container.encode(true, forKey: .waitForSlot) }
+        case let .dictationTicket(requestId):
+            try container.encode("dictationTicket", forKey: .type)
+            try container.encode(requestId, forKey: .requestId)
         }
     }
 }

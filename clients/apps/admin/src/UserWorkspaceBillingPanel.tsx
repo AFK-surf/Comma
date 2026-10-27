@@ -36,6 +36,7 @@ import {
   type WorkspaceSections,
 } from "./UserWorkspaceBillingModel";
 import { WorkspaceCloudVmSection } from "./WorkspaceCloudVmSection";
+import { WorkspaceSandboxLimitSection } from "./WorkspaceSandboxLimitSection";
 import { WorkspaceSignalSection } from "./WorkspaceSignalSection";
 import { messages } from "@comma/i18n";
 
@@ -154,10 +155,13 @@ function WorkspaceBillingContent({
         <WorkspaceAgentModelsSection model={sections.agentModels} />
       ) : null}
 
-      {sections?.cloudVm || (ready && sections?.signal) ? (
+      {sections?.cloudVm || (ready && (sections?.signal || sections?.sandboxLimit)) ? (
         <AdminSection title={messages.admin_runtime()}>
           {sections?.cloudVm ? (
             <WorkspaceCloudVmSection model={sections.cloudVm} />
+          ) : null}
+          {ready && sections?.sandboxLimit ? (
+            <WorkspaceSandboxLimitSection model={sections.sandboxLimit} />
           ) : null}
           {ready && sections?.signal ? (
             <WorkspaceSignalSection model={sections.signal} />

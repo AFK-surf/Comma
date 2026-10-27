@@ -30,6 +30,36 @@ struct RecommendationFeedTests {
         #expect(RecommendationSource.brandKey("Google Calendar") == "googlecalendar")
     }
 
+    @Test func memberTaskRowCarriesItsTaskAndQuotedSource() throws {
+        // As the client core publishes it: a member row's link carries its objective and the source words it quotes, read.
+        let json = #"""
+        {"state":"fresh","settings":{"sources":[
+            {"appId":"slack","appName":"Slack","connectionId":"conn-sl","enabled":true,"kind":"composio","label":"acme"}]},
+         "snapshot":{"generatedAt":1700000000000,"generation":2,"protocolVersion":1,"sourceRevision":1,"templateCatalogVersion":1,"warnings":[],
+          "summary":[{"kind":"markdown","text":"One thing needs you."}],
+          "cards":[
+            {"id":"slack","title":"Slack","template":"text-list@1","sourceIds":["conn-sl"],"fallbackText":"Slack","items":[
+              {"id":"i1","parts":[{"kind":"inline-link","link":{"href":"https://acme.slack.com/archives/C1/p1","label":"PR 3986","sourceId":"conn-sl",
+                "objective":"Decide whether to merge PR 3986","previewText":"Ember: <@U1|zanwei> CI is green.\n• Retry",
+                "quote":[{"runs":[{"kind":"text","text":"Ember: "},{"kind":"mention","text":"@zanwei","href":"https://acme.slack.com/team/U1"},{"kind":"text","text":" CI is green."}]},
+                  {"listItem":true,"runs":[{"kind":"text","text":"Retry"}]}],
+                "taskPrompt":"Decide whether to merge PR 3986\n\nhttps://acme.slack.com/archives/C1/p1"}}],
+               "action":{"type":"send_to_comma","label":"Decide","memberTask":true,"prompt":"Decide whether to merge PR 3986\n\nhttps://acme.slack.com/archives/C1/p1","requiresConfirmation":true}},
+              {"id":"i2","parts":[{"kind":"markdown","text":"Reply to "},{"kind":"inline-link","link":{"href":"https://acme.slack.com/archives/C1/p2","label":"Ada","sourceId":"conn-sl","previewText":"Ada: is it final?","quote":[{"runs":[{"kind":"text","text":"Ada: is it final?"}]}]}}],
+               "action":{"type":"send_to_comma","label":"Reply","prompt":"Reply to Ada","requiresConfirmation":true}}]}]}}
+        """#
+        let feed = try RecommendationFeed(envelope: JSONDecoder().decode(JSONValue.self, from: Data(json.utf8)))
+        let row = feed.cards[0].items[0]
+        #expect(row.objective == "Decide whether to merge PR 3986")
+        #expect(row.quote == RecommendationQuote(lines: [
+            .init(runs: [.init(text: "Ember: ", kind: .text), .init(text: "@zanwei", kind: .mention), .init(text: " CI is green.", kind: .text)]),
+            .init(runs: [.init(text: "Retry", kind: .text)], listItem: true),
+        ]))
+        #expect(row.quote?.plainText == "Ember: @zanwei CI is green.\n• Retry")
+        // A row with prose around its link is not a member task row: it shows its prose and quotes nothing.
+        #expect(feed.cards[0].items[1].objective == nil && feed.cards[0].items[1].quote == nil)
+    }
+
     @Test func summaryBodyLeavesOutTheBriefingTitle() {
         let titled = RecommendationFeed(state: "fresh", summary: [
             .text("Your work briefing\n\nHere is what I suggest you focus on: "),

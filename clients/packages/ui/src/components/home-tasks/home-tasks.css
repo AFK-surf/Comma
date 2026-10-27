@@ -19,8 +19,9 @@
   );
 }
 
-/* Keep the status readable and resume its phase when the card returns. */
-.comma-home-tasks-item[data-motion-visible="false"] .comma-shiny-text {
+/* Keep the status readable and resume its phase when the card returns. The
+   shine is the text's ::after band, which runs an animation of its own. */
+.comma-home-tasks-item[data-motion-visible="false"] .comma-shiny-text::after {
   animation-play-state: paused;
 }
 

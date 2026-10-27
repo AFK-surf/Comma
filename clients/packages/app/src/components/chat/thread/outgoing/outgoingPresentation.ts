@@ -3,6 +3,7 @@ import type { ChatMessage } from "@comma/core/chat";
 import type {
   OutgoingBubbleFrame,
   OutgoingBubblePlaybackRate,
+  OutgoingTranscriptAnchor,
 } from "../../motion/outgoingBubbleMotion";
 import {
   QUICK_CHAT_MESSAGE_TYPE,
@@ -16,6 +17,8 @@ export type ChatOutgoingLaunch = {
   expiresAt: number;
   id: number;
   sourceFrame: OutgoingBubbleFrame;
+  /** The newest turn as the message was sent, for holding the transcript still. */
+  transcriptAnchor?: OutgoingTranscriptAnchor | undefined;
   text: string;
 };
 
